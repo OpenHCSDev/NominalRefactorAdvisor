@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Callable
-
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -242,7 +240,10 @@ class ActionContext:
     registry_name: str
     class_list: str
     mapping_symbol: str
+    mapping_call: str
+    mapping_problem: str
     field_list: str
+    identity_field_list: str
     dispatch_symbol: str
     statement_count: int
 
@@ -313,6 +314,13 @@ def _build_action_context(
     symbols = _evidence_symbols(findings)
     class_names = _class_names_from_findings(findings)
     field_names = _field_names_from_findings(findings)
+    identity_field_names = _identity_field_names_from_findings(findings)
+    mapping_symbol = _mapping_symbol_from_findings(
+        findings,
+        field_names,
+        identity_field_names,
+        _mapping_source_name_from_findings(findings),
+    )
     return ActionContext(
         subsystem=subsystem,
         evidence=_combined_evidence(findings),
@@ -321,10 +329,19 @@ def _build_action_context(
         template_method_name="run",
         registry_name=_registry_name_from_findings(findings),
         class_list=_human_join(list(class_names)) if class_names else "the family",
-        mapping_symbol=_mapping_symbol_from_findings(findings, field_names),
+        mapping_symbol=mapping_symbol,
+        mapping_call=_mapping_call_from_symbol(
+            mapping_symbol,
+            field_names,
+            _mapping_source_name_from_findings(findings),
+        ),
+        mapping_problem=_mapping_problem_description(field_names, identity_field_names),
         field_list=_human_join(list(field_names))
         if field_names
         else "the repeated fields",
+        identity_field_list=_human_join(list(identity_field_names))
+        if identity_field_names
+        else "the directly copied fields",
         dispatch_symbol=_dispatch_symbol_from_findings(findings),
         statement_count=_statement_count_from_findings(findings),
     )
@@ -419,15 +436,15 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_authoritative_schema",
-                description="Create `{mapping_symbol}` in `{subsystem}` to own the repeated mapping for {field_list}.",
+                description="Create `{mapping_symbol}` in `{subsystem}` to collapse the repeated {mapping_problem}.",
                 confidence=HIGH_CONFIDENCE,
                 create_symbol="{mapping_symbol}",
             ),
             ActionTemplate(
                 kind="replace_mapping_sites",
-                description="Replace the repeated constructor/export/projection sites with `{mapping_symbol}`.",
+                description="Replace the repeated constructor/export/projection sites with `{mapping_call}`.",
                 confidence=HIGH_CONFIDENCE,
-                replace_with="{mapping_symbol}",
+                replace_with="{mapping_call}",
             ),
         )
     ),
@@ -857,6 +874,15 @@ def _field_names_from_findings(
     return tuple(_dedupe_preserve_order(names))
 
 
+def _identity_field_names_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for finding in findings:
+        names.extend(finding.metrics.identity_field_names_for_plan())
+    return tuple(_dedupe_preserve_order(names))
+
+
 def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
     for finding in findings:
         registry_name = finding.metrics.registry_name_for_plan()
@@ -866,7 +892,10 @@ def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
 
 
 def _mapping_symbol_from_findings(
-    findings: tuple[RefactorFinding, ...], field_names: tuple[str, ...]
+    findings: tuple[RefactorFinding, ...],
+    field_names: tuple[str, ...],
+    identity_field_names: tuple[str, ...],
+    source_name: str | None,
 ) -> str:
     for finding in findings:
         mapping_name = finding.metrics.mapping_name_for_plan()
@@ -874,11 +903,63 @@ def _mapping_symbol_from_findings(
             continue
         identifier = _safe_identifier(mapping_name)
         if mapping_name[:1].isupper():
+            if field_names and set(identity_field_names) == set(field_names):
+                if source_name is not None:
+                    return f"{identifier}.from_source"
+                return f"{identifier}.from_fields"
             return f"{identifier}.from_source"
         return f"build_{identifier}"
     if field_names:
+        if set(identity_field_names) == set(field_names):
+            return "ProjectionSchema.from_fields"
         return "ProjectionSchema.from_source"
     return "AuthoritativeSchema.from_source"
+
+
+def _mapping_source_name_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> str | None:
+    names = {
+        name
+        for finding in findings
+        if (name := finding.metrics.source_name_for_plan()) is not None
+    }
+    if not names:
+        return None
+    if len(names) == 1:
+        return next(iter(names))
+    return "source"
+
+
+def _mapping_call_from_symbol(
+    mapping_symbol: str,
+    field_names: tuple[str, ...],
+    source_name: str | None,
+) -> str:
+    if mapping_symbol.endswith(".from_source"):
+        return f"{mapping_symbol}({source_name or 'source'})"
+    if mapping_symbol.endswith(".from_fields"):
+        arguments = ", ".join(field_names) if field_names else "..."
+        return f"{mapping_symbol}({arguments})"
+    if source_name is not None:
+        return f"{mapping_symbol}({source_name})"
+    return f"{mapping_symbol}(...)"
+
+
+def _mapping_problem_description(
+    field_names: tuple[str, ...],
+    identity_field_names: tuple[str, ...],
+) -> str:
+    if field_names and set(identity_field_names) == set(field_names):
+        return f"name-for-name boilerplate for {_human_join(list(field_names))}"
+    if identity_field_names:
+        return (
+            f"mapping for {_human_join(list(field_names))} with direct copies for "
+            f"{_human_join(list(identity_field_names))}"
+        )
+    if field_names:
+        return f"mapping for {_human_join(list(field_names))}"
+    return "mapping boilerplate"
 
 
 def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str:

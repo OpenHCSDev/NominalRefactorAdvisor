@@ -42,6 +42,8 @@ class BuilderCallShape:
     keyword_names: tuple[str, ...]
     value_fingerprint: tuple[str, ...]
     source_arity: int
+    source_name: str | None
+    identity_field_names: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
@@ -128,6 +130,8 @@ class ExportDictShape:
     key_names: tuple[str, ...]
     value_fingerprint: tuple[str, ...]
     source_arity: int
+    source_name: str | None
+    identity_field_names: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
@@ -381,6 +385,10 @@ def _builder_call_shape(
     source_roots = set()
     for _, value in keyword_pairs:
         source_roots.update(_root_names(value))
+    source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
+    identity_field_names = tuple(
+        name for name, value in keyword_pairs if _leaf_name(value) == name
+    )
     return BuilderCallShape(
         file_path=str(parsed_module.path),
         class_name=class_name,
@@ -390,6 +398,8 @@ def _builder_call_shape(
         keyword_names=keyword_names,
         value_fingerprint=value_fingerprint,
         source_arity=len(source_roots),
+        source_name=source_name,
+        identity_field_names=identity_field_names,
     )
 
 
@@ -417,6 +427,10 @@ def _export_dict_shape(
         source_roots.update(_root_names(value))
     if not source_roots:
         return None
+    source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
+    identity_field_names = tuple(
+        name for name, value in key_pairs if _leaf_name(value) == name
+    )
     return ExportDictShape(
         file_path=str(parsed_module.path),
         class_name=class_name,
@@ -425,10 +439,20 @@ def _export_dict_shape(
         key_names=key_names,
         value_fingerprint=value_fingerprint,
         source_arity=len(source_roots),
+        source_name=source_name,
+        identity_field_names=identity_field_names,
     )
 
 
 def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _leaf_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):

@@ -833,6 +833,13 @@ REGISTRY["beta"] = Beta
     assert plan.outcome.repeated_mappings_centralized >= 3
     assert any(action.kind == "create_abc_base" for action in plan.actions)
     assert any(action.kind == "create_metaclass" for action in plan.actions)
+    mapping_action = next(
+        action
+        for action in plan.actions
+        if action.kind == "create_authoritative_schema"
+    )
+    assert mapping_action.create_symbol == "RuntimePlan.from_source"
+    assert "name-for-name boilerplate" in mapping_action.description
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:

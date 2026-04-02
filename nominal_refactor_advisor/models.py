@@ -104,6 +104,12 @@ class FindingMetrics(SemanticRecord, ABC):
     def mapping_name_for_plan(self) -> str | None:
         return None
 
+    def source_name_for_plan(self) -> str | None:
+        return None
+
+    def identity_field_names_for_plan(self) -> tuple[str, ...]:
+        return ()
+
     def statement_count_for_plan(self) -> int:
         return 0
 
@@ -174,6 +180,8 @@ class MappingMetrics(MappingFindingMetrics):
     field_count: int
     mapping_name: str | None = None
     field_names: tuple[str, ...] = ()
+    source_name: str | None = None
+    identity_field_names: tuple[str, ...] = ()
 
     def mapping_sites_for_plan(self) -> int:
         return self.mapping_site_count
@@ -203,6 +211,12 @@ class MappingMetrics(MappingFindingMetrics):
 
     def mapping_name_for_plan(self) -> str | None:
         return self.mapping_name
+
+    def source_name_for_plan(self) -> str | None:
+        return self.source_name
+
+    def identity_field_names_for_plan(self) -> tuple[str, ...]:
+        return self.identity_field_names
 
 
 @dataclass(frozen=True)

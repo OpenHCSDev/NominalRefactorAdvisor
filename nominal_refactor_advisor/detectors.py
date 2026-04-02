@@ -548,6 +548,8 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
                 field_count=len(builders[0].keyword_names),
                 mapping_name=builders[0].callee_name,
                 field_names=builders[0].keyword_names,
+                source_name=builders[0].source_name,
+                identity_field_names=builders[0].identity_field_names,
             ),
         )
 
@@ -621,6 +623,8 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
                 mapping_site_count=len(export_shapes),
                 field_count=len(export_shapes[0].key_names),
                 field_names=export_shapes[0].key_names,
+                source_name=export_shapes[0].source_name,
+                identity_field_names=export_shapes[0].identity_field_names,
             ),
         )
 
