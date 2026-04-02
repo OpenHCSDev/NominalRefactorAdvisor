@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 
-from .ast_tools import parse_python_modules
+from .ast_tools import build_observation_graph, parse_python_modules
 from .detectors import DetectorConfig, default_detectors
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
 
 
-def analyze_path(
-    root: Path, config: DetectorConfig | None = None
+def analyze_modules(
+    modules: list, config: DetectorConfig | None = None
 ) -> list[RefactorFinding]:
     config = config or DetectorConfig()
-    modules = parse_python_modules(root)
     findings: list[RefactorFinding] = []
     for detector in default_detectors():
         findings.extend(detector.detect(modules, config))
@@ -25,9 +25,29 @@ def analyze_path(
     )
 
 
+def analyze_path(
+    root: Path, config: DetectorConfig | None = None
+) -> list[RefactorFinding]:
+    modules = parse_python_modules(root)
+    return analyze_modules(modules, config)
+
+
 def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
     findings = analyze_path(root, config)
     return build_refactor_plans(findings, root)
+
+
+def _json_payload(
+    findings: list[RefactorFinding],
+    plans: list[RefactorPlan],
+    modules: list,
+) -> dict[str, object]:
+    report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
+    graph = build_observation_graph(modules)
+    payload = report.to_dict()
+    payload["observations"] = [asdict(item) for item in graph.observations]
+    payload["fibers"] = [asdict(item) for item in graph.fibers]
+    return payload
 
 
 def _format_markdown(
@@ -200,20 +220,19 @@ def main() -> int:
 
     config = DetectorConfig.from_namespace(args)
     root = Path(args.path)
-    findings = analyze_path(root, config)
+    modules = parse_python_modules(root)
+    findings = analyze_modules(modules, config)
     plans = None
     if args.include_plans or args.plans_only:
         plans = build_refactor_plans(findings, root)
     if args.json:
-        if args.include_plans or args.plans_only:
-            report = AnalysisReport(
-                findings=() if args.plans_only else tuple(findings),
-                plans=tuple(plans or ()),
+        json_findings = [] if args.plans_only else findings
+        print(
+            json.dumps(
+                _json_payload(json_findings, plans or [], modules),
+                indent=2,
             )
-            print(json.dumps(report.to_dict(), indent=2))
-        else:
-            report = AnalysisReport(findings=tuple(findings))
-            print(json.dumps(report.to_dict()["findings"], indent=2))
+        )
     else:
         if args.plans_only:
             print(_format_plans_markdown(plans or []))

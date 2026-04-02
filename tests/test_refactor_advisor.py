@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import cast
 
 from nominal_refactor_advisor.ast_tools import (
     FieldObservationSpec,
@@ -9,12 +10,16 @@ from nominal_refactor_advisor.ast_tools import (
     ObservationKind,
     RegistrationShapeSpec,
     StructuralExecutionLevel,
+    collect_attribute_probe_observations,
+    collect_inline_literal_dispatch_observations,
+    collect_literal_dispatch_observations,
     collect_registration_shapes,
     collect_scoped_observations,
     collect_field_observations,
     parse_python_modules,
 )
 from nominal_refactor_advisor.cli import _format_markdown
+from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.models import DispatchCountMetrics
 from nominal_refactor_advisor.planner import build_refactor_plans
@@ -340,6 +345,62 @@ def resolve(widget):
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "attribute_probes" for finding in findings)
+
+
+def test_collects_attribute_probe_observations_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(widget):
+    if hasattr(widget, "checked"):
+        return widget.checked
+    try:
+        return getattr(widget, "value", None)
+    except AttributeError:
+        return None
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_attribute_probe_observations(module)
+
+    assert {item.probe_kind for item in observations} == {
+        "hasattr",
+        "getattr",
+        "attribute_error",
+    }
+    assert any(item.observed_attribute == "checked" for item in observations)
+
+
+def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def convert(kind, value):
+    if kind == "numpy":
+        return value
+    elif kind == "cupy":
+        return value
+    return value
+
+
+def walk(node):
+    if node.kind == "alpha":
+        return 1
+    if node.kind == "beta":
+        return 2
+    return 0
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    chains = collect_literal_dispatch_observations(module, str)
+    inline_groups = collect_inline_literal_dispatch_observations(module, str)
+
+    assert any(item.axis_expression == "kind" for item in chains)
+    assert any(item.axis_expression == "node.kind" for item in inline_groups)
 
 
 def test_detects_string_dispatch(tmp_path: Path) -> None:
@@ -957,6 +1018,41 @@ class BetaController:
     )
     assert field_action.statement_operation == "move"
     assert "pose_id" in field_action.description
+
+
+def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+
+
+def convert(kind, value):
+    if kind == "numpy":
+        return value
+    elif kind == "cupy":
+        return value
+    return value
+""",
+    )
+
+    modules = parse_python_modules(tmp_path)
+    findings = analyze_path(tmp_path)
+    payload = _json_payload(findings, [], modules)
+    observations = cast(list[dict[str, object]], payload["observations"])
+    fibers = cast(list[dict[str, object]], payload["fibers"])
+
+    assert "observations" in payload
+    assert "fibers" in payload
+    assert any(item["observation_kind"] == "field" for item in observations)
+    assert any(item["observation_kind"] == "literal_dispatch" for item in fibers)
 
 
 def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:

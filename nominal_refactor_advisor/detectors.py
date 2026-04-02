@@ -18,9 +18,12 @@ from .ast_tools import (
     ParsedModule,
     RegistrationShape,
     StructuralExecutionLevel,
+    collect_attribute_probe_observations,
     collect_field_observations,
     collect_builder_call_shapes,
     collect_export_dict_shapes,
+    collect_inline_literal_dispatch_observations,
+    collect_literal_dispatch_observations,
     collect_method_shapes,
     collect_registration_shapes,
     fingerprint_function,
@@ -98,19 +101,6 @@ class IssueDetector(ABC):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         raise NotImplementedError
-
-    def _collect_rule_locations(
-        self,
-        module: ParsedModule,
-        rules: tuple["NodeRule", ...],
-    ) -> list[SourceLocation]:
-        locations: list[SourceLocation] = []
-        for node in ast.walk(module.module):
-            for rule in rules:
-                location = rule.maybe_collect(module, node)
-                if location is not None:
-                    locations.append(location)
-        return locations
 
 
 class PerModuleIssueDetector(IssueDetector):
@@ -240,52 +230,6 @@ def _as_export_shape(shape: object) -> ExportDictShape:
     return shape
 
 
-class NodeRule(ABC):
-    @abstractmethod
-    def maybe_collect(
-        self, module: ParsedModule, node: ast.AST
-    ) -> SourceLocation | None:
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class NamedCallProbeRule(NodeRule):
-    function_name: str
-    min_args: int
-    symbol: str
-
-    def maybe_collect(
-        self, module: ParsedModule, node: ast.AST
-    ) -> SourceLocation | None:
-        if not isinstance(node, ast.Call):
-            return None
-        if not isinstance(node.func, ast.Name):
-            return None
-        if node.func.id != self.function_name:
-            return None
-        if len(node.args) < self.min_args:
-            return None
-        return SourceLocation(str(module.path), node.lineno, self.symbol)
-
-
-@dataclass(frozen=True)
-class AttributeErrorTryRule(NodeRule):
-    symbol: str = "AttributeError"
-
-    def maybe_collect(
-        self, module: ParsedModule, node: ast.AST
-    ) -> SourceLocation | None:
-        if not isinstance(node, ast.Try):
-            return None
-        for handler in node.handlers:
-            if (
-                isinstance(handler.type, ast.Name)
-                and handler.type.id == "AttributeError"
-            ):
-                return SourceLocation(str(module.path), handler.lineno, self.symbol)
-        return None
-
-
 @dataclass(frozen=True)
 class SemanticDataclassRecommendation:
     class_name: str
@@ -333,24 +277,6 @@ class AccessorWrapperCandidate:
     @property
     def symbol(self) -> str:
         return f"{self.class_name}.{self.method_name}"
-
-
-@dataclass(frozen=True)
-class LiteralDispatchChain:
-    line: int
-    symbol: str
-    axis_fingerprint: str
-    axis_expression: str
-    literal_cases: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class InlineLiteralObservation:
-    line: int
-    symbol: str
-    axis_fingerprint: str
-    axis_expression: str
-    literal_case: str
 
 
 @dataclass(frozen=True)
@@ -1426,19 +1352,18 @@ class AttributeProbeDetector(PerModuleIssueDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-    probe_rules = (
-        NamedCallProbeRule("hasattr", 2, "hasattr"),
-        NamedCallProbeRule("getattr", 3, "getattr"),
-        AttributeErrorTryRule(),
-    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        evidence = tuple(self._collect_rule_locations(module, self.probe_rules)[:6])
-        total = len(evidence)
+        observations = collect_attribute_probe_observations(module)
+        total = len(observations)
         if total < config.min_attribute_probes:
             return []
+        evidence = tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in observations[:6]
+        )
         return [
             self.finding_spec.build(
                 self.detector_id,
@@ -1477,36 +1402,30 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for owner_name, block in _iter_statement_blocks(module.module):
-            for observation_group in _group_inline_literal_dispatch(module, block):
-                if len(observation_group) < config.min_attribute_probes:
-                    continue
-                axis_expression = observation_group[0].axis_expression
-                literal_cases = tuple(
-                    sorted(
-                        {item.literal_case for item in observation_group},
-                        key=str,
-                    )
+        for observation in collect_inline_literal_dispatch_observations(module, str):
+            branch_count = len(observation.branch_lines)
+            if branch_count < config.min_attribute_probes:
+                continue
+            evidence = tuple(
+                SourceLocation(observation.file_path, line, observation.symbol)
+                for line in observation.branch_lines[:6]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{module.path} repeats literal-case dispatch over `{observation.axis_expression}` across {branch_count} sibling branches with cases {observation.literal_cases}."
+                    ),
+                    evidence,
+                    relation_context=(
+                        f"same branch role repeated inline inside {observation.scope_owner or 'module block'}"
+                    ),
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        observation.axis_expression,
+                        observation.literal_cases,
+                    ),
                 )
-                findings.append(
-                    self.finding_spec.build(
-                        self.detector_id,
-                        (
-                            f"{module.path} repeats literal-case dispatch over `{axis_expression}` across {len(observation_group)} sibling branches with cases {literal_cases}."
-                        ),
-                        tuple(
-                            SourceLocation(str(module.path), item.line, item.symbol)
-                            for item in observation_group[:6]
-                        ),
-                        relation_context=(
-                            f"same branch role repeated inline inside {owner_name or 'module block'}"
-                        ),
-                        metrics=DispatchCountMetrics.from_literal_family(
-                            axis_expression,
-                            literal_cases,
-                        ),
-                    )
-                )
+            )
         return findings
 
 
@@ -1537,22 +1456,28 @@ class StringDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for chain in _literal_dispatch_chains(module, str):
-            if len(chain.literal_cases) < config.min_string_cases:
+        for observation in collect_literal_dispatch_observations(module, str):
+            if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
                     (
-                        f"{module.path} dispatches on `{chain.axis_expression}` through cases {chain.literal_cases}."
+                        f"{module.path} dispatches on `{observation.axis_expression}` through cases {observation.literal_cases}."
                     ),
-                    (SourceLocation(str(module.path), chain.line, chain.symbol),),
+                    (
+                        SourceLocation(
+                            observation.file_path,
+                            observation.line,
+                            observation.symbol,
+                        ),
+                    ),
                     relation_context=(
-                        f"same observed axis `{chain.axis_expression}` is split across literal string cases {chain.literal_cases}"
+                        f"same observed axis `{observation.axis_expression}` is split across literal string cases {observation.literal_cases}"
                     ),
                     metrics=DispatchCountMetrics.from_literal_family(
-                        chain.axis_expression,
-                        chain.literal_cases,
+                        observation.axis_expression,
+                        observation.literal_cases,
                     ),
                 )
             )
@@ -1605,22 +1530,28 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for chain in _literal_dispatch_chains(module, int):
-            if len(chain.literal_cases) < config.min_string_cases:
+        for observation in collect_literal_dispatch_observations(module, int):
+            if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
                     (
-                        f"{module.path} dispatches on `{chain.axis_expression}` through numeric cases {chain.literal_cases}."
+                        f"{module.path} dispatches on `{observation.axis_expression}` through numeric cases {observation.literal_cases}."
                     ),
-                    (SourceLocation(str(module.path), chain.line, chain.symbol),),
+                    (
+                        SourceLocation(
+                            observation.file_path,
+                            observation.line,
+                            observation.symbol,
+                        ),
+                    ),
                     relation_context=(
-                        f"same observed axis `{chain.axis_expression}` is split across numeric literal cases {chain.literal_cases}"
+                        f"same observed axis `{observation.axis_expression}` is split across numeric literal cases {observation.literal_cases}"
                     ),
                     metrics=DispatchCountMetrics.from_literal_family(
-                        chain.axis_expression,
-                        chain.literal_cases,
+                        observation.axis_expression,
+                        observation.literal_cases,
                     ),
                 )
             )
@@ -2688,87 +2619,6 @@ def _is_docstring_expr(node: ast.stmt) -> bool:
     )
 
 
-def _literal_dispatch_chains(
-    module: ParsedModule, literal_type: type[object]
-) -> tuple[LiteralDispatchChain, ...]:
-    parents = {
-        child: parent
-        for parent in ast.walk(module.module)
-        for child in ast.iter_child_nodes(parent)
-    }
-    chains: list[LiteralDispatchChain] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.If):
-            continue
-        parent = parents.get(node)
-        if (
-            isinstance(parent, ast.If)
-            and len(parent.orelse) == 1
-            and parent.orelse[0] is node
-        ):
-            continue
-        chain = _literal_dispatch_chain(module, node, literal_type)
-        if chain is not None:
-            chains.append(chain)
-    return tuple(sorted(chains, key=lambda item: (item.line, item.axis_expression)))
-
-
-def _literal_dispatch_chain(
-    module: ParsedModule, node: ast.If, literal_type: type[object]
-) -> LiteralDispatchChain | None:
-    literal_cases: list[str] = []
-    axis_fingerprint: str | None = None
-    axis_expression: str | None = None
-    current: ast.stmt | None = node
-    while isinstance(current, ast.If):
-        case = _literal_dispatch_case(current.test, literal_type)
-        if case is None:
-            return None
-        current_fingerprint, current_expression, literal_case = case
-        if axis_fingerprint is None:
-            axis_fingerprint = current_fingerprint
-            axis_expression = current_expression
-        elif axis_fingerprint != current_fingerprint:
-            return None
-        literal_cases.append(literal_case)
-        current = current.orelse[0] if len(current.orelse) == 1 else None
-    if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
-        return None
-    return LiteralDispatchChain(
-        line=node.lineno,
-        symbol="literal-dispatch-chain",
-        axis_fingerprint=axis_fingerprint,
-        axis_expression=axis_expression,
-        literal_cases=tuple(literal_cases),
-    )
-
-
-def _literal_dispatch_case(
-    test: ast.AST, literal_type: type[object]
-) -> tuple[str, str, str] | None:
-    if not isinstance(test, ast.Compare):
-        return None
-    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
-        return None
-    if len(test.comparators) != 1:
-        return None
-    left = test.left
-    right = test.comparators[0]
-    if isinstance(left, ast.Constant) and isinstance(left.value, literal_type):
-        return (
-            ast.dump(right, include_attributes=False),
-            ast.unparse(right),
-            repr(left.value),
-        )
-    if isinstance(right, ast.Constant) and isinstance(right.value, literal_type):
-        return (
-            ast.dump(left, include_attributes=False),
-            ast.unparse(left),
-            repr(right.value),
-        )
-    return None
-
-
 def _collect_dict_attrs(node: ast.ClassDef) -> set[str]:
     dict_attrs: set[str] = set()
     for child in ast.walk(node):
@@ -2804,53 +2654,6 @@ def _collect_mirrored_assignments(node: ast.ClassDef) -> list[tuple[int, str]]:
             if isinstance(child.value, ast.Name):
                 mirrored.append((child.lineno, target.value.attr))
     return mirrored
-
-
-def _iter_statement_blocks(
-    module: ast.Module,
-) -> list[tuple[str | None, list[ast.stmt]]]:
-    blocks: list[tuple[str | None, list[ast.stmt]]] = [(None, module.body)]
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            blocks.append((node.name, node.body))
-            self.generic_visit(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            blocks.append((node.name, node.body))
-            self.generic_visit(node)
-
-    Visitor().visit(module)
-    return blocks
-
-
-def _group_inline_literal_dispatch(
-    module: ParsedModule,
-    block: list[ast.stmt],
-) -> tuple[tuple[InlineLiteralObservation, ...], ...]:
-    groups: dict[str, list[InlineLiteralObservation]] = defaultdict(list)
-    for stmt in block:
-        if not isinstance(stmt, ast.If):
-            continue
-        case = _literal_dispatch_case(stmt.test, str)
-        if case is None:
-            continue
-        axis_fingerprint, axis_expression, literal_case = case
-        groups[axis_fingerprint].append(
-            InlineLiteralObservation(
-                line=stmt.lineno,
-                symbol="inline-literal-dispatch",
-                axis_fingerprint=axis_fingerprint,
-                axis_expression=axis_expression,
-                literal_case=literal_case,
-            )
-        )
-    observation_groups: list[tuple[InlineLiteralObservation, ...]] = []
-    for items in groups.values():
-        if len({item.literal_case for item in items}) < 2:
-            continue
-        observation_groups.append(tuple(sorted(items, key=lambda item: item.line)))
-    return tuple(observation_groups)
 
 
 def _collect_repeated_method_shapes(

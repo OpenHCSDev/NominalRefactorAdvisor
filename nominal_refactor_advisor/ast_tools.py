@@ -17,12 +17,16 @@ class ParsedModule:
 
 
 class ObservationKind(StrEnum):
+    ATTRIBUTE_PROBE = "attribute_probe"
     FIELD = "field"
+    LITERAL_DISPATCH = "literal_dispatch"
 
 
 class StructuralExecutionLevel(StrEnum):
     CLASS_BODY = "class_body"
     INIT_BODY = "init_body"
+    FUNCTION_BODY = "function_body"
+    MODULE_BODY = "module_body"
 
 
 class FieldOriginKind(StrEnum):
@@ -70,6 +74,8 @@ class AutoRegisterMeta(ABCMeta):
         cls = super().__new__(mcls, name, bases, namespace, **kwargs)
         if namespace.get("_registry_root", False):
             setattr(cls, "_registered_spec_types", [])
+            return cls
+        if namespace.get("_registry_skip", False):
             return cls
         if cls.__abstractmethods__:
             return cls
@@ -278,6 +284,55 @@ class FieldObservation:
             execution_level=self.execution_level,
             observed_name=self.field_name,
             fiber_key=self.field_name,
+        )
+
+
+@dataclass(frozen=True)
+class AttributeProbeObservation:
+    file_path: str
+    line: int
+    symbol: str
+    probe_kind: str
+    observed_attribute: str | None
+    execution_level: StructuralExecutionLevel
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        observed_name = self.observed_attribute or self.probe_kind
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.ATTRIBUTE_PROBE,
+            execution_level=self.execution_level,
+            observed_name=observed_name,
+            fiber_key=f"{self.probe_kind}:{observed_name}",
+        )
+
+
+@dataclass(frozen=True)
+class LiteralDispatchObservation:
+    file_path: str
+    line: int
+    symbol: str
+    axis_fingerprint: str
+    axis_expression: str
+    literal_cases: tuple[str, ...]
+    literal_kind: str
+    execution_level: StructuralExecutionLevel
+    branch_lines: tuple[int, ...] = ()
+    scope_owner: str | None = None
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.LITERAL_DISPATCH,
+            execution_level=self.execution_level,
+            observed_name=self.axis_expression,
+            fiber_key=f"{self.literal_kind}:{self.axis_fingerprint}",
         )
 
 
@@ -495,6 +550,9 @@ def _subscript_base_name(node: ast.AST) -> str | None:
 
 _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
 _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
+_ATTRIBUTE_ERROR_FAMILY = AstNameFamily(frozenset({"AttributeError"}))
+_HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
+_GETATTR_CALL_FAMILY = AstNameFamily(frozenset({"getattr"}))
 _REGISTRATION_CALL_FAMILY = AstNameFamily(
     frozenset({"register", "add", "register_class", "register_type"})
 )
@@ -622,6 +680,12 @@ def collect_scoped_shapes(
     return spec.collect(parsed_module)
 
 
+def _execution_level_for_scope(function_name: str | None) -> StructuralExecutionLevel:
+    if function_name is None:
+        return StructuralExecutionLevel.MODULE_BODY
+    return StructuralExecutionLevel.FUNCTION_BODY
+
+
 def _class_observations(parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
     observations: list[ClassAstObservation] = []
     for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
@@ -678,6 +742,171 @@ class ExportDictShapeSpec(ContextHelperShapeSpec):
 _METHOD_SHAPE_SPEC = MethodShapeSpec()
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 _EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
+
+
+class AttributeProbeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+class CallAttributeProbeObservationSpec(
+    AttributeProbeObservationSpec, ContextForwardingShapeSpec, ABC
+):
+    node_type = ast.Call
+    _registry_skip = True
+    call_family: ClassVar[AstNameFamily]
+    probe_kind: ClassVar[str]
+    minimum_args: ClassVar[int]
+    attribute_arg_index: ClassVar[int | None] = None
+
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> AttributeProbeObservation | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if _terminal_name_in_family(node.func, type(self).call_family) is None:
+            return None
+        if len(node.args) < type(self).minimum_args:
+            return None
+        observed_attribute = None
+        attribute_arg_index = type(self).attribute_arg_index
+        if attribute_arg_index is not None and len(node.args) > attribute_arg_index:
+            arg = node.args[attribute_arg_index]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                observed_attribute = arg.value
+        return AttributeProbeObservation(
+            file_path=str(parsed_module.path),
+            line=node.lineno,
+            symbol=type(self).probe_kind,
+            probe_kind=type(self).probe_kind,
+            observed_attribute=observed_attribute,
+            execution_level=_execution_level_for_scope(observation.function_name),
+        )
+
+
+class HasAttrProbeObservationSpec(CallAttributeProbeObservationSpec):
+    call_family = _HASATTR_CALL_FAMILY
+    probe_kind = "hasattr"
+    minimum_args = 2
+    attribute_arg_index = 1
+
+
+class GetAttrProbeObservationSpec(CallAttributeProbeObservationSpec):
+    call_family = _GETATTR_CALL_FAMILY
+    probe_kind = "getattr"
+    minimum_args = 3
+    attribute_arg_index = 1
+
+
+class AttributeErrorProbeObservationSpec(
+    AttributeProbeObservationSpec, ObservationShapeSpec
+):
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (ast.Try,)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> AttributeProbeObservation | None:
+        node = observation.node
+        if not isinstance(node, ast.Try):
+            return None
+        for handler in node.handlers:
+            if handler.type is None:
+                continue
+            if not _node_matches_family(handler.type, _ATTRIBUTE_ERROR_FAMILY):
+                continue
+            return AttributeProbeObservation(
+                file_path=str(parsed_module.path),
+                line=handler.lineno,
+                symbol="attribute-error-fallback",
+                probe_kind="attribute_error",
+                observed_attribute=None,
+                execution_level=_execution_level_for_scope(observation.function_name),
+            )
+        return None
+
+
+class TypedLiteralObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
+    literal_type: ClassVar[type[object]]
+
+    @classmethod
+    def registered_specs_for_literal_type(
+        cls, literal_type: type[object] | None = None
+    ) -> tuple["TypedLiteralObservationSpec", ...]:
+        specs = tuple(
+            spec
+            for spec in cls.registered_specs()
+            if isinstance(spec, TypedLiteralObservationSpec)
+        )
+        if literal_type is None:
+            return specs
+        return tuple(spec for spec in specs if type(spec).literal_type is literal_type)
+
+
+class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
+    _registry_root = True
+    literal_kind: ClassVar[str]
+
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        parent_map = _parent_map(parsed_module.module)
+        observations: list[object] = []
+        for node in ast.walk(parsed_module.module):
+            if not isinstance(node, ast.If):
+                continue
+            parent = parent_map.get(node)
+            if (
+                isinstance(parent, ast.If)
+                and len(parent.orelse) == 1
+                and parent.orelse[0] is node
+            ):
+                continue
+            observation = _literal_dispatch_observation_from_if(
+                parsed_module,
+                node,
+                type(self).literal_type,
+                type(self).literal_kind,
+                parent_map,
+            )
+            if observation is not None:
+                observations.append(observation)
+        return observations
+
+
+class StringLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
+    literal_type = str
+    literal_kind = "string"
+
+
+class NumericLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
+    literal_type = int
+    literal_kind = "numeric"
+
+
+class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
+    _registry_root = True
+    literal_kind: ClassVar[str]
+
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        observations: list[object] = []
+        for owner_name, block in _iter_statement_blocks(parsed_module.module):
+            observations.extend(
+                _inline_literal_dispatch_groups(
+                    parsed_module,
+                    owner_name,
+                    block,
+                    type(self).literal_type,
+                    type(self).literal_kind,
+                )
+            )
+        return observations
+
+
+class InlineStringLiteralDispatchObservationSpec(InlineLiteralDispatchObservationSpec):
+    literal_type = str
+    literal_kind = "string"
 
 
 class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -892,6 +1121,86 @@ def collect_export_dict_shapes(parsed_module: ParsedModule) -> list[ExportDictSh
     ]
 
 
+def collect_attribute_probe_observations(
+    parsed_module: ParsedModule,
+) -> list[AttributeProbeObservation]:
+    observations: list[AttributeProbeObservation] = []
+    for spec in AttributeProbeObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, AttributeProbeObservation)
+        )
+    return observations
+
+
+def collect_literal_dispatch_observations(
+    parsed_module: ParsedModule,
+    literal_type: type[object] | None = None,
+) -> list[LiteralDispatchObservation]:
+    observations: list[LiteralDispatchObservation] = []
+    for spec in LiteralDispatchObservationSpec.registered_specs_for_literal_type(
+        literal_type
+    ):
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, LiteralDispatchObservation)
+        )
+    return observations
+
+
+def collect_inline_literal_dispatch_observations(
+    parsed_module: ParsedModule,
+    literal_type: type[object] | None = None,
+) -> list[LiteralDispatchObservation]:
+    observations: list[LiteralDispatchObservation] = []
+    for spec in InlineLiteralDispatchObservationSpec.registered_specs_for_literal_type(
+        literal_type
+    ):
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, LiteralDispatchObservation)
+        )
+    return observations
+
+
+def collect_structural_observations(
+    parsed_module: ParsedModule,
+) -> tuple[StructuralObservation, ...]:
+    observations: list[StructuralObservation] = []
+    observations.extend(
+        item.structural_observation
+        for item in collect_field_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_attribute_probe_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_literal_dispatch_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_inline_literal_dispatch_observations(parsed_module)
+    )
+    return tuple(
+        sorted(
+            observations,
+            key=lambda item: (item.file_path, item.line, item.owner_symbol),
+        )
+    )
+
+
+def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
+    observations: list[StructuralObservation] = []
+    for module in modules:
+        observations.extend(collect_structural_observations(module))
+    return ObservationGraph(tuple(observations))
+
+
 def _class_body_field_observation(
     parsed_module: ParsedModule,
     class_name: str,
@@ -1019,6 +1328,145 @@ def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObserva
             if isinstance(item, FieldObservation)
         )
     return observations
+
+
+def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
+    return {
+        child: parent
+        for parent in ast.walk(module)
+        for child in ast.iter_child_nodes(parent)
+    }
+
+
+def _enclosing_function_name(
+    node: ast.AST, parent_map: dict[ast.AST, ast.AST]
+) -> str | None:
+    current: ast.AST | None = node
+    while current is not None:
+        current = parent_map.get(current)
+        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return current.name
+    return None
+
+
+def _literal_dispatch_case(
+    test: ast.AST, literal_type: type[object]
+) -> tuple[str, str, str] | None:
+    if not isinstance(test, ast.Compare):
+        return None
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return None
+    if len(test.comparators) != 1:
+        return None
+    left = test.left
+    right = test.comparators[0]
+    if isinstance(left, ast.Constant) and isinstance(left.value, literal_type):
+        return (
+            ast.dump(right, include_attributes=False),
+            ast.unparse(right),
+            repr(left.value),
+        )
+    if isinstance(right, ast.Constant) and isinstance(right.value, literal_type):
+        return (
+            ast.dump(left, include_attributes=False),
+            ast.unparse(left),
+            repr(right.value),
+        )
+    return None
+
+
+def _literal_dispatch_observation_from_if(
+    parsed_module: ParsedModule,
+    node: ast.If,
+    literal_type: type[object],
+    literal_kind: str,
+    parent_map: dict[ast.AST, ast.AST],
+) -> LiteralDispatchObservation | None:
+    literal_cases: list[str] = []
+    branch_lines: list[int] = []
+    axis_fingerprint: str | None = None
+    axis_expression: str | None = None
+    current: ast.stmt | None = node
+    while isinstance(current, ast.If):
+        case = _literal_dispatch_case(current.test, literal_type)
+        if case is None:
+            return None
+        current_fingerprint, current_expression, literal_case = case
+        if axis_fingerprint is None:
+            axis_fingerprint = current_fingerprint
+            axis_expression = current_expression
+        elif axis_fingerprint != current_fingerprint:
+            return None
+        literal_cases.append(literal_case)
+        branch_lines.append(current.lineno)
+        current = current.orelse[0] if len(current.orelse) == 1 else None
+    if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
+        return None
+    function_name = _enclosing_function_name(node, parent_map)
+    return LiteralDispatchObservation(
+        file_path=str(parsed_module.path),
+        line=node.lineno,
+        symbol=(function_name or "<module>") + ":literal-dispatch",
+        axis_fingerprint=axis_fingerprint,
+        axis_expression=axis_expression,
+        literal_cases=tuple(literal_cases),
+        literal_kind=literal_kind,
+        execution_level=_execution_level_for_scope(function_name),
+        branch_lines=tuple(branch_lines),
+        scope_owner=function_name,
+    )
+
+
+def _iter_statement_blocks(
+    module: ast.Module,
+) -> tuple[tuple[str | None, list[ast.stmt]], ...]:
+    blocks: list[tuple[str | None, list[ast.stmt]]] = [(None, module.body)]
+    for node in ast.walk(module):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            blocks.append((node.name, node.body))
+    return tuple(blocks)
+
+
+def _inline_literal_dispatch_groups(
+    parsed_module: ParsedModule,
+    owner_name: str | None,
+    block: list[ast.stmt],
+    literal_type: type[object],
+    literal_kind: str,
+) -> tuple[LiteralDispatchObservation, ...]:
+    groups: dict[str, list[tuple[int, str, str]]] = {}
+    for stmt in block:
+        if not isinstance(stmt, ast.If):
+            continue
+        case = _literal_dispatch_case(stmt.test, literal_type)
+        if case is None:
+            continue
+        axis_fingerprint, axis_expression, literal_case = case
+        groups.setdefault(axis_fingerprint, []).append(
+            (stmt.lineno, axis_expression, literal_case)
+        )
+    observations: list[LiteralDispatchObservation] = []
+    for axis_fingerprint, items in groups.items():
+        literal_cases = tuple(
+            sorted({literal_case for _, _, literal_case in items}, key=str)
+        )
+        if len(literal_cases) < 2:
+            continue
+        observations.append(
+            LiteralDispatchObservation(
+                file_path=str(parsed_module.path),
+                line=min(line for line, _, _ in items),
+                symbol=(owner_name or "<module>") + ":inline-literal-dispatch",
+                axis_fingerprint=axis_fingerprint,
+                axis_expression=items[0][1],
+                literal_cases=literal_cases,
+                literal_kind=literal_kind,
+                execution_level=_execution_level_for_scope(owner_name),
+                branch_lines=tuple(sorted(line for line, _, _ in items)),
+                scope_owner=owner_name,
+            )
+        )
+    return tuple(sorted(observations, key=lambda item: item.line))
 
 
 def _builder_call_shape(
