@@ -123,9 +123,15 @@ reducing false positives, and adding codemod suggestions.
 
 1. sharpen Pattern 3 so constant maps are separated from true dispatch smells
 2. widen Pattern 14 to dataclass-to-dataclass conversion blocks
-3. add suggested refactor skeletons, not just findings
+3. add suggested refactor skeletons and codemod scaffolds, not just findings
 4. add repository configuration and suppression support
 5. extract more generic docs into the standalone repo over time
+
+The CLI now already includes richer pattern guidance for each finding:
+
+- the pattern prescription
+- the canonical target shape
+- concrete first moves for the refactor
 
 The builder detector currently focuses on repeated keyword-constructor shapes. A later pass should widen it
 to export dictionaries and repeated dataclass-to-dataclass conversion blocks.

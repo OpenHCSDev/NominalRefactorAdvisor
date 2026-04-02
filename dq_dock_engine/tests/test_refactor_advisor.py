@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dq_dock_engine.refactor_advisor.cli import _format_markdown
 from dq_dock_engine.refactor_advisor.cli import analyze_path
 
 
@@ -196,6 +197,27 @@ def inject(target_type, method_name, method_impl):
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 12 for finding in findings)
+
+
+def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def build(param_type):
+    if is_optional(param_type):
+        return OptionalInfo()
+    elif is_dataclass(param_type):
+        return DataclassInfo()
+    return GenericInfo()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    output = _format_markdown(findings)
+    assert "Prescription:" in output
+    assert "Canonical shape:" in output
+    assert "First move:" in output
 
 
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:

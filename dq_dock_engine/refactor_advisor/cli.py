@@ -34,9 +34,13 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
         lines.append(f"   - Pattern {pattern.pattern_id}: {pattern.name}")
         lines.append(f"   - Summary: {finding.summary}")
         lines.append(f"   - Capability gap: {finding.capability_gap}")
+        lines.append(f"   - Prescription: {pattern.prescription}")
+        lines.append(f"   - Canonical shape: {pattern.canonical_shape}")
         lines.append(f"   - Why: {finding.why}")
         lines.append(f"   - Relation: {finding.relation_context}")
         lines.append(f"   - Confidence: {finding.confidence}")
+        for step in pattern.first_moves:
+            lines.append(f"   - First move: {step}")
         for item in finding.evidence:
             lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
     return "\n".join(lines)
