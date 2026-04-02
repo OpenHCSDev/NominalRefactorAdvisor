@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
+from typing import Sequence
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -16,7 +17,7 @@ from .models import (
     RefactorPlan,
     SourceLocation,
 )
-from .patterns import PATTERN_SPECS
+from .patterns import PATTERN_SPECS, PatternId
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
@@ -28,47 +29,130 @@ from .taxonomy import (
 
 
 _PATTERN_DEPENDENCIES = {
-    3: {1, 2, 4, 6},
-    5: {1, 4},
-    8: {4, 7, 13},
-    9: {10},
-    12: {10},
-    13: {7},
-    14: {5, 6, 7, 13},
+    PatternId.CLOSED_FAMILY_DISPATCH: {
+        PatternId.NOMINAL_BOUNDARY,
+        PatternId.DISCRIMINATED_UNION,
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.AUTO_REGISTER_META,
+    },
+    PatternId.ABC_TEMPLATE_METHOD: {
+        PatternId.NOMINAL_BOUNDARY,
+        PatternId.CONFIG_CONTRACTS,
+    },
+    PatternId.DUAL_AXIS_RESOLUTION: {
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.TYPE_LINEAGE,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+    },
+    PatternId.VIRTUAL_MEMBERSHIP: {PatternId.DYNAMIC_INTERFACE},
+    PatternId.TYPE_NAMESPACE_INJECTION: {PatternId.DYNAMIC_INTERFACE},
+    PatternId.BIDIRECTIONAL_LOOKUP: {PatternId.TYPE_LINEAGE},
+    PatternId.AUTHORITATIVE_SCHEMA: {
+        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.AUTO_REGISTER_META,
+        PatternId.TYPE_LINEAGE,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+    },
 }
 
 _PATTERN_SYNERGY = {
-    1: {3, 4, 5},
-    2: {3, 5},
-    3: {1, 2, 4, 6, 14},
-    4: {1, 3, 5, 8, 14},
-    5: {1, 2, 4, 6, 14},
-    6: {3, 5, 13, 14},
-    7: {8, 13, 14},
-    8: {4, 7, 13},
-    9: {10, 11, 12},
-    10: {9, 11, 12},
-    11: {9, 10, 12},
-    12: {9, 10, 11},
-    13: {6, 7, 8, 14},
-    14: {3, 4, 5, 6, 7, 13},
+    PatternId.NOMINAL_BOUNDARY: {
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.ABC_TEMPLATE_METHOD,
+    },
+    PatternId.DISCRIMINATED_UNION: {
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        PatternId.ABC_TEMPLATE_METHOD,
+    },
+    PatternId.CLOSED_FAMILY_DISPATCH: {
+        PatternId.NOMINAL_BOUNDARY,
+        PatternId.DISCRIMINATED_UNION,
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.AUTO_REGISTER_META,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.CONFIG_CONTRACTS: {
+        PatternId.NOMINAL_BOUNDARY,
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.DUAL_AXIS_RESOLUTION,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.ABC_TEMPLATE_METHOD: {
+        PatternId.NOMINAL_BOUNDARY,
+        PatternId.DISCRIMINATED_UNION,
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.AUTO_REGISTER_META,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.AUTO_REGISTER_META: {
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.TYPE_LINEAGE: {
+        PatternId.DUAL_AXIS_RESOLUTION,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.DUAL_AXIS_RESOLUTION: {
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.TYPE_LINEAGE,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+    },
+    PatternId.VIRTUAL_MEMBERSHIP: {
+        PatternId.DYNAMIC_INTERFACE,
+        PatternId.SENTINEL_TYPE_MARKER,
+        PatternId.TYPE_NAMESPACE_INJECTION,
+    },
+    PatternId.DYNAMIC_INTERFACE: {
+        PatternId.VIRTUAL_MEMBERSHIP,
+        PatternId.SENTINEL_TYPE_MARKER,
+        PatternId.TYPE_NAMESPACE_INJECTION,
+    },
+    PatternId.SENTINEL_TYPE_MARKER: {
+        PatternId.VIRTUAL_MEMBERSHIP,
+        PatternId.DYNAMIC_INTERFACE,
+        PatternId.TYPE_NAMESPACE_INJECTION,
+    },
+    PatternId.TYPE_NAMESPACE_INJECTION: {
+        PatternId.VIRTUAL_MEMBERSHIP,
+        PatternId.DYNAMIC_INTERFACE,
+        PatternId.SENTINEL_TYPE_MARKER,
+    },
+    PatternId.BIDIRECTIONAL_LOOKUP: {
+        PatternId.AUTO_REGISTER_META,
+        PatternId.TYPE_LINEAGE,
+        PatternId.DUAL_AXIS_RESOLUTION,
+        PatternId.AUTHORITATIVE_SCHEMA,
+    },
+    PatternId.AUTHORITATIVE_SCHEMA: {
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        PatternId.CONFIG_CONTRACTS,
+        PatternId.ABC_TEMPLATE_METHOD,
+        PatternId.AUTO_REGISTER_META,
+        PatternId.TYPE_LINEAGE,
+        PatternId.BIDIRECTIONAL_LOOKUP,
+    },
 }
 
 _PATTERN_PRIORITY = {
-    1: 95,
-    2: 92,
-    4: 90,
-    5: 88,
-    6: 84,
-    7: 80,
-    10: 76,
-    9: 74,
-    11: 72,
-    12: 70,
-    13: 66,
-    8: 62,
-    3: 58,
-    14: 40,
+    PatternId.NOMINAL_BOUNDARY: 95,
+    PatternId.DISCRIMINATED_UNION: 92,
+    PatternId.CONFIG_CONTRACTS: 90,
+    PatternId.ABC_TEMPLATE_METHOD: 88,
+    PatternId.AUTO_REGISTER_META: 84,
+    PatternId.TYPE_LINEAGE: 80,
+    PatternId.DYNAMIC_INTERFACE: 76,
+    PatternId.VIRTUAL_MEMBERSHIP: 74,
+    PatternId.SENTINEL_TYPE_MARKER: 72,
+    PatternId.TYPE_NAMESPACE_INJECTION: 70,
+    PatternId.BIDIRECTIONAL_LOOKUP: 66,
+    PatternId.DUAL_AXIS_RESOLUTION: 62,
+    PatternId.CLOSED_FAMILY_DISPATCH: 58,
+    PatternId.AUTHORITATIVE_SCHEMA: 40,
 }
 
 
@@ -84,7 +168,7 @@ class PatternPlanStepBuilder(ABC):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         raise NotImplementedError
@@ -94,18 +178,20 @@ class GenericPatternPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         pattern = PATTERN_SPECS[pattern_id]
-        return f"Apply Pattern {pattern_id} in `{subsystem}`: {pattern.prescription}"
+        return (
+            f"Apply Pattern {pattern_id.value} in `{subsystem}`: {pattern.prescription}"
+        )
 
 
 class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         site_count = sum(
@@ -121,7 +207,7 @@ class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         site_count = sum(
@@ -137,7 +223,7 @@ class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         site_count = sum(
@@ -153,7 +239,7 @@ class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         site_count = sum(
@@ -170,7 +256,7 @@ class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         site_count = sum(
@@ -214,7 +300,7 @@ class PatternActionBuilder(ABC):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
         raise NotImplementedError
@@ -228,6 +314,7 @@ class ActionTemplate:
     create_symbol: str | None = None
     replace_with: str | None = None
     remove_symbols_from_evidence: bool = False
+    statement_operation: str | None = None
 
 
 @dataclass(frozen=True)
@@ -237,7 +324,9 @@ class ActionContext:
     symbols: tuple[str, ...]
     base_name: str
     template_method_name: str
+    statement_sequence: str
     registry_name: str
+    registry_hook_examples: str
     class_list: str
     mapping_symbol: str
     mapping_call: str
@@ -252,12 +341,14 @@ class GenericPatternActionBuilder(PatternActionBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
         template = ActionTemplate(
             kind="apply_pattern",
-            description=f"Apply Pattern {pattern_id}: {PATTERN_SPECS[pattern_id].prescription}",
+            description=(
+                f"Apply Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].prescription}"
+            ),
             confidence=MEDIUM_CONFIDENCE,
         )
         return _actions_from_templates(subsystem, findings, (template,))
@@ -270,7 +361,7 @@ class TemplatedPatternActionBuilder(PatternActionBuilder):
     def build(
         self,
         subsystem: str,
-        pattern_id: int,
+        pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
         return _actions_from_templates(subsystem, findings, self.templates)
@@ -302,6 +393,8 @@ def _actions_from_templates(
                 context.symbols if template.remove_symbols_from_evidence else ()
             ),
             evidence=context.evidence,
+            statement_operation=template.statement_operation,
+            statement_sites=(context.evidence if template.statement_operation else ()),
             confidence=template.confidence,
         )
         for template in templates
@@ -327,7 +420,9 @@ def _build_action_context(
         symbols=symbols,
         base_name=_suggest_base_name(class_names),
         template_method_name="run",
+        statement_sequence=_statement_sequence_from_findings(findings),
         registry_name=_registry_name_from_findings(findings),
+        registry_hook_examples=_registry_hook_examples_from_findings(findings),
         class_list=_human_join(list(class_names)) if class_names else "the family",
         mapping_symbol=mapping_symbol,
         mapping_call=_mapping_call_from_symbol(
@@ -348,17 +443,17 @@ def _build_action_context(
 
 
 _GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
-_PATTERN_PLAN_STEP_BUILDERS: dict[int, PatternPlanStepBuilder] = {
-    3: ClosedFamilyDispatchPlanStepBuilder(),
-    5: TemplateMethodPlanStepBuilder(),
-    6: AutoRegisterPlanStepBuilder(),
-    13: BidirectionalRegistryPlanStepBuilder(),
-    14: AuthoritativeMappingPlanStepBuilder(),
+_PATTERN_PLAN_STEP_BUILDERS: dict[PatternId, PatternPlanStepBuilder] = {
+    PatternId.CLOSED_FAMILY_DISPATCH: ClosedFamilyDispatchPlanStepBuilder(),
+    PatternId.ABC_TEMPLATE_METHOD: TemplateMethodPlanStepBuilder(),
+    PatternId.AUTO_REGISTER_META: AutoRegisterPlanStepBuilder(),
+    PatternId.BIDIRECTIONAL_LOOKUP: BidirectionalRegistryPlanStepBuilder(),
+    PatternId.AUTHORITATIVE_SCHEMA: AuthoritativeMappingPlanStepBuilder(),
 }
 
 _GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
-_PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
-    3: TemplatedPatternActionBuilder(
+_PATTERN_ACTION_BUILDERS: dict[PatternId, PatternActionBuilder] = {
+    PatternId.CLOSED_FAMILY_DISPATCH: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
                 kind="create_dispatch_authority",
@@ -371,10 +466,11 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
                 description="Replace {class_list} branch/lookup sites with `{dispatch_symbol}`.",
                 confidence=HIGH_CONFIDENCE,
                 replace_with="{dispatch_symbol}",
+                statement_operation="replace",
             ),
         )
     ),
-    5: TemplatedPatternActionBuilder(
+    PatternId.ABC_TEMPLATE_METHOD: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
                 kind="create_abc_base",
@@ -384,9 +480,10 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
             ),
             ActionTemplate(
                 kind="extract_template_method",
-                description="Move the shared {statement_count}-statement orchestration from the repeated methods into `{base_name}.{template_method_name}`.",
+                description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
                 confidence=HIGH_CONFIDENCE,
                 create_symbol="{base_name}.{template_method_name}",
+                statement_operation="move",
             ),
             ActionTemplate(
                 kind="leave_residual_hooks",
@@ -395,7 +492,7 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
             ),
         )
     ),
-    6: TemplatedPatternActionBuilder(
+    PatternId.AUTO_REGISTER_META: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
                 kind="create_metaclass",
@@ -405,7 +502,7 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
             ),
             ActionTemplate(
                 kind="add_declarative_hooks",
-                description="Add declarative class-level hooks such as `registry_key` to {class_list}.",
+                description="Add declarative class-level hooks such as `registry_key` to {registry_hook_examples}.",
                 confidence=MEDIUM_CONFIDENCE,
             ),
             ActionTemplate(
@@ -413,10 +510,11 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
                 description="Delete the manual registration writes after routing {class_list} through `AutoRegisterMeta`.",
                 confidence=HIGH_CONFIDENCE,
                 remove_symbols_from_evidence=True,
+                statement_operation="delete",
             ),
         )
     ),
-    13: TemplatedPatternActionBuilder(
+    PatternId.BIDIRECTIONAL_LOOKUP: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
                 kind="create_bidirectional_registry",
@@ -429,10 +527,11 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
                 description="Delete the mirrored update sites once `{registry_name}BidirectionalRegistry` is in place.",
                 confidence=HIGH_CONFIDENCE,
                 remove_symbols_from_evidence=True,
+                statement_operation="delete",
             ),
         )
     ),
-    14: TemplatedPatternActionBuilder(
+    PatternId.AUTHORITATIVE_SCHEMA: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
                 kind="create_authoritative_schema",
@@ -445,6 +544,7 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
                 description="Replace the repeated constructor/export/projection sites with `{mapping_call}`.",
                 confidence=HIGH_CONFIDENCE,
                 replace_with="{mapping_call}",
+                statement_operation="replace",
             ),
         )
     ),
@@ -499,12 +599,11 @@ def _cluster_findings(
                 ),
             )
         )
-        evidence = _cluster_evidence(ordered_findings)
         clusters.append(
             _FindingCluster(
                 subsystem=_subsystem_name(ordered_findings, root),
                 findings=ordered_findings,
-                evidence=evidence,
+                evidence=_combined_evidence(ordered_findings),
             )
         )
     return sorted(
@@ -530,7 +629,7 @@ def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -
     return score
 
 
-def _patterns_are_synergistic(left: int, right: int) -> bool:
+def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
     return right in _PATTERN_SYNERGY.get(left, set()) or left in _PATTERN_SYNERGY.get(
         right, set()
     )
@@ -584,21 +683,6 @@ def _subsystem_name(findings: tuple[RefactorFinding, ...], root: Path) -> str:
     return first.stem
 
 
-def _cluster_evidence(
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[SourceLocation, ...]:
-    seen: set[tuple[str, int, str]] = set()
-    evidence: list[SourceLocation] = []
-    for finding in findings:
-        for item in finding.evidence:
-            key = (item.file_path, item.line, item.symbol)
-            if key in seen:
-                continue
-            seen.add(key)
-            evidence.append(item)
-    return tuple(sorted(evidence, key=lambda item: (item.file_path, item.line))[:8])
-
-
 def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     selected_patterns = _select_pattern_cover(cluster.findings)
     ordered_patterns = _order_patterns(selected_patterns, cluster.findings)
@@ -636,7 +720,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     )
 
 
-def _select_pattern_cover(findings: tuple[RefactorFinding, ...]) -> tuple[int, ...]:
+def _select_pattern_cover(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[PatternId, ...]:
     pattern_ids = tuple(sorted({finding.pattern_id for finding in findings}))
     required_capabilities = set(_unique_capabilities(findings))
     if not pattern_ids:
@@ -649,7 +735,7 @@ def _select_pattern_cover(findings: tuple[RefactorFinding, ...]) -> tuple[int, .
         finding.pattern_id for finding in findings if finding.certification == CERTIFIED
     )
 
-    best_subset: tuple[int, ...] | None = None
+    best_subset: tuple[PatternId, ...] | None = None
     best_score: tuple[int, int, int, tuple[int, ...]] | None = None
     for size in range(1, len(pattern_ids) + 1):
         for subset in combinations(pattern_ids, size):
@@ -673,8 +759,8 @@ def _select_pattern_cover(findings: tuple[RefactorFinding, ...]) -> tuple[int, .
 
 
 def _order_patterns(
-    pattern_ids: tuple[int, ...], findings: tuple[RefactorFinding, ...]
-) -> list[int]:
+    pattern_ids: tuple[PatternId, ...], findings: tuple[RefactorFinding, ...]
+) -> list[PatternId]:
     if not pattern_ids:
         return []
 
@@ -688,7 +774,7 @@ def _order_patterns(
         finding.pattern_id for finding in findings if finding.certification == CERTIFIED
     )
 
-    ordered: list[int] = []
+    ordered: list[PatternId] = []
     ready = [pattern_id for pattern_id in pattern_ids if not dependencies[pattern_id]]
     while ready:
         ready.sort(
@@ -723,7 +809,7 @@ def _order_patterns(
 
 
 def _estimate_outcome(
-    findings: tuple[RefactorFinding, ...], ordered_patterns: list[int]
+    findings: tuple[RefactorFinding, ...], ordered_patterns: Sequence[PatternId]
 ) -> OutcomeEstimate:
     total = ImpactDelta()
 
@@ -773,19 +859,21 @@ def _aggregate_certification(
 
 
 def _plan_summary(
-    subsystem: str, ordered_patterns: list[int], findings: tuple[RefactorFinding, ...]
+    subsystem: str,
+    ordered_patterns: Sequence[PatternId],
+    findings: tuple[RefactorFinding, ...],
 ) -> str:
     primary = PATTERN_SPECS[ordered_patterns[0]]
     if len(ordered_patterns) == 1:
         return (
-            f"`{subsystem}` clusters {len(findings)} finding(s) into Pattern {primary.pattern_id} "
+            f"`{subsystem}` clusters {len(findings)} finding(s) into Pattern {primary.pattern_id.value} "
             f"as the authoritative refactor witness."
         )
     secondary = ", ".join(
-        f"Pattern {pattern_id}" for pattern_id in ordered_patterns[1:]
+        f"Pattern {pattern_id.value}" for pattern_id in ordered_patterns[1:]
     )
     return (
-        f"`{subsystem}` needs Pattern {primary.pattern_id} as the primary witness, "
+        f"`{subsystem}` needs Pattern {primary.pattern_id.value} as the primary witness, "
         f"with {secondary} as supporting helpers."
     )
 
@@ -803,7 +891,7 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
     )
 
 
-def _canonical_normal_form(pattern_ids: list[int]) -> str:
+def _canonical_normal_form(pattern_ids: Sequence[PatternId]) -> str:
     primary = PATTERN_SPECS[pattern_ids[0]].canonical_shape
     if len(pattern_ids) == 1:
         return primary
@@ -814,7 +902,9 @@ def _canonical_normal_form(pattern_ids: list[int]) -> str:
 
 
 def _build_plan_steps(
-    subsystem: str, pattern_ids: list[int], findings: tuple[RefactorFinding, ...]
+    subsystem: str,
+    pattern_ids: Sequence[PatternId],
+    findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
     steps = [
         _pattern_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids
@@ -826,7 +916,9 @@ def _build_plan_steps(
 
 
 def _pattern_step(
-    subsystem: str, pattern_id: int, findings: tuple[RefactorFinding, ...]
+    subsystem: str,
+    pattern_id: PatternId,
+    findings: tuple[RefactorFinding, ...],
 ) -> str:
     supporting = [finding for finding in findings if finding.pattern_id == pattern_id]
     builder = _PATTERN_PLAN_STEP_BUILDERS.get(
@@ -836,7 +928,9 @@ def _pattern_step(
 
 
 def _build_plan_actions(
-    subsystem: str, pattern_ids: list[int], findings: tuple[RefactorFinding, ...]
+    subsystem: str,
+    pattern_ids: Sequence[PatternId],
+    findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorAction, ...]:
     actions: list[RefactorAction] = []
     for pattern_id in pattern_ids:
@@ -872,6 +966,32 @@ def _field_names_from_findings(
     for finding in findings:
         names.extend(finding.metrics.field_names_for_plan())
     return tuple(_dedupe_preserve_order(names))
+
+
+def _statement_sequence_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> str:
+    for finding in findings:
+        shared_statement_texts = finding.metrics.shared_statement_texts_for_plan()
+        if shared_statement_texts:
+            rendered = " ; ".join(shared_statement_texts)
+            if len(rendered) > 180:
+                return rendered[:177] + "..."
+            return rendered
+    return "the shared orchestration"
+
+
+def _registry_hook_examples_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> str:
+    for finding in findings:
+        pairs = finding.metrics.class_key_pairs_for_plan()
+        if pairs:
+            return _human_join(list(pairs))
+    class_names = _class_names_from_findings(findings)
+    if class_names:
+        return _human_join(list(class_names))
+    return "the participating classes"
 
 
 def _identity_field_names_from_findings(

@@ -1,13 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import IntEnum
 
 from .taxonomy import CapabilityTag
 
 
+class PatternId(IntEnum):
+    NOMINAL_BOUNDARY = 1
+    DISCRIMINATED_UNION = 2
+    CLOSED_FAMILY_DISPATCH = 3
+    CONFIG_CONTRACTS = 4
+    ABC_TEMPLATE_METHOD = 5
+    AUTO_REGISTER_META = 6
+    TYPE_LINEAGE = 7
+    DUAL_AXIS_RESOLUTION = 8
+    VIRTUAL_MEMBERSHIP = 9
+    DYNAMIC_INTERFACE = 10
+    SENTINEL_TYPE_MARKER = 11
+    TYPE_NAMESPACE_INJECTION = 12
+    BIDIRECTIONAL_LOOKUP = 13
+    AUTHORITATIVE_SCHEMA = 14
+
+
 @dataclass(frozen=True)
 class PatternSpec:
-    pattern_id: int
+    pattern_id: PatternId
     name: str
     prescription: str
     canonical_shape: str
@@ -16,9 +34,9 @@ class PatternSpec:
     example_skeletons: tuple[str, ...] = ()
 
 
-PATTERN_SPECS: dict[int, PatternSpec] = {
-    1: PatternSpec(
-        1,
+PATTERN_SPECS: dict[PatternId, PatternSpec] = {
+    PatternId.NOMINAL_BOUNDARY: PatternSpec(
+        PatternId.NOMINAL_BOUNDARY,
         "Nominal Boundary Over Sentinel Simulation",
         "Replace fake identity-by-convention with an explicit nominal boundary.",
         "ABC or explicit subclass family with declared role identity instead of sentinel attributes.",
@@ -33,8 +51,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.PROVENANCE,
         ),
     ),
-    2: PatternSpec(
-        2,
+    PatternId.DISCRIMINATED_UNION: PatternSpec(
+        PatternId.DISCRIMINATED_UNION,
         "Discriminated Union Enumeration",
         "Use subclass families and runtime enumeration when exhaustive variant discovery is required.",
         "Subclass family plus factory that enumerates variants instead of open-ended predicate chains.",
@@ -52,8 +70,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "class VariantBase(ABC): ...\nclass OptionalVariant(VariantBase): ...\nclass DirectVariant(VariantBase): ...",
         ),
     ),
-    3: PatternSpec(
-        3,
+    PatternId.CLOSED_FAMILY_DISPATCH: PatternSpec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
         "Closed-Family O(1) Dispatch",
         "Use enum- or type-keyed dispatch instead of repeated string probing for closed backend families.",
         "Enum/type keyed registry or dataclass rule table representing a closed family.",
@@ -67,8 +85,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.AUTHORITATIVE_DISPATCH,
         ),
     ),
-    4: PatternSpec(
-        4,
+    PatternId.CONFIG_CONTRACTS: PatternSpec(
+        PatternId.CONFIG_CONTRACTS,
         "Polymorphic Configuration Contracts",
         "Dispatch on declared config family identity instead of fragile attribute checks.",
         "Config ABC with concrete config subclasses and fail-loud interface guarantees.",
@@ -83,8 +101,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.PROVENANCE,
         ),
     ),
-    5: PatternSpec(
-        5,
+    PatternId.ABC_TEMPLATE_METHOD: PatternSpec(
+        PatternId.ABC_TEMPLATE_METHOD,
         "ABC Template-Method Migration",
         "Extract shared non-orthogonal logic into an ABC with a concrete main method, keep orthogonal hooks small, and prefer mixins/multiple inheritance over composition when orthogonal concerns still need nominal MRO-aware structure.",
         "ABC with one concrete orchestration method, small abstract hooks, and mixins for orthogonal MRO-sensitive concerns.",
@@ -103,8 +121,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "class CandidateBase(ABC):\n    def run(self, request):\n        normalized = self._normalize(request)\n        return self._execute(normalized)\n\n    @abstractmethod\n    def _execute(self, normalized): ...",
         ),
     ),
-    6: PatternSpec(
-        6,
+    PatternId.AUTO_REGISTER_META: PatternSpec(
+        PatternId.AUTO_REGISTER_META,
         "Auto-Registration Metaclass",
         "Centralize repeated class-level registration logic in one authoritative metaclass algorithm.",
         "Metaclass or registry base that owns import-time registration, skipping, uniqueness, and inheritance behavior.",
@@ -123,8 +141,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "class AutoRegisterMeta(ABCMeta):\n    registry = {}\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    registry_key: str",
         ),
     ),
-    7: PatternSpec(
-        7,
+    PatternId.TYPE_LINEAGE: PatternSpec(
+        PatternId.TYPE_LINEAGE,
         "Type Transformation With Lineage",
         "Preserve generated/base type lineage through explicit nominal mappings and generated type families.",
         "Generated type family with explicit forward/reverse lineage mappings and normalization helpers.",
@@ -139,8 +157,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
         ),
     ),
-    8: PatternSpec(
-        8,
+    PatternId.DUAL_AXIS_RESOLUTION: PatternSpec(
+        PatternId.DUAL_AXIS_RESOLUTION,
         "Dual-Axis Resolution",
         "Make scope x type precedence explicit when provenance and ordered override resolution matter.",
         "Dedicated resolution primitive that walks context and type precedence together and returns provenance.",
@@ -155,8 +173,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.MRO_ORDERING,
         ),
     ),
-    9: PatternSpec(
-        9,
+    PatternId.VIRTUAL_MEMBERSHIP: PatternSpec(
+        PatternId.VIRTUAL_MEMBERSHIP,
         "Custom isinstance for Virtual Membership",
         "Use class-level virtual membership only when runtime interface claims must be explicit and inspectable.",
         "Custom isinstance/subclass semantics backed by class-level markers or metaclass logic.",
@@ -170,8 +188,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
-    10: PatternSpec(
-        10,
+    PatternId.DYNAMIC_INTERFACE: PatternSpec(
+        PatternId.DYNAMIC_INTERFACE,
         "Dynamic Interface Generation",
         "Generate nominal interfaces when explicit role identity exists without stable structural content.",
         "Runtime-generated nominal interface types used only for explicit identity and membership.",
@@ -186,8 +204,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
-    11: PatternSpec(
-        11,
+    PatternId.SENTINEL_TYPE_MARKER: PatternSpec(
+        PatternId.SENTINEL_TYPE_MARKER,
         "Sentinel Type Capability Marker",
         "Use a unique nominal sentinel object when exact marker identity matters more than payload.",
         "Unique runtime marker object/type used as a capability token or registry key.",
@@ -201,8 +219,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
-    12: PatternSpec(
-        12,
+    PatternId.TYPE_NAMESPACE_INJECTION: PatternSpec(
+        PatternId.TYPE_NAMESPACE_INJECTION,
         "Dynamic Method Injection Into Type Namespace",
         "Operate on class namespaces when behavior must change for all current and future instances.",
         "Explicit class-namespace mutation or plugin hook that targets the type, not per-instance patching.",
@@ -216,8 +234,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
-    13: PatternSpec(
-        13,
+    PatternId.BIDIRECTIONAL_LOOKUP: PatternSpec(
+        PatternId.BIDIRECTIONAL_LOOKUP,
         "Bidirectional Type Lookup",
         "Use type-keyed bijective registries to preserve exact companion-type normalization and reverse lookup.",
         "Single authoritative bidirectional type registry with bijection enforcement.",
@@ -232,8 +250,8 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             CapabilityTag.EXACT_LOOKUP,
         ),
     ),
-    14: PatternSpec(
-        14,
+    PatternId.AUTHORITATIVE_SCHEMA: PatternSpec(
+        PatternId.AUTHORITATIVE_SCHEMA,
         "Authoritative Projection Schema",
         "Declare repeated field-to-record or record-to-export mappings once in an authoritative constructor, classmethod, shared builder, or declarative export schema.",
         "Authoritative constructor/builder/schema that owns repeated record or projection mappings.",

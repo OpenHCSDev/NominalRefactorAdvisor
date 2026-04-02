@@ -4,7 +4,7 @@ import ast
 import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import Any
 
 from .ast_tools import (
@@ -23,25 +23,25 @@ from .models import (
     CERTIFIED,
     SPECULATIVE,
     STRONG_HEURISTIC,
-    BehaviorFindingMetrics,
     BranchCountMetrics,
     DispatchCountMetrics,
-    DispatchFindingMetrics,
     FindingMetrics,
     FindingSpec,
     HierarchyCandidateMetrics,
     ImpactDelta,
-    MappingFindingMetrics,
     MappingMetrics,
     ProbeCountMetrics,
     RefactorFinding,
-    RegistrationFindingMetrics,
     RegistrationMetrics,
     RepeatedMethodMetrics,
     ResolutionAxisMetrics,
+    SemanticBagDescriptor,
     SentinelSimulationMetrics,
     SourceLocation,
+    impact_delta_semantic_bag_descriptor,
+    metric_semantic_bag_descriptors,
 )
+from .patterns import PatternId
 from .taxonomy import (
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
@@ -280,13 +280,6 @@ class AttributeErrorTryRule(NodeRule):
 
 
 @dataclass(frozen=True)
-class SemanticBagSchema:
-    class_name: str
-    base_class_name: str
-    accepted_key_sets: tuple[frozenset[str], ...]
-
-
-@dataclass(frozen=True)
 class SemanticDataclassRecommendation:
     class_name: str
     base_class_name: str
@@ -323,7 +316,7 @@ class ProjectionHelperShape:
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_private_methods"
     finding_spec = FindingSpec(
-        pattern_id=5,
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated non-orthogonal method skeleton across classes",
         why=(
             "Shared orchestration logic is duplicated across a behavior family. The docs say this shared "
@@ -389,6 +382,8 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
                 duplicate_site_count=len(methods),
                 statement_count=methods[0].statement_count,
                 class_count=len(class_names),
+                method_symbols=tuple(method.symbol for method in methods),
+                shared_statement_texts=methods[0].statement_texts,
             ),
         )
 
@@ -396,7 +391,7 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
 class InheritanceHierarchyCandidateDetector(IssueDetector):
     detector_id = "inheritance_hierarchy_candidate"
     finding_spec = FindingSpec(
-        pattern_id=5,
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Classes cluster into an ABC hierarchy candidate",
         why=(
             "The same set of classes repeats multiple non-orthogonal method skeletons. The docs say this is a "
@@ -474,7 +469,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
 class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_builder_calls"
     finding_spec = FindingSpec(
-        pattern_id=14,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated field assignment should become an authoritative builder",
         why=(
             "The docs say repeated manual field assignment is an SSOT violation: the mapping should be declared once "
@@ -557,7 +552,7 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
 class RepeatedExportDictDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_export_dicts"
     finding_spec = FindingSpec(
-        pattern_id=14,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated projection dict should become an authoritative schema",
         why=(
             "The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative "
@@ -632,7 +627,7 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
 class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
     detector_id = "manual_class_registration"
     finding_spec = FindingSpec(
-        pattern_id=6,
+        pattern_id=PatternId.AUTO_REGISTER_META,
         title="Manual class registration should become AutoRegisterMeta",
         why=(
             "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. "
@@ -700,6 +695,10 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
                 class_count=len(class_names),
                 registry_name=registry_name,
                 class_names=tuple(sorted(class_names)),
+                class_key_pairs=tuple(
+                    f"{item.registered_class}={item.key_expression}"
+                    for item in registrations
+                ),
             ),
         )
 
@@ -707,7 +706,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
 class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
     detector_id = "sentinel_attribute_simulation"
     finding_spec = FindingSpec(
-        pattern_id=1,
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Sentinel attribute is simulating nominal identity",
         why=(
             "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
@@ -762,7 +761,7 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
 class PredicateFactoryChainDetector(PerModuleIssueDetector):
     detector_id = "predicate_factory_chain"
     finding_spec = FindingSpec(
-        pattern_id=2,
+        pattern_id=PatternId.DISCRIMINATED_UNION,
         title="Predicate chain should become a discriminated union family",
         why=(
             "The docs say repeated predicate-driven variant selection should become an explicit subclass family with "
@@ -807,7 +806,7 @@ class PredicateFactoryChainDetector(PerModuleIssueDetector):
 class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     detector_id = "config_attribute_dispatch"
     finding_spec = FindingSpec(
-        pattern_id=4,
+        pattern_id=PatternId.CONFIG_CONTRACTS,
         title="Config dispatch is encoded through fragile attribute probing",
         why=(
             "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name "
@@ -849,7 +848,7 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
 class GeneratedTypeLineageDetector(StaticModulePatternDetector):
     detector_id = "generated_type_lineage"
     finding_spec = FindingSpec(
-        pattern_id=7,
+        pattern_id=PatternId.TYPE_LINEAGE,
         title="Generated types need explicit lineage tracking",
         why=(
             "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and "
@@ -887,7 +886,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
 class DualAxisResolutionDetector(PerModuleIssueDetector):
     detector_id = "dual_axis_resolution"
     finding_spec = FindingSpec(
-        pattern_id=8,
+        pattern_id=PatternId.DUAL_AXIS_RESOLUTION,
         title="Nested precedence walk should be a dual-axis resolution primitive",
         why=(
             "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order "
@@ -933,7 +932,7 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
 class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     detector_id = "manual_virtual_membership"
     finding_spec = FindingSpec(
-        pattern_id=9,
+        pattern_id=PatternId.VIRTUAL_MEMBERSHIP,
         title="Manual class-marker membership should become custom isinstance semantics",
         why=(
             "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks "
@@ -972,7 +971,7 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
 class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     detector_id = "dynamic_interface_generation"
     finding_spec = FindingSpec(
-        pattern_id=10,
+        pattern_id=PatternId.DYNAMIC_INTERFACE,
         title="Dynamic interface generation is present or required",
         why=(
             "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles "
@@ -1008,7 +1007,7 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
 class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     detector_id = "sentinel_type_marker"
     finding_spec = FindingSpec(
-        pattern_id=11,
+        pattern_id=PatternId.SENTINEL_TYPE_MARKER,
         title="Unique sentinel type marker is present or should be used",
         why=(
             "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when "
@@ -1041,7 +1040,7 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
 class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     detector_id = "dynamic_method_injection"
     finding_spec = FindingSpec(
-        pattern_id=12,
+        pattern_id=PatternId.TYPE_NAMESPACE_INJECTION,
         title="Dynamic method injection belongs in a type-namespace pattern",
         why=(
             "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, "
@@ -1074,7 +1073,7 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
 class AttributeProbeDetector(PerModuleIssueDetector):
     detector_id = "attribute_probes"
     finding_spec = FindingSpec(
-        pattern_id=5,
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Semantic role recovered from attribute probing",
         why=(
             "Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a "
@@ -1120,7 +1119,7 @@ class AttributeProbeDetector(PerModuleIssueDetector):
 class InlineLiteralDispatchDetector(PerModuleIssueDetector):
     detector_id = "inline_literal_dispatch"
     finding_spec = FindingSpec(
-        pattern_id=3,
+        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Inline literal dispatch should be a registry",
         why=(
             "When the same observed value is split across several sibling literal branches, the docs "
@@ -1170,7 +1169,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
 class StringDispatchDetector(PerModuleIssueDetector):
     detector_id = "string_dispatch"
     finding_spec = FindingSpec(
-        pattern_id=3,
+        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Closed-family dispatch expressed through strings",
         why=(
             "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches "
@@ -1221,7 +1220,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     detector_id = "numeric_literal_dispatch"
     finding_spec = FindingSpec(
-        pattern_id=3,
+        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Closed-family dispatch expressed through numeric IDs",
         why=(
             "The docs treat repeated numeric pattern or mode IDs the same way as magic strings: the "
@@ -1272,7 +1271,7 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
 class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
     detector_id = "repeated_hardcoded_strings"
     finding_spec = FindingSpec(
-        pattern_id=14,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated hardcoded semantic string should become authoritative",
         why=(
             "The docs treat repeated hardcoded semantic keys as a coherence failure: the key should "
@@ -1322,7 +1321,7 @@ class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
 class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
     detector_id = "repeated_projection_helpers"
     finding_spec = FindingSpec(
-        pattern_id=14,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated projection helper wrappers should become one projector",
         why=(
             "The docs treat parallel projection helpers as a coherence failure: once several helpers differ only in "
@@ -1395,7 +1394,7 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
 class SemanticDictBagDetector(PerModuleIssueDetector):
     detector_id = "semantic_dict_bag"
     finding_spec = FindingSpec(
-        pattern_id=14,
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Semantic dict bag should become a nominal dataclass",
         why=(
             "The docs treat semantic field bags as coherence failures: once a dict carries named semantic "
@@ -1462,7 +1461,7 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
 class BidirectionalRegistryDetector(PerModuleIssueDetector):
     detector_id = "bidirectional_registry"
     finding_spec = FindingSpec(
-        pattern_id=13,
+        pattern_id=PatternId.BIDIRECTIONAL_LOOKUP,
         title="Bidirectional registry maintained manually",
         why=(
             "The docs prescribe a single authoritative bidirectional type registry when exact companion "
@@ -1515,72 +1514,18 @@ class BidirectionalRegistryDetector(PerModuleIssueDetector):
                     metrics=RegistrationMetrics(
                         registration_site_count=len(mirrored_pairs),
                         registry_name=node.name,
+                        class_key_pairs=tuple(
+                            f"{node.name}.{label}" for _, label in mirrored_pairs
+                        ),
                     ),
                 )
             )
         return findings
 
 
-def _schema_key_set(model_type: Any) -> frozenset[str]:
-    return frozenset(field.name for field in fields(model_type))
+_METRIC_BAG_SCHEMAS = metric_semantic_bag_descriptors()
 
-
-_METRIC_BAG_SCHEMAS = (
-    SemanticBagSchema(
-        class_name="RepeatedMethodMetrics",
-        base_class_name=BehaviorFindingMetrics.__name__,
-        accepted_key_sets=(_schema_key_set(RepeatedMethodMetrics),),
-    ),
-    SemanticBagSchema(
-        class_name="HierarchyCandidateMetrics",
-        base_class_name=BehaviorFindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"duplicate_group_count", "class_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="MappingMetrics",
-        base_class_name=MappingFindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"mapping_site_count", "field_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="RegistrationMetrics",
-        base_class_name=RegistrationFindingMetrics.__name__,
-        accepted_key_sets=(
-            frozenset({"registration_site_count"}),
-            frozenset({"registration_site_count", "class_count"}),
-        ),
-    ),
-    SemanticBagSchema(
-        class_name="SentinelSimulationMetrics",
-        base_class_name=FindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"class_count", "branch_site_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="BranchCountMetrics",
-        base_class_name=DispatchFindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"branch_site_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="ResolutionAxisMetrics",
-        base_class_name=FindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"resolution_axis_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="ProbeCountMetrics",
-        base_class_name=DispatchFindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"probe_site_count"}),),
-    ),
-    SemanticBagSchema(
-        class_name="DispatchCountMetrics",
-        base_class_name=DispatchFindingMetrics.__name__,
-        accepted_key_sets=(frozenset({"dispatch_site_count"}),),
-    ),
-)
-
-_IMPACT_BAG_SCHEMA = SemanticBagSchema(
-    class_name="ImpactDelta",
-    base_class_name=ImpactDelta.__name__,
-    accepted_key_sets=(_schema_key_set(ImpactDelta),),
-)
+_IMPACT_BAG_SCHEMA = impact_delta_semantic_bag_descriptor()
 
 
 def _semantic_dict_bag_candidates(
@@ -1849,8 +1794,8 @@ def _recommend_local_semantic_record(
 
 
 def _exact_schema_match(
-    key_names: tuple[str, ...], schemas: tuple[SemanticBagSchema, ...]
-) -> SemanticBagSchema | None:
+    key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
+) -> SemanticBagDescriptor | None:
     key_set = frozenset(key_names)
     for schema in schemas:
         if key_set in schema.accepted_key_sets:
@@ -1859,10 +1804,10 @@ def _exact_schema_match(
 
 
 def _closest_schema_match(
-    key_names: tuple[str, ...], schemas: tuple[SemanticBagSchema, ...]
-) -> SemanticBagSchema | None:
+    key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
+) -> SemanticBagDescriptor | None:
     key_set = frozenset(key_names)
-    best_schema: SemanticBagSchema | None = None
+    best_schema: SemanticBagDescriptor | None = None
     best_score = 0.0
     for schema in schemas:
         for accepted in schema.accepted_key_sets:

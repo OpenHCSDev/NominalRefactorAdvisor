@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from abc import ABC
-from dataclasses import asdict, dataclass, field
-from typing import Any, cast
+from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from typing import Any, ClassVar
+
+from .patterns import PatternId
 
 from .taxonomy import (
     MEDIUM_CONFIDENCE,
@@ -70,6 +72,10 @@ class ImpactDelta(SemanticRecord):
     def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
         return self.combine(other)
 
+    @classmethod
+    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
+        return (frozenset(field.name for field in fields(cls) if field.init),)
+
 
 @dataclass(frozen=True)
 class OutcomeEstimate(ImpactDelta):
@@ -77,6 +83,27 @@ class OutcomeEstimate(ImpactDelta):
 
 
 class FindingMetrics(SemanticRecord, ABC):
+    @classmethod
+    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
+        if not is_dataclass(cls):
+            return ()
+        key_names = [
+            item.name
+            for item in fields(cls)
+            if item.init and item.default is MISSING and item.default_factory is MISSING
+        ]
+        if not key_names:
+            return ()
+        return (frozenset(key_names),)
+
+    @classmethod
+    def semantic_bag_base_name(cls) -> str:
+        for base in cls.__mro__[1:]:
+            if issubclass(base, FindingMetrics) and base is not FindingMetrics:
+                if not is_dataclass(base):
+                    return base.__name__
+        return FindingMetrics.__name__
+
     def shared_algorithm_sites_for_plan(self) -> int:
         return 0
 
@@ -113,6 +140,12 @@ class FindingMetrics(SemanticRecord, ABC):
     def statement_count_for_plan(self) -> int:
         return 0
 
+    def shared_statement_texts_for_plan(self) -> tuple[str, ...]:
+        return ()
+
+    def class_key_pairs_for_plan(self) -> tuple[str, ...]:
+        return ()
+
 
 class BehaviorFindingMetrics(FindingMetrics, ABC):
     pass
@@ -132,7 +165,9 @@ class DispatchFindingMetrics(FindingMetrics, ABC):
 
 @dataclass(frozen=True)
 class EmptyFindingMetrics(FindingMetrics):
-    pass
+    @classmethod
+    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
+        return ()
 
 
 @dataclass(frozen=True)
@@ -140,6 +175,8 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
     duplicate_site_count: int
     statement_count: int
     class_count: int
+    method_symbols: tuple[str, ...] = ()
+    shared_statement_texts: tuple[str, ...] = ()
 
     def shared_algorithm_sites_for_plan(self) -> int:
         return self.duplicate_site_count
@@ -163,6 +200,16 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
 
     def statement_count_for_plan(self) -> int:
         return self.statement_count
+
+    def shared_statement_texts_for_plan(self) -> tuple[str, ...]:
+        return self.shared_statement_texts
+
+    def class_names_for_plan(self) -> tuple[str, ...]:
+        names = []
+        for symbol in self.method_symbols:
+            if "." in symbol:
+                names.append(symbol.split(".", 1)[0])
+        return tuple(names)
 
 
 @dataclass(frozen=True)
@@ -225,6 +272,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     class_count: int | None = None
     registry_name: str | None = None
     class_names: tuple[str, ...] = ()
+    class_key_pairs: tuple[str, ...] = ()
 
     def registration_sites_for_plan(self) -> int:
         return self.registration_site_count
@@ -245,6 +293,19 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     def registry_name_for_plan(self) -> str | None:
         return self.registry_name
 
+    def field_names_for_plan(self) -> tuple[str, ...]:
+        return self.class_key_pairs
+
+    def class_key_pairs_for_plan(self) -> tuple[str, ...]:
+        return self.class_key_pairs
+
+    @classmethod
+    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
+        return (
+            frozenset({"registration_site_count"}),
+            frozenset({"registration_site_count", "class_count"}),
+        )
+
 
 @dataclass(frozen=True)
 class SentinelSimulationMetrics(FindingMetrics):
@@ -252,22 +313,35 @@ class SentinelSimulationMetrics(FindingMetrics):
     branch_site_count: int
 
 
-@dataclass(frozen=True)
-class BranchCountMetrics(DispatchFindingMetrics):
-    branch_site_count: int
+class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
+    count_field_name: ClassVar[str]
+
+    @classmethod
+    def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
+        return (frozenset({cls.count_field_name}),)
+
+    def _count_value(self) -> int:
+        return int(getattr(self, self.count_field_name))
 
     def dispatch_sites_for_plan(self, evidence_count: int) -> int:
-        return self.branch_site_count
+        return self._count_value()
 
     def outcome_delta(self, evidence_count: int) -> ImpactDelta:
-        lower_bound = max(self.branch_site_count - 1, 0)
+        count = self._count_value()
+        lower_bound = max(count - 1, 0)
         return ImpactDelta(
             lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=max(self.branch_site_count, lower_bound),
-            loci_of_change_before=self.branch_site_count,
+            upper_bound_removable_loc=max(count, lower_bound),
+            loci_of_change_before=count,
             loci_of_change_after=1,
-            dispatch_sites_eliminated=self.branch_site_count,
+            dispatch_sites_eliminated=count,
         )
+
+
+@dataclass(frozen=True)
+class BranchCountMetrics(CountedDispatchMetrics):
+    count_field_name: ClassVar[str] = "branch_site_count"
+    branch_site_count: int
 
 
 @dataclass(frozen=True)
@@ -276,45 +350,21 @@ class ResolutionAxisMetrics(FindingMetrics):
 
 
 @dataclass(frozen=True)
-class ProbeCountMetrics(DispatchFindingMetrics):
+class ProbeCountMetrics(CountedDispatchMetrics):
+    count_field_name: ClassVar[str] = "probe_site_count"
     probe_site_count: int
-
-    def dispatch_sites_for_plan(self, evidence_count: int) -> int:
-        return self.probe_site_count
-
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
-        lower_bound = max(self.probe_site_count - 1, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=max(self.probe_site_count, lower_bound),
-            loci_of_change_before=self.probe_site_count,
-            loci_of_change_after=1,
-            dispatch_sites_eliminated=self.probe_site_count,
-        )
 
 
 @dataclass(frozen=True)
-class DispatchCountMetrics(DispatchFindingMetrics):
+class DispatchCountMetrics(CountedDispatchMetrics):
+    count_field_name: ClassVar[str] = "dispatch_site_count"
     dispatch_site_count: int
-
-    def dispatch_sites_for_plan(self, evidence_count: int) -> int:
-        return self.dispatch_site_count
-
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
-        lower_bound = max(self.dispatch_site_count - 1, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=max(self.dispatch_site_count, lower_bound),
-            loci_of_change_before=self.dispatch_site_count,
-            loci_of_change_after=1,
-            dispatch_sites_eliminated=self.dispatch_site_count,
-        )
 
 
 @dataclass(frozen=True)
 class RefactorFinding(SemanticRecord):
     detector_id: str
-    pattern_id: int
+    pattern_id: PatternId
     title: str
     summary: str
     why: str
@@ -371,7 +421,7 @@ class RefactorFinding(SemanticRecord):
 
 @dataclass(frozen=True)
 class FindingSpec:
-    pattern_id: int
+    pattern_id: PatternId
     title: str
     why: str
     capability_gap: str
@@ -426,9 +476,11 @@ class RefactorAction(SemanticRecord):
     target: str | None = None
     create_symbol: str | None = None
     replace_with: str | None = None
+    statement_operation: str | None = None
     symbols: tuple[str, ...] = ()
     remove_symbols: tuple[str, ...] = ()
     evidence: tuple[SourceLocation, ...] = ()
+    statement_sites: tuple[SourceLocation, ...] = ()
     confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
 
 
@@ -440,9 +492,9 @@ class RefactorPlan(SemanticRecord):
     collapsed_distinctions: tuple[str, ...]
     missing_capabilities: tuple[str, ...]
     certification: CertificationLevel
-    primary_pattern_id: int
-    secondary_pattern_ids: tuple[int, ...]
-    application_order: tuple[int, ...]
+    primary_pattern_id: PatternId
+    secondary_pattern_ids: tuple[PatternId, ...]
+    application_order: tuple[PatternId, ...]
     canonical_normal_form: str
     plan_steps: tuple[str, ...]
     supporting_findings: tuple[str, ...]
@@ -455,3 +507,42 @@ class RefactorPlan(SemanticRecord):
 class AnalysisReport(SemanticRecord):
     findings: tuple[RefactorFinding, ...] = ()
     plans: tuple[RefactorPlan, ...] = ()
+
+
+@dataclass(frozen=True)
+class SemanticBagDescriptor(SemanticRecord):
+    class_name: str
+    base_class_name: str
+    accepted_key_sets: tuple[frozenset[str], ...]
+
+
+def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
+    return tuple(
+        SemanticBagDescriptor(
+            class_name=metric_type.__name__,
+            base_class_name=metric_type.semantic_bag_base_name(),
+            accepted_key_sets=metric_type.semantic_bag_key_sets(),
+        )
+        for metric_type in _concrete_metric_types()
+        if metric_type.semantic_bag_key_sets()
+    )
+
+
+def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
+    return SemanticBagDescriptor(
+        class_name=ImpactDelta.__name__,
+        base_class_name=ImpactDelta.__name__,
+        accepted_key_sets=ImpactDelta.semantic_bag_key_sets(),
+    )
+
+
+def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
+    discovered: list[type[FindingMetrics]] = []
+    queue = list(FindingMetrics.__subclasses__())
+    while queue:
+        current = queue.pop(0)
+        queue.extend(current.__subclasses__())
+        if not is_dataclass(current):
+            continue
+        discovered.append(current)
+    return tuple(sorted(discovered, key=lambda metric_type: metric_type.__name__))

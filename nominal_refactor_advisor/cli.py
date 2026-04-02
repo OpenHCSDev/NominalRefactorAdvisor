@@ -50,7 +50,7 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
     for index, finding in enumerate(findings, start=1):
         pattern = PATTERN_SPECS[finding.pattern_id]
         lines.append(f"{index}. {finding.title}")
-        lines.append(f"   - Pattern {pattern.pattern_id}: {pattern.name}")
+        lines.append(f"   - Pattern {pattern.pattern_id.value}: {pattern.name}")
         lines.append(f"   - Summary: {finding.summary}")
         lines.append(f"   - Capability gap: {finding.capability_gap}")
         lines.append(f"   - Prescription: {pattern.prescription}")
@@ -81,16 +81,16 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
     for index, plan in enumerate(plans, start=1):
         primary = PATTERN_SPECS[plan.primary_pattern_id]
         order = " -> ".join(
-            f"Pattern {pattern_id}" for pattern_id in plan.application_order
+            f"Pattern {pattern_id.value}" for pattern_id in plan.application_order
         )
         lines.append(f"{index}. {plan.subsystem}")
         lines.append(f"   - Summary: {plan.summary}")
         lines.append(
-            f"   - Primary pattern: Pattern {primary.pattern_id}: {primary.name}"
+            f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
         )
         if plan.secondary_pattern_ids:
             secondary = ", ".join(
-                f"Pattern {pattern_id}: {PATTERN_SPECS[pattern_id].name}"
+                f"Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].name}"
                 for pattern_id in plan.secondary_pattern_ids
             )
             lines.append(f"   - Secondary patterns: {secondary}")
@@ -115,6 +115,13 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
         )
         for action in plan.actions:
             lines.append(f"   - Action: {action.kind} -> {action.description}")
+            if action.statement_operation and action.statement_sites:
+                site_list = ", ".join(
+                    f"{item.file_path}:{item.line}" for item in action.statement_sites
+                )
+                lines.append(
+                    f"   - Action sites: {action.statement_operation} at {site_list}"
+                )
         for step in plan.plan_steps:
             lines.append(f"   - Plan step: {step}")
         for title in plan.supporting_findings[:5]:

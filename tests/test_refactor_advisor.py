@@ -738,7 +738,7 @@ def build():
     )
 
     assert "DispatchCountMetrics" in (finding.scaffold or "")
-    assert "DispatchFindingMetrics" in (finding.scaffold or "")
+    assert "CountedDispatchMetrics" in (finding.scaffold or "")
 
 
 def test_detects_local_impact_dict_bag_and_recommends_impact_delta(
@@ -833,6 +833,12 @@ REGISTRY["beta"] = Beta
     assert plan.outcome.repeated_mappings_centralized >= 3
     assert any(action.kind == "create_abc_base" for action in plan.actions)
     assert any(action.kind == "create_metaclass" for action in plan.actions)
+    extract_action = next(
+        action for action in plan.actions if action.kind == "extract_template_method"
+    )
+    assert extract_action.statement_operation == "move"
+    assert extract_action.statement_sites
+    assert "self.normalize" in extract_action.description
     mapping_action = next(
         action
         for action in plan.actions
@@ -840,6 +846,11 @@ REGISTRY["beta"] = Beta
     )
     assert mapping_action.create_symbol == "RuntimePlan.from_source"
     assert "name-for-name boilerplate" in mapping_action.description
+    replace_action = next(
+        action for action in plan.actions if action.kind == "replace_mapping_sites"
+    )
+    assert replace_action.statement_operation == "replace"
+    assert replace_action.replace_with == "RuntimePlan.from_source(candidate)"
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
@@ -870,3 +881,4 @@ class Beta:
     assert "Primary pattern:" in output
     assert "Outcome:" in output
     assert "Action:" in output
+    assert "Action sites:" in output

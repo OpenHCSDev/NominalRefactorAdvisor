@@ -24,6 +24,7 @@ class MethodShape:
     param_count: int
     decorators: tuple[str, ...]
     fingerprint: str
+    statement_texts: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
@@ -60,6 +61,7 @@ class RegistrationShape:
     registry_name: str
     registered_class: str
     key_fingerprint: str
+    key_expression: str
     registration_style: str
 
     @classmethod
@@ -78,6 +80,9 @@ class RegistrationShape:
             registry_name=registry_name,
             registered_class=node.value.id,
             key_fingerprint=key_fingerprint,
+            key_expression=ast.unparse(node.targets[0].slice)
+            if isinstance(node.targets[0], ast.Subscript)
+            else "...",
             registration_style="subscript_assignment",
         )
 
@@ -96,6 +101,9 @@ class RegistrationShape:
             registry_name=registry_name,
             registered_class=registered_class,
             key_fingerprint=key_fingerprint,
+            key_expression=ast.unparse(
+                node.args[1] if len(node.args) >= 2 else node.args[0]
+            ),
             registration_style="registration_call",
         )
 
@@ -113,6 +121,7 @@ class RegistrationShape:
             registry_name=registry_name,
             registered_class=node.name,
             key_fingerprint=key_fingerprint,
+            key_expression=node.name,
             registration_style="decorator_registration",
         )
 
@@ -232,6 +241,7 @@ def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
                         _decorator_name(dec) for dec in node.decorator_list
                     ),
                     fingerprint=fingerprint_function(node),
+                    statement_texts=tuple(ast.unparse(stmt) for stmt in node.body),
                 )
             )
 
