@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import ast
 import copy
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeAlias
+from typing import ClassVar, TypeAlias
 
 
 @dataclass(frozen=True)
@@ -53,7 +53,51 @@ class ScopedAstObservation:
     function_name: str | None
 
 
-class ScopedShapeSpec(ABC):
+@dataclass(frozen=True)
+class ClassAstObservation:
+    node: ast.ClassDef
+    is_dataclass_family: bool
+
+
+class AutoRegisterMeta(ABCMeta):
+    def __new__(
+        mcls,
+        name: str,
+        bases: tuple[type[object], ...],
+        namespace: dict[str, object],
+        **kwargs: object,
+    ):
+        cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+        if namespace.get("_registry_root", False):
+            setattr(cls, "_registered_spec_types", [])
+            return cls
+        if cls.__abstractmethods__:
+            return cls
+        for base in cls.__mro__[1:]:
+            registry = base.__dict__.get("_registered_spec_types")
+            if registry is None:
+                continue
+            registry.append(cls)
+            break
+        return cls
+
+
+class ModuleShapeSpec(ABC):
+    @abstractmethod
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        raise NotImplementedError
+
+
+class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
+    _registry_root: ClassVar[bool] = False
+    _registered_spec_types: ClassVar[list[type["AutoRegisteredModuleShapeSpec"]]]
+
+    @classmethod
+    def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
+        return tuple(spec_type() for spec_type in cls._registered_spec_types)
+
+
+class ScopedShapeSpec(ModuleShapeSpec, ABC):
     @property
     @abstractmethod
     def node_types(self) -> tuple[type[ast.AST], ...]:
@@ -562,6 +606,27 @@ def collect_scoped_shapes(
     return spec.collect(parsed_module)
 
 
+def _class_observations(parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
+    observations: list[ClassAstObservation] = []
+    for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
+        node = observation.node
+        assert isinstance(node, ast.ClassDef)
+        observations.append(
+            ClassAstObservation(
+                node=node,
+                is_dataclass_family=any(
+                    _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
+                    for decorator in node.decorator_list
+                ),
+            )
+        )
+    return tuple(observations)
+
+
+def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
+    return _name_family({item.node.name for item in _class_observations(parsed_module)})
+
+
 class MethodShapeSpec(ObservationShapeSpec):
     @property
     def node_types(self) -> tuple[type[ast.AST], ...]:
@@ -631,6 +696,183 @@ _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 _EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
 
 
+class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC):
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        return self.collect_with_known_class_family(
+            parsed_module,
+            _known_class_family(parsed_module),
+        )
+
+    @abstractmethod
+    def collect_with_known_class_family(
+        self,
+        parsed_module: ParsedModule,
+        known_class_family: AstNameFamily,
+    ) -> list[object]:
+        raise NotImplementedError
+
+
+class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
+    def collect_with_known_class_family(
+        self,
+        parsed_module: ParsedModule,
+        known_class_family: AstNameFamily,
+    ) -> list[object]:
+        shapes: list[object] = []
+        for node in ast.walk(parsed_module.module):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not isinstance(node.value, ast.Name):
+                continue
+            if _terminal_name_in_family(node.value, known_class_family) is None:
+                continue
+            for target in node.targets:
+                registry_name = _subscript_base_name(target)
+                if registry_name is None:
+                    continue
+                key_fingerprint = _registration_key_fingerprint(target)
+                if key_fingerprint is None:
+                    continue
+                shapes.append(
+                    RegistrationShape.from_assignment(
+                        parsed_module,
+                        node,
+                        registry_name,
+                        key_fingerprint,
+                    )
+                )
+        return shapes
+
+
+class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
+    def collect_with_known_class_family(
+        self,
+        parsed_module: ParsedModule,
+        known_class_family: AstNameFamily,
+    ) -> list[object]:
+        shapes: list[object] = []
+        for observation in _iter_attribute_family_calls(
+            parsed_module, _REGISTRATION_CALL_FAMILY
+        ):
+            node = observation.call
+            assert isinstance(node.func, ast.Attribute)
+            registry_name = _terminal_name(node.func.value)
+            if registry_name is None:
+                continue
+            if not node.args:
+                continue
+            class_name = _class_name_from_expr(node.args[0], known_class_family)
+            if class_name is None:
+                continue
+            key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
+            key_fingerprint = _fingerprint_builder_value(key_source)
+            shapes.append(
+                RegistrationShape.from_registration_call(
+                    parsed_module,
+                    node,
+                    registry_name,
+                    class_name,
+                    key_fingerprint,
+                )
+            )
+        return shapes
+
+
+class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        shapes: list[object] = []
+        for node, decorator, _matched_name in _iter_class_decorator_family_calls(
+            parsed_module, _REGISTRATION_DECORATOR_FAMILY
+        ):
+            if not decorator.args:
+                continue
+            registry_name = _terminal_name(decorator.args[0])
+            if registry_name is None:
+                continue
+            key_expr = (
+                decorator.args[1]
+                if len(decorator.args) >= 2
+                else ast.Constant(value=node.name)
+            )
+            shapes.append(
+                RegistrationShape.from_decorator(
+                    parsed_module,
+                    node,
+                    registry_name,
+                    _fingerprint_builder_value(key_expr),
+                )
+            )
+        return shapes
+
+
+class FieldObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+class ClassObservationSpec(FieldObservationSpec, ABC):
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        observations: list[object] = []
+        for class_observation in _class_observations(parsed_module):
+            observations.extend(
+                self.collect_for_class(parsed_module, class_observation)
+            )
+        return observations
+
+    @abstractmethod
+    def collect_for_class(
+        self,
+        parsed_module: ParsedModule,
+        class_observation: ClassAstObservation,
+    ) -> list[object]:
+        raise NotImplementedError
+
+
+class DataclassBodyFieldObservationSpec(ClassObservationSpec):
+    def collect_for_class(
+        self,
+        parsed_module: ParsedModule,
+        class_observation: ClassAstObservation,
+    ) -> list[object]:
+        observations: list[object] = []
+        for stmt in class_observation.node.body:
+            if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
+                continue
+            field_observation = _class_body_field_observation(
+                parsed_module,
+                class_observation.node.name,
+                class_observation.is_dataclass_family,
+                stmt,
+            )
+            if field_observation is not None:
+                observations.append(field_observation)
+        return observations
+
+
+class InitAssignmentFieldObservationSpec(ClassObservationSpec):
+    def collect_for_class(
+        self,
+        parsed_module: ParsedModule,
+        class_observation: ClassAstObservation,
+    ) -> list[object]:
+        observations: list[object] = []
+        for stmt in class_observation.node.body:
+            if not isinstance(stmt, ast.FunctionDef) or stmt.name != "__init__":
+                continue
+            observations.extend(
+                _init_field_observations(
+                    parsed_module,
+                    class_observation.node.name,
+                    class_observation.is_dataclass_family,
+                    stmt,
+                )
+            )
+        return observations
+
+
 def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
     return [
         shape
@@ -649,36 +891,12 @@ def collect_builder_call_shapes(parsed_module: ParsedModule) -> list[BuilderCall
 
 def collect_registration_shapes(parsed_module: ParsedModule) -> list[RegistrationShape]:
     shapes: list[RegistrationShape] = []
-    known_classes = {
-        node.name
-        for node in ast.walk(parsed_module.module)
-        if isinstance(node, ast.ClassDef)
-    }
-    known_class_family = _name_family(known_classes)
-    for node in ast.walk(parsed_module.module):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not isinstance(node.value, ast.Name):
-            continue
-        if _terminal_name_in_family(node.value, known_class_family) is None:
-            continue
-        for target in node.targets:
-            registry_name = _subscript_base_name(target)
-            if registry_name is None:
-                continue
-            key_fingerprint = _registration_key_fingerprint(target)
-            if key_fingerprint is None:
-                continue
-            shapes.append(
-                RegistrationShape.from_assignment(
-                    parsed_module,
-                    node,
-                    registry_name,
-                    key_fingerprint,
-                )
-            )
-    shapes.extend(_collect_registration_call_shapes(parsed_module, known_class_family))
-    shapes.extend(_collect_decorator_registration_shapes(parsed_module))
+    for spec in RegistrationShapeSpec.registered_specs():
+        shapes.extend(
+            shape
+            for shape in spec.collect(parsed_module)
+            if isinstance(shape, RegistrationShape)
+        )
     return shapes
 
 
@@ -810,41 +1028,12 @@ def _init_field_observations(
 
 def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObservation]:
     observations: list[FieldObservation] = []
-    for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
-        node = observation.node
-        assert isinstance(node, ast.ClassDef)
-        observations.extend(_field_observations_for_class(parsed_module, node))
-    return observations
-
-
-def _field_observations_for_class(
-    parsed_module: ParsedModule,
-    node: ast.ClassDef,
-) -> list[FieldObservation]:
-    observations: list[FieldObservation] = []
-    is_dataclass_family = any(
-        _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
-        for decorator in node.decorator_list
-    )
-    for stmt in node.body:
-        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
-            observations.extend(
-                _init_field_observations(
-                    parsed_module,
-                    node.name,
-                    is_dataclass_family,
-                    stmt,
-                )
-            )
-            continue
-        field_observation = _class_body_field_observation(
-            parsed_module,
-            node.name,
-            is_dataclass_family,
-            stmt,
+    for spec in FieldObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, FieldObservation)
         )
-        if field_observation is not None:
-            observations.append(field_observation)
     return observations
 
 
@@ -973,65 +1162,6 @@ def _registration_key_fingerprint(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
     return _fingerprint_builder_value(node.slice)
-
-
-def _collect_registration_call_shapes(
-    parsed_module: ParsedModule, known_class_family: AstNameFamily
-) -> list[RegistrationShape]:
-    shapes: list[RegistrationShape] = []
-    for observation in _iter_attribute_family_calls(
-        parsed_module, _REGISTRATION_CALL_FAMILY
-    ):
-        node = observation.call
-        assert isinstance(node.func, ast.Attribute)
-        registry_name = _terminal_name(node.func.value)
-        if registry_name is None:
-            continue
-        if not node.args:
-            continue
-        class_name = _class_name_from_expr(node.args[0], known_class_family)
-        if class_name is None:
-            continue
-        key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
-        key_fingerprint = _fingerprint_builder_value(key_source)
-        shapes.append(
-            RegistrationShape.from_registration_call(
-                parsed_module,
-                node,
-                registry_name,
-                class_name,
-                key_fingerprint,
-            )
-        )
-    return shapes
-
-
-def _collect_decorator_registration_shapes(
-    parsed_module: ParsedModule,
-) -> list[RegistrationShape]:
-    shapes: list[RegistrationShape] = []
-    for node, decorator, _matched_name in _iter_class_decorator_family_calls(
-        parsed_module, _REGISTRATION_DECORATOR_FAMILY
-    ):
-        if not decorator.args:
-            continue
-        registry_name = _terminal_name(decorator.args[0])
-        if registry_name is None:
-            continue
-        key_expr = (
-            decorator.args[1]
-            if len(decorator.args) >= 2
-            else ast.Constant(value=node.name)
-        )
-        shapes.append(
-            RegistrationShape.from_decorator(
-                parsed_module,
-                node,
-                registry_name,
-                _fingerprint_builder_value(key_expr),
-            )
-        )
-    return shapes
 
 
 def _class_name_from_expr(

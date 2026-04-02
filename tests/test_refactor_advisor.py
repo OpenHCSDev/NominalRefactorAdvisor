@@ -4,9 +4,12 @@ import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
+    FieldObservationSpec,
     ObservationGraph,
     ObservationKind,
+    RegistrationShapeSpec,
     StructuralExecutionLevel,
+    collect_registration_shapes,
     collect_scoped_observations,
     collect_field_observations,
     parse_python_modules,
@@ -576,6 +579,25 @@ class Alpha:
     assert call_observation.function_name == "build"
 
 
+def test_spec_families_use_autoregistration() -> None:
+    registration_specs = {
+        type(spec).__name__ for spec in RegistrationShapeSpec.registered_specs()
+    }
+    field_specs = {
+        type(spec).__name__ for spec in FieldObservationSpec.registered_specs()
+    }
+
+    assert registration_specs == {
+        "AssignmentRegistrationShapeSpec",
+        "CallRegistrationShapeSpec",
+        "DecoratorRegistrationShapeSpec",
+    }
+    assert field_specs == {
+        "DataclassBodyFieldObservationSpec",
+        "InitAssignmentFieldObservationSpec",
+    }
+
+
 def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -656,6 +678,40 @@ class Beta:
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
+
+
+def test_collects_registration_shapes_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Plugins:
+    def auto_register(self, registry, key):
+        def deco(cls):
+            return cls
+        return deco
+
+
+plugins = Plugins()
+REGISTRY = {}
+
+
+@plugins.auto_register(REGISTRY, "alpha")
+class Alpha:
+    pass
+
+
+REGISTRY["beta"] = Alpha
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    shapes = collect_registration_shapes(module)
+
+    assert {shape.registration_style for shape in shapes} == {
+        "decorator_registration",
+        "subscript_assignment",
+    }
 
 
 def test_detects_repeated_export_dict_shape(tmp_path: Path) -> None:
