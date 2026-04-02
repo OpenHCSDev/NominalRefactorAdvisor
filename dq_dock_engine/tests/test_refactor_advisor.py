@@ -283,3 +283,4 @@ class Beta:
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "repeated_export_dicts" for finding in findings)
+    assert any("projection dict" in finding.title.lower() for finding in findings)

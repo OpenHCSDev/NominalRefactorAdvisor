@@ -401,17 +401,17 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
         return RefactorFinding(
             detector_id=self.detector_id,
             pattern_id=14,
-            title="Repeated export dict should become a declarative export schema",
+            title="Repeated projection dict should become an authoritative schema",
             summary=(
-                f"Export dict with keys {export_shapes[0].key_names} repeats across {len(export_shapes)} sites."
+                f"String-key projection dict with keys {export_shapes[0].key_names} repeats across {len(export_shapes)} sites."
             ),
             why=(
-                "The docs say repeated JSON/CSV/export dict builders should become one authoritative row dataclass or "
-                "declarative export schema instead of many hand-maintained dict literals."
+                "The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative "
+                "row schema or projection builder instead of many hand-maintained dict literals."
             ),
-            capability_gap="single authoritative export projection for a repeated record family",
+            capability_gap="single authoritative projection schema for a repeated record or kwargs family",
             confidence="medium",
-            relation_context="same export role repeated across sibling functions or methods",
+            relation_context="same string-key projection role repeated across sibling functions or methods",
             evidence=evidence,
         )
 

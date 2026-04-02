@@ -14,7 +14,7 @@ The current MVP scans Python ASTs and emits findings for several issue families:
 
 - repeated non-orthogonal method skeletons across classes
 - repeated keyword-based builder calls that copy the same field mapping across sites
-- repeated export dictionaries that should collapse into one declarative export schema
+- repeated string-key projection dictionaries that should collapse into one authoritative schema
 - repeated manual class-registration assignments that should move into a metaclass or registry base
 - repeated ``hasattr`` / ``getattr(..., default)`` / ``AttributeError`` probing
 - repeated string-based closed-family dispatch
@@ -99,7 +99,7 @@ Against ``agent_refactoring_crash_course.rst``:
 - Mechanical audit support: good
 - ABC-first prescription for repeated non-orthogonal logic: good
 - Repeated field-assignment detection: good in the initial keyword-builder form
-- Repeated export-schema detection: good in the initial string-key export-dict form
+- Repeated projection-schema detection: good in the initial string-key dict form
 - Orthogonal-core reduction beyond direct clones: medium
 
 Against ``nominal_identity_case_studies.rst``:
@@ -124,7 +124,7 @@ The next useful detectors should be:
 The builder detector currently focuses on repeated keyword-constructor shapes. A later pass should widen it
 to export dictionaries and repeated dataclass-to-dataclass conversion blocks.
 
-That widening has now started: the advisor also detects repeated string-key export dictionaries and points
-them toward one authoritative export schema.
+That widening has now started: the advisor also detects repeated string-key projection dictionaries,
+including export dicts and kwargs/source-value bags, and points them toward one authoritative schema.
 
 The goal is not to produce more findings. The goal is to make each finding more canonical and less noisy.
