@@ -4,6 +4,8 @@ from pathlib import Path
 
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import analyze_path
+from nominal_refactor_advisor.models import DispatchCountMetrics
+from nominal_refactor_advisor.planner import build_refactor_plans
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> None:
@@ -604,3 +606,225 @@ def resolve(config):
 
     findings = analyze_path(tmp_path)
     assert not any(finding.pattern_id == 4 for finding in findings)
+
+
+def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def render(pattern_id):
+    if pattern_id == 3:
+        return "dispatch"
+    elif pattern_id == 5:
+        return "abc"
+    elif pattern_id == 14:
+        return "schema"
+    return "other"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == "numeric_literal_dispatch" for finding in findings
+    )
+
+
+def test_detects_repeated_hardcoded_semantic_string(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+DEFAULT_CERTIFICATION = "strong_heuristic"
+
+
+def first():
+    return configure(certification="strong_heuristic")
+
+
+def second():
+    return configure(certification="strong_heuristic")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == "repeated_hardcoded_strings" for finding in findings
+    )
+
+
+def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def render(pattern_id):
+    if pattern_id == 3:
+        return "dispatch"
+    elif pattern_id == 5:
+        return "abc"
+    elif pattern_id == 14:
+        return "schema"
+    return "other"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "numeric_literal_dispatch"
+    )
+
+    assert isinstance(finding.metrics, DispatchCountMetrics)
+    assert finding.metrics.dispatch_site_count == 1
+
+
+def test_detects_semantic_metrics_dict_bag_and_recommends_nominal_class(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class RefactorFinding:
+    metrics: object
+
+
+def build():
+    return RefactorFinding(metrics={"dispatch_site_count": len([1, 2, 3])})
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "semantic_dict_bag"
+    )
+
+    assert "DispatchCountMetrics" in (finding.scaffold or "")
+    assert "DispatchFindingMetrics" in (finding.scaffold or "")
+
+
+def test_detects_local_impact_dict_bag_and_recommends_impact_delta(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def estimate():
+    impact = {
+        "lower_bound_removable_loc": 0,
+        "upper_bound_removable_loc": 0,
+        "loci_of_change_before": 0,
+        "loci_of_change_after": 0,
+        "repeated_mappings_centralized": 0,
+        "dispatch_sites_eliminated": 0,
+        "registration_sites_removed": 0,
+        "shared_algorithm_sites_centralized": 0,
+    }
+    impact["dispatch_sites_eliminated"] = 2
+    return impact
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "semantic_dict_bag"
+    )
+
+    assert "ImpactDelta" in (finding.scaffold or "")
+
+
+def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+REGISTRY = {}
+
+
+class RuntimePlan:
+    def __init__(self, pose_id, score, label):
+        self.pose_id = pose_id
+        self.score = score
+        self.label = label
+
+
+class Alpha:
+    def _prepare(self, item):
+        ready = self.normalize(item)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+    def build(self, candidate):
+        return RuntimePlan(
+            pose_id=candidate.pose_id,
+            score=candidate.score,
+            label=candidate.label,
+        )
+
+
+class Beta:
+    def _assemble(self, value):
+        ready = self.normalize(value)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+    def build(self, entry):
+        return RuntimePlan(
+            pose_id=entry.pose_id,
+            score=entry.score,
+            label=entry.label,
+        )
+
+
+REGISTRY["alpha"] = Alpha
+REGISTRY["beta"] = Beta
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    plans = build_refactor_plans(findings, tmp_path)
+
+    assert plans
+    plan = plans[0]
+    assert plan.primary_pattern_id == 5
+    assert 6 in plan.secondary_pattern_ids
+    assert 14 in plan.secondary_pattern_ids
+    assert plan.outcome.loci_of_change_before > plan.outcome.loci_of_change_after
+    assert plan.outcome.registration_sites_removed == 2
+    assert plan.outcome.repeated_mappings_centralized >= 3
+
+
+def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    def _prepare(self, item):
+        ready = self.normalize(item)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+
+class Beta:
+    def _build(self, value):
+        ready = self.normalize(value)
+        checked = self.validate(ready)
+        return self.finish(checked)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    plans = build_refactor_plans(findings, tmp_path)
+    output = _format_markdown(findings, plans)
+
+    assert "Subsystem plans:" in output
+    assert "Primary pattern:" in output
+    assert "Outcome:" in output

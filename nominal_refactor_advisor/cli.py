@@ -6,8 +6,9 @@ from pathlib import Path
 
 from .ast_tools import parse_python_modules
 from .detectors import DetectorConfig, default_detectors
-from .models import RefactorFinding
+from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .patterns import PATTERN_SPECS
+from .planner import build_refactor_plans
 
 
 def analyze_path(
@@ -24,7 +25,25 @@ def analyze_path(
     )
 
 
-def _format_markdown(findings: list[RefactorFinding]) -> str:
+def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
+    findings = analyze_path(root, config)
+    return build_refactor_plans(findings, root)
+
+
+def _format_markdown(
+    findings: list[RefactorFinding], plans: list[RefactorPlan] | None = None
+) -> str:
+    sections: list[str] = []
+    if findings:
+        sections.append(_format_findings_markdown(findings))
+    elif not plans:
+        sections.append("No refactoring findings.")
+    if plans is not None:
+        sections.append(_format_plans_markdown(plans))
+    return "\n\n".join(section for section in sections if section)
+
+
+def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
     if not findings:
         return "No refactoring findings."
     lines: list[str] = []
@@ -39,6 +58,7 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
         lines.append(f"   - Why: {finding.why}")
         lines.append(f"   - Relation: {finding.relation_context}")
         lines.append(f"   - Confidence: {finding.confidence}")
+        lines.append(f"   - Certification: {finding.certification}")
         for step in pattern.first_moves:
             lines.append(f"   - First move: {step}")
         for skeleton in pattern.example_skeletons:
@@ -50,6 +70,54 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
             for patch_line in finding.codemod_patch.splitlines():
                 lines.append(f"     {patch_line}")
         for item in finding.evidence:
+            lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
+    return "\n".join(lines)
+
+
+def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
+    if not plans:
+        return "No subsystem plans."
+    lines = ["Subsystem plans:"]
+    for index, plan in enumerate(plans, start=1):
+        primary = PATTERN_SPECS[plan.primary_pattern_id]
+        order = " -> ".join(
+            f"Pattern {pattern_id}" for pattern_id in plan.application_order
+        )
+        lines.append(f"{index}. {plan.subsystem}")
+        lines.append(f"   - Summary: {plan.summary}")
+        lines.append(
+            f"   - Primary pattern: Pattern {primary.pattern_id}: {primary.name}"
+        )
+        if plan.secondary_pattern_ids:
+            secondary = ", ".join(
+                f"Pattern {pattern_id}: {PATTERN_SPECS[pattern_id].name}"
+                for pattern_id in plan.secondary_pattern_ids
+            )
+            lines.append(f"   - Secondary patterns: {secondary}")
+        lines.append(f"   - Application order: {order}")
+        lines.append(f"   - Certification: {plan.certification}")
+        lines.append(f"   - Partial view: {plan.current_partial_view}")
+        lines.append(
+            f"   - Collapsed distinctions: {', '.join(plan.collapsed_distinctions)}"
+        )
+        lines.append(
+            f"   - Missing capabilities: {', '.join(plan.missing_capabilities)}"
+        )
+        lines.append(f"   - Canonical normal form: {plan.canonical_normal_form}")
+        lines.append(
+            "   - Outcome: "
+            f"removable LOC {plan.outcome.lower_bound_removable_loc}-{plan.outcome.upper_bound_removable_loc}; "
+            f"loci {plan.outcome.loci_of_change_before}->{plan.outcome.loci_of_change_after}; "
+            f"mappings {plan.outcome.repeated_mappings_centralized}; "
+            f"dispatch {plan.outcome.dispatch_sites_eliminated}; "
+            f"registrations {plan.outcome.registration_sites_removed}; "
+            f"shared algorithms {plan.outcome.shared_algorithm_sites_centralized}"
+        )
+        for step in plan.plan_steps:
+            lines.append(f"   - Plan step: {step}")
+        for title in plan.supporting_findings[:5]:
+            lines.append(f"   - Supporting finding: {title}")
+        for item in plan.evidence:
             lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
     return "\n".join(lines)
 
@@ -66,6 +134,16 @@ def main() -> int:
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit JSON instead of Markdown."
+    )
+    parser.add_argument(
+        "--include-plans",
+        action="store_true",
+        help="Also synthesize subsystem-level composed refactor plans.",
+    )
+    parser.add_argument(
+        "--plans-only",
+        action="store_true",
+        help="Emit only subsystem-level composed refactor plans.",
     )
     parser.add_argument(
         "--min-duplicate-statements",
@@ -103,14 +181,35 @@ def main() -> int:
         default=2,
         help="Minimum manual registration sites before surfacing a class-registration finding.",
     )
+    parser.add_argument(
+        "--min-hardcoded-string-sites",
+        type=int,
+        default=3,
+        help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
+    )
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)
-    findings = analyze_path(Path(args.path), config)
+    root = Path(args.path)
+    findings = analyze_path(root, config)
+    plans = None
+    if args.include_plans or args.plans_only:
+        plans = build_refactor_plans(findings, root)
     if args.json:
-        print(json.dumps([finding.to_dict() for finding in findings], indent=2))
+        if args.include_plans or args.plans_only:
+            report = AnalysisReport(
+                findings=() if args.plans_only else tuple(findings),
+                plans=tuple(plans or ()),
+            )
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            report = AnalysisReport(findings=tuple(findings))
+            print(json.dumps(report.to_dict()["findings"], indent=2))
     else:
-        print(_format_markdown(findings))
+        if args.plans_only:
+            print(_format_plans_markdown(plans or []))
+        else:
+            print(_format_markdown(findings, plans))
     return 0
 
 

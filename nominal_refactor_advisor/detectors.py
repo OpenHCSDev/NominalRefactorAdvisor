@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ast
+import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 from .ast_tools import (
@@ -17,7 +18,35 @@ from .ast_tools import (
     collect_method_shapes,
     collect_registration_shapes,
 )
-from .models import FindingSpec, RefactorFinding, SourceLocation
+from .models import (
+    CERTIFIED,
+    SPECULATIVE,
+    STRONG_HEURISTIC,
+    BehaviorFindingMetrics,
+    BranchCountMetrics,
+    DispatchCountMetrics,
+    DispatchFindingMetrics,
+    FindingMetrics,
+    FindingSpec,
+    HierarchyCandidateMetrics,
+    ImpactDelta,
+    MappingFindingMetrics,
+    MappingMetrics,
+    ProbeCountMetrics,
+    RefactorFinding,
+    RegistrationFindingMetrics,
+    RegistrationMetrics,
+    RepeatedMethodMetrics,
+    ResolutionAxisMetrics,
+    SentinelSimulationMetrics,
+    SourceLocation,
+)
+from .taxonomy import (
+    HIGH_CONFIDENCE,
+    MEDIUM_CONFIDENCE,
+    CapabilityTag,
+    ObservationTag,
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +57,7 @@ class DetectorConfig:
     min_builder_keywords: int = 3
     min_export_keys: int = 3
     min_registration_sites: int = 2
+    min_hardcoded_string_sites: int = 3
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "DetectorConfig":
@@ -38,6 +68,7 @@ class DetectorConfig:
             min_builder_keywords=int(namespace.min_builder_keywords),
             min_export_keys=int(namespace.min_export_keys),
             min_registration_sites=int(namespace.min_registration_sites),
+            min_hardcoded_string_sites=int(namespace.min_hardcoded_string_sites),
         )
 
 
@@ -127,9 +158,9 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         config: DetectorConfig,
     ) -> RefactorFinding:
         return self.finding_spec.build(
-            detector_id=self.detector_id,
-            summary=self._summary(module, evidence),
-            evidence=self._evidence_slice(evidence),
+            self.detector_id,
+            self._summary(module, evidence),
+            self._evidence_slice(evidence),
         )
 
     def _evidence_slice(
@@ -246,8 +277,57 @@ class AttributeErrorTryRule(NodeRule):
         return None
 
 
+@dataclass(frozen=True)
+class SemanticBagSchema:
+    class_name: str
+    base_class_name: str
+    accepted_key_sets: tuple[frozenset[str], ...]
+
+
+@dataclass(frozen=True)
+class SemanticDataclassRecommendation:
+    class_name: str
+    base_class_name: str
+    matched_schema_name: str | None
+    rationale: str
+    scaffold: str
+    certification: str
+
+
+@dataclass(frozen=True)
+class SemanticDictBagCandidate:
+    line: int
+    symbol: str
+    key_names: tuple[str, ...]
+    context_kind: str
+    recommendation: SemanticDataclassRecommendation
+
+
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_private_methods"
+    finding_spec = FindingSpec(
+        pattern_id=5,
+        title="Repeated non-orthogonal method skeleton across classes",
+        why=(
+            "Shared orchestration logic is duplicated across a behavior family. The docs say this shared "
+            "non-orthogonal logic should move into an ABC with a concrete template method, leaving only "
+            "orthogonal hooks in subclasses."
+        ),
+        capability_gap="single authoritative algorithm for a nominal behavior family",
+        relation_context="same method role across sibling classes",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+        ),
+    )
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -279,29 +359,48 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
             if methods[0].is_private
             else "same method role across sibling classes"
         )
-        return RefactorFinding(
-            detector_id=self.detector_id,
-            pattern_id=5,
-            title="Repeated non-orthogonal method skeleton across classes",
-            summary=(
+        return self.finding_spec.build(
+            self.detector_id,
+            (
                 f"{len(methods)} methods across {len(class_names)} classes share the same normalized AST shape."
             ),
-            why=(
-                "Shared orchestration logic is duplicated across a behavior family. The docs say this shared "
-                "non-orthogonal logic should move into an ABC with a concrete template method, leaving only "
-                "orthogonal hooks in subclasses."
-            ),
-            capability_gap="single authoritative algorithm for a nominal behavior family",
-            confidence="high",
+            evidence,
             relation_context=relation,
-            evidence=evidence,
             scaffold=_abc_scaffold_for_methods(methods),
             codemod_patch=_abc_patch_for_methods(methods),
+            metrics=RepeatedMethodMetrics(
+                duplicate_site_count=len(methods),
+                statement_count=methods[0].statement_count,
+                class_count=len(class_names),
+            ),
         )
 
 
 class InheritanceHierarchyCandidateDetector(IssueDetector):
     detector_id = "inheritance_hierarchy_candidate"
+    finding_spec = FindingSpec(
+        pattern_id=5,
+        title="Classes cluster into an ABC hierarchy candidate",
+        why=(
+            "The same set of classes repeats multiple non-orthogonal method skeletons. The docs say this is a "
+            "strong signal that the family should be factored into an ABC with one concrete template method "
+            "layer; orthogonal reusable concerns can then live in mixins so MRO preserves declared precedence."
+        ),
+        capability_gap="single authoritative inheritance hierarchy for a duplicated behavior family",
+        relation_context="same class set repeats several method roles across the same family boundary",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.REPEATED_METHOD_ROLES,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -338,24 +437,18 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                         SourceLocation(method.file_path, method.lineno, method.symbol)
                     )
             findings.append(
-                RefactorFinding(
-                    detector_id=self.detector_id,
-                    pattern_id=5,
-                    title="Classes cluster into an ABC hierarchy candidate",
-                    summary=(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
                         f"Classes {', '.join(sorted(class_names))} share {len(groups)} repeated method-shape groups and repeated method roles that likely want one ABC family."
                     ),
-                    why=(
-                        "The same set of classes repeats multiple non-orthogonal method skeletons. The docs say this is a "
-                        "strong signal that the family should be factored into an ABC with one concrete template method "
-                        "layer; orthogonal reusable concerns can then live in mixins so MRO preserves declared precedence."
-                    ),
-                    capability_gap="single authoritative inheritance hierarchy for a duplicated behavior family",
-                    confidence="high",
-                    relation_context="same class set repeats several method roles across the same family boundary",
-                    evidence=tuple(evidence[:8]),
+                    tuple(evidence[:8]),
                     scaffold=_abc_family_scaffold(class_names, groups),
                     codemod_patch=_abc_family_patch(class_names, groups),
+                    metrics=HierarchyCandidateMetrics(
+                        duplicate_group_count=len(groups),
+                        class_count=len(class_names),
+                    ),
                 )
             )
         return findings
@@ -363,6 +456,28 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
 
 class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_builder_calls"
+    finding_spec = FindingSpec(
+        pattern_id=14,
+        title="Repeated field assignment should become an authoritative builder",
+        why=(
+            "The docs say repeated manual field assignment is an SSOT violation: the mapping should be declared once "
+            "in an authoritative constructor, classmethod, or shared builder rather than copied across call sites."
+        ),
+        capability_gap="single authoritative record-builder mapping for a repeated constructor family",
+        relation_context="same builder role repeated across sibling functions or methods",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.BUILDER_CALL,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -398,34 +513,50 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
             for builder in builders[:6]
         )
         same_source = all(builder.source_arity == 1 for builder in builders)
-        return RefactorFinding(
-            detector_id=self.detector_id,
-            pattern_id=14,
-            title="Repeated field assignment should become an authoritative builder",
-            summary=(
+        return self.finding_spec.build(
+            self.detector_id,
+            (
                 f"Call `{builders[0].callee_name}` repeats the same keyword-mapping shape across {len(builders)} sites."
             ),
-            why=(
-                "The docs say repeated manual field assignment is an SSOT violation: the mapping should be declared once "
-                "in an authoritative constructor, classmethod, or shared builder rather than copied across call sites."
-            ),
+            evidence,
             capability_gap=(
                 "single authoritative data-to-record mapping"
                 if same_source
-                else "single authoritative record-builder mapping for a repeated constructor family"
+                else self.finding_spec.capability_gap
             ),
-            confidence="medium",
-            relation_context=(
-                "same builder role repeated across sibling functions or methods"
-            ),
-            evidence=evidence,
             scaffold=_builder_scaffold(builders),
             codemod_patch=_builder_patch(builders),
+            metrics=MappingMetrics(
+                mapping_site_count=len(builders),
+                field_count=len(builders[0].keyword_names),
+            ),
         )
 
 
 class RepeatedExportDictDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_export_dicts"
+    finding_spec = FindingSpec(
+        pattern_id=14,
+        title="Repeated projection dict should become an authoritative schema",
+        why=(
+            "The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative "
+            "row schema or projection builder instead of many hand-maintained dict literals."
+        ),
+        capability_gap="single authoritative projection schema for a repeated record or kwargs family",
+        relation_context="same string-key projection role repeated across sibling functions or methods",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.EXPORT_MAPPING,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -459,28 +590,46 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
             SourceLocation(shape.file_path, shape.lineno, shape.symbol)
             for shape in export_shapes[:6]
         )
-        return RefactorFinding(
-            detector_id=self.detector_id,
-            pattern_id=14,
-            title="Repeated projection dict should become an authoritative schema",
-            summary=(
+        return self.finding_spec.build(
+            self.detector_id,
+            (
                 f"String-key projection dict with keys {export_shapes[0].key_names} repeats across {len(export_shapes)} sites."
             ),
-            why=(
-                "The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative "
-                "row schema or projection builder instead of many hand-maintained dict literals."
-            ),
-            capability_gap="single authoritative projection schema for a repeated record or kwargs family",
-            confidence="medium",
-            relation_context="same string-key projection role repeated across sibling functions or methods",
-            evidence=evidence,
+            evidence,
             scaffold=_projection_schema_scaffold(export_shapes),
             codemod_patch=_projection_schema_patch(export_shapes),
+            metrics=MappingMetrics(
+                mapping_site_count=len(export_shapes),
+                field_count=len(export_shapes[0].key_names),
+            ),
         )
 
 
 class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
     detector_id = "manual_class_registration"
+    finding_spec = FindingSpec(
+        pattern_id=6,
+        title="Manual class registration should become AutoRegisterMeta",
+        why=(
+            "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. "
+            "It should move into one authoritative metaclass or registry base so abstract-class skipping, uniqueness, "
+            "and inheritance behavior are enforced in one place."
+        ),
+        capability_gap="single authoritative class-registration algorithm with nominal class identity",
+        relation_context="same registry key family repeated through manual class-level registration assignments",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        observation_tags=(
+            ObservationTag.REGISTRY_POPULATION,
+            ObservationTag.CLASS_LEVEL_POSITION,
+            ObservationTag.MANUAL_REGISTRATION,
+        ),
+    )
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -512,31 +661,47 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
             for item in registrations[:6]
         )
         registry_name = registrations[0].registry_name
-        return RefactorFinding(
-            detector_id=self.detector_id,
-            pattern_id=6,
-            title="Manual class registration should become AutoRegisterMeta",
-            summary=(
+        return self.finding_spec.build(
+            self.detector_id,
+            (
                 f"Registry `{registry_name}` is populated manually for {len(class_names)} classes across {len(registrations)} sites."
             ),
-            why=(
-                "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. "
-                "It should move into one authoritative metaclass or registry base so abstract-class skipping, uniqueness, "
-                "and inheritance behavior are enforced in one place."
-            ),
-            capability_gap="single authoritative class-registration algorithm with nominal class identity",
-            confidence="medium",
-            relation_context="same registry key family repeated through manual class-level registration assignments",
-            evidence=evidence,
+            evidence,
             scaffold=_autoregister_scaffold(registry_name, class_names),
             codemod_patch=_autoregister_patch(
                 registry_name, class_names, registrations
+            ),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(registrations),
+                class_count=len(class_names),
             ),
         )
 
 
 class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
     detector_id = "sentinel_attribute_simulation"
+    finding_spec = FindingSpec(
+        pattern_id=1,
+        title="Sentinel attribute is simulating nominal identity",
+        why=(
+            "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
+            "multiple classes, the boundary should become a nominal family or another explicit identity handle."
+        ),
+        capability_gap="enumerable and enforceable nominal role identity",
+        relation_context="same class-level sentinel attribute reused as a fake identity boundary",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.SENTINEL_ATTRIBUTE,
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.CLASS_FAMILY,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -553,21 +718,16 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
             if generic_name and len(branch_evidence) < 2:
                 continue
             findings.append(
-                RefactorFinding(
-                    detector_id=self.detector_id,
-                    pattern_id=1,
-                    title="Sentinel attribute is simulating nominal identity",
-                    summary=(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
                         f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites."
                     ),
-                    why=(
-                        "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
-                        "multiple classes, the boundary should become a nominal family or another explicit identity handle."
+                    tuple((evidence + branch_evidence)[:6]),
+                    metrics=SentinelSimulationMetrics(
+                        class_count=len(evidence),
+                        branch_site_count=len(branch_evidence),
                     ),
-                    capability_gap="enumerable and enforceable nominal role identity",
-                    confidence="medium",
-                    relation_context="same class-level sentinel attribute reused as a fake identity boundary",
-                    evidence=tuple((evidence + branch_evidence)[:6]),
                 )
             )
         return findings
@@ -575,6 +735,27 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
 
 class PredicateFactoryChainDetector(PerModuleIssueDetector):
     detector_id = "predicate_factory_chain"
+    finding_spec = FindingSpec(
+        pattern_id=2,
+        title="Predicate chain should become a discriminated union family",
+        why=(
+            "The docs say repeated predicate-driven variant selection should become an explicit subclass family with "
+            "enumeration rather than an open-ended if/elif chain."
+        ),
+        capability_gap="exhaustive nominal variant discovery and extension",
+        relation_context="same factory role repeated as predicate branches inside one function",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.ENUMERATION,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.PREDICATE_CHAIN,
+            ObservationTag.FACTORY_DISPATCH,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -585,25 +766,13 @@ class PredicateFactoryChainDetector(PerModuleIssueDetector):
             if branch_count is None:
                 continue
             findings.append(
-                RefactorFinding(
-                    detector_id=self.detector_id,
-                    pattern_id=2,
-                    title="Predicate chain should become a discriminated union family",
-                    summary=(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
                         f"{function.name} contains a {branch_count}-branch predicate factory chain returning variant constructors."
                     ),
-                    why=(
-                        "The docs say repeated predicate-driven variant selection should become an explicit subclass family with "
-                        "enumeration rather than an open-ended if/elif chain."
-                    ),
-                    capability_gap="exhaustive nominal variant discovery and extension",
-                    confidence="medium",
-                    relation_context="same factory role repeated as predicate branches inside one function",
-                    evidence=(
-                        SourceLocation(
-                            str(module.path), function.lineno, function.name
-                        ),
-                    ),
+                    (SourceLocation(str(module.path), function.lineno, function.name),),
+                    metrics=BranchCountMetrics(branch_site_count=branch_count),
                 )
             )
         return findings
@@ -620,6 +789,16 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
         ),
         capability_gap="fail-loud polymorphic configuration contracts",
         relation_context="same config-family choice expressed through attribute-level probing",
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.ATTRIBUTE_PROBE,
+            ObservationTag.CONFIG_DISPATCH,
+        ),
     )
 
     def _module_evidence(
@@ -652,6 +831,16 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         ),
         capability_gap="exact generated-type lineage and normalization",
         relation_context="same module combines runtime type generation with lineage-sensitive registries",
+        certification=SPECULATIVE,
+        capability_tags=(
+            CapabilityTag.TYPE_LINEAGE,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
+        ),
+        observation_tags=(
+            ObservationTag.RUNTIME_TYPE_GENERATION,
+            ObservationTag.LINEAGE_MAPPING,
+        ),
     )
 
     def _module_evidence(
@@ -671,6 +860,28 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
 
 class DualAxisResolutionDetector(PerModuleIssueDetector):
     detector_id = "dual_axis_resolution"
+    finding_spec = FindingSpec(
+        pattern_id=8,
+        title="Nested precedence walk should be a dual-axis resolution primitive",
+        why=(
+            "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order "
+            "contribute to resolution and provenance."
+        ),
+        capability_gap="explicit dual-axis precedence with provenance",
+        relation_context="same function combines context hierarchy and type/MRO hierarchy",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.DUAL_AXIS_RESOLUTION,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.NESTED_PRECEDENCE_WALK,
+            ObservationTag.SCOPE_HIERARCHY,
+            ObservationTag.MRO_HIERARCHY,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -681,21 +892,13 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
             if evidence is None:
                 continue
             findings.append(
-                RefactorFinding(
-                    detector_id=self.detector_id,
-                    pattern_id=8,
-                    title="Nested precedence walk should be a dual-axis resolution primitive",
-                    summary=(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
                         f"{function.name} nests scope-like and MRO/type-like iteration in one precedence walk."
                     ),
-                    why=(
-                        "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order "
-                        "contribute to resolution and provenance."
-                    ),
-                    capability_gap="explicit dual-axis precedence with provenance",
-                    confidence="medium",
-                    relation_context="same function combines context hierarchy and type/MRO hierarchy",
-                    evidence=evidence,
+                    evidence,
+                    metrics=ResolutionAxisMetrics(resolution_axis_count=2),
                 )
             )
         return findings
@@ -712,6 +915,15 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
         ),
         capability_gap="runtime-checkable virtual membership on nominal class identity",
         relation_context="same membership question repeated through class-marker probing",
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_MARKER_PROBE,
+            ObservationTag.RUNTIME_MEMBERSHIP,
+        ),
     )
 
     def _module_evidence(
@@ -742,6 +954,16 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
         ),
         capability_gap="explicit runtime-generated nominal interface identity",
         relation_context="same module generates interface-like nominal types at runtime",
+        certification=SPECULATIVE,
+        capability_tags=(
+            CapabilityTag.GENERATED_INTERFACE_IDENTITY,
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.RUNTIME_TYPE_GENERATION,
+            ObservationTag.INTERFACE_IDENTITY,
+        ),
     )
 
     def _module_evidence(
@@ -768,6 +990,15 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
         ),
         capability_gap="exact capability-marker identity independent of structure",
         relation_context="same module creates or uses unique nominal sentinel markers",
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CAPABILITY_MARKER_IDENTITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.SENTINEL_TYPE,
+            ObservationTag.CAPABILITY_MARKER,
+        ),
     )
 
     def _module_evidence(
@@ -792,6 +1023,15 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
         ),
         capability_gap="shared type-namespace mutation for a nominal family",
         relation_context="same module mutates class behavior through runtime namespace injection",
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_TYPE_NAMESPACE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.DYNAMIC_METHOD_INJECTION,
+            ObservationTag.TYPE_NAMESPACE,
+        ),
     )
 
     def _module_evidence(
@@ -807,6 +1047,27 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
 
 class AttributeProbeDetector(PerModuleIssueDetector):
     detector_id = "attribute_probes"
+    finding_spec = FindingSpec(
+        pattern_id=5,
+        title="Semantic role recovered from attribute probing",
+        why=(
+            "Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a "
+            "partial structural view. The documented fix is to migrate this region toward an ABC contract "
+            "with direct method calls and fail-loud guarantees."
+        ),
+        capability_gap="declared semantic role identity and import-time enforcement",
+        relation_context="same module-level probing layer across multiple call sites",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        observation_tags=(
+            ObservationTag.ATTRIBUTE_PROBE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
     probe_rules = (
         NamedCallProbeRule("hasattr", 2, "hasattr"),
         NamedCallProbeRule("getattr", 3, "getattr"),
@@ -821,26 +1082,38 @@ class AttributeProbeDetector(PerModuleIssueDetector):
         if total < config.min_attribute_probes:
             return []
         return [
-            RefactorFinding(
-                detector_id=self.detector_id,
-                pattern_id=5,
-                title="Semantic role recovered from attribute probing",
-                summary=f"{module.path} contains {total} attribute-probe sites.",
-                why=(
-                    "Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a "
-                    "partial structural view. The documented fix is to migrate this region toward an ABC contract "
-                    "with direct method calls and fail-loud guarantees."
-                ),
-                capability_gap="declared semantic role identity and import-time enforcement",
-                confidence="medium",
-                relation_context="same module-level probing layer across multiple call sites",
-                evidence=evidence,
+            self.finding_spec.build(
+                self.detector_id,
+                f"{module.path} contains {total} attribute-probe sites.",
+                evidence,
+                metrics=ProbeCountMetrics(probe_site_count=total),
             )
         ]
 
 
 class InlineLiteralDispatchDetector(PerModuleIssueDetector):
     detector_id = "inline_literal_dispatch"
+    finding_spec = FindingSpec(
+        pattern_id=3,
+        title="Inline literal dispatch should be a registry",
+        why=(
+            "When the same observed value is split across several sibling literal branches, the docs "
+            "say the local rule family should be moved into an authoritative registry, dataclass table, "
+            "or another closed dispatch object instead of repeating inline branch logic."
+        ),
+        capability_gap="single authoritative dispatch representation for a closed local rule family",
+        relation_context="same branch role repeated inline inside a module block",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+        ),
+        observation_tags=(
+            ObservationTag.LITERAL_BRANCH_DISPATCH,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -853,24 +1126,16 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
                 if len(evidence) < config.min_attribute_probes:
                     continue
                 findings.append(
-                    RefactorFinding(
-                        detector_id=self.detector_id,
-                        pattern_id=3,
-                        title="Inline literal dispatch should be a registry",
-                        summary=(
+                    self.finding_spec.build(
+                        self.detector_id,
+                        (
                             f"{module.path} repeats literal-case dispatch over `{relation_key}` in {len(evidence)} sibling branches."
                         ),
-                        why=(
-                            "When the same observed value is split across several sibling literal branches, the docs "
-                            "say the local rule family should be moved into an authoritative registry, dataclass table, "
-                            "or another closed dispatch object instead of repeating inline branch logic."
-                        ),
-                        capability_gap="single authoritative dispatch representation for a closed local rule family",
-                        confidence="medium",
+                        tuple(evidence[:6]),
                         relation_context=(
                             f"same branch role repeated inline inside {owner_name or 'module block'}"
                         ),
-                        evidence=tuple(evidence[:6]),
+                        metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
                     )
                 )
         return findings
@@ -878,6 +1143,26 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
 
 class StringDispatchDetector(PerModuleIssueDetector):
     detector_id = "string_dispatch"
+    finding_spec = FindingSpec(
+        pattern_id=3,
+        title="Closed-family dispatch expressed through strings",
+        why=(
+            "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches "
+            "suggest the code is using a weaker representation than the domain requires."
+        ),
+        capability_gap="closed-family dispatch with stable nominal keys",
+        relation_context="same dispatch role repeated through string comparisons or string-key registries",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+        ),
+        observation_tags=(
+            ObservationTag.STRING_DISPATCH,
+            ObservationTag.CLOSED_FAMILY_CASES,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -886,7 +1171,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
         evidence.extend(_dispatch_dict_locations(module, config.min_string_cases))
         for node in ast.walk(module.module):
             if isinstance(node, ast.If):
-                string_tests = _count_string_comparisons(node)
+                string_tests = _count_literal_comparisons(node, str)
                 if string_tests >= config.min_string_cases:
                     evidence.append(
                         SourceLocation(
@@ -896,27 +1181,208 @@ class StringDispatchDetector(PerModuleIssueDetector):
         if not evidence:
             return []
         return [
-            RefactorFinding(
-                detector_id=self.detector_id,
-                pattern_id=3,
-                title="Closed-family dispatch expressed through strings",
-                summary=(
+            self.finding_spec.build(
+                self.detector_id,
+                (
                     f"{module.path} contains {len(evidence)} string-dispatch sites that look like closed variant logic."
                 ),
-                why=(
-                    "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches "
-                    "suggest the code is using a weaker representation than the domain requires."
-                ),
-                capability_gap="closed-family dispatch with stable nominal keys",
-                confidence="medium",
-                relation_context="same dispatch role repeated through string comparisons or string-key registries",
-                evidence=tuple(evidence[:6]),
+                tuple(evidence[:6]),
+                metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
             )
         ]
 
 
+class NumericLiteralDispatchDetector(PerModuleIssueDetector):
+    detector_id = "numeric_literal_dispatch"
+    finding_spec = FindingSpec(
+        pattern_id=3,
+        title="Closed-family dispatch expressed through numeric IDs",
+        why=(
+            "The docs treat repeated numeric pattern or mode IDs the same way as magic strings: the "
+            "domain axis is real but undeclared. Replace the literal-ID branches with an enum, nominal "
+            "registry, or polymorphic family and dispatch once."
+        ),
+        capability_gap="closed-family dispatch with stable nominal keys",
+        relation_context="same dispatch role repeated through numeric literal comparisons",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+        ),
+        observation_tags=(
+            ObservationTag.LITERAL_ID_DISPATCH,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        evidence: list[SourceLocation] = []
+        for node in ast.walk(module.module):
+            if not isinstance(node, ast.If):
+                continue
+            literal_tests = _count_literal_comparisons(node, int)
+            if literal_tests < config.min_string_cases:
+                continue
+            evidence.append(
+                SourceLocation(str(module.path), node.lineno, "if-numeric-dispatch")
+            )
+        if not evidence:
+            return []
+        return [
+            self.finding_spec.build(
+                self.detector_id,
+                (
+                    f"{module.path} contains {len(evidence)} numeric-ID dispatch sites that look like a closed variant family."
+                ),
+                tuple(evidence[:6]),
+                metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
+            )
+        ]
+
+
+class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
+    detector_id = "repeated_hardcoded_strings"
+    finding_spec = FindingSpec(
+        pattern_id=14,
+        title="Repeated hardcoded semantic string should become authoritative",
+        why=(
+            "The docs treat repeated hardcoded semantic keys as a coherence failure: the key should "
+            "be declared once as an authoritative constant, enum member, or nominal handle instead "
+            "of being copied across sites."
+        ),
+        capability_gap="single authoritative semantic-key declaration",
+        relation_context="same semantic key duplicated across decision-bearing or declarative sites",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.SEMANTIC_STRING_LITERAL,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for literal, sites in _semantic_string_literal_sites(module).items():
+            if len(sites) < config.min_hardcoded_string_sites:
+                continue
+            evidence = tuple(sites[:6])
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"String literal `{literal}` repeats across {len(sites)} semantic sites in {module.path}."
+                    ),
+                    evidence,
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(sites),
+                        field_count=1,
+                    ),
+                )
+            )
+        return findings
+
+
+class SemanticDictBagDetector(PerModuleIssueDetector):
+    detector_id = "semantic_dict_bag"
+    finding_spec = FindingSpec(
+        pattern_id=14,
+        title="Semantic dict bag should become a nominal dataclass",
+        why=(
+            "The docs treat semantic field bags as coherence failures: once a dict carries named semantic "
+            "fields rather than serialization payload, the data should move into a nominal dataclass family "
+            "with one authoritative schema and explicit inheritance."
+        ),
+        capability_gap="single authoritative nominal schema for semantic field bags",
+        relation_context="same semantic field family is carried through an ad hoc dict bag instead of a nominal record",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.SEMANTIC_DICT_BAG,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for candidate in _semantic_dict_bag_candidates(module):
+            recommendation = candidate.recommendation
+            key_list = ", ".join(candidate.key_names)
+            summary = f"Semantic dict bag with keys {candidate.key_names} appears at {module.path}:{candidate.line}."
+            if recommendation.matched_schema_name is not None:
+                summary = (
+                    f"Semantic dict bag with keys {candidate.key_names} should use `{recommendation.class_name}` "
+                    f"instead of an untyped dict at {module.path}:{candidate.line}."
+                )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    summary,
+                    (
+                        SourceLocation(
+                            str(module.path), candidate.line, candidate.symbol
+                        ),
+                    ),
+                    confidence=(
+                        HIGH_CONFIDENCE
+                        if recommendation.certification == CERTIFIED
+                        else MEDIUM_CONFIDENCE
+                    ),
+                    relation_context=(
+                        f"same semantic field family is carried through a {candidate.context_kind.replace('_', ' ')} "
+                        "instead of a nominal record"
+                    ),
+                    scaffold=(
+                        f"{recommendation.rationale}\n"
+                        f"Base: {recommendation.base_class_name}\n"
+                        f"Fields: {key_list}\n\n"
+                        f"{recommendation.scaffold}"
+                    ),
+                    certification=recommendation.certification,
+                )
+            )
+        return findings
+
+
 class BidirectionalRegistryDetector(PerModuleIssueDetector):
     detector_id = "bidirectional_registry"
+    finding_spec = FindingSpec(
+        pattern_id=13,
+        title="Bidirectional registry maintained manually",
+        why=(
+            "The docs prescribe a single authoritative bidirectional type registry when exact companion "
+            "normalization and reverse lookup matter. Manual mirrored assignments are drift-prone and "
+            "should be centralized."
+        ),
+        capability_gap="exact bijection and O(1) reverse lookup on nominal keys",
+        relation_context="same class maintains forward and reverse registry state",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
+            CapabilityTag.EXACT_LOOKUP,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.MIRRORED_REGISTRY,
+            ObservationTag.CLASS_LEVEL_POSITION,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -934,25 +1400,526 @@ class BidirectionalRegistryDetector(PerModuleIssueDetector):
                 for lineno, label in mirrored_pairs[:6]
             )
             findings.append(
-                RefactorFinding(
-                    detector_id=self.detector_id,
-                    pattern_id=13,
-                    title="Bidirectional registry maintained manually",
-                    summary=(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
                         f"Class {node.name} appears to maintain mirrored forward/reverse registry assignments."
                     ),
-                    why=(
-                        "The docs prescribe a single authoritative bidirectional type registry when exact companion "
-                        "normalization and reverse lookup matter. Manual mirrored assignments are drift-prone and "
-                        "should be centralized."
+                    evidence,
+                    observation_tags=(
+                        ObservationTag.MIRRORED_REGISTRY,
+                        ObservationTag.CLASS_LEVEL_POSITION,
+                        ObservationTag.MANUAL_SYNCHRONIZATION,
                     ),
-                    capability_gap="exact bijection and O(1) reverse lookup on nominal keys",
-                    confidence="medium",
-                    relation_context="same class maintains forward and reverse registry state",
-                    evidence=evidence,
+                    metrics=RegistrationMetrics(
+                        registration_site_count=len(mirrored_pairs)
+                    ),
                 )
             )
         return findings
+
+
+def _schema_key_set(model_type: Any) -> frozenset[str]:
+    return frozenset(field.name for field in fields(model_type))
+
+
+_METRIC_BAG_SCHEMAS = (
+    SemanticBagSchema(
+        class_name="RepeatedMethodMetrics",
+        base_class_name=BehaviorFindingMetrics.__name__,
+        accepted_key_sets=(_schema_key_set(RepeatedMethodMetrics),),
+    ),
+    SemanticBagSchema(
+        class_name="HierarchyCandidateMetrics",
+        base_class_name=BehaviorFindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"duplicate_group_count", "class_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="MappingMetrics",
+        base_class_name=MappingFindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"mapping_site_count", "field_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="RegistrationMetrics",
+        base_class_name=RegistrationFindingMetrics.__name__,
+        accepted_key_sets=(
+            frozenset({"registration_site_count"}),
+            frozenset({"registration_site_count", "class_count"}),
+        ),
+    ),
+    SemanticBagSchema(
+        class_name="SentinelSimulationMetrics",
+        base_class_name=FindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"class_count", "branch_site_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="BranchCountMetrics",
+        base_class_name=DispatchFindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"branch_site_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="ResolutionAxisMetrics",
+        base_class_name=FindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"resolution_axis_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="ProbeCountMetrics",
+        base_class_name=DispatchFindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"probe_site_count"}),),
+    ),
+    SemanticBagSchema(
+        class_name="DispatchCountMetrics",
+        base_class_name=DispatchFindingMetrics.__name__,
+        accepted_key_sets=(frozenset({"dispatch_site_count"}),),
+    ),
+)
+
+_IMPACT_BAG_SCHEMA = SemanticBagSchema(
+    class_name="ImpactDelta",
+    base_class_name=ImpactDelta.__name__,
+    accepted_key_sets=(_schema_key_set(ImpactDelta),),
+)
+
+
+def _semantic_dict_bag_candidates(
+    module: ParsedModule,
+) -> list[SemanticDictBagCandidate]:
+    candidates: list[SemanticDictBagCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.function_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            for stmt in _trim_docstring_body(node.body):
+                self.visit(stmt)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            candidates.extend(
+                _function_local_semantic_dict_bag_candidates(
+                    module, node, tuple(self.class_stack)
+                )
+            )
+            self.function_stack.append(node.name)
+            for stmt in _trim_docstring_body(node.body):
+                self.visit(stmt)
+            self.function_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            candidates.extend(
+                _function_local_semantic_dict_bag_candidates(
+                    module, node, tuple(self.class_stack)
+                )
+            )
+            self.function_stack.append(node.name)
+            for stmt in _trim_docstring_body(node.body):
+                self.visit(stmt)
+            self.function_stack.pop()
+
+        def visit_Call(self, node: ast.Call) -> None:
+            for keyword in node.keywords:
+                if keyword.arg != "metrics" or not isinstance(keyword.value, ast.Dict):
+                    continue
+                items = _string_dict_items(keyword.value)
+                if items is None:
+                    continue
+                owner_symbol = _owner_symbol(
+                    tuple(self.class_stack), tuple(self.function_stack), "metrics"
+                )
+                recommendation = _recommend_metrics_dataclass(
+                    items,
+                    owner_symbol=owner_symbol,
+                )
+                candidates.append(
+                    SemanticDictBagCandidate(
+                        line=keyword.value.lineno,
+                        symbol=owner_symbol,
+                        key_names=tuple(items),
+                        context_kind="metrics_keyword",
+                        recommendation=recommendation,
+                    )
+                )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return candidates
+
+
+def _function_local_semantic_dict_bag_candidates(
+    module: ParsedModule,
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_stack: tuple[str, ...],
+) -> list[SemanticDictBagCandidate]:
+    assignments: dict[str, tuple[int, dict[str, ast.AST]]] = {}
+    accessed_keys: dict[str, set[str]] = defaultdict(set)
+    serialization_boundary_names: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.target_node = function_node
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is self.target_node:
+                for stmt in _trim_docstring_body(node.body):
+                    self.visit(stmt)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is self.target_node:
+                for stmt in _trim_docstring_body(node.body):
+                    self.visit(stmt)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                items = _string_dict_items(node.value)
+                if items is not None:
+                    assignments[node.targets[0].id] = (node.lineno, items)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if (
+                isinstance(node.target, ast.Name)
+                and node.value is not None
+                and (items := _string_dict_items(node.value)) is not None
+            ):
+                assignments[node.target.id] = (node.lineno, items)
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> None:
+            if isinstance(node.value, ast.Name):
+                key_name = _string_slice_name(node.slice)
+                if key_name is not None:
+                    accessed_keys[node.value.id].add(key_name)
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if _is_json_boundary_call(node):
+                for arg in node.args:
+                    if isinstance(arg, ast.Name):
+                        serialization_boundary_names.add(arg.id)
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.attr in {"get", "pop", "setdefault"}
+                and node.args
+            ):
+                key_name = _constant_string(node.args[0])
+                if key_name is not None:
+                    accessed_keys[node.func.value.id].add(key_name)
+            self.generic_visit(node)
+
+        def visit_Return(self, node: ast.Return) -> None:
+            if self.target_node.name == "to_dict" and isinstance(node.value, ast.Name):
+                serialization_boundary_names.add(node.value.id)
+            self.generic_visit(node)
+
+    Visitor().visit(function_node)
+
+    candidates: list[SemanticDictBagCandidate] = []
+    owner_symbol = _owner_symbol(class_stack, (function_node.name,), "record")
+    for name, (lineno, items) in assignments.items():
+        if name in serialization_boundary_names:
+            continue
+        touched_keys = set(items) | accessed_keys.get(name, set())
+        if not touched_keys:
+            continue
+        recommendation = _recommend_local_semantic_record(
+            tuple(sorted(touched_keys)),
+            owner_symbol=owner_symbol,
+            variable_name=name,
+            value_nodes=items,
+        )
+        if recommendation is None:
+            continue
+        candidates.append(
+            SemanticDictBagCandidate(
+                line=lineno,
+                symbol=f"{owner_symbol}:{name}",
+                key_names=tuple(sorted(touched_keys)),
+                context_kind="local_string_key_bag",
+                recommendation=recommendation,
+            )
+        )
+    return candidates
+
+
+def _recommend_metrics_dataclass(
+    items: dict[str, ast.AST], owner_symbol: str
+) -> SemanticDataclassRecommendation:
+    key_names = tuple(sorted(items))
+    exact_schema = _exact_schema_match(key_names, _METRIC_BAG_SCHEMAS)
+    if exact_schema is not None:
+        class_name = exact_schema.class_name
+        base_class_name = exact_schema.base_class_name
+        rationale = f"Use existing `{class_name}`, which already inherits `{base_class_name}` for this semantic field family."
+        scaffold = _instantiation_scaffold(
+            class_name,
+            key_names,
+            items,
+            prefix="metrics=",
+        )
+        return SemanticDataclassRecommendation(
+            class_name=class_name,
+            base_class_name=base_class_name,
+            matched_schema_name=class_name,
+            rationale=rationale,
+            scaffold=scaffold,
+            certification=CERTIFIED,
+        )
+
+    closest_schema = _closest_schema_match(key_names, _METRIC_BAG_SCHEMAS)
+    base_class_name = (
+        closest_schema.base_class_name
+        if closest_schema is not None
+        else FindingMetrics.__name__
+    )
+    class_name = _suggest_dataclass_name(owner_symbol, "Metrics")
+    rationale = (
+        f"Create `{class_name}` inheriting from `{base_class_name}` because this key family is closest to "
+        f"existing `{closest_schema.class_name}`."
+        if closest_schema is not None
+        else f"Create `{class_name}` inheriting from `{FindingMetrics.__name__}` to give this metrics bag a nominal schema."
+    )
+    scaffold = _declaration_scaffold(
+        class_name,
+        base_class_name,
+        key_names,
+        items,
+        instantiation_prefix="metrics=",
+    )
+    return SemanticDataclassRecommendation(
+        class_name=class_name,
+        base_class_name=base_class_name,
+        matched_schema_name=closest_schema.class_name if closest_schema else None,
+        rationale=rationale,
+        scaffold=scaffold,
+        certification=STRONG_HEURISTIC,
+    )
+
+
+def _recommend_local_semantic_record(
+    key_names: tuple[str, ...],
+    owner_symbol: str,
+    variable_name: str,
+    value_nodes: dict[str, ast.AST],
+) -> SemanticDataclassRecommendation | None:
+    exact_schema = _exact_schema_match(key_names, (_IMPACT_BAG_SCHEMA,))
+    if exact_schema is not None:
+        class_name = exact_schema.class_name
+        rationale = f"Use `{class_name}` directly instead of a string-key impact bag."
+        scaffold = _instantiation_scaffold(class_name, key_names, value_nodes)
+        return SemanticDataclassRecommendation(
+            class_name=class_name,
+            base_class_name=exact_schema.base_class_name,
+            matched_schema_name=class_name,
+            rationale=rationale,
+            scaffold=scaffold,
+            certification=CERTIFIED,
+        )
+
+    closest_schema = _closest_schema_match(key_names, (_IMPACT_BAG_SCHEMA,))
+    if closest_schema is None:
+        if not (variable_name.endswith("metrics") or variable_name in {"metrics"}):
+            return None
+        return _recommend_metrics_dataclass(value_nodes, owner_symbol=owner_symbol)
+
+    class_name = _suggest_dataclass_name(owner_symbol, "ImpactDelta")
+    rationale = f"Create `{class_name}` inheriting from `{closest_schema.class_name}` because the local bag carries the same quantified impact fields nominally modeled there."
+    scaffold = _declaration_scaffold(
+        class_name,
+        closest_schema.class_name,
+        key_names,
+        value_nodes,
+    )
+    return SemanticDataclassRecommendation(
+        class_name=class_name,
+        base_class_name=closest_schema.class_name,
+        matched_schema_name=closest_schema.class_name,
+        rationale=rationale,
+        scaffold=scaffold,
+        certification=STRONG_HEURISTIC,
+    )
+
+
+def _exact_schema_match(
+    key_names: tuple[str, ...], schemas: tuple[SemanticBagSchema, ...]
+) -> SemanticBagSchema | None:
+    key_set = frozenset(key_names)
+    for schema in schemas:
+        if key_set in schema.accepted_key_sets:
+            return schema
+    return None
+
+
+def _closest_schema_match(
+    key_names: tuple[str, ...], schemas: tuple[SemanticBagSchema, ...]
+) -> SemanticBagSchema | None:
+    key_set = frozenset(key_names)
+    best_schema: SemanticBagSchema | None = None
+    best_score = 0.0
+    for schema in schemas:
+        for accepted in schema.accepted_key_sets:
+            score = _set_similarity(key_set, accepted)
+            if score > best_score:
+                best_schema = schema
+                best_score = score
+    if best_score < 0.4:
+        return None
+    return best_schema
+
+
+def _set_similarity(left: frozenset[str], right: frozenset[str]) -> float:
+    if not left and not right:
+        return 1.0
+    return len(left & right) / len(left | right)
+
+
+def _declaration_scaffold(
+    class_name: str,
+    base_class_name: str,
+    key_names: tuple[str, ...],
+    value_nodes: dict[str, ast.AST],
+    instantiation_prefix: str = "",
+) -> str:
+    field_lines = "\n".join(
+        f"    {key}: {_infer_field_type_name(key, value_nodes.get(key))}"
+        for key in key_names
+    )
+    return (
+        "@dataclass(frozen=True)\n"
+        f"class {class_name}({base_class_name}):\n"
+        f"{field_lines}\n\n"
+        f"{_instantiation_scaffold(class_name, key_names, value_nodes, prefix=instantiation_prefix)}"
+    )
+
+
+def _instantiation_scaffold(
+    class_name: str,
+    key_names: tuple[str, ...],
+    value_nodes: dict[str, ast.AST],
+    prefix: str = "",
+) -> str:
+    rendered_args = ",\n    ".join(
+        f"{key}={_render_value_expression(key, value_nodes.get(key))}"
+        for key in key_names
+    )
+    return f"{prefix}{class_name}(\n    {rendered_args}\n)"
+
+
+def _infer_field_type_name(key_name: str, node: ast.AST | None) -> str:
+    if (
+        key_name.endswith("_count")
+        or "bound" in key_name
+        or key_name.startswith("loci_")
+    ):
+        return "int"
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, bool):
+            return "bool"
+        if isinstance(node.value, int):
+            return "int"
+        if isinstance(node.value, str):
+            return "str"
+        if node.value is None:
+            return "object | None"
+    if isinstance(node, ast.Compare):
+        return "bool"
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+        if node.func.id in {"len", "sum", "max", "min"}:
+            return "int"
+    if isinstance(node, ast.Tuple):
+        return "tuple[object, ...]"
+    if isinstance(node, ast.List):
+        return "list[object]"
+    return "object"
+
+
+def _render_value_expression(key_name: str, node: ast.AST | None) -> str:
+    if node is None:
+        if (
+            key_name.endswith("_count")
+            or "bound" in key_name
+            or key_name.startswith("loci_")
+        ):
+            return "0"
+        return "..."
+    return ast.unparse(node)
+
+
+def _suggest_dataclass_name(owner_symbol: str, suffix: str) -> str:
+    parts = [
+        _camel_case(part)
+        for part in re.split(r"[^A-Za-z0-9]+", owner_symbol)
+        if part and part not in {"module", "record", "metrics"}
+    ]
+    prefix = parts[-1] if parts else "Semantic"
+    if prefix.endswith(suffix):
+        return prefix
+    return f"{prefix}{suffix}"
+
+
+def _camel_case(value: str) -> str:
+    if not value:
+        return ""
+    if value.isupper():
+        return value.title().replace("_", "")
+    chunks = [chunk for chunk in re.split(r"_+", value) if chunk]
+    return "".join(chunk[:1].upper() + chunk[1:] for chunk in chunks)
+
+
+def _owner_symbol(
+    class_stack: tuple[str, ...], function_stack: tuple[str, ...], label: str
+) -> str:
+    owner = function_stack[-1] if function_stack else "<module>"
+    if class_stack:
+        owner = f"{class_stack[-1]}.{owner}"
+    return f"{owner}:{label}"
+
+
+def _string_dict_items(node: ast.AST) -> dict[str, ast.AST] | None:
+    if not isinstance(node, ast.Dict) or not node.keys:
+        return None
+    items: dict[str, ast.AST] = {}
+    for key, value in zip(node.keys, node.values, strict=True):
+        key_name = _constant_string(key)
+        if key_name is None or value is None:
+            return None
+        items[key_name] = value
+    return items
+
+
+def _string_slice_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _constant_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
+    if body and _is_docstring_expr(body[0]):
+        return body[1:]
+    return body
+
+
+def _is_json_boundary_call(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Name) and node.func.id == "asdict":
+        return True
+    return (
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "json"
+        and node.func.attr in {"dump", "dumps"}
+    )
 
 
 def default_detectors() -> tuple[IssueDetector, ...]:
@@ -974,31 +1941,206 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         AttributeProbeDetector(),
         InlineLiteralDispatchDetector(),
         StringDispatchDetector(),
+        NumericLiteralDispatchDetector(),
+        RepeatedHardcodedStringDetector(),
+        SemanticDictBagDetector(),
         BidirectionalRegistryDetector(),
     )
 
 
-def _count_string_comparisons(node: ast.If) -> int:
+_SEMANTIC_STRING_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
+_SEMANTIC_KEYWORD_NAMES = {
+    "backend",
+    "capability_gap",
+    "capability_tags",
+    "certification",
+    "confidence",
+    "key",
+    "kind",
+    "label",
+    "mode",
+    "name",
+    "observation_tags",
+    "pattern_id",
+    "registry_key",
+    "relation_context",
+    "status",
+    "title",
+    "type",
+}
+_SEMANTIC_NAME_SUFFIXES = (
+    "_backend",
+    "_certification",
+    "_family",
+    "_id",
+    "_key",
+    "_kind",
+    "_label",
+    "_mode",
+    "_name",
+    "_pattern",
+    "_role",
+    "_status",
+    "_type",
+)
+
+
+def _semantic_string_literal_sites(
+    module: ParsedModule,
+) -> dict[str, list[SourceLocation]]:
+    groups: dict[str, set[SourceLocation]] = defaultdict(set)
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.function_stack: list[str] = []
+
+        def visit_Module(self, node: ast.Module) -> None:
+            body = node.body
+            if body and _is_docstring_expr(body[0]):
+                body = body[1:]
+            for stmt in body:
+                self.visit(stmt)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            body = node.body
+            if body and _is_docstring_expr(body[0]):
+                body = body[1:]
+            for stmt in body:
+                self.visit(stmt)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            body = node.body
+            if body and _is_docstring_expr(body[0]):
+                body = body[1:]
+            for stmt in body:
+                self.visit(stmt)
+            self.function_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.function_stack.append(node.name)
+            body = node.body
+            if body and _is_docstring_expr(body[0]):
+                body = body[1:]
+            for stmt in body:
+                self.visit(stmt)
+            self.function_stack.pop()
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self._record_literals(node.value, node.lineno, "assign")
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if node.value is not None:
+                self._record_literals(node.value, node.lineno, "assign")
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            for keyword in node.keywords:
+                if keyword.arg is None:
+                    continue
+                if not _is_semantic_keyword_name(keyword.arg):
+                    continue
+                self._record_literals(keyword.value, node.lineno, keyword.arg)
+            self.generic_visit(node)
+
+        def visit_Compare(self, node: ast.Compare) -> None:
+            if not _compare_subject_is_semantic(node):
+                self.generic_visit(node)
+                return
+            self._record_literals(node.left, node.lineno, "compare")
+            for comparator in node.comparators:
+                self._record_literals(comparator, node.lineno, "compare")
+            self.generic_visit(node)
+
+        def _record_literals(self, node: ast.AST, lineno: int, kind: str) -> None:
+            for literal in _literal_strings(node):
+                groups[literal].add(
+                    SourceLocation(str(module.path), lineno, self._symbol(kind))
+                )
+
+        def _symbol(self, kind: str) -> str:
+            owner = self.function_stack[-1] if self.function_stack else "<module>"
+            if self.class_stack:
+                owner = f"{self.class_stack[-1]}.{owner}"
+            return f"{owner}:{kind}"
+
+    Visitor().visit(module.module)
+    return {
+        literal: sorted(
+            sites, key=lambda item: (item.file_path, item.line, item.symbol)
+        )
+        for literal, sites in groups.items()
+        if len(sites) >= 2
+    }
+
+
+def _literal_strings(node: ast.AST) -> tuple[str, ...]:
+    literals: list[str] = []
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        if _is_semantic_string(node.value):
+            literals.append(node.value)
+    elif isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        for item in node.elts:
+            literals.extend(_literal_strings(item))
+    return tuple(literals)
+
+
+def _is_semantic_string(value: str) -> bool:
+    return bool(_SEMANTIC_STRING_RE.fullmatch(value))
+
+
+def _is_semantic_keyword_name(name: str) -> bool:
+    return name in _SEMANTIC_KEYWORD_NAMES or name.endswith(_SEMANTIC_NAME_SUFFIXES)
+
+
+def _compare_subject_is_semantic(node: ast.Compare) -> bool:
+    candidates = [node.left] + list(node.comparators)
+    return any(_looks_like_semantic_subject(candidate) for candidate in candidates)
+
+
+def _looks_like_semantic_subject(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return _is_semantic_keyword_name(node.id)
+    if isinstance(node, ast.Attribute):
+        return _is_semantic_keyword_name(node.attr)
+    return False
+
+
+def _is_docstring_expr(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _count_literal_comparisons(node: ast.If, literal_type: type[object]) -> int:
     count = 0
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
-        count += _string_comparisons_in_test(current.test)
+        count += _literal_comparisons_in_test(current.test, literal_type)
         current = current.orelse[0] if len(current.orelse) == 1 else None
     return count
 
 
-def _string_comparisons_in_test(node: ast.AST) -> int:
+def _literal_comparisons_in_test(node: ast.AST, literal_type: type[object]) -> int:
     if isinstance(node, ast.Compare):
         if not all(isinstance(op, ast.Eq) for op in node.ops):
             return 0
         values = [node.left] + list(node.comparators)
         if any(
-            isinstance(value, ast.Constant) and isinstance(value.value, str)
+            isinstance(value, ast.Constant) and isinstance(value.value, literal_type)
             for value in values
         ):
             return 1
     if isinstance(node, ast.BoolOp):
-        return sum(_string_comparisons_in_test(value) for value in node.values)
+        return sum(
+            _literal_comparisons_in_test(value, literal_type) for value in node.values
+        )
     return 0
 
 

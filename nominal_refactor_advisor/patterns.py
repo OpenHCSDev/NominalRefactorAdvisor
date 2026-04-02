@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .taxonomy import CapabilityTag
+
 
 @dataclass(frozen=True)
 class PatternSpec:
@@ -10,6 +12,7 @@ class PatternSpec:
     prescription: str
     canonical_shape: str
     first_moves: tuple[str, ...]
+    witness_capabilities: tuple[CapabilityTag, ...] = ()
     example_skeletons: tuple[str, ...] = ()
 
 
@@ -24,6 +27,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Introduce a nominal base or explicit variant family.",
             "Move branching from attribute values to class identity.",
         ),
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
     2: PatternSpec(
         2,
@@ -34,6 +42,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Name the variant family explicitly.",
             "Turn predicate branches into variant classes.",
             "Let the factory enumerate the family rather than re-encoding it in if/elif chains.",
+        ),
+        (
+            CapabilityTag.ENUMERATION,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
         ),
         (
             "class VariantBase(ABC): ...\nclass OptionalVariant(VariantBase): ...\nclass DirectVariant(VariantBase): ...",
@@ -49,6 +62,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Replace repeated literals with one registry/table.",
             "Dispatch once on the nominal key.",
         ),
+        (
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+        ),
     ),
     4: PatternSpec(
         4,
@@ -60,6 +77,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Replace field-name probing with nominal config types.",
             "Keep backend-specific behavior behind the config contract.",
         ),
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
     ),
     5: PatternSpec(
         5,
@@ -70,6 +92,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Identify the repeated algorithm skeleton.",
             "Move shared orchestration, validation, and packaging into the base class.",
             "Leave only irreducible hooks or mixin-provided concerns in subclasses.",
+        ),
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
         ),
         (
             "class Base(ABC):\n    def run(self, request): ...\n    @abstractmethod\n    def hook(self, request): ...",
@@ -87,6 +114,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Expose only declarative class hooks for orthogonal differences.",
         ),
         (
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+        (
             "class AutoRegisterMeta(ABCMeta): ...\nclass Handler(Base, metaclass=AutoRegisterMeta):\n    registry_key = 'name'",
             "class AutoRegisterMeta(ABCMeta):\n    registry = {}\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    registry_key: str",
         ),
@@ -101,6 +133,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Make normalization a named operation.",
             "Preserve provenance in APIs that cross the family boundary.",
         ),
+        (
+            CapabilityTag.TYPE_LINEAGE,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
+        ),
     ),
     8: PatternSpec(
         8,
@@ -111,6 +148,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Identify the two precedence axes.",
             "Make the precedence walk an explicit shared primitive.",
             "Return value plus provenance instead of discarding origin.",
+        ),
+        (
+            CapabilityTag.DUAL_AXIS_RESOLUTION,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.MRO_ORDERING,
         ),
     ),
     9: PatternSpec(
@@ -123,6 +165,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Move membership semantics to the class level.",
             "Replace repeated marker probing with one runtime-checkable boundary.",
         ),
+        (
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     ),
     10: PatternSpec(
         10,
@@ -133,6 +179,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Identify the interface role that structure cannot express.",
             "Generate a nominal interface type for that role.",
             "Attach membership through inheritance or class-level registration.",
+        ),
+        (
+            CapabilityTag.GENERATED_INTERFACE_IDENTITY,
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+            CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
     11: PatternSpec(
@@ -145,6 +196,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Use the marker as the authoritative capability key.",
             "Keep marker creation centralized.",
         ),
+        (
+            CapabilityTag.CAPABILITY_MARKER_IDENTITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
     ),
     12: PatternSpec(
         12,
@@ -155,6 +210,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Identify whether the mutation is meant for the class family or individual instances.",
             "Move the change to the class namespace boundary.",
             "Make plugin/injection points explicit.",
+        ),
+        (
+            CapabilityTag.SHARED_TYPE_NAMESPACE,
+            CapabilityTag.NOMINAL_IDENTITY,
         ),
     ),
     13: PatternSpec(
@@ -167,6 +226,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Enforce uniqueness in both directions.",
             "Route normalization and reverse lookup through that registry.",
         ),
+        (
+            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.EXACT_LOOKUP,
+        ),
     ),
     14: PatternSpec(
         14,
@@ -177,6 +241,11 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Find the repeated mapping source and target shape.",
             "Declare the mapping once in a builder or projection schema.",
             "Derive exports and secondary views from that one authority.",
+        ),
+        (
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
         ),
         (
             "@dataclass(frozen=True)\nclass Row: ...\n@classmethod\ndef from_source(cls, source): ...",
