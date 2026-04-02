@@ -328,6 +328,24 @@ class AccessorWrapperCandidate:
         return f"{self.class_name}.{self.method_name}"
 
 
+@dataclass(frozen=True)
+class LiteralDispatchChain:
+    line: int
+    symbol: str
+    axis_fingerprint: str
+    axis_expression: str
+    literal_cases: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InlineLiteralObservation:
+    line: int
+    symbol: str
+    axis_fingerprint: str
+    axis_expression: str
+    literal_case: str
+
+
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_private_methods"
     finding_spec = FindingSpec(
@@ -1144,7 +1162,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         capability_gap="single authoritative dispatch representation for a closed local rule family",
         relation_context="same branch role repeated inline inside a module block",
         confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
+        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1160,22 +1178,33 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         for owner_name, block in _iter_statement_blocks(module.module):
-            for relation_key, evidence in _group_inline_literal_dispatch(
-                module, block
-            ).items():
-                if len(evidence) < config.min_attribute_probes:
+            for observation_group in _group_inline_literal_dispatch(module, block):
+                if len(observation_group) < config.min_attribute_probes:
                     continue
+                axis_expression = observation_group[0].axis_expression
+                literal_cases = tuple(
+                    sorted(
+                        {item.literal_case for item in observation_group},
+                        key=str,
+                    )
+                )
                 findings.append(
                     self.finding_spec.build(
                         self.detector_id,
                         (
-                            f"{module.path} repeats literal-case dispatch over `{relation_key}` in {len(evidence)} sibling branches."
+                            f"{module.path} repeats literal-case dispatch over `{axis_expression}` across {len(observation_group)} sibling branches with cases {literal_cases}."
                         ),
-                        tuple(evidence[:6]),
+                        tuple(
+                            SourceLocation(str(module.path), item.line, item.symbol)
+                            for item in observation_group[:6]
+                        ),
                         relation_context=(
                             f"same branch role repeated inline inside {owner_name or 'module block'}"
                         ),
-                        metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
+                        metrics=DispatchCountMetrics.from_literal_family(
+                            axis_expression,
+                            literal_cases,
+                        ),
                     )
                 )
         return findings
@@ -1193,7 +1222,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
         capability_gap="closed-family dispatch with stable nominal keys",
         relation_context="same dispatch role repeated through string comparisons or string-key registries",
         confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
+        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1207,29 +1236,45 @@ class StringDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        evidence: list[SourceLocation] = []
-        evidence.extend(_dispatch_dict_locations(module, config.min_string_cases))
-        for node in ast.walk(module.module):
-            if isinstance(node, ast.If):
-                string_tests = _count_literal_comparisons(node, str)
-                if string_tests >= config.min_string_cases:
-                    evidence.append(
-                        SourceLocation(
-                            str(module.path), node.lineno, "if-string-dispatch"
-                        )
-                    )
-        if not evidence:
-            return []
-        return [
-            self.finding_spec.build(
-                self.detector_id,
-                (
-                    f"{module.path} contains {len(evidence)} string-dispatch sites that look like closed variant logic."
-                ),
-                tuple(evidence[:6]),
-                metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
+        findings: list[RefactorFinding] = []
+        for chain in _literal_dispatch_chains(module, str):
+            if len(chain.literal_cases) < config.min_string_cases:
+                continue
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{module.path} dispatches on `{chain.axis_expression}` through cases {chain.literal_cases}."
+                    ),
+                    (SourceLocation(str(module.path), chain.line, chain.symbol),),
+                    relation_context=(
+                        f"same observed axis `{chain.axis_expression}` is split across literal string cases {chain.literal_cases}"
+                    ),
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        chain.axis_expression,
+                        chain.literal_cases,
+                    ),
+                )
             )
-        ]
+        dict_evidence = _dispatch_dict_locations(module, config.min_string_cases)
+        if dict_evidence:
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{module.path} contains {len(dict_evidence)} string-key dispatch table site(s) that encode a closed family."
+                    ),
+                    tuple(dict_evidence[:6]),
+                    certification=STRONG_HEURISTIC,
+                    relation_context=(
+                        "same closed family encoded in string-key dispatch tables rather than one nominal dispatch boundary"
+                    ),
+                    metrics=DispatchCountMetrics(
+                        dispatch_site_count=len(dict_evidence)
+                    ),
+                )
+            )
+        return findings
 
 
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
@@ -1245,7 +1290,7 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         capability_gap="closed-family dispatch with stable nominal keys",
         relation_context="same dispatch role repeated through numeric literal comparisons",
         confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
+        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1259,28 +1304,27 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        evidence: list[SourceLocation] = []
-        for node in ast.walk(module.module):
-            if not isinstance(node, ast.If):
+        findings: list[RefactorFinding] = []
+        for chain in _literal_dispatch_chains(module, int):
+            if len(chain.literal_cases) < config.min_string_cases:
                 continue
-            literal_tests = _count_literal_comparisons(node, int)
-            if literal_tests < config.min_string_cases:
-                continue
-            evidence.append(
-                SourceLocation(str(module.path), node.lineno, "if-numeric-dispatch")
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{module.path} dispatches on `{chain.axis_expression}` through numeric cases {chain.literal_cases}."
+                    ),
+                    (SourceLocation(str(module.path), chain.line, chain.symbol),),
+                    relation_context=(
+                        f"same observed axis `{chain.axis_expression}` is split across numeric literal cases {chain.literal_cases}"
+                    ),
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        chain.axis_expression,
+                        chain.literal_cases,
+                    ),
+                )
             )
-        if not evidence:
-            return []
-        return [
-            self.finding_spec.build(
-                self.detector_id,
-                (
-                    f"{module.path} contains {len(evidence)} numeric-ID dispatch sites that look like a closed variant family."
-                ),
-                tuple(evidence[:6]),
-                metrics=DispatchCountMetrics(dispatch_site_count=len(evidence)),
-            )
-        ]
+        return findings
 
 
 class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
@@ -2266,30 +2310,85 @@ def _is_docstring_expr(node: ast.stmt) -> bool:
     )
 
 
-def _count_literal_comparisons(node: ast.If, literal_type: type[object]) -> int:
-    count = 0
+def _literal_dispatch_chains(
+    module: ParsedModule, literal_type: type[object]
+) -> tuple[LiteralDispatchChain, ...]:
+    parents = {
+        child: parent
+        for parent in ast.walk(module.module)
+        for child in ast.iter_child_nodes(parent)
+    }
+    chains: list[LiteralDispatchChain] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.If):
+            continue
+        parent = parents.get(node)
+        if (
+            isinstance(parent, ast.If)
+            and len(parent.orelse) == 1
+            and parent.orelse[0] is node
+        ):
+            continue
+        chain = _literal_dispatch_chain(module, node, literal_type)
+        if chain is not None:
+            chains.append(chain)
+    return tuple(sorted(chains, key=lambda item: (item.line, item.axis_expression)))
+
+
+def _literal_dispatch_chain(
+    module: ParsedModule, node: ast.If, literal_type: type[object]
+) -> LiteralDispatchChain | None:
+    literal_cases: list[str] = []
+    axis_fingerprint: str | None = None
+    axis_expression: str | None = None
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
-        count += _literal_comparisons_in_test(current.test, literal_type)
+        case = _literal_dispatch_case(current.test, literal_type)
+        if case is None:
+            return None
+        current_fingerprint, current_expression, literal_case = case
+        if axis_fingerprint is None:
+            axis_fingerprint = current_fingerprint
+            axis_expression = current_expression
+        elif axis_fingerprint != current_fingerprint:
+            return None
+        literal_cases.append(literal_case)
         current = current.orelse[0] if len(current.orelse) == 1 else None
-    return count
+    if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
+        return None
+    return LiteralDispatchChain(
+        line=node.lineno,
+        symbol="literal-dispatch-chain",
+        axis_fingerprint=axis_fingerprint,
+        axis_expression=axis_expression,
+        literal_cases=tuple(literal_cases),
+    )
 
 
-def _literal_comparisons_in_test(node: ast.AST, literal_type: type[object]) -> int:
-    if isinstance(node, ast.Compare):
-        if not all(isinstance(op, ast.Eq) for op in node.ops):
-            return 0
-        values = [node.left] + list(node.comparators)
-        if any(
-            isinstance(value, ast.Constant) and isinstance(value.value, literal_type)
-            for value in values
-        ):
-            return 1
-    if isinstance(node, ast.BoolOp):
-        return sum(
-            _literal_comparisons_in_test(value, literal_type) for value in node.values
+def _literal_dispatch_case(
+    test: ast.AST, literal_type: type[object]
+) -> tuple[str, str, str] | None:
+    if not isinstance(test, ast.Compare):
+        return None
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
+        return None
+    if len(test.comparators) != 1:
+        return None
+    left = test.left
+    right = test.comparators[0]
+    if isinstance(left, ast.Constant) and isinstance(left.value, literal_type):
+        return (
+            ast.dump(right, include_attributes=False),
+            ast.unparse(right),
+            repr(left.value),
         )
-    return 0
+    if isinstance(right, ast.Constant) and isinstance(right.value, literal_type):
+        return (
+            ast.dump(left, include_attributes=False),
+            ast.unparse(left),
+            repr(right.value),
+        )
+    return None
 
 
 def _collect_dict_attrs(node: ast.ClassDef) -> set[str]:
@@ -2350,31 +2449,30 @@ def _iter_statement_blocks(
 def _group_inline_literal_dispatch(
     module: ParsedModule,
     block: list[ast.stmt],
-) -> dict[str, list[SourceLocation]]:
-    groups: dict[str, list[SourceLocation]] = defaultdict(list)
+) -> tuple[tuple[InlineLiteralObservation, ...], ...]:
+    groups: dict[str, list[InlineLiteralObservation]] = defaultdict(list)
     for stmt in block:
         if not isinstance(stmt, ast.If):
             continue
-        key = _literal_dispatch_key(stmt.test)
-        if key is None:
+        case = _literal_dispatch_case(stmt.test, str)
+        if case is None:
             continue
-        groups[key].append(
-            SourceLocation(str(module.path), stmt.lineno, "inline-literal-dispatch")
+        axis_fingerprint, axis_expression, literal_case = case
+        groups[axis_fingerprint].append(
+            InlineLiteralObservation(
+                line=stmt.lineno,
+                symbol="inline-literal-dispatch",
+                axis_fingerprint=axis_fingerprint,
+                axis_expression=axis_expression,
+                literal_case=literal_case,
+            )
         )
-    return {key: items for key, items in groups.items() if len(items) >= 2}
-
-
-def _literal_dispatch_key(test: ast.AST) -> str | None:
-    if not isinstance(test, ast.Compare):
-        return None
-    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
-        return None
-    if len(test.comparators) != 1:
-        return None
-    comparator = test.comparators[0]
-    if not (isinstance(comparator, ast.Constant) and isinstance(comparator.value, str)):
-        return None
-    return ast.dump(test.left, include_attributes=False)
+    observation_groups: list[tuple[InlineLiteralObservation, ...]] = []
+    for items in groups.values():
+        if len({item.literal_case for item in items}) < 2:
+            continue
+        observation_groups.append(tuple(sorted(items, key=lambda item: item.line)))
+    return tuple(observation_groups)
 
 
 def _collect_repeated_method_shapes(

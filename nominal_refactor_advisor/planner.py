@@ -323,6 +323,8 @@ class ActionContext:
     field_list: str
     identity_field_list: str
     dispatch_symbol: str
+    dispatch_axis: str
+    dispatch_cases: str
     statement_count: int
 
 
@@ -427,6 +429,8 @@ def _build_action_context(
         if identity_field_names
         else "the directly copied fields",
         dispatch_symbol=_dispatch_symbol_from_findings(findings),
+        dispatch_axis=_dispatch_axis_from_findings(findings),
+        dispatch_cases=_dispatch_cases_from_findings(findings),
         statement_count=_statement_count_from_findings(findings),
     )
 
@@ -446,13 +450,13 @@ _PATTERN_ACTION_BUILDERS: dict[PatternId, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_dispatch_authority",
-                description="Create `{dispatch_symbol}` in `{subsystem}` as the single enum/type-keyed dispatch authority.",
+                description="Create `{dispatch_symbol}` in `{subsystem}` for `{dispatch_axis}` over cases {dispatch_cases}.",
                 confidence=HIGH_CONFIDENCE,
                 create_symbol="{dispatch_symbol}",
             ),
             ActionTemplate(
                 kind="replace_branch_sites",
-                description="Replace {class_list} branch/lookup sites with `{dispatch_symbol}`.",
+                description="Replace the repeated `{dispatch_axis}` branch/lookup sites with `{dispatch_symbol}` over cases {dispatch_cases}.",
                 confidence=HIGH_CONFIDENCE,
                 replace_with="{dispatch_symbol}",
                 statement_operation="replace",
@@ -1072,6 +1076,11 @@ def _mapping_problem_description(
 
 
 def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    dispatch_axis = _dispatch_axis_from_findings(findings)
+    if dispatch_axis != "the dispatch axis":
+        identifier = _safe_identifier(dispatch_axis)
+        if identifier:
+            return f"dispatch_{identifier}"
     symbols = _evidence_symbols(findings)
     if symbols:
         root = symbols[0].split(":", 1)[0].split(".", 1)[0]
@@ -1079,6 +1088,29 @@ def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str
         if identifier:
             return f"dispatch_{identifier}"
     return "dispatch_by_kind"
+
+
+def _dispatch_axis_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    axes = {
+        axis
+        for finding in findings
+        if (axis := finding.metrics.plan_dispatch_axis) is not None
+    }
+    if not axes:
+        return "the dispatch axis"
+    if len(axes) == 1:
+        return next(iter(axes))
+    return "the shared dispatch axes"
+
+
+def _dispatch_cases_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    cases: list[str] = []
+    for finding in findings:
+        cases.extend(finding.metrics.plan_literal_cases)
+    deduped = _dedupe_preserve_order(cases)
+    if not deduped:
+        return "the observed cases"
+    return _human_join(deduped)
 
 
 def _statement_count_from_findings(findings: tuple[RefactorFinding, ...]) -> int:

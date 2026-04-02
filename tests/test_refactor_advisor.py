@@ -347,7 +347,13 @@ def convert(kind, value):
     )
 
     findings = analyze_path(tmp_path)
-    assert any(finding.pattern_id == 3 for finding in findings)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "string_dispatch"
+    )
+    assert finding.pattern_id == 3
+    assert "`kind`" in finding.summary
+    assert "'numpy'" in finding.summary
+    assert finding.certification == "certified"
 
 
 def test_detects_inline_literal_dispatch_registry_smell(tmp_path: Path) -> None:
@@ -625,9 +631,14 @@ def render(pattern_id):
     )
 
     findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == "numeric_literal_dispatch" for finding in findings
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "numeric_literal_dispatch"
     )
+    assert "`pattern_id`" in finding.summary
+    assert "3" in finding.summary
+    assert finding.certification == "certified"
 
 
 def test_detects_repeated_hardcoded_semantic_string(tmp_path: Path) -> None:
@@ -778,7 +789,8 @@ def render(pattern_id):
     )
 
     assert isinstance(finding.metrics, DispatchCountMetrics)
-    assert finding.metrics.dispatch_site_count == 1
+    assert finding.metrics.dispatch_site_count == 3
+    assert finding.metrics.dispatch_axis == "pattern_id"
 
 
 def test_detects_semantic_metrics_dict_bag_and_recommends_nominal_class(

@@ -160,6 +160,14 @@ class FindingMetrics(SemanticRecord, ABC):
     def plan_class_key_pairs(self) -> tuple[str, ...]:
         return ()
 
+    @property
+    def plan_dispatch_axis(self) -> str | None:
+        return None
+
+    @property
+    def plan_literal_cases(self) -> tuple[str, ...]:
+        return ()
+
 
 class BehaviorFindingMetrics(FindingMetrics, ABC):
     pass
@@ -393,6 +401,26 @@ class ProbeCountMetrics(CountedDispatchMetrics):
 class DispatchCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "dispatch_site_count"
     dispatch_site_count: int
+    dispatch_axis: str | None = None
+    literal_cases: tuple[str, ...] = ()
+
+    @classmethod
+    def from_literal_family(
+        cls, dispatch_axis: str | None, literal_cases: tuple[str, ...]
+    ) -> "DispatchCountMetrics":
+        return cls(
+            dispatch_site_count=len(literal_cases),
+            dispatch_axis=dispatch_axis,
+            literal_cases=literal_cases,
+        )
+
+    @property
+    def plan_dispatch_axis(self) -> str | None:
+        return self.dispatch_axis
+
+    @property
+    def plan_literal_cases(self) -> tuple[str, ...]:
+        return self.literal_cases
 
 
 @dataclass(frozen=True)
