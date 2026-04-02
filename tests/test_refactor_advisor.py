@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from dq_dock_engine.refactor_advisor.cli import _format_markdown
-from dq_dock_engine.refactor_advisor.cli import analyze_path
+from nominal_refactor_advisor.cli import _format_markdown
+from nominal_refactor_advisor.cli import analyze_path
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> None:

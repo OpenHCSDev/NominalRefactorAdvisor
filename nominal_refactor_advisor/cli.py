@@ -56,13 +56,13 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="AST-driven refactoring advisor for DQ-Dock."
+        description="AST-driven refactoring advisor for nominal architecture."
     )
     parser.add_argument(
         "path",
         nargs="?",
-        default="dq_dock_engine",
-        help="Root path to analyze (defaults to dq_dock_engine).",
+        default="nominal_refactor_advisor",
+        help="Root path to analyze (defaults to nominal_refactor_advisor).",
     )
     parser.add_argument(
         "--json", action="store_true", help="Emit JSON instead of Markdown."

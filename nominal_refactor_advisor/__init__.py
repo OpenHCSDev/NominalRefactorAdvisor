@@ -1,4 +1,4 @@
-"""AST-driven refactoring advisor for DQ-Dock."""
+"""AST-driven refactoring advisor for nominal architecture."""
 
 from .cli import analyze_path
 from .models import RefactorFinding, SourceLocation
