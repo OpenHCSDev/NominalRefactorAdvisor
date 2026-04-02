@@ -546,6 +546,8 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
             metrics=MappingMetrics(
                 mapping_site_count=len(builders),
                 field_count=len(builders[0].keyword_names),
+                mapping_name=builders[0].callee_name,
+                field_names=builders[0].keyword_names,
             ),
         )
 
@@ -618,6 +620,7 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
             metrics=MappingMetrics(
                 mapping_site_count=len(export_shapes),
                 field_count=len(export_shapes[0].key_names),
+                field_names=export_shapes[0].key_names,
             ),
         )
 
@@ -691,6 +694,8 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
             metrics=RegistrationMetrics(
                 registration_site_count=len(registrations),
                 class_count=len(class_names),
+                registry_name=registry_name,
+                class_names=tuple(sorted(class_names)),
             ),
         )
 
@@ -1302,6 +1307,8 @@ class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
                     metrics=MappingMetrics(
                         mapping_site_count=len(sites),
                         field_count=1,
+                        mapping_name=literal,
+                        field_names=(literal,),
                     ),
                 )
             )
@@ -1502,7 +1509,8 @@ class BidirectionalRegistryDetector(PerModuleIssueDetector):
                         ObservationTag.MANUAL_SYNCHRONIZATION,
                     ),
                     metrics=RegistrationMetrics(
-                        registration_site_count=len(mirrored_pairs)
+                        registration_site_count=len(mirrored_pairs),
+                        registry_name=node.name,
                     ),
                 )
             )

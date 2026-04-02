@@ -92,6 +92,21 @@ class FindingMetrics(SemanticRecord, ABC):
     def outcome_delta(self, evidence_count: int) -> ImpactDelta:
         return ImpactDelta()
 
+    def class_names_for_plan(self) -> tuple[str, ...]:
+        return ()
+
+    def field_names_for_plan(self) -> tuple[str, ...]:
+        return ()
+
+    def registry_name_for_plan(self) -> str | None:
+        return None
+
+    def mapping_name_for_plan(self) -> str | None:
+        return None
+
+    def statement_count_for_plan(self) -> int:
+        return 0
+
 
 class BehaviorFindingMetrics(FindingMetrics, ABC):
     pass
@@ -140,6 +155,9 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
             shared_algorithm_sites_centralized=max(self.duplicate_site_count - 1, 0),
         )
 
+    def statement_count_for_plan(self) -> int:
+        return self.statement_count
+
 
 @dataclass(frozen=True)
 class HierarchyCandidateMetrics(BehaviorFindingMetrics):
@@ -154,6 +172,8 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 class MappingMetrics(MappingFindingMetrics):
     mapping_site_count: int
     field_count: int
+    mapping_name: str | None = None
+    field_names: tuple[str, ...] = ()
 
     def mapping_sites_for_plan(self) -> int:
         return self.mapping_site_count
@@ -178,11 +198,19 @@ class MappingMetrics(MappingFindingMetrics):
             ),
         )
 
+    def field_names_for_plan(self) -> tuple[str, ...]:
+        return self.field_names
+
+    def mapping_name_for_plan(self) -> str | None:
+        return self.mapping_name
+
 
 @dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics):
     registration_site_count: int
     class_count: int | None = None
+    registry_name: str | None = None
+    class_names: tuple[str, ...] = ()
 
     def registration_sites_for_plan(self) -> int:
         return self.registration_site_count
@@ -196,6 +224,12 @@ class RegistrationMetrics(RegistrationFindingMetrics):
             loci_of_change_after=1,
             registration_sites_removed=self.registration_site_count,
         )
+
+    def class_names_for_plan(self) -> tuple[str, ...]:
+        return self.class_names
+
+    def registry_name_for_plan(self) -> str | None:
+        return self.registry_name
 
 
 @dataclass(frozen=True)
@@ -376,7 +410,10 @@ class RefactorAction(SemanticRecord):
     kind: str
     description: str
     target: str | None = None
+    create_symbol: str | None = None
+    replace_with: str | None = None
     symbols: tuple[str, ...] = ()
+    remove_symbols: tuple[str, ...] = ()
     evidence: tuple[SourceLocation, ...] = ()
     confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
 

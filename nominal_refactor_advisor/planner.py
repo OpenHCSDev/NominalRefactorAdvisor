@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
+from typing import Callable
 
 from .models import (
     CERTIFIED,
@@ -21,6 +22,7 @@ from .patterns import PATTERN_SPECS
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
+    ConfidenceLevel,
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     ObservationTag,
@@ -224,7 +226,25 @@ class PatternActionBuilder(ABC):
 class ActionTemplate:
     kind: str
     description: str
-    confidence: object
+    confidence: ConfidenceLevel
+    create_symbol: str | None = None
+    replace_with: str | None = None
+    remove_symbols_from_evidence: bool = False
+
+
+@dataclass(frozen=True)
+class ActionContext:
+    subsystem: str
+    evidence: tuple[SourceLocation, ...]
+    symbols: tuple[str, ...]
+    base_name: str
+    template_method_name: str
+    registry_name: str
+    class_list: str
+    mapping_symbol: str
+    field_list: str
+    dispatch_symbol: str
+    statement_count: int
 
 
 class GenericPatternActionBuilder(PatternActionBuilder):
@@ -260,18 +280,53 @@ def _actions_from_templates(
     findings: tuple[RefactorFinding, ...],
     templates: tuple[ActionTemplate, ...],
 ) -> tuple[RefactorAction, ...]:
-    evidence = _combined_evidence(findings)
-    symbols = _evidence_symbols(findings)
+    context = _build_action_context(subsystem, findings)
     return tuple(
         RefactorAction(
             kind=template.kind,
-            description=template.description.format(subsystem=subsystem),
+            description=template.description.format(**context.__dict__),
             target=subsystem,
-            symbols=symbols,
-            evidence=evidence,
+            create_symbol=(
+                template.create_symbol.format(**context.__dict__)
+                if template.create_symbol is not None
+                else None
+            ),
+            replace_with=(
+                template.replace_with.format(**context.__dict__)
+                if template.replace_with is not None
+                else None
+            ),
+            symbols=context.symbols,
+            remove_symbols=(
+                context.symbols if template.remove_symbols_from_evidence else ()
+            ),
+            evidence=context.evidence,
             confidence=template.confidence,
         )
         for template in templates
+    )
+
+
+def _build_action_context(
+    subsystem: str, findings: tuple[RefactorFinding, ...]
+) -> ActionContext:
+    symbols = _evidence_symbols(findings)
+    class_names = _class_names_from_findings(findings)
+    field_names = _field_names_from_findings(findings)
+    return ActionContext(
+        subsystem=subsystem,
+        evidence=_combined_evidence(findings),
+        symbols=symbols,
+        base_name=_suggest_base_name(class_names),
+        template_method_name="run",
+        registry_name=_registry_name_from_findings(findings),
+        class_list=_human_join(list(class_names)) if class_names else "the family",
+        mapping_symbol=_mapping_symbol_from_findings(findings, field_names),
+        field_list=_human_join(list(field_names))
+        if field_names
+        else "the repeated fields",
+        dispatch_symbol=_dispatch_symbol_from_findings(findings),
+        statement_count=_statement_count_from_findings(findings),
     )
 
 
@@ -290,13 +345,15 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_dispatch_authority",
-                description="Create one enum/type-keyed dispatch authority for `{subsystem}`.",
+                description="Create `{dispatch_symbol}` in `{subsystem}` as the single enum/type-keyed dispatch authority.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="{dispatch_symbol}",
             ),
             ActionTemplate(
                 kind="replace_branch_sites",
-                description="Replace the repeated branch/lookup sites with a single dispatch entry point.",
+                description="Replace {class_list} branch/lookup sites with `{dispatch_symbol}`.",
                 confidence=HIGH_CONFIDENCE,
+                replace_with="{dispatch_symbol}",
             ),
         )
     ),
@@ -304,17 +361,19 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_abc_base",
-                description="Create one ABC base in `{subsystem}` for the repeated behavior family.",
+                description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="{base_name}",
             ),
             ActionTemplate(
                 kind="extract_template_method",
-                description="Move the shared orchestration statements from the repeated methods into one concrete template method.",
+                description="Move the shared {statement_count}-statement orchestration from the repeated methods into `{base_name}.{template_method_name}`.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="{base_name}.{template_method_name}",
             ),
             ActionTemplate(
                 kind="leave_residual_hooks",
-                description="Leave only irreducible per-class residue as abstract hooks or mixin-provided concerns.",
+                description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
                 confidence=MEDIUM_CONFIDENCE,
             ),
         )
@@ -323,18 +382,20 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_metaclass",
-                description="Create `AutoRegisterMeta` or an equivalent registry base for `{subsystem}`.",
+                description="Create `AutoRegisterMeta` for `{registry_name}` in `{subsystem}`.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="AutoRegisterMeta",
             ),
             ActionTemplate(
                 kind="add_declarative_hooks",
-                description="Add declarative class-level registration hooks such as `registry_key` on the participating classes.",
+                description="Add declarative class-level hooks such as `registry_key` to {class_list}.",
                 confidence=MEDIUM_CONFIDENCE,
             ),
             ActionTemplate(
                 kind="delete_manual_registration",
-                description="Delete the manual registration writes after routing the family through the metaclass/base.",
+                description="Delete the manual registration writes after routing {class_list} through `AutoRegisterMeta`.",
                 confidence=HIGH_CONFIDENCE,
+                remove_symbols_from_evidence=True,
             ),
         )
     ),
@@ -342,13 +403,15 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_bidirectional_registry",
-                description="Create one authoritative forward/reverse registry for `{subsystem}`.",
+                description="Create `{registry_name}BidirectionalRegistry` in `{subsystem}` as the authoritative forward/reverse registry.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="{registry_name}BidirectionalRegistry",
             ),
             ActionTemplate(
                 kind="delete_mirrored_updates",
-                description="Delete mirrored forward/reverse update sites once the bijective registry is in place.",
+                description="Delete the mirrored update sites once `{registry_name}BidirectionalRegistry` is in place.",
                 confidence=HIGH_CONFIDENCE,
+                remove_symbols_from_evidence=True,
             ),
         )
     ),
@@ -356,13 +419,15 @@ _PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
         (
             ActionTemplate(
                 kind="create_authoritative_schema",
-                description="Create one authoritative builder/schema in `{subsystem}` for the repeated field mapping family.",
+                description="Create `{mapping_symbol}` in `{subsystem}` to own the repeated mapping for {field_list}.",
                 confidence=HIGH_CONFIDENCE,
+                create_symbol="{mapping_symbol}",
             ),
             ActionTemplate(
                 kind="replace_mapping_sites",
-                description="Replace each repeated constructor/export/projection site with the authoritative builder/schema.",
+                description="Replace the repeated constructor/export/projection sites with `{mapping_symbol}`.",
                 confidence=HIGH_CONFIDENCE,
+                replace_with="{mapping_symbol}",
             ),
         )
     ),
@@ -766,6 +831,103 @@ def _build_plan_actions(
         )
         actions.extend(builder.build(subsystem, pattern_id, supporting))
     return tuple(actions)
+
+
+def _class_names_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for finding in findings:
+        names.extend(finding.metrics.class_names_for_plan())
+        for item in finding.evidence:
+            if "." not in item.symbol:
+                continue
+            head = item.symbol.split(".", 1)[0]
+            if head and not head.startswith("<"):
+                names.append(head)
+    return tuple(_dedupe_preserve_order(names))
+
+
+def _field_names_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[str, ...]:
+    names: list[str] = []
+    for finding in findings:
+        names.extend(finding.metrics.field_names_for_plan())
+    return tuple(_dedupe_preserve_order(names))
+
+
+def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    for finding in findings:
+        registry_name = finding.metrics.registry_name_for_plan()
+        if registry_name:
+            return _safe_identifier(registry_name)
+    return "Registry"
+
+
+def _mapping_symbol_from_findings(
+    findings: tuple[RefactorFinding, ...], field_names: tuple[str, ...]
+) -> str:
+    for finding in findings:
+        mapping_name = finding.metrics.mapping_name_for_plan()
+        if not mapping_name:
+            continue
+        identifier = _safe_identifier(mapping_name)
+        if mapping_name[:1].isupper():
+            return f"{identifier}.from_source"
+        return f"build_{identifier}"
+    if field_names:
+        return "ProjectionSchema.from_source"
+    return "AuthoritativeSchema.from_source"
+
+
+def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    symbols = _evidence_symbols(findings)
+    if symbols:
+        root = symbols[0].split(":", 1)[0].split(".", 1)[0]
+        identifier = _safe_identifier(root)
+        if identifier:
+            return f"dispatch_{identifier}"
+    return "dispatch_by_kind"
+
+
+def _statement_count_from_findings(findings: tuple[RefactorFinding, ...]) -> int:
+    for finding in findings:
+        statement_count = finding.metrics.statement_count_for_plan()
+        if statement_count:
+            return int(statement_count)
+    return 0
+
+
+def _suggest_base_name(class_names: tuple[str, ...]) -> str:
+    if not class_names:
+        return "ExtractedBase"
+    suffix = _common_suffix(class_names)
+    if len(suffix) >= 3:
+        return suffix if suffix.endswith("Base") else f"{suffix}Base"
+    prefix = _common_prefix(class_names)
+    if len(prefix) >= 3:
+        return prefix if prefix.endswith("Base") else f"{prefix}Base"
+    return "ExtractedBase"
+
+
+def _common_prefix(values: tuple[str, ...]) -> str:
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+
+
+def _common_suffix(values: tuple[str, ...]) -> str:
+    reversed_values = tuple(value[::-1] for value in values)
+    return _common_prefix(reversed_values)[::-1]
+
+
+def _safe_identifier(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() else "_" for ch in value)
+    cleaned = cleaned.strip("_")
+    return cleaned or "value"
 
 
 def _render_tag_values(items, projector) -> tuple[str, ...]:
