@@ -685,6 +685,29 @@ def observation_labels(observations):
     assert "_render_projection" in (finding.scaffold or "")
 
 
+def test_detects_accessor_wrapper_smell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sample:
+    def get_status(self):
+        return self.status
+
+    def set_status(self, status):
+        self.status = status
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+    )
+
+    assert "direct attribute/property access" in finding.title
+    assert "replace `Sample.get_status()` with `status`" in (finding.scaffold or "")
+
+
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

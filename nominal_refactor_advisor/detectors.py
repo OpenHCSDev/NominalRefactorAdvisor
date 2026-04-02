@@ -313,6 +313,19 @@ class ProjectionHelperShape:
         return self.function_name
 
 
+@dataclass(frozen=True)
+class AccessorWrapperCandidate:
+    class_name: str
+    method_name: str
+    lineno: int
+    target_expression: str
+    accessor_kind: str
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.method_name}"
+
+
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_private_methods"
     finding_spec = FindingSpec(
@@ -1391,6 +1404,70 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
         return findings
 
 
+class AccessorWrapperDetector(PerModuleIssueDetector):
+    detector_id = "accessor_wrapper"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Java-style accessor wrapper should be direct attribute/property access",
+        why=(
+            "The docs treat wrappers that merely transport an already-owned fact as redundant structure. In Python, "
+            "trivial getter/setter wrappers should collapse to direct attribute access or an `@property` when computed "
+            "access is genuinely needed."
+        ),
+        capability_gap="direct authoritative attribute/property access instead of wrapper boilerplate",
+        relation_context="same class exposes an already-owned fact through trivial wrapper methods",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.ACCESSOR_WRAPPER,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        grouped: dict[str, list[AccessorWrapperCandidate]] = defaultdict(list)
+        for candidate in _accessor_wrapper_candidates(module):
+            grouped[candidate.class_name].append(candidate)
+
+        findings: list[RefactorFinding] = []
+        for class_name, candidates in grouped.items():
+            ordered = sorted(candidates, key=lambda item: item.lineno)
+            evidence = tuple(
+                SourceLocation(str(module.path), candidate.lineno, candidate.symbol)
+                for candidate in ordered[:6]
+            )
+            replacement_examples = ", ".join(
+                _accessor_replacement_example(candidate) for candidate in ordered[:3]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"Class {class_name} exposes {len(ordered)} trivial accessor wrapper(s): "
+                        f"{', '.join(candidate.method_name for candidate in ordered[:4])}."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "Prefer direct dot access when the fact is already owned by the object.\n\n"
+                        "Example replacement:\n"
+                        f"{replacement_examples}"
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(ordered),
+                        field_count=1,
+                        mapping_name=f"{class_name} property",
+                    ),
+                )
+            )
+        return findings
+
+
 class SemanticDictBagDetector(PerModuleIssueDetector):
     detector_id = "semantic_dict_bag"
     finding_spec = FindingSpec(
@@ -1991,6 +2068,7 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         NumericLiteralDispatchDetector(),
         RepeatedHardcodedStringDetector(),
         RepeatedProjectionHelperDetector(),
+        AccessorWrapperDetector(),
         SemanticDictBagDetector(),
         BidirectionalRegistryDetector(),
     )
@@ -2665,6 +2743,158 @@ def _projection_helper_scaffold(shapes: list[ProjectionHelperShape]) -> str:
         f"# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n"
         f"# Projected fields: {attributes}"
     )
+
+
+def _accessor_wrapper_candidates(
+    module: ParsedModule,
+) -> list[AccessorWrapperCandidate]:
+    candidates: list[AccessorWrapperCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            for stmt in _trim_docstring_body(node.body):
+                self.visit(stmt)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if not self.class_stack:
+                return
+            candidate = _accessor_wrapper_candidate(self.class_stack[-1], node)
+            if candidate is not None:
+                candidates.append(candidate)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if not self.class_stack:
+                return
+            candidate = _accessor_wrapper_candidate(self.class_stack[-1], node)
+            if candidate is not None:
+                candidates.append(candidate)
+
+    Visitor().visit(module.module)
+    return candidates
+
+
+def _accessor_wrapper_candidate(
+    class_name: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> AccessorWrapperCandidate | None:
+    if _has_property_like_decorator(function):
+        return None
+    body = _trim_docstring_body(function.body)
+    if not body:
+        return None
+    getter_expr = _getter_wrapper_expression(function, body)
+    if getter_expr is not None:
+        return AccessorWrapperCandidate(
+            class_name=class_name,
+            method_name=function.name,
+            lineno=function.lineno,
+            target_expression=getter_expr,
+            accessor_kind="getter",
+        )
+    setter_target = _setter_wrapper_target(function, body)
+    if setter_target is not None:
+        return AccessorWrapperCandidate(
+            class_name=class_name,
+            method_name=function.name,
+            lineno=function.lineno,
+            target_expression=setter_target,
+            accessor_kind="setter",
+        )
+    return None
+
+
+def _getter_wrapper_expression(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    body: list[ast.stmt],
+) -> str | None:
+    if len(function.args.args) != 1:
+        return None
+    if not (function.name.startswith("get_") or function.name.endswith("_for_plan")):
+        return None
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return None
+    expr = body[0].value
+    if _is_self_attribute_expression(expr):
+        return ast.unparse(expr)
+    if _is_wrapped_self_attribute_expression(expr):
+        return ast.unparse(expr)
+    return None
+
+
+def _setter_wrapper_target(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    body: list[ast.stmt],
+) -> str | None:
+    if not function.name.startswith("set_"):
+        return None
+    if len(function.args.args) != 2:
+        return None
+    if len(body) != 1 or not isinstance(body[0], ast.Assign):
+        return None
+    assign = body[0]
+    if len(assign.targets) != 1:
+        return None
+    target = assign.targets[0]
+    value_arg = function.args.args[1].arg
+    if not (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return None
+    if not (isinstance(assign.value, ast.Name) and assign.value.id == value_arg):
+        return None
+    return ast.unparse(target)
+
+
+def _is_self_attribute_expression(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+
+
+def _is_wrapped_self_attribute_expression(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call) or len(node.args) != 1:
+        return False
+    if not isinstance(node.func, ast.Name):
+        return False
+    if node.func.id not in {"tuple", "list", "set", "str", "int", "bool"}:
+        return False
+    return _is_self_attribute_expression(node.args[0])
+
+
+def _has_property_like_decorator(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    for decorator in function.decorator_list:
+        if isinstance(decorator, ast.Name) and decorator.id == "property":
+            return True
+        if isinstance(decorator, ast.Attribute) and decorator.attr == "setter":
+            return True
+    return False
+
+
+def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
+    if candidate.accessor_kind == "setter":
+        property_name = (
+            candidate.method_name[4:]
+            if candidate.method_name.startswith("set_")
+            else candidate.method_name
+        )
+        return f"replace `{candidate.symbol}(value)` with `{property_name} = value`"
+    property_name = (
+        candidate.method_name[4:]
+        if candidate.method_name.startswith("get_")
+        else candidate.method_name.removesuffix("_for_plan")
+    )
+    return f"replace `{candidate.symbol}()` with `{property_name}`"
 
 
 def _function_has_param(

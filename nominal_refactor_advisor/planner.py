@@ -194,9 +194,7 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        site_count = sum(
-            finding.metrics.shared_algorithm_sites_for_plan() for finding in findings
-        )
+        site_count = sum(finding.metrics.shared_algorithm_sites for finding in findings)
         return (
             f"Create one ABC template-method family for `{subsystem}` and move the shared orchestration from "
             f"{site_count or len(findings)} duplicated method site(s) into the base class."
@@ -210,9 +208,7 @@ class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        site_count = sum(
-            finding.metrics.registration_sites_for_plan() for finding in findings
-        )
+        site_count = sum(finding.metrics.registration_sites for finding in findings)
         return (
             f"Introduce `AutoRegisterMeta` for `{subsystem}` and replace {site_count or len(findings)} "
             "manual registration site(s) with declarative class hooks."
@@ -226,9 +222,7 @@ class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        site_count = sum(
-            finding.metrics.mapping_sites_for_plan() for finding in findings
-        )
+        site_count = sum(finding.metrics.mapping_sites for finding in findings)
         return (
             f"Declare one authoritative builder/schema for `{subsystem}` and route {site_count or len(findings)} "
             "repeated mapping site(s) through it."
@@ -242,10 +236,7 @@ class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        site_count = sum(
-            finding.metrics.dispatch_sites_for_plan(len(finding.evidence))
-            for finding in findings
-        )
+        site_count = sum(finding.metrics.dispatch_sites for finding in findings)
         return (
             f"Replace {site_count or len(findings)} branch or dispatch site(s) in `{subsystem}` with one "
             "enum/type-keyed registry or rule table."
@@ -259,9 +250,7 @@ class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
-        site_count = sum(
-            finding.metrics.registration_sites_for_plan() for finding in findings
-        )
+        site_count = sum(finding.metrics.registration_sites for finding in findings)
         return (
             f"Centralize forward/reverse lookup for `{subsystem}` in one bidirectional registry and delete "
             f"{site_count or len(findings)} mirrored update site(s)."
@@ -814,7 +803,7 @@ def _estimate_outcome(
     total = ImpactDelta()
 
     for finding in findings:
-        total += finding.metrics.outcome_delta(len(finding.evidence))
+        total += finding.metrics.impact_delta
 
     loci_before = total.loci_of_change_before
     if loci_before == 0:
@@ -949,7 +938,7 @@ def _class_names_from_findings(
 ) -> tuple[str, ...]:
     names: list[str] = []
     for finding in findings:
-        names.extend(finding.metrics.class_names_for_plan())
+        names.extend(finding.metrics.plan_class_names)
         for item in finding.evidence:
             if "." not in item.symbol:
                 continue
@@ -964,7 +953,7 @@ def _field_names_from_findings(
 ) -> tuple[str, ...]:
     names: list[str] = []
     for finding in findings:
-        names.extend(finding.metrics.field_names_for_plan())
+        names.extend(finding.metrics.plan_field_names)
     return tuple(_dedupe_preserve_order(names))
 
 
@@ -972,7 +961,7 @@ def _statement_sequence_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> str:
     for finding in findings:
-        shared_statement_texts = finding.metrics.shared_statement_texts_for_plan()
+        shared_statement_texts = finding.metrics.plan_shared_statement_texts
         if shared_statement_texts:
             rendered = " ; ".join(shared_statement_texts)
             if len(rendered) > 180:
@@ -985,7 +974,7 @@ def _registry_hook_examples_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> str:
     for finding in findings:
-        pairs = finding.metrics.class_key_pairs_for_plan()
+        pairs = finding.metrics.plan_class_key_pairs
         if pairs:
             return _human_join(list(pairs))
     class_names = _class_names_from_findings(findings)
@@ -999,13 +988,13 @@ def _identity_field_names_from_findings(
 ) -> tuple[str, ...]:
     names: list[str] = []
     for finding in findings:
-        names.extend(finding.metrics.identity_field_names_for_plan())
+        names.extend(finding.metrics.plan_identity_field_names)
     return tuple(_dedupe_preserve_order(names))
 
 
 def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
     for finding in findings:
-        registry_name = finding.metrics.registry_name_for_plan()
+        registry_name = finding.metrics.plan_registry_name
         if registry_name:
             return _safe_identifier(registry_name)
     return "Registry"
@@ -1018,7 +1007,7 @@ def _mapping_symbol_from_findings(
     source_name: str | None,
 ) -> str:
     for finding in findings:
-        mapping_name = finding.metrics.mapping_name_for_plan()
+        mapping_name = finding.metrics.plan_mapping_name
         if not mapping_name:
             continue
         identifier = _safe_identifier(mapping_name)
@@ -1042,7 +1031,7 @@ def _mapping_source_name_from_findings(
     names = {
         name
         for finding in findings
-        if (name := finding.metrics.source_name_for_plan()) is not None
+        if (name := finding.metrics.plan_source_name) is not None
     }
     if not names:
         return None
@@ -1094,7 +1083,7 @@ def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str
 
 def _statement_count_from_findings(findings: tuple[RefactorFinding, ...]) -> int:
     for finding in findings:
-        statement_count = finding.metrics.statement_count_for_plan()
+        statement_count = finding.metrics.plan_statement_count
         if statement_count:
             return int(statement_count)
     return 0

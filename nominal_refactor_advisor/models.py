@@ -104,46 +104,60 @@ class FindingMetrics(SemanticRecord, ABC):
                     return base.__name__
         return FindingMetrics.__name__
 
-    def shared_algorithm_sites_for_plan(self) -> int:
+    @property
+    def shared_algorithm_sites(self) -> int:
         return 0
 
-    def registration_sites_for_plan(self) -> int:
+    @property
+    def registration_sites(self) -> int:
         return 0
 
-    def mapping_sites_for_plan(self) -> int:
+    @property
+    def mapping_sites(self) -> int:
         return 0
 
-    def dispatch_sites_for_plan(self, evidence_count: int) -> int:
+    @property
+    def dispatch_sites(self) -> int:
         return 0
 
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
+    @property
+    def impact_delta(self) -> ImpactDelta:
         return ImpactDelta()
 
-    def class_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
         return ()
 
-    def field_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
         return ()
 
-    def registry_name_for_plan(self) -> str | None:
+    @property
+    def plan_registry_name(self) -> str | None:
         return None
 
-    def mapping_name_for_plan(self) -> str | None:
+    @property
+    def plan_mapping_name(self) -> str | None:
         return None
 
-    def source_name_for_plan(self) -> str | None:
+    @property
+    def plan_source_name(self) -> str | None:
         return None
 
-    def identity_field_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_identity_field_names(self) -> tuple[str, ...]:
         return ()
 
-    def statement_count_for_plan(self) -> int:
+    @property
+    def plan_statement_count(self) -> int:
         return 0
 
-    def shared_statement_texts_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_shared_statement_texts(self) -> tuple[str, ...]:
         return ()
 
-    def class_key_pairs_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_class_key_pairs(self) -> tuple[str, ...]:
         return ()
 
 
@@ -178,10 +192,12 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
     method_symbols: tuple[str, ...] = ()
     shared_statement_texts: tuple[str, ...] = ()
 
-    def shared_algorithm_sites_for_plan(self) -> int:
+    @property
+    def shared_algorithm_sites(self) -> int:
         return self.duplicate_site_count
 
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
+    @property
+    def impact_delta(self) -> ImpactDelta:
         lower_bound = max(
             (self.duplicate_site_count - 1) * max(self.statement_count - 2, 0),
             0,
@@ -198,13 +214,16 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
             shared_algorithm_sites_centralized=max(self.duplicate_site_count - 1, 0),
         )
 
-    def statement_count_for_plan(self) -> int:
+    @property
+    def plan_statement_count(self) -> int:
         return self.statement_count
 
-    def shared_statement_texts_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_shared_statement_texts(self) -> tuple[str, ...]:
         return self.shared_statement_texts
 
-    def class_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
         names = []
         for symbol in self.method_symbols:
             if "." in symbol:
@@ -217,7 +236,8 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
     duplicate_group_count: int
     class_count: int
 
-    def shared_algorithm_sites_for_plan(self) -> int:
+    @property
+    def shared_algorithm_sites(self) -> int:
         return self.duplicate_group_count
 
 
@@ -230,10 +250,12 @@ class MappingMetrics(MappingFindingMetrics):
     source_name: str | None = None
     identity_field_names: tuple[str, ...] = ()
 
-    def mapping_sites_for_plan(self) -> int:
+    @property
+    def mapping_sites(self) -> int:
         return self.mapping_site_count
 
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
+    @property
+    def impact_delta(self) -> ImpactDelta:
         lower_bound = max(
             (self.mapping_site_count - 1) * max(self.field_count - 1, 0),
             0,
@@ -253,16 +275,20 @@ class MappingMetrics(MappingFindingMetrics):
             ),
         )
 
-    def field_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
         return self.field_names
 
-    def mapping_name_for_plan(self) -> str | None:
+    @property
+    def plan_mapping_name(self) -> str | None:
         return self.mapping_name
 
-    def source_name_for_plan(self) -> str | None:
+    @property
+    def plan_source_name(self) -> str | None:
         return self.source_name
 
-    def identity_field_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_identity_field_names(self) -> tuple[str, ...]:
         return self.identity_field_names
 
 
@@ -274,10 +300,12 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     class_names: tuple[str, ...] = ()
     class_key_pairs: tuple[str, ...] = ()
 
-    def registration_sites_for_plan(self) -> int:
+    @property
+    def registration_sites(self) -> int:
         return self.registration_site_count
 
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
+    @property
+    def impact_delta(self) -> ImpactDelta:
         lower_bound = max(self.registration_site_count - 1, 0)
         return ImpactDelta(
             lower_bound_removable_loc=lower_bound,
@@ -287,16 +315,20 @@ class RegistrationMetrics(RegistrationFindingMetrics):
             registration_sites_removed=self.registration_site_count,
         )
 
-    def class_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
         return self.class_names
 
-    def registry_name_for_plan(self) -> str | None:
+    @property
+    def plan_registry_name(self) -> str | None:
         return self.registry_name
 
-    def field_names_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
         return self.class_key_pairs
 
-    def class_key_pairs_for_plan(self) -> tuple[str, ...]:
+    @property
+    def plan_class_key_pairs(self) -> tuple[str, ...]:
         return self.class_key_pairs
 
     @classmethod
@@ -323,10 +355,12 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
     def _count_value(self) -> int:
         return int(getattr(self, self.count_field_name))
 
-    def dispatch_sites_for_plan(self, evidence_count: int) -> int:
+    @property
+    def dispatch_sites(self) -> int:
         return self._count_value()
 
-    def outcome_delta(self, evidence_count: int) -> ImpactDelta:
+    @property
+    def impact_delta(self) -> ImpactDelta:
         count = self._count_value()
         lower_bound = max(count - 1, 0)
         return ImpactDelta(

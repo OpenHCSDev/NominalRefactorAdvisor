@@ -45,6 +45,7 @@ class CapabilityTag(StrEnum):
 
 
 class ObservationTag(StrEnum):
+    ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
     BRANCH_DISPATCH = "branch_dispatch"
     BUILDER_CALL = "builder_call"
@@ -136,6 +137,7 @@ _CAPABILITY_DISTINCTIONS = {
 }
 
 _OBSERVATION_LABELS = {
+    ObservationTag.ACCESSOR_WRAPPER: "accessor wrapper methods",
     ObservationTag.ATTRIBUTE_PROBE: "attribute probes",
     ObservationTag.BRANCH_DISPATCH: "branch-level value checks",
     ObservationTag.BUILDER_CALL: "keyword-constructor sites",
