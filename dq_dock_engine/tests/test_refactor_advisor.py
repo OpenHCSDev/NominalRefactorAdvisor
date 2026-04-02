@@ -35,6 +35,169 @@ class Beta:
     assert any(finding.pattern_id == 5 for finding in findings)
 
 
+def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    sigma = "alpha"
+
+
+class Beta:
+    sigma = "beta"
+
+
+def choose(obj):
+    if obj.sigma == "alpha":
+        return 1
+    return 2
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 1 for finding in findings)
+
+
+def test_detects_predicate_factory_chain(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def build(param_type):
+    if is_optional(param_type):
+        return OptionalInfo()
+    elif is_dataclass(param_type):
+        return DataclassInfo()
+    return GenericInfo()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 2 for finding in findings)
+
+
+def test_detects_config_attribute_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(config):
+    if hasattr(config, "napari_port"):
+        return config.napari_port
+    if getattr(config, "viewer_type", None) == "fiji":
+        return 2
+    return 0
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 4 for finding in findings)
+
+
+def test_detects_generated_type_lineage(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+BASE_TO_LAZY = {}
+
+
+class Base:
+    pass
+
+
+LazyBase = type("LazyBase", (Base,), {})
+BASE_TO_LAZY[Base] = LazyBase
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 7 for finding in findings)
+
+
+def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(scope_stack, obj):
+    for scope in scope_stack:
+        for mro_type in type(obj).__mro__:
+            if scope and mro_type:
+                return scope, mro_type
+    return None
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 8 for finding in findings)
+
+
+def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def check(instance):
+    if hasattr(instance.__class__, "_is_global_config"):
+        return instance.__class__._is_global_config
+    return False
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 9 for finding in findings)
+
+
+def test_detects_dynamic_interface_generation(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+def make_interface(name):
+    return type(name, (ABC,), {})
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 10 for finding in findings)
+
+
+def test_detects_sentinel_type_marker(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+SENTINEL = type("Sentinel", (), {})()
+
+
+def present(registry):
+    return SENTINEL in registry
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 11 for finding in findings)
+
+
+def test_detects_dynamic_method_injection(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def inject(target_type, method_name, method_impl):
+    setattr(target_type, method_name, method_impl)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 12 for finding in findings)
+
+
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -1,8 +1,7 @@
-DQ-Dock Refactor Advisor
+Nominal Refactor Advisor
 ========================
 
-This document records the initial plan and self-audit for the AST-driven refactoring advisor introduced
-for DQ-Dock.
+This document records the current design and self-audit for the standalone AST-driven refactoring advisor.
 
 Purpose
 -------
@@ -10,7 +9,7 @@ Purpose
 The tool is not a generic clone detector. It is a structural issue classifier that tries to prescribe a
 canonical refactoring pattern using the nominal-architecture rules in this docs set.
 
-The current MVP scans Python ASTs and emits findings for several issue families:
+The current implementation scans Python ASTs and emits findings for all current pattern families.
 
 - repeated non-orthogonal method skeletons across classes
 - repeated keyword-based builder calls that copy the same field mapping across sites
@@ -25,13 +24,22 @@ The current MVP scans Python ASTs and emits findings for several issue families:
 Primary Prescriptions
 ---------------------
 
-The tool currently prescribes these case-study patterns:
+The tool now has explicit coverage for Patterns 1 through 14, including:
 
+- Pattern 1: sentinel attribute simulation vs nominal boundary
+- Pattern 2: discriminated-union predicate chains
+- Pattern 3: closed-family O(1) dispatch
+- Pattern 4: polymorphic configuration contracts
 - Pattern 5: ABC template-method migration
 - Pattern 6: AutoRegisterMeta / class-level registration normal form
-- Pattern 3: closed-family O(1) dispatch
+- Pattern 7: generated-type lineage tracking
+- Pattern 8: dual-axis scope x type resolution
+- Pattern 9: custom ``isinstance`` / virtual membership
+- Pattern 10: dynamic interface generation
+- Pattern 11: sentinel type capability markers
+- Pattern 12: dynamic method injection into type namespaces
 - Pattern 13: bidirectional type lookup
-- Pattern 14: authoritative constructor / shared builder
+- Pattern 14: authoritative constructor / projection schema
 
 Pattern 5 should be read broadly: the advisor may point toward an ``ABC`` plus concrete implementation
 classes, or toward an ``ABC`` plus mixins when some concerns are orthogonal but still belong in the
@@ -59,8 +67,7 @@ For Pattern 3, the prescription is intentionally broad: the replacement can be a
 class-registration family, or a dataclass-backed rule table. The important point is that the cases become
 data in one authoritative structure rather than repeated literal branches in code.
 
-This matches the current DQ-Dock need: find duplicated behavior-family logic, weak structural dispatch,
-and mirrored registry state before those patterns spread further.
+DQ-Dock was the initial proving ground, but the advisor is no longer DQ-Dock-specific.
 
 
 Why the Design Follows the Docs
@@ -104,22 +111,21 @@ Against ``agent_refactoring_crash_course.rst``:
 
 Against ``nominal_identity_case_studies.rst``:
 
-- Pattern 3 coverage: good
-- Pattern 5 coverage: good
-- Pattern 13 coverage: good
-- Pattern 6/7/8/9/10/11/12 coverage: not yet implemented
+- Pattern coverage: complete at the first heuristic level
+- Confidence quality: mixed; some patterns are stronger than others and still need sharpening
 
 
 Next Iteration Targets
 ----------------------
 
-The next useful detectors should be:
+The next useful iterations are no longer about missing pattern IDs. They are about improving precision,
+reducing false positives, and adding codemod suggestions.
 
-1. repeated field-assignment / record-builder detection
-2. repeated subclass registration boilerplate -> Pattern 6
-3. sentinel-attribute simulation of identity -> Pattern 1 or 11
-4. repeated lineage-normalization logic -> Pattern 7 or 13
-5. scope x type precedence detection -> Pattern 8
+1. sharpen Pattern 3 so constant maps are separated from true dispatch smells
+2. widen Pattern 14 to dataclass-to-dataclass conversion blocks
+3. add suggested refactor skeletons, not just findings
+4. add repository configuration and suppression support
+5. extract more generic docs into the standalone repo over time
 
 The builder detector currently focuses on repeated keyword-constructor shapes. A later pass should widen it
 to export dictionaries and repeated dataclass-to-dataclass conversion blocks.

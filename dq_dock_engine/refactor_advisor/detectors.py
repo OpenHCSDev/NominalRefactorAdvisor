@@ -89,6 +89,72 @@ class PerModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
+class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        evidence = self._module_evidence(module, config)
+        if len(evidence) < self._minimum_evidence(config):
+            return []
+        return [self._build_finding(module, evidence, config)]
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        return 1
+
+    @abstractmethod
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _build_finding(
+        self,
+        module: ParsedModule,
+        evidence: tuple[SourceLocation, ...],
+        config: DetectorConfig,
+    ) -> RefactorFinding:
+        raise NotImplementedError
+
+
+class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
+    pattern_id: int
+    title: str
+    why: str
+    capability_gap: str
+    relation_context: str
+    confidence: str = "medium"
+
+    def _build_finding(
+        self,
+        module: ParsedModule,
+        evidence: tuple[SourceLocation, ...],
+        config: DetectorConfig,
+    ) -> RefactorFinding:
+        return _module_finding(
+            detector_id=self.detector_id,
+            pattern_id=self.pattern_id,
+            title=self.title,
+            summary=self._summary(module, evidence),
+            why=self.why,
+            capability_gap=self.capability_gap,
+            relation_context=self.relation_context,
+            evidence=self._evidence_slice(evidence),
+            confidence=self.confidence,
+        )
+
+    def _evidence_slice(
+        self, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[SourceLocation, ...]:
+        return evidence[:6]
+
+    @abstractmethod
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        raise NotImplementedError
+
+
 class GroupedShapeIssueDetector(IssueDetector):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -143,6 +209,31 @@ def _as_export_shape(shape: object) -> ExportDictShape:
     if not isinstance(shape, ExportDictShape):
         raise TypeError(f"Expected ExportDictShape, got {type(shape)!r}")
     return shape
+
+
+def _module_finding(
+    *,
+    detector_id: str,
+    pattern_id: int,
+    title: str,
+    summary: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+    evidence: tuple[SourceLocation, ...],
+    confidence: str = "medium",
+) -> RefactorFinding:
+    return RefactorFinding(
+        detector_id=detector_id,
+        pattern_id=pattern_id,
+        title=title,
+        summary=summary,
+        why=why,
+        capability_gap=capability_gap,
+        confidence=confidence,
+        relation_context=relation_context,
+        evidence=evidence,
+    )
 
 
 class NodeRule(ABC):
@@ -468,6 +559,266 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         )
 
 
+class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
+    detector_id = "sentinel_attribute_simulation"
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        sentinel_attrs = _collect_class_sentinel_attrs(module.module)
+        findings: list[RefactorFinding] = []
+        for attr_name, evidence in sentinel_attrs.items():
+            if len(evidence) < 2:
+                continue
+            if not _module_compares_attribute(module.module, attr_name):
+                continue
+            findings.append(
+                RefactorFinding(
+                    detector_id=self.detector_id,
+                    pattern_id=1,
+                    title="Sentinel attribute is simulating nominal identity",
+                    summary=(
+                        f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also used for behavioral branching."
+                    ),
+                    why=(
+                        "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
+                        "multiple classes, the boundary should become a nominal family or another explicit identity handle."
+                    ),
+                    capability_gap="enumerable and enforceable nominal role identity",
+                    confidence="medium",
+                    relation_context="same class-level sentinel attribute reused as a fake identity boundary",
+                    evidence=tuple(evidence[:6]),
+                )
+            )
+        return findings
+
+
+class PredicateFactoryChainDetector(PerModuleIssueDetector):
+    detector_id = "predicate_factory_chain"
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for function in _iter_functions(module.module):
+            branch_count = _predicate_factory_chain_branch_count(function)
+            if branch_count is None:
+                continue
+            findings.append(
+                RefactorFinding(
+                    detector_id=self.detector_id,
+                    pattern_id=2,
+                    title="Predicate chain should become a discriminated union family",
+                    summary=(
+                        f"{function.name} contains a {branch_count}-branch predicate factory chain returning variant constructors."
+                    ),
+                    why=(
+                        "The docs say repeated predicate-driven variant selection should become an explicit subclass family with "
+                        "enumeration rather than an open-ended if/elif chain."
+                    ),
+                    capability_gap="exhaustive nominal variant discovery and extension",
+                    confidence="medium",
+                    relation_context="same factory role repeated as predicate branches inside one function",
+                    evidence=(
+                        SourceLocation(
+                            str(module.path), function.lineno, function.name
+                        ),
+                    ),
+                )
+            )
+        return findings
+
+
+class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
+    detector_id = "config_attribute_dispatch"
+    pattern_id = 4
+    title = "Config dispatch is encoded through fragile attribute probing"
+    why = (
+        "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name "
+        "probing or ad hoc attribute comparisons."
+    )
+    capability_gap = "fail-loud polymorphic configuration contracts"
+    relation_context = (
+        "same config-family choice expressed through attribute-level probing"
+    )
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = []
+        for function in _iter_functions(module.module):
+            if not _function_has_param(function, "config"):
+                continue
+            evidence.extend(_config_dispatch_evidence(module, function))
+        return tuple(evidence)
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        return 2
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return f"{module.path} contains {len(evidence)} config-specific attribute probes or comparisons."
+
+
+class GeneratedTypeLineageDetector(StaticModulePatternDetector):
+    detector_id = "generated_type_lineage"
+    pattern_id = 7
+    title = "Generated types need explicit lineage tracking"
+    why = (
+        "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and "
+        "provenance remain exact."
+    )
+    capability_gap = "exact generated-type lineage and normalization"
+    relation_context = (
+        "same module combines runtime type generation with lineage-sensitive registries"
+    )
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        generation_sites = _generated_type_sites(module)
+        lineage_sites = _type_lineage_sites(module)
+        if not generation_sites or not lineage_sites:
+            return ()
+        return tuple((generation_sites + lineage_sites)[:6])
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return f"{module.path} generates runtime types and also maintains type-lineage state."
+
+
+class DualAxisResolutionDetector(PerModuleIssueDetector):
+    detector_id = "dual_axis_resolution"
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for function in _iter_functions(module.module):
+            evidence = _dual_axis_resolution_evidence(module, function)
+            if evidence is None:
+                continue
+            findings.append(
+                RefactorFinding(
+                    detector_id=self.detector_id,
+                    pattern_id=8,
+                    title="Nested precedence walk should be a dual-axis resolution primitive",
+                    summary=(
+                        f"{function.name} nests scope-like and MRO/type-like iteration in one precedence walk."
+                    ),
+                    why=(
+                        "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order "
+                        "contribute to resolution and provenance."
+                    ),
+                    capability_gap="explicit dual-axis precedence with provenance",
+                    confidence="medium",
+                    relation_context="same function combines context hierarchy and type/MRO hierarchy",
+                    evidence=evidence,
+                )
+            )
+        return findings
+
+
+class ManualVirtualMembershipDetector(StaticModulePatternDetector):
+    detector_id = "manual_virtual_membership"
+    pattern_id = 9
+    title = "Manual class-marker membership should become custom isinstance semantics"
+    why = (
+        "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks "
+        "suggest a custom isinstance/subclass boundary rather than scattered manual probing."
+    )
+    capability_gap = "runtime-checkable virtual membership on nominal class identity"
+    relation_context = "same membership question repeated through class-marker probing"
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = []
+        for function in _iter_functions(module.module):
+            evidence.extend(_manual_class_marker_checks(module, function))
+        return tuple(evidence)
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        return 2
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return f"{module.path} performs {len(evidence)} class-level marker checks on instances."
+
+
+class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
+    detector_id = "dynamic_interface_generation"
+    pattern_id = 10
+    title = "Dynamic interface generation is present or required"
+    why = (
+        "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles "
+        "when structure alone cannot express membership."
+    )
+    capability_gap = "explicit runtime-generated nominal interface identity"
+    relation_context = "same module generates interface-like nominal types at runtime"
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        return tuple(_dynamic_interface_sites(module)[:6])
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return (
+            f"{module.path} contains {len(evidence)} runtime-generated interface sites."
+        )
+
+
+class SentinelTypeMarkerDetector(StaticModulePatternDetector):
+    detector_id = "sentinel_type_marker"
+    pattern_id = 11
+    title = "Unique sentinel type marker is present or should be used"
+    why = (
+        "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when "
+        "exact capability identity matters more than payload."
+    )
+    capability_gap = "exact capability-marker identity independent of structure"
+    relation_context = "same module creates or uses unique nominal sentinel markers"
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        return tuple(_sentinel_type_sites(module)[:6])
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return f"{module.path} contains {len(evidence)} sentinel-type capability marker sites."
+
+
+class DynamicMethodInjectionDetector(StaticModulePatternDetector):
+    detector_id = "dynamic_method_injection"
+    pattern_id = 12
+    title = "Dynamic method injection belongs in a type-namespace pattern"
+    why = (
+        "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, "
+        "not in repeated instance-level patching."
+    )
+    capability_gap = "shared type-namespace mutation for a nominal family"
+    relation_context = (
+        "same module mutates class behavior through runtime namespace injection"
+    )
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        return tuple(_dynamic_method_injection_sites(module)[:6])
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return f"{module.path} contains {len(evidence)} dynamic type-namespace injection sites."
+
+
 class AttributeProbeDetector(PerModuleIssueDetector):
     detector_id = "attribute_probes"
     probe_rules = (
@@ -632,6 +983,15 @@ class BidirectionalRegistryDetector(PerModuleIssueDetector):
 
 def default_detectors() -> tuple[IssueDetector, ...]:
     return (
+        SentinelAttributeSimulationDetector(),
+        PredicateFactoryChainDetector(),
+        ConfigAttributeDispatchDetector(),
+        GeneratedTypeLineageDetector(),
+        DualAxisResolutionDetector(),
+        ManualVirtualMembershipDetector(),
+        DynamicInterfaceGenerationDetector(),
+        SentinelTypeMarkerDetector(),
+        DynamicMethodInjectionDetector(),
         RepeatedPrivateMethodDetector(),
         InheritanceHierarchyCandidateDetector(),
         RepeatedBuilderCallDetector(),
@@ -655,6 +1015,8 @@ def _count_string_comparisons(node: ast.If) -> int:
 
 def _string_comparisons_in_test(node: ast.AST) -> int:
     if isinstance(node, ast.Compare):
+        if not all(isinstance(op, ast.Eq) for op in node.ops):
+            return 0
         values = [node.left] + list(node.comparators)
         if any(
             isinstance(value, ast.Constant) and isinstance(value.value, str)
@@ -775,3 +1137,292 @@ def _group_repeated_methods(
         for methods in groups.values()
         if len(methods) >= 2 and len({method.class_name for method in methods}) >= 2
     ]
+
+
+def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    return [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+
+
+def _function_has_param(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, param_name: str
+) -> bool:
+    return any(arg.arg == param_name for arg in function.args.args)
+
+
+def _collect_class_sentinel_attrs(
+    module: ast.Module,
+) -> dict[str, list[SourceLocation]]:
+    grouped: dict[str, list[SourceLocation]] = defaultdict(list)
+    for node in ast.walk(module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            if not isinstance(stmt.value, ast.Constant):
+                continue
+            if not isinstance(stmt.value.value, (str, int, bool)):
+                continue
+            grouped[target.id].append(
+                SourceLocation("<module>", stmt.lineno, f"{node.name}.{target.id}")
+            )
+    return grouped
+
+
+def _module_compares_attribute(module: ast.Module, attr_name: str) -> bool:
+    for node in ast.walk(module):
+        if isinstance(node, ast.Compare):
+            values = [node.left] + list(node.comparators)
+            if any(
+                isinstance(value, ast.Attribute) and value.attr == attr_name
+                for value in values
+            ):
+                return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "getattr" and len(node.args) >= 2:
+                attr = node.args[1]
+                if isinstance(attr, ast.Constant) and attr.value == attr_name:
+                    return True
+    return False
+
+
+def _predicate_factory_chain_branch_count(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> int | None:
+    if not function.body or not isinstance(function.body[0], ast.If):
+        return None
+    branch_count = 0
+    current: ast.stmt | None = function.body[0]
+    while isinstance(current, ast.If):
+        if not _test_has_call(current.test):
+            return None
+        if not any(
+            isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Call)
+            for stmt in current.body
+        ):
+            return None
+        branch_count += 1
+        current = current.orelse[0] if len(current.orelse) == 1 else None
+    if branch_count < 2:
+        return None
+    return branch_count
+
+
+def _test_has_call(node: ast.AST) -> bool:
+    return any(isinstance(child, ast.Call) for child in ast.walk(node))
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _config_dispatch_evidence(
+    module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if (
+                node.func.id == "hasattr"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "config"
+            ):
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, function.name)
+                )
+            if (
+                node.func.id == "getattr"
+                and node.args
+                and isinstance(node.args[0], ast.Name)
+                and node.args[0].id == "config"
+            ):
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, function.name)
+                )
+        if isinstance(node, ast.Compare):
+            if (
+                isinstance(node.left, ast.Attribute)
+                and isinstance(node.left.value, ast.Name)
+                and node.left.value.id == "config"
+            ):
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, function.name)
+                )
+    return evidence
+
+
+def _generated_type_sites(module: ParsedModule) -> list[SourceLocation]:
+    sites: list[SourceLocation] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        if call_name in {"type", "make_dataclass", "new_class"}:
+            sites.append(
+                SourceLocation(str(module.path), node.lineno, call_name or "type")
+            )
+    return sites
+
+
+def _type_lineage_sites(module: ParsedModule) -> list[SourceLocation]:
+    sites: list[SourceLocation] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Subscript):
+                continue
+            name = _call_name(target.value)
+            if name and any(
+                token in name.lower()
+                for token in ("lazy", "base", "type", "mapping", "registry")
+            ):
+                sites.append(SourceLocation(str(module.path), node.lineno, name))
+    return sites
+
+
+def _dual_axis_resolution_evidence(
+    module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[SourceLocation, ...] | None:
+    for node in ast.walk(function):
+        if not isinstance(node, ast.For):
+            continue
+        inner_loops = [child for child in node.body if isinstance(child, ast.For)]
+        if not inner_loops:
+            continue
+        outer_name = _loop_target_name(node.target)
+        inner_name = _loop_target_name(inner_loops[0].target)
+        text = ast.dump(inner_loops[0].iter, include_attributes=False)
+        if "__mro__" in text or "mro" in text.lower() or "type" in text.lower():
+            if outer_name and any(
+                token in outer_name.lower() for token in ("scope", "context", "level")
+            ):
+                return (
+                    SourceLocation(str(module.path), node.lineno, function.name),
+                    SourceLocation(
+                        str(module.path), inner_loops[0].lineno, function.name
+                    ),
+                )
+    return None
+
+
+def _loop_target_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _manual_class_marker_checks(
+    module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    for node in ast.walk(function):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "hasattr"
+        ):
+            target = node.args[0] if node.args else None
+            if isinstance(target, ast.Attribute) and target.attr == "__class__":
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, function.name)
+                )
+            elif isinstance(target, ast.Call) and _call_name(target.func) == "type":
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, function.name)
+                )
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_is_"):
+            evidence.append(
+                SourceLocation(str(module.path), node.lineno, function.name)
+            )
+    return evidence
+
+
+def _dynamic_interface_sites(module: ParsedModule) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        if _call_name(node.func) != "type":
+            continue
+        if len(node.args) < 3:
+            continue
+        bases = node.args[1]
+        if isinstance(bases, ast.Tuple) and any(
+            isinstance(elt, ast.Name) and elt.id == "ABC" for elt in bases.elts
+        ):
+            namespace = node.args[2]
+            if isinstance(namespace, ast.Dict) and len(namespace.keys) == 0:
+                evidence.append(SourceLocation(str(module.path), node.lineno, "type"))
+    return evidence
+
+
+def _sentinel_type_sites(module: ParsedModule) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    sentinel_names: set[str] = set()
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        if not isinstance(node.value.func, ast.Call):
+            continue
+        if _call_name(node.value.func.func) != "type":
+            continue
+        sentinel_names.add(target.id)
+        evidence.append(SourceLocation(str(module.path), node.lineno, target.id))
+    for node in ast.walk(module.module):
+        if isinstance(node, ast.Compare):
+            names = {
+                subnode.id
+                for subnode in ast.walk(node)
+                if isinstance(subnode, ast.Name)
+            }
+            if names & sentinel_names:
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, "sentinel-compare")
+                )
+        if isinstance(node, ast.Subscript):
+            names = {
+                subnode.id
+                for subnode in ast.walk(node)
+                if isinstance(subnode, ast.Name)
+            }
+            if names & sentinel_names:
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, "sentinel-subscript")
+                )
+    return evidence
+
+
+def _dynamic_method_injection_sites(module: ParsedModule) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        if not isinstance(node.func, ast.Name) or node.func.id != "setattr":
+            continue
+        if len(node.args) < 3:
+            continue
+        target = node.args[0]
+        if isinstance(target, ast.Name) and target.id.endswith("type"):
+            evidence.append(SourceLocation(str(module.path), node.lineno, "setattr"))
+    return evidence
