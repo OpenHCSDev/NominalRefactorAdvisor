@@ -295,6 +295,7 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
             confidence="high",
             relation_context=relation,
             evidence=evidence,
+            scaffold=_abc_scaffold_for_methods(methods),
         )
 
 
@@ -352,6 +353,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                     confidence="high",
                     relation_context="same class set repeats several method roles across the same family boundary",
                     evidence=tuple(evidence[:8]),
+                    scaffold=_abc_family_scaffold(class_names, groups),
                 )
             )
         return findings
@@ -415,6 +417,7 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
                 "same builder role repeated across sibling functions or methods"
             ),
             evidence=evidence,
+            scaffold=_builder_scaffold(builders),
         )
 
 
@@ -468,6 +471,7 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
             confidence="medium",
             relation_context="same string-key projection role repeated across sibling functions or methods",
             evidence=evidence,
+            scaffold=_projection_schema_scaffold(export_shapes),
         )
 
 
@@ -520,6 +524,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
             confidence="medium",
             relation_context="same registry key family repeated through manual class-level registration assignments",
             evidence=evidence,
+            scaffold=_autoregister_scaffold(registry_name, class_names),
         )
 
 
@@ -867,6 +872,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         evidence: list[SourceLocation] = []
+        evidence.extend(_dispatch_dict_locations(module, config.min_string_cases))
         for node in ast.walk(module.module):
             if isinstance(node, ast.If):
                 string_tests = _count_string_comparisons(node)
@@ -876,19 +882,6 @@ class StringDispatchDetector(PerModuleIssueDetector):
                             str(module.path), node.lineno, "if-string-dispatch"
                         )
                     )
-            if isinstance(node, ast.Dict):
-                string_keys = sum(
-                    1
-                    for key in node.keys
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                )
-                if string_keys >= config.min_string_cases:
-                    evidence.append(
-                        SourceLocation(
-                            str(module.path), node.lineno, "dict-string-dispatch"
-                        )
-                    )
-
         if not evidence:
             return []
         return [
@@ -1107,6 +1100,168 @@ def _group_repeated_methods(
         for methods in groups.values()
         if len(methods) >= 2 and len({method.class_name for method in methods}) >= 2
     ]
+
+
+def _abc_scaffold_for_methods(methods: tuple[MethodShape, ...]) -> str:
+    class_names = sorted(
+        {method.class_name for method in methods if method.class_name is not None}
+    )
+    hook_names = sorted({method.method_name for method in methods})
+    base_name = _shared_family_name(class_names) or "ExtractedBase"
+    hook_name = hook_names[0] if hook_names else "hook"
+    return (
+        f"class {base_name}(ABC):\n"
+        f"    def run(self, request):\n"
+        f"        normalized = self._normalize(request)\n"
+        f"        return self.{hook_name}(normalized)\n\n"
+        f"    @abstractmethod\n"
+        f"    def {hook_name}(self, normalized): ..."
+    )
+
+
+def _abc_family_scaffold(
+    class_names: frozenset[str], groups: list[tuple[MethodShape, ...]]
+) -> str:
+    ordered = sorted(class_names)
+    base_name = _shared_family_name(ordered) or "FamilyBase"
+    hook_methods = sorted(
+        {
+            method.method_name
+            for group in groups
+            for method in group
+            if method.class_name in class_names
+        }
+    )
+    hook_block = "\n".join(
+        f"    @abstractmethod\n    def {name}(self, request): ..."
+        for name in hook_methods[:3]
+    )
+    subclass_block = "\n".join(
+        f"class {name}({base_name}):\n    ..." for name in ordered[:3]
+    )
+    return f"class {base_name}(ABC):\n    def run(self, request): ...\n{hook_block}\n\n{subclass_block}"
+
+
+def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
+    callee_name = builders[0].callee_name
+    keywords = builders[0].keyword_names
+    row_name = callee_name if callee_name[:1].isupper() else "ProjectedRow"
+    args_block = "\n".join(
+        f"            {name}=source.{name}," for name in keywords[:4]
+    )
+    return (
+        f"@dataclass(frozen=True)\n"
+        f"class {row_name}:\n"
+        f"    ...\n\n"
+        f"    @classmethod\n"
+        f"    def from_source(cls, source):\n"
+        f"        return cls(\n{args_block}\n        )"
+    )
+
+
+def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> str:
+    keys = export_shapes[0].key_names
+    field_block = "\n".join(f"    {key}: object" for key in keys[:4])
+    mapping_block = "\n".join(f"            {key}=source.{key}," for key in keys[:4])
+    return (
+        "@dataclass(frozen=True)\n"
+        "class ProjectionSchema:\n"
+        f"{field_block}\n\n"
+        "    @classmethod\n"
+        "    def from_source(cls, source):\n"
+        f"        return cls(\n{mapping_block}\n        )"
+    )
+
+
+def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
+    base_name = _shared_family_name(sorted(class_names)) or "RegisteredBase"
+    sample = sorted(class_names)[:2]
+    subclass_block = "\n".join(
+        f'class {name}({base_name}, metaclass=AutoRegisterMeta):\n    registry_key = "{name.lower()}"'
+        for name in sample
+    )
+    return (
+        f"class AutoRegisterMeta(ABCMeta):\n"
+        f"    registry = {registry_name}\n\n"
+        f"class {base_name}(ABC):\n"
+        f"    registry_key: str\n\n"
+        f"{subclass_block}"
+    )
+
+
+def _shared_family_name(class_names: list[str]) -> str | None:
+    if not class_names:
+        return None
+    prefix = class_names[0]
+    for name in class_names[1:]:
+        while prefix and not name.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix or None
+
+
+def _dispatch_dict_locations(
+    module: ParsedModule, min_string_cases: int
+) -> list[SourceLocation]:
+    locations: list[SourceLocation] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.function_depth = 0
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_depth += 1
+            self.generic_visit(node)
+            self.function_depth -= 1
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.function_depth += 1
+            self.generic_visit(node)
+            self.function_depth -= 1
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if self.function_depth > 0:
+                return
+            if not isinstance(node.value, ast.Dict):
+                return
+            if _looks_like_dispatch_dict(node.value, min_string_cases):
+                locations.append(
+                    SourceLocation(
+                        str(module.path), node.lineno, "dict-string-dispatch"
+                    )
+                )
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if self.function_depth > 0:
+                return
+            if not isinstance(node.value, ast.Dict):
+                return
+            if _looks_like_dispatch_dict(node.value, min_string_cases):
+                locations.append(
+                    SourceLocation(
+                        str(module.path), node.lineno, "dict-string-dispatch"
+                    )
+                )
+
+    Visitor().visit(module.module)
+    return locations
+
+
+def _looks_like_dispatch_dict(node: ast.Dict, min_string_cases: int) -> bool:
+    string_keys = [
+        key
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    ]
+    if len(string_keys) < min_string_cases or len(string_keys) != len(node.keys):
+        return False
+    if not node.values:
+        return False
+    if all(isinstance(value, ast.Constant) for value in node.values):
+        return False
+    return any(
+        isinstance(value, (ast.Name, ast.Attribute, ast.Lambda, ast.Call))
+        for value in node.values
+    )
 
 
 def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:

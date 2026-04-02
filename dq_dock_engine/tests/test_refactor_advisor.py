@@ -34,6 +34,7 @@ class Beta:
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 5 for finding in findings)
+    assert any(finding.pattern_id == 5 and finding.scaffold for finding in findings)
 
 
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
@@ -244,6 +245,7 @@ class Beta:
     findings = analyze_path(tmp_path)
     output = _format_markdown(findings)
     assert output.count("Example skeleton:") >= 2
+    assert "Suggested scaffold:" in output
 
 
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
@@ -382,6 +384,7 @@ class Beta:
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 14 for finding in findings)
+    assert any(finding.pattern_id == 14 and finding.scaffold for finding in findings)
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
@@ -407,6 +410,7 @@ REGISTRY["beta"] = BetaHandler
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
+    assert any(finding.pattern_id == 6 and finding.scaffold for finding in findings)
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
@@ -495,3 +499,55 @@ class Beta:
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "repeated_export_dicts" for finding in findings)
     assert any("projection dict" in finding.title.lower() for finding in findings)
+    assert any(
+        finding.detector_id == "repeated_export_dicts" and finding.scaffold
+        for finding in findings
+    )
+
+
+def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+LOOKUP = {
+    "alpha": 1,
+    "beta": 2,
+    "gamma": 3,
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "string_dispatch" for finding in findings)
+
+
+def test_detects_module_level_dispatch_dict_with_callable_targets(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def alpha():
+    return 1
+
+
+def beta():
+    return 2
+
+
+def gamma():
+    return 3
+
+
+DISPATCH = {
+    "alpha": alpha,
+    "beta": beta,
+    "gamma": gamma,
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.detector_id == "string_dispatch" for finding in findings)
