@@ -6,7 +6,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar, TypeAlias
+from typing import Callable, ClassVar, TypeAlias
 
 
 @dataclass(frozen=True)
@@ -134,20 +134,17 @@ class ObservationShapeSpec(ScopedShapeSpec, ABC):
 
 
 class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
-    @property
-    @abstractmethod
-    def node_type(self) -> type[ast.AST]:
-        raise NotImplementedError
+    node_type: ClassVar[type[ast.AST]]
 
     @property
     def node_types(self) -> tuple[type[ast.AST], ...]:
-        return (self.node_type,)
+        return (type(self).node_type,)
 
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
     ) -> object | None:
         node = observation.node
-        assert isinstance(node, self.node_type)
+        assert isinstance(node, type(self).node_type)
         return self.build_from_context(parsed_module, node, observation)
 
     @abstractmethod
@@ -158,6 +155,25 @@ class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
         observation: ScopedAstObservation,
     ) -> object | None:
         raise NotImplementedError
+
+
+class ContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
+    shape_helper: ClassVar[
+        Callable[[ParsedModule, ast.AST, str | None, str | None], object | None]
+    ]
+
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return type(self).shape_helper(
+            parsed_module,
+            node,
+            observation.class_name,
+            observation.function_name,
+        )
 
 
 @dataclass(frozen=True)
@@ -651,44 +667,12 @@ class MethodShapeSpec(ObservationShapeSpec):
         )
 
 
-class BuilderCallShapeSpec(ContextForwardingShapeSpec):
-    @property
-    def node_type(self) -> type[ast.AST]:
-        return ast.Call
-
-    def build_from_context(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.AST,
-        observation: ScopedAstObservation,
-    ) -> BuilderCallShape | None:
-        assert isinstance(node, ast.Call)
-        return _builder_call_shape(
-            parsed_module,
-            node,
-            observation.class_name,
-            observation.function_name,
-        )
+class BuilderCallShapeSpec(ContextHelperShapeSpec):
+    node_type = ast.Call
 
 
-class ExportDictShapeSpec(ContextForwardingShapeSpec):
-    @property
-    def node_type(self) -> type[ast.AST]:
-        return ast.Dict
-
-    def build_from_context(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.AST,
-        observation: ScopedAstObservation,
-    ) -> ExportDictShape | None:
-        assert isinstance(node, ast.Dict)
-        return _export_dict_shape(
-            parsed_module,
-            node,
-            observation.class_name,
-            observation.function_name,
-        )
+class ExportDictShapeSpec(ContextHelperShapeSpec):
+    node_type = ast.Dict
 
 
 _METHOD_SHAPE_SPEC = MethodShapeSpec()
@@ -1039,10 +1023,12 @@ def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObserva
 
 def _builder_call_shape(
     parsed_module: ParsedModule,
-    node: ast.Call,
+    node: ast.AST,
     class_name: str | None,
     function_name: str | None,
 ) -> BuilderCallShape | None:
+    if not isinstance(node, ast.Call):
+        return None
     if function_name is None:
         return None
     keyword_pairs = [(kw.arg, kw.value) for kw in node.keywords if kw.arg is not None]
@@ -1078,10 +1064,12 @@ def _builder_call_shape(
 
 def _export_dict_shape(
     parsed_module: ParsedModule,
-    node: ast.Dict,
+    node: ast.AST,
     class_name: str | None,
     function_name: str | None,
 ) -> ExportDictShape | None:
+    if not isinstance(node, ast.Dict):
+        return None
     if function_name is None:
         return None
     key_pairs = [
@@ -1115,6 +1103,10 @@ def _export_dict_shape(
         source_name=source_name,
         identity_field_names=identity_field_names,
     )
+
+
+BuilderCallShapeSpec.shape_helper = _builder_call_shape
+ExportDictShapeSpec.shape_helper = _export_dict_shape
 
 
 class _BuilderValueNormalizer(ast.NodeTransformer):
