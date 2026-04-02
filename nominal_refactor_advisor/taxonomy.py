@@ -80,6 +80,7 @@ class ObservationTag(StrEnum):
     RUNTIME_MEMBERSHIP = "runtime_membership"
     RUNTIME_TYPE_GENERATION = "runtime_type_generation"
     SCOPE_HIERARCHY = "scope_hierarchy"
+    SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
     SEMANTIC_DICT_BAG = "semantic_dict_bag"
     SEMANTIC_STRING_LITERAL = "semantic_string_literal"
     SENTINEL_ATTRIBUTE = "sentinel_attribute"
@@ -172,6 +173,7 @@ _OBSERVATION_LABELS = {
     ObservationTag.RUNTIME_MEMBERSHIP: "runtime membership probes",
     ObservationTag.RUNTIME_TYPE_GENERATION: "runtime type generation",
     ObservationTag.SCOPE_HIERARCHY: "scope hierarchy walks",
+    ObservationTag.SCOPED_SHAPE_WRAPPER: "scoped shape wrapper families",
     ObservationTag.SEMANTIC_DICT_BAG: "semantic dict bags",
     ObservationTag.SEMANTIC_STRING_LITERAL: "repeated semantic string literals",
     ObservationTag.SENTINEL_ATTRIBUTE: "sentinel attribute checks",

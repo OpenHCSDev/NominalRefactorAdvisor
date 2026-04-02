@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .ast_tools import (
+    _terminal_name,
     BuilderCallShape,
     FieldObservation,
     ObservationGraph,
@@ -359,6 +360,21 @@ class FieldFamilyCandidate:
     execution_level: StructuralExecutionLevel
     observations: tuple[FieldObservation, ...]
     dataclass_count: int
+
+
+@dataclass(frozen=True)
+class ScopedShapeWrapperFunction:
+    function_name: str
+    lineno: int
+    node_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ScopedShapeWrapperSpec:
+    spec_name: str
+    lineno: int
+    function_name: str
+    node_types: tuple[str, ...]
 
 
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
@@ -1706,6 +1722,82 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
         return findings
 
 
+class ScopedShapeWrapperDetector(PerModuleIssueDetector):
+    detector_id = "scoped_shape_wrapper"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Parallel scoped-shape wrappers should become a polymorphic spec family",
+        why=(
+            "Parallel wrapper functions plus parallel spec declarations mean the code already has a hidden "
+            "strategy family, but it is encoded as duplicated procedural glue. The docs prefer moving the shared "
+            "algorithm into an ABC and letting polymorphic spec classes own the node family differences."
+        ),
+        capability_gap="single authoritative polymorphic observation-spec family",
+        relation_context="same scoped-observation wrapper skeleton repeated across multiple shape builders",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.SCOPED_SHAPE_WRAPPER,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        wrapper_functions = {
+            item.function_name: item for item in _scoped_shape_wrapper_functions(module)
+        }
+        wrapper_specs = [
+            spec
+            for spec in _scoped_shape_wrapper_specs(module)
+            if spec.function_name in wrapper_functions
+            and spec.node_types == wrapper_functions[spec.function_name].node_types
+        ]
+        if len(wrapper_specs) < 2:
+            return []
+        evidence_items = [
+            SourceLocation(str(module.path), spec.lineno, spec.spec_name)
+            for spec in wrapper_specs[:6]
+        ]
+        evidence_items.extend(
+            SourceLocation(
+                str(module.path),
+                wrapper_functions[spec.function_name].lineno,
+                wrapper_functions[spec.function_name].function_name,
+            )
+            for spec in wrapper_specs[:6]
+        )
+        evidence = tuple(
+            sorted(
+                evidence_items,
+                key=lambda item: (item.line, item.symbol),
+            )[:8]
+        )
+        function_names = ", ".join(spec.function_name for spec in wrapper_specs)
+        spec_names = ", ".join(spec.spec_name for spec in wrapper_specs)
+        node_families = ", ".join(
+            sorted({"/".join(spec.node_types) for spec in wrapper_specs})
+        )
+        return [
+            self.finding_spec.build(
+                self.detector_id,
+                (
+                    f"{module.path} encodes scoped shape builders {function_names} and specs {spec_names} as parallel wrappers over node families {node_families}."
+                ),
+                evidence,
+                scaffold=(
+                    "Introduce one `ScopedShapeSpec` ABC with a concrete collect path and polymorphic subclasses such as\n"
+                    "`MethodShapeSpec`, `BuilderCallShapeSpec`, and `ExportDictShapeSpec`, then delete the wrapper functions."
+                ),
+            )
+        ]
+
+
 class AccessorWrapperDetector(PerModuleIssueDetector):
     detector_id = "accessor_wrapper"
     finding_spec = FindingSpec(
@@ -2391,6 +2483,7 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         NumericLiteralDispatchDetector(),
         RepeatedHardcodedStringDetector(),
         RepeatedProjectionHelperDetector(),
+        ScopedShapeWrapperDetector(),
         AccessorWrapperDetector(),
         SemanticDictBagDetector(),
         BidirectionalRegistryDetector(),
@@ -3120,6 +3213,122 @@ def _projection_helper_scaffold(shapes: list[ProjectionHelperShape]) -> str:
         f"# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n"
         f"# Projected fields: {attributes}"
     )
+
+
+def _scoped_shape_wrapper_functions(
+    module: ParsedModule,
+) -> tuple[ScopedShapeWrapperFunction, ...]:
+    wrappers: list[ScopedShapeWrapperFunction] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        candidate = _scoped_shape_wrapper_function(node)
+        if candidate is not None:
+            wrappers.append(candidate)
+    return tuple(sorted(wrappers, key=lambda item: item.lineno))
+
+
+def _scoped_shape_wrapper_function(
+    node: ast.FunctionDef,
+) -> ScopedShapeWrapperFunction | None:
+    if len(node.args.args) != 2:
+        return None
+    body = _trim_docstring_body(node.body)
+    if len(body) < 3:
+        return None
+    first_stmt = body[0]
+    if not (
+        isinstance(first_stmt, ast.Assign)
+        and len(first_stmt.targets) == 1
+        and isinstance(first_stmt.targets[0], ast.Name)
+        and first_stmt.targets[0].id == "node"
+        and isinstance(first_stmt.value, ast.Attribute)
+        and isinstance(first_stmt.value.value, ast.Name)
+        and first_stmt.value.value.id == node.args.args[1].arg
+        and first_stmt.value.attr == "node"
+    ):
+        return None
+    second_stmt = body[1]
+    if not isinstance(second_stmt, ast.If):
+        return None
+    node_types = _guarded_node_types(second_stmt.test, "node")
+    if not node_types:
+        return None
+    if not (
+        len(second_stmt.body) == 1
+        and isinstance(second_stmt.body[0], ast.Return)
+        and isinstance(second_stmt.body[0].value, ast.Constant)
+        and second_stmt.body[0].value.value is None
+    ):
+        return None
+    if not isinstance(body[-1], ast.Return) or body[-1].value is None:
+        return None
+    return ScopedShapeWrapperFunction(
+        function_name=node.name,
+        lineno=node.lineno,
+        node_types=node_types,
+    )
+
+
+def _guarded_node_types(test: ast.AST, expected_name: str) -> tuple[str, ...]:
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _guarded_node_types(test.operand, expected_name)
+    if not isinstance(test, ast.Call):
+        return ()
+    if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
+        return ()
+    if len(test.args) != 2:
+        return ()
+    if not isinstance(test.args[0], ast.Name) or test.args[0].id != expected_name:
+        return ()
+    return _type_name_tuple(test.args[1])
+
+
+def _type_name_tuple(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (node.attr,)
+    if isinstance(node, ast.Tuple):
+        names: list[str] = []
+        for item in node.elts:
+            names.extend(_type_name_tuple(item))
+        return tuple(names)
+    return ()
+
+
+def _scoped_shape_wrapper_specs(
+    module: ParsedModule,
+) -> tuple[ScopedShapeWrapperSpec, ...]:
+    specs: list[ScopedShapeWrapperSpec] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        if _terminal_name(node.value.func) != "ScopedShapeSpec":
+            continue
+        node_types = ()
+        function_name = None
+        for keyword in node.value.keywords:
+            if keyword.arg == "node_types":
+                node_types = _type_name_tuple(keyword.value)
+            if keyword.arg == "build_shape":
+                function_name = _terminal_name(keyword.value)
+        if not node_types or function_name is None:
+            continue
+        specs.append(
+            ScopedShapeWrapperSpec(
+                spec_name=target.id,
+                lineno=node.lineno,
+                function_name=function_name,
+                node_types=node_types,
+            )
+        )
+    return tuple(sorted(specs, key=lambda item: item.lineno))
 
 
 def _accessor_wrapper_candidates(

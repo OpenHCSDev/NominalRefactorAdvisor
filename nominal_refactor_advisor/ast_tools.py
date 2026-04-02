@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ast
 import copy
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import TypeAlias
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,90 @@ class FieldOriginKind(StrEnum):
     CLASS_ANNOTATION = "class_annotation"
     DATACLASS_FIELD = "dataclass_field"
     INIT_ASSIGNMENT = "init_assignment"
+
+
+@dataclass(frozen=True)
+class AstNameFamily:
+    names: frozenset[str]
+
+
+@dataclass(frozen=True)
+class AstCallObservation:
+    call: ast.Call
+    matched_name: str
+
+
+AstScopedNode: TypeAlias = ast.AST
+
+
+@dataclass(frozen=True)
+class ScopedAstObservation:
+    node: AstScopedNode
+    class_name: str | None
+    function_name: str | None
+
+
+class ScopedShapeSpec(ABC):
+    @property
+    @abstractmethod
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        raise NotImplementedError
+
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        shapes: list[object] = []
+        for observation in collect_scoped_observations(parsed_module, self.node_types):
+            shape = self.build_shape(parsed_module, observation)
+            if shape is not None:
+                shapes.append(shape)
+        return shapes
+
+    @abstractmethod
+    def build_shape(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        raise NotImplementedError
+
+
+class ObservationShapeSpec(ScopedShapeSpec, ABC):
+    def build_shape(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        if not isinstance(observation.node, self.node_types):
+            return None
+        return self.build_from_observation(parsed_module, observation)
+
+    @abstractmethod
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        raise NotImplementedError
+
+
+class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
+    @property
+    @abstractmethod
+    def node_type(self) -> type[ast.AST]:
+        raise NotImplementedError
+
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (self.node_type,)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        node = observation.node
+        assert isinstance(node, self.node_type)
+        return self.build_from_context(parsed_module, node, observation)
+
+    @abstractmethod
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -345,97 +431,218 @@ def _subscript_base_name(node: ast.AST) -> str | None:
     return _terminal_name(node.value)
 
 
-def _node_matches_name(node: ast.AST, expected_name: str) -> bool:
+_CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
+_DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
+_REGISTRATION_CALL_FAMILY = AstNameFamily(
+    frozenset({"register", "add", "register_class", "register_type"})
+)
+_REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
+    _REGISTRATION_CALL_FAMILY.names | frozenset({"auto_register"})
+)
+
+
+def _node_matches_family(node: ast.AST, family: AstNameFamily) -> bool:
     return (
-        _terminal_name(node) == expected_name
-        or _subscript_base_name(node) == expected_name
+        _terminal_name(node) in family.names
+        or _subscript_base_name(node) in family.names
     )
+
+
+def _terminal_name_in_family(node: ast.AST, family: AstNameFamily) -> str | None:
+    terminal_name = _terminal_name(node)
+    if terminal_name in family.names:
+        return terminal_name
+    return None
+
+
+def _name_family(names: set[str] | frozenset[str]) -> AstNameFamily:
+    return AstNameFamily(frozenset(names))
+
+
+def _iter_attribute_family_calls(
+    parsed_module: ParsedModule, family: AstNameFamily
+) -> tuple[AstCallObservation, ...]:
+    observations: list[AstCallObservation] = []
+    for node in ast.walk(parsed_module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        matched_name = _attribute_call_family_name(node, family)
+        if matched_name is None:
+            continue
+        observations.append(AstCallObservation(call=node, matched_name=matched_name))
+    return tuple(sorted(observations, key=lambda item: item.call.lineno))
+
+
+def _attribute_call_family_name(node: ast.Call, family: AstNameFamily) -> str | None:
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    return _terminal_name_in_family(node.func, family)
+
+
+def _iter_class_decorator_family_calls(
+    parsed_module: ParsedModule, family: AstNameFamily
+) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
+    observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
+    for node in ast.walk(parsed_module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            matched_name = _terminal_name_in_family(decorator.func, family)
+            if matched_name is None:
+                continue
+            observations.append((node, decorator, matched_name))
+    return tuple(sorted(observations, key=lambda item: item[0].lineno))
 
 
 def _node_display_name(node: ast.AST) -> str:
     return _terminal_name(node) or node.__class__.__name__
 
 
-def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
-    methods: list[MethodShape] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-
-        def _record_method(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            methods.append(
-                MethodShape(
-                    file_path=str(parsed_module.path),
-                    class_name=self.class_stack[-1] if self.class_stack else None,
-                    method_name=node.name,
-                    lineno=node.lineno,
-                    statement_count=len(node.body),
-                    is_private=node.name.startswith("_")
-                    and not node.name.startswith("__"),
-                    param_count=len(node.args.args),
-                    decorators=tuple(
-                        _node_display_name(dec) for dec in node.decorator_list
-                    ),
-                    fingerprint=fingerprint_function(node),
-                    statement_texts=tuple(ast.unparse(stmt) for stmt in node.body),
-                )
-            )
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._record_method(node)
-            self.generic_visit(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._record_method(node)
-            self.generic_visit(node)
-
-    Visitor().visit(parsed_module.module)
-    return methods
-
-
-def collect_builder_call_shapes(parsed_module: ParsedModule) -> list[BuilderCallShape]:
-    shapes: list[BuilderCallShape] = []
+def collect_scoped_observations(
+    parsed_module: ParsedModule,
+    node_types: tuple[type[ast.AST], ...],
+) -> tuple[ScopedAstObservation, ...]:
+    observations: list[ScopedAstObservation] = []
 
     class Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
             self.class_stack: list[str] = []
             self.function_stack: list[str] = []
 
-        def _push_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
+        def _record(self, node: ast.AST) -> None:
+            if not isinstance(node, node_types):
+                return
+            observations.append(
+                ScopedAstObservation(
+                    node=node,
+                    class_name=self.class_stack[-1] if self.class_stack else None,
+                    function_name=(
+                        self.function_stack[-1] if self.function_stack else None
+                    ),
+                )
+            )
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self._record(node)
             self.class_stack.append(node.name)
             self.generic_visit(node)
             self.class_stack.pop()
 
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._push_function(node)
+            self._record(node)
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
 
         def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._push_function(node)
-
-        def visit_Call(self, node: ast.Call) -> None:
-            shape = _builder_call_shape(
-                parsed_module,
-                node,
-                self.class_stack[-1] if self.class_stack else None,
-                self.function_stack[-1] if self.function_stack else None,
-            )
-            if shape is not None:
-                shapes.append(shape)
+            self._record(node)
+            self.function_stack.append(node.name)
             self.generic_visit(node)
+            self.function_stack.pop()
+
+        def generic_visit(self, node: ast.AST) -> None:
+            if not isinstance(
+                node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                self._record(node)
+            super().generic_visit(node)
 
     Visitor().visit(parsed_module.module)
-    return shapes
+    return tuple(observations)
+
+
+def collect_scoped_shapes(
+    parsed_module: ParsedModule,
+    spec: ScopedShapeSpec,
+) -> list[object]:
+    return spec.collect(parsed_module)
+
+
+class MethodShapeSpec(ObservationShapeSpec):
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> MethodShape | None:
+        node = observation.node
+        assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        return MethodShape(
+            file_path=str(parsed_module.path),
+            class_name=observation.class_name,
+            method_name=node.name,
+            lineno=node.lineno,
+            statement_count=len(node.body),
+            is_private=node.name.startswith("_") and not node.name.startswith("__"),
+            param_count=len(node.args.args),
+            decorators=tuple(_node_display_name(dec) for dec in node.decorator_list),
+            fingerprint=fingerprint_function(node),
+            statement_texts=tuple(ast.unparse(stmt) for stmt in node.body),
+        )
+
+
+class BuilderCallShapeSpec(ContextForwardingShapeSpec):
+    @property
+    def node_type(self) -> type[ast.AST]:
+        return ast.Call
+
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> BuilderCallShape | None:
+        assert isinstance(node, ast.Call)
+        return _builder_call_shape(
+            parsed_module,
+            node,
+            observation.class_name,
+            observation.function_name,
+        )
+
+
+class ExportDictShapeSpec(ContextForwardingShapeSpec):
+    @property
+    def node_type(self) -> type[ast.AST]:
+        return ast.Dict
+
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> ExportDictShape | None:
+        assert isinstance(node, ast.Dict)
+        return _export_dict_shape(
+            parsed_module,
+            node,
+            observation.class_name,
+            observation.function_name,
+        )
+
+
+_METHOD_SHAPE_SPEC = MethodShapeSpec()
+_BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
+_EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
+
+
+def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
+    return [
+        shape
+        for shape in collect_scoped_shapes(parsed_module, _METHOD_SHAPE_SPEC)
+        if isinstance(shape, MethodShape)
+    ]
+
+
+def collect_builder_call_shapes(parsed_module: ParsedModule) -> list[BuilderCallShape]:
+    return [
+        shape
+        for shape in collect_scoped_shapes(parsed_module, _BUILDER_CALL_SHAPE_SPEC)
+        if isinstance(shape, BuilderCallShape)
+    ]
 
 
 def collect_registration_shapes(parsed_module: ParsedModule) -> list[RegistrationShape]:
@@ -445,12 +652,13 @@ def collect_registration_shapes(parsed_module: ParsedModule) -> list[Registratio
         for node in ast.walk(parsed_module.module)
         if isinstance(node, ast.ClassDef)
     }
+    known_class_family = _name_family(known_classes)
     for node in ast.walk(parsed_module.module):
         if not isinstance(node, ast.Assign):
             continue
         if not isinstance(node.value, ast.Name):
             continue
-        if node.value.id not in known_classes:
+        if _terminal_name_in_family(node.value, known_class_family) is None:
             continue
         for target in node.targets:
             registry_name = _subscript_base_name(target)
@@ -467,48 +675,17 @@ def collect_registration_shapes(parsed_module: ParsedModule) -> list[Registratio
                     key_fingerprint,
                 )
             )
-    shapes.extend(_collect_registration_call_shapes(parsed_module, known_classes))
+    shapes.extend(_collect_registration_call_shapes(parsed_module, known_class_family))
     shapes.extend(_collect_decorator_registration_shapes(parsed_module))
     return shapes
 
 
 def collect_export_dict_shapes(parsed_module: ParsedModule) -> list[ExportDictShape]:
-    shapes: list[ExportDictShape] = []
-
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-            self.function_stack: list[str] = []
-
-        def _push_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._push_function(node)
-
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._push_function(node)
-
-        def visit_Dict(self, node: ast.Dict) -> None:
-            shape = _export_dict_shape(
-                parsed_module,
-                node,
-                self.class_stack[-1] if self.class_stack else None,
-                self.function_stack[-1] if self.function_stack else None,
-            )
-            if shape is not None:
-                shapes.append(shape)
-            self.generic_visit(node)
-
-    Visitor().visit(parsed_module.module)
-    return shapes
+    return [
+        shape
+        for shape in collect_scoped_shapes(parsed_module, _EXPORT_DICT_SHAPE_SPEC)
+        if isinstance(shape, ExportDictShape)
+    ]
 
 
 def _class_body_field_observation(
@@ -520,7 +697,7 @@ def _class_body_field_observation(
     if not is_dataclass_family:
         return None
     if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-        if _node_matches_name(stmt.annotation, "ClassVar"):
+        if _node_matches_family(stmt.annotation, _CLASSVAR_REFERENCE_FAMILY):
             return None
         return FieldObservation(
             file_path=str(parsed_module.path),
@@ -598,54 +775,43 @@ def _init_field_observations(
     return observations
 
 
-def _is_classvar_annotation(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "ClassVar"
-    if isinstance(node, ast.Subscript):
-        target = node.value
-        if isinstance(target, ast.Name):
-            return target.id == "ClassVar"
-        if isinstance(target, ast.Attribute):
-            return target.attr == "ClassVar"
-    return False
-
-
 def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObservation]:
     observations: list[FieldObservation] = []
+    for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
+        node = observation.node
+        assert isinstance(node, ast.ClassDef)
+        observations.extend(_field_observations_for_class(parsed_module, node))
+    return observations
 
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[tuple[str, bool]] = []
 
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            is_dataclass_family = any(
-                _node_matches_name(decorator, "dataclass")
-                for decorator in node.decorator_list
-            )
-            self.class_stack.append((node.name, is_dataclass_family))
-            for stmt in node.body:
-                if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
-                    observations.extend(
-                        _init_field_observations(
-                            parsed_module,
-                            node.name,
-                            is_dataclass_family,
-                            stmt,
-                        )
-                    )
-                    continue
-                field_observation = _class_body_field_observation(
+def _field_observations_for_class(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+) -> list[FieldObservation]:
+    observations: list[FieldObservation] = []
+    is_dataclass_family = any(
+        _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
+        for decorator in node.decorator_list
+    )
+    for stmt in node.body:
+        if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
+            observations.extend(
+                _init_field_observations(
                     parsed_module,
                     node.name,
                     is_dataclass_family,
                     stmt,
                 )
-                if field_observation is not None:
-                    observations.append(field_observation)
-            self.generic_visit(node)
-            self.class_stack.pop()
-
-    Visitor().visit(parsed_module.module)
+            )
+            continue
+        field_observation = _class_body_field_observation(
+            parsed_module,
+            node.name,
+            is_dataclass_family,
+            stmt,
+        )
+        if field_observation is not None:
+            observations.append(field_observation)
     return observations
 
 
@@ -777,22 +943,20 @@ def _registration_key_fingerprint(node: ast.AST) -> str | None:
 
 
 def _collect_registration_call_shapes(
-    parsed_module: ParsedModule, known_classes: set[str]
+    parsed_module: ParsedModule, known_class_family: AstNameFamily
 ) -> list[RegistrationShape]:
     shapes: list[RegistrationShape] = []
-    for node in ast.walk(parsed_module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr not in {"register", "add", "register_class", "register_type"}:
-            continue
+    for observation in _iter_attribute_family_calls(
+        parsed_module, _REGISTRATION_CALL_FAMILY
+    ):
+        node = observation.call
+        assert isinstance(node.func, ast.Attribute)
         registry_name = _terminal_name(node.func.value)
         if registry_name is None:
             continue
         if not node.args:
             continue
-        class_name = _class_name_from_expr(node.args[0], known_classes)
+        class_name = _class_name_from_expr(node.args[0], known_class_family)
         if class_name is None:
             continue
         key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
@@ -813,42 +977,31 @@ def _collect_decorator_registration_shapes(
     parsed_module: ParsedModule,
 ) -> list[RegistrationShape]:
     shapes: list[RegistrationShape] = []
-    for node in ast.walk(parsed_module.module):
-        if not isinstance(node, ast.ClassDef):
+    for node, decorator, _matched_name in _iter_class_decorator_family_calls(
+        parsed_module, _REGISTRATION_DECORATOR_FAMILY
+    ):
+        if not decorator.args:
             continue
-        for decorator in node.decorator_list:
-            if not isinstance(decorator, ast.Call):
-                continue
-            decorator_name = _terminal_name(decorator.func)
-            if decorator_name not in {
-                "register",
-                "register_class",
-                "register_type",
-                "auto_register",
-            }:
-                continue
-            if not decorator.args:
-                continue
-            registry_name = _terminal_name(decorator.args[0])
-            if registry_name is None:
-                continue
-            key_expr = (
-                decorator.args[1]
-                if len(decorator.args) >= 2
-                else ast.Constant(value=node.name)
+        registry_name = _terminal_name(decorator.args[0])
+        if registry_name is None:
+            continue
+        key_expr = (
+            decorator.args[1]
+            if len(decorator.args) >= 2
+            else ast.Constant(value=node.name)
+        )
+        shapes.append(
+            RegistrationShape.from_decorator(
+                parsed_module,
+                node,
+                registry_name,
+                _fingerprint_builder_value(key_expr),
             )
-            shapes.append(
-                RegistrationShape.from_decorator(
-                    parsed_module,
-                    node,
-                    registry_name,
-                    _fingerprint_builder_value(key_expr),
-                )
-            )
+        )
     return shapes
 
 
-def _class_name_from_expr(node: ast.AST, known_classes: set[str]) -> str | None:
-    if isinstance(node, ast.Name) and node.id in known_classes:
-        return node.id
-    return None
+def _class_name_from_expr(
+    node: ast.AST, known_class_family: AstNameFamily
+) -> str | None:
+    return _terminal_name_in_family(node, known_class_family)

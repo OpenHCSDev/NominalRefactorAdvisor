@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import (
     ObservationGraph,
     ObservationKind,
     StructuralExecutionLevel,
+    collect_scoped_observations,
     collect_field_observations,
     parse_python_modules,
 )
@@ -521,6 +523,141 @@ class Beta:
     assert any(finding.pattern_id == 6 for finding in findings)
 
 
+def test_detects_auto_register_decorator_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def auto_register(registry, key):
+    def deco(cls):
+        return cls
+    return deco
+
+
+REGISTRY = {}
+
+
+@auto_register(REGISTRY, "alpha")
+class Alpha:
+    pass
+
+
+@auto_register(REGISTRY, "beta")
+class Beta:
+    pass
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 6 for finding in findings)
+
+
+def test_collects_scoped_call_observations(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    def build(self, result):
+        return transform(result)
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_scoped_observations(module, (ast.Call,))
+    call_observation = next(
+        item
+        for item in observations
+        if isinstance(item.node, ast.Call)
+        and getattr(item.node.func, "id", None) == "transform"
+    )
+
+    assert call_observation.class_name == "Alpha"
+    assert call_observation.function_name == "build"
+
+
+def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+import ast
+
+
+@dataclass(frozen=True)
+class ScopedShapeSpec:
+    node_types: tuple[type[ast.AST], ...]
+    build_shape: object
+
+
+def _build_method_shape_from_observation(parsed_module, observation):
+    node = observation.node
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    return (parsed_module, node, observation.class_name)
+
+
+def _build_builder_call_shape_from_observation(parsed_module, observation):
+    node = observation.node
+    if not isinstance(node, ast.Call):
+        return None
+    return (parsed_module, node, observation.function_name)
+
+
+_METHOD_SHAPE_SPEC = ScopedShapeSpec(
+    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),
+    build_shape=_build_method_shape_from_observation,
+)
+
+
+_BUILDER_CALL_SHAPE_SPEC = ScopedShapeSpec(
+    node_types=(ast.Call,),
+    build_shape=_build_builder_call_shape_from_observation,
+)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "scoped_shape_wrapper"
+    )
+
+    assert "polymorphic spec family" in finding.title
+    assert "ScopedShapeSpec" in (finding.scaffold or "")
+
+
+def test_detects_namespaced_auto_register_decorator_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Plugins:
+    def auto_register(self, registry, key):
+        def deco(cls):
+            return cls
+        return deco
+
+
+plugins = Plugins()
+REGISTRY = {}
+
+
+@plugins.auto_register(REGISTRY, "alpha")
+class Alpha:
+    pass
+
+
+@plugins.auto_register(REGISTRY, "beta")
+class Beta:
+    pass
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.pattern_id == 6 for finding in findings)
+
+
 def test_detects_repeated_export_dict_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -620,6 +757,49 @@ class BetaResult:
     observations = collect_field_observations(module)
 
     assert all(item.field_name != "cache" for item in observations)
+
+
+def test_ignores_namespaced_classvar_fields_via_family_matcher(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import typing
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    cache: typing.ClassVar[dict[str, int]] = {}
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_field_observations(module)
+
+    assert all(item.field_name != "cache" for item in observations)
+
+
+def test_collects_namespaced_dataclass_fields_via_name_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import dataclasses as dc
+
+
+@dc.dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_field_observations(module)
+
+    assert {item.field_name for item in observations} == {"pose_id", "score"}
 
 
 def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
