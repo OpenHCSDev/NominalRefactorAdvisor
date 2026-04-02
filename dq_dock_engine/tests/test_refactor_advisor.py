@@ -35,6 +35,9 @@ class Beta:
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 5 for finding in findings)
     assert any(finding.pattern_id == 5 and finding.scaffold for finding in findings)
+    assert any(
+        finding.pattern_id == 5 and finding.codemod_patch for finding in findings
+    )
 
 
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
@@ -95,6 +98,30 @@ def resolve(config):
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 4 for finding in findings)
+
+
+def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    name = "alpha"
+
+
+class Beta:
+    name = "beta"
+
+
+def choose(obj):
+    if obj.name == "alpha":
+        return 1
+    return 2
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(finding.pattern_id == 1 for finding in findings)
 
 
 def test_detects_generated_type_lineage(tmp_path: Path) -> None:
@@ -246,6 +273,7 @@ class Beta:
     output = _format_markdown(findings)
     assert output.count("Example skeleton:") >= 2
     assert "Suggested scaffold:" in output
+    assert "Suggested patch:" in output
 
 
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
@@ -385,6 +413,9 @@ class Beta:
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 14 for finding in findings)
     assert any(finding.pattern_id == 14 and finding.scaffold for finding in findings)
+    assert any(
+        finding.pattern_id == 14 and finding.codemod_patch for finding in findings
+    )
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
@@ -411,6 +442,9 @@ REGISTRY["beta"] = BetaHandler
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
     assert any(finding.pattern_id == 6 and finding.scaffold for finding in findings)
+    assert any(
+        finding.pattern_id == 6 and finding.codemod_patch for finding in findings
+    )
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
@@ -503,6 +537,10 @@ class Beta:
         finding.detector_id == "repeated_export_dicts" and finding.scaffold
         for finding in findings
     )
+    assert any(
+        finding.detector_id == "repeated_export_dicts" and finding.codemod_patch
+        for finding in findings
+    )
 
 
 def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:
@@ -551,3 +589,18 @@ DISPATCH = {
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "string_dispatch" for finding in findings)
+
+
+def test_ignores_non_branch_config_reads(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(config):
+    port = config.napari_port
+    return port
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(finding.pattern_id == 4 for finding in findings)

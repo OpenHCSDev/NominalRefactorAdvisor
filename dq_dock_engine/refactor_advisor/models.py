@@ -22,6 +22,7 @@ class RefactorFinding:
     relation_context: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
     scaffold: str | None = None
+    codemod_patch: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -44,6 +45,7 @@ class FindingSpec:
         summary: str,
         evidence: tuple[SourceLocation, ...],
         scaffold: str | None = None,
+        codemod_patch: str | None = None,
     ) -> RefactorFinding:
         return RefactorFinding(
             detector_id=detector_id,
@@ -56,4 +58,5 @@ class FindingSpec:
             relation_context=self.relation_context,
             evidence=evidence,
             scaffold=scaffold,
+            codemod_patch=codemod_patch,
         )

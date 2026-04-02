@@ -45,6 +45,10 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
             lines.append(f"   - Example skeleton: {skeleton}")
         if finding.scaffold:
             lines.append(f"   - Suggested scaffold: {finding.scaffold}")
+        if finding.codemod_patch:
+            lines.append("   - Suggested patch:")
+            for patch_line in finding.codemod_patch.splitlines():
+                lines.append(f"     {patch_line}")
         for item in finding.evidence:
             lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
     return "\n".join(lines)

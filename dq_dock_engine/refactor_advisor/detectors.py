@@ -296,6 +296,7 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
             relation_context=relation,
             evidence=evidence,
             scaffold=_abc_scaffold_for_methods(methods),
+            codemod_patch=_abc_patch_for_methods(methods),
         )
 
 
@@ -354,6 +355,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                     relation_context="same class set repeats several method roles across the same family boundary",
                     evidence=tuple(evidence[:8]),
                     scaffold=_abc_family_scaffold(class_names, groups),
+                    codemod_patch=_abc_family_patch(class_names, groups),
                 )
             )
         return findings
@@ -418,6 +420,7 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
             ),
             evidence=evidence,
             scaffold=_builder_scaffold(builders),
+            codemod_patch=_builder_patch(builders),
         )
 
 
@@ -472,6 +475,7 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
             relation_context="same string-key projection role repeated across sibling functions or methods",
             evidence=evidence,
             scaffold=_projection_schema_scaffold(export_shapes),
+            codemod_patch=_projection_schema_patch(export_shapes),
         )
 
 
@@ -525,6 +529,9 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
             relation_context="same registry key family repeated through manual class-level registration assignments",
             evidence=evidence,
             scaffold=_autoregister_scaffold(registry_name, class_names),
+            codemod_patch=_autoregister_patch(
+                registry_name, class_names, registrations
+            ),
         )
 
 
@@ -539,7 +546,11 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
         for attr_name, evidence in sentinel_attrs.items():
             if len(evidence) < 2:
                 continue
-            if not _module_compares_attribute(module.module, attr_name):
+            branch_evidence = _attribute_branch_evidence(module, attr_name)
+            if not branch_evidence:
+                continue
+            generic_name = attr_name.lower() in {"name", "label", "title"}
+            if generic_name and len(branch_evidence) < 2:
                 continue
             findings.append(
                 RefactorFinding(
@@ -547,7 +558,7 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
                     pattern_id=1,
                     title="Sentinel attribute is simulating nominal identity",
                     summary=(
-                        f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also used for behavioral branching."
+                        f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites."
                     ),
                     why=(
                         "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
@@ -556,7 +567,7 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
                     capability_gap="enumerable and enforceable nominal role identity",
                     confidence="medium",
                     relation_context="same class-level sentinel attribute reused as a fake identity boundary",
-                    evidence=tuple(evidence[:6]),
+                    evidence=tuple((evidence + branch_evidence)[:6]),
                 )
             )
         return findings
@@ -1102,6 +1113,105 @@ def _group_repeated_methods(
     ]
 
 
+def _abc_patch_for_methods(methods: tuple[MethodShape, ...]) -> str:
+    target_file = methods[0].file_path
+    base_name = (
+        _shared_family_name(
+            sorted(
+                {
+                    method.class_name
+                    for method in methods
+                    if method.class_name is not None
+                }
+            )
+        )
+        or "ExtractedBase"
+    )
+    hook_name = methods[0].method_name
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {target_file}\n"
+        f"@@\n"
+        f"+class {base_name}(ABC):\n"
+        f"+    def run(self, request):\n"
+        f"+        normalized = self._normalize(request)\n"
+        f"+        return self.{hook_name}(normalized)\n"
+        f"+\n"
+        f"+    @abstractmethod\n"
+        f"+    def {hook_name}(self, normalized): ...\n"
+        "*** End Patch"
+    )
+
+
+def _abc_family_patch(
+    class_names: frozenset[str], groups: list[tuple[MethodShape, ...]]
+) -> str:
+    ordered = sorted(class_names)
+    target_file = groups[0][0].file_path
+    base_name = _shared_family_name(ordered) or "FamilyBase"
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {target_file}\n"
+        "@@\n"
+        f"+class {base_name}(ABC):\n"
+        "+    def run(self, request): ...\n"
+        "+\n"
+        "+    @abstractmethod\n"
+        "+    def hook(self, request): ...\n"
+        "*** End Patch"
+    )
+
+
+def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
+    target_file = builders[0].file_path
+    callee_name = builders[0].callee_name
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {target_file}\n"
+        "@@\n"
+        f"+@classmethod\n"
+        f"+def from_source(cls, source):\n"
+        f"+    return {callee_name}(...)\n"
+        "*** End Patch"
+    )
+
+
+def _projection_schema_patch(export_shapes: tuple[ExportDictShape, ...]) -> str:
+    target_file = export_shapes[0].file_path
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {target_file}\n"
+        "@@\n"
+        "+@dataclass(frozen=True)\n"
+        "+class ProjectionSchema:\n"
+        "+    ...\n"
+        "+\n"
+        "+    @classmethod\n"
+        "+    def from_source(cls, source): ...\n"
+        "*** End Patch"
+    )
+
+
+def _autoregister_patch(
+    registry_name: str,
+    class_names: set[str],
+    registrations: tuple[RegistrationShape, ...],
+) -> str:
+    target_file = registrations[0].file_path
+    base_name = _shared_family_name(sorted(class_names)) or "RegisteredBase"
+    return (
+        "*** Begin Patch\n"
+        f"*** Update File: {target_file}\n"
+        "@@\n"
+        "+class AutoRegisterMeta(ABCMeta):\n"
+        f"+    registry = {registry_name}\n"
+        "+\n"
+        f"+class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
+        "+    registry_key: str\n"
+        "*** End Patch"
+    )
+
+
 def _abc_scaffold_for_methods(methods: tuple[MethodShape, ...]) -> str:
     class_names = sorted(
         {method.class_name for method in methods if method.class_name is not None}
@@ -1264,6 +1374,48 @@ def _looks_like_dispatch_dict(node: ast.Dict, min_string_cases: int) -> bool:
     )
 
 
+def _attribute_branch_evidence(
+    module: ParsedModule, attr_name: str
+) -> list[SourceLocation]:
+    evidence: list[SourceLocation] = []
+    for node in ast.walk(module.module):
+        if isinstance(node, ast.If):
+            if _test_compares_attribute(node.test, attr_name):
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, f"if-{attr_name}")
+                )
+        if isinstance(node, ast.Match):
+            subject = node.subject
+            if isinstance(subject, ast.Attribute) and subject.attr == attr_name:
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, f"match-{attr_name}")
+                )
+    return evidence
+
+
+def _test_compares_attribute(test: ast.AST, attr_name: str) -> bool:
+    for node in ast.walk(test):
+        if isinstance(node, ast.Compare):
+            values = [node.left] + list(node.comparators)
+            attr_match = any(
+                isinstance(value, ast.Attribute) and value.attr == attr_name
+                for value in values
+            )
+            literal_match = any(
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, (str, int, bool))
+                for value in values
+            )
+            if attr_match and literal_match:
+                return True
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "getattr" and len(node.args) >= 2:
+                arg = node.args[1]
+                if isinstance(arg, ast.Constant) and arg.value == attr_name:
+                    return True
+    return False
+
+
 def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     return [
         node
@@ -1358,35 +1510,58 @@ def _config_dispatch_evidence(
 ) -> list[SourceLocation]:
     evidence: list[SourceLocation] = []
     for node in ast.walk(function):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if (
-                node.func.id == "hasattr"
-                and node.args
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "config"
-            ):
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, function.name)
-                )
-            if (
-                node.func.id == "getattr"
-                and node.args
-                and isinstance(node.args[0], ast.Name)
-                and node.args[0].id == "config"
-            ):
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, function.name)
-                )
-        if isinstance(node, ast.Compare):
-            if (
-                isinstance(node.left, ast.Attribute)
-                and isinstance(node.left.value, ast.Name)
-                and node.left.value.id == "config"
-            ):
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, function.name)
-                )
+        if isinstance(node, ast.If) and _config_dispatch_test(node.test):
+            evidence.append(
+                SourceLocation(str(module.path), node.lineno, function.name)
+            )
+        if isinstance(node, ast.Match) and _match_subject_is_config_dispatch(
+            node.subject
+        ):
+            evidence.append(
+                SourceLocation(str(module.path), node.lineno, function.name)
+            )
     return evidence
+
+
+def _config_dispatch_test(test: ast.AST) -> bool:
+    for node in ast.walk(test):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            if node.func.id == "hasattr" and _call_targets_config(node):
+                return True
+            if node.func.id == "getattr" and _call_targets_config(node):
+                return True
+        if isinstance(node, ast.Compare):
+            values = [node.left] + list(node.comparators)
+            if any(_is_config_attribute(value) for value in values) and any(
+                isinstance(value, ast.Constant)
+                and isinstance(value.value, (str, int, bool))
+                for value in values
+            ):
+                return True
+    return False
+
+
+def _match_subject_is_config_dispatch(subject: ast.AST) -> bool:
+    return _is_config_attribute(subject) or (
+        isinstance(subject, ast.Call)
+        and isinstance(subject.func, ast.Name)
+        and subject.func.id == "getattr"
+        and _call_targets_config(subject)
+    )
+
+
+def _call_targets_config(node: ast.Call) -> bool:
+    return bool(
+        node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "config"
+    )
+
+
+def _is_config_attribute(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "config"
+    )
 
 
 def _generated_type_sites(module: ParsedModule) -> list[SourceLocation]:
