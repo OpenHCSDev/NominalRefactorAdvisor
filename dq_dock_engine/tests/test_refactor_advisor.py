@@ -218,6 +218,7 @@ def build(param_type):
     assert "Prescription:" in output
     assert "Canonical shape:" in output
     assert "First move:" in output
+    assert "Example skeleton:" in output
 
 
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:

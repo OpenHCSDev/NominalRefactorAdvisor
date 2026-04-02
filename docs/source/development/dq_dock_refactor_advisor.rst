@@ -132,6 +132,7 @@ The CLI now already includes richer pattern guidance for each finding:
 - the pattern prescription
 - the canonical target shape
 - concrete first moves for the refactor
+- example skeletons for the strongest canonical targets
 
 The builder detector currently focuses on repeated keyword-constructor shapes. A later pass should widen it
 to export dictionaries and repeated dataclass-to-dataclass conversion blocks.

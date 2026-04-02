@@ -24,3 +24,32 @@ class RefactorFinding:
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class FindingSpec:
+    pattern_id: int
+    title: str
+    why: str
+    capability_gap: str
+    relation_context: str
+    confidence: str = "medium"
+
+    def build(
+        self,
+        *,
+        detector_id: str,
+        summary: str,
+        evidence: tuple[SourceLocation, ...],
+    ) -> RefactorFinding:
+        return RefactorFinding(
+            detector_id=detector_id,
+            pattern_id=self.pattern_id,
+            title=self.title,
+            summary=summary,
+            why=self.why,
+            capability_gap=self.capability_gap,
+            confidence=self.confidence,
+            relation_context=self.relation_context,
+            evidence=evidence,
+        )

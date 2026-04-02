@@ -17,7 +17,7 @@ from .ast_tools import (
     collect_method_shapes,
     collect_registration_shapes,
 )
-from .models import RefactorFinding, SourceLocation
+from .models import FindingSpec, RefactorFinding, SourceLocation
 
 
 @dataclass(frozen=True)
@@ -118,12 +118,7 @@ class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
 
 
 class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
-    pattern_id: int
-    title: str
-    why: str
-    capability_gap: str
-    relation_context: str
-    confidence: str = "medium"
+    finding_spec: FindingSpec
 
     def _build_finding(
         self,
@@ -131,16 +126,10 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         evidence: tuple[SourceLocation, ...],
         config: DetectorConfig,
     ) -> RefactorFinding:
-        return _module_finding(
+        return self.finding_spec.build(
             detector_id=self.detector_id,
-            pattern_id=self.pattern_id,
-            title=self.title,
             summary=self._summary(module, evidence),
-            why=self.why,
-            capability_gap=self.capability_gap,
-            relation_context=self.relation_context,
             evidence=self._evidence_slice(evidence),
-            confidence=self.confidence,
         )
 
     def _evidence_slice(
@@ -209,31 +198,6 @@ def _as_export_shape(shape: object) -> ExportDictShape:
     if not isinstance(shape, ExportDictShape):
         raise TypeError(f"Expected ExportDictShape, got {type(shape)!r}")
     return shape
-
-
-def _module_finding(
-    *,
-    detector_id: str,
-    pattern_id: int,
-    title: str,
-    summary: str,
-    why: str,
-    capability_gap: str,
-    relation_context: str,
-    evidence: tuple[SourceLocation, ...],
-    confidence: str = "medium",
-) -> RefactorFinding:
-    return RefactorFinding(
-        detector_id=detector_id,
-        pattern_id=pattern_id,
-        title=title,
-        summary=summary,
-        why=why,
-        capability_gap=capability_gap,
-        confidence=confidence,
-        relation_context=relation_context,
-        evidence=evidence,
-    )
 
 
 class NodeRule(ABC):
@@ -631,15 +595,15 @@ class PredicateFactoryChainDetector(PerModuleIssueDetector):
 
 class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     detector_id = "config_attribute_dispatch"
-    pattern_id = 4
-    title = "Config dispatch is encoded through fragile attribute probing"
-    why = (
-        "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name "
-        "probing or ad hoc attribute comparisons."
-    )
-    capability_gap = "fail-loud polymorphic configuration contracts"
-    relation_context = (
-        "same config-family choice expressed through attribute-level probing"
+    finding_spec = FindingSpec(
+        pattern_id=4,
+        title="Config dispatch is encoded through fragile attribute probing",
+        why=(
+            "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name "
+            "probing or ad hoc attribute comparisons."
+        ),
+        capability_gap="fail-loud polymorphic configuration contracts",
+        relation_context="same config-family choice expressed through attribute-level probing",
     )
 
     def _module_evidence(
@@ -663,15 +627,15 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
 
 class GeneratedTypeLineageDetector(StaticModulePatternDetector):
     detector_id = "generated_type_lineage"
-    pattern_id = 7
-    title = "Generated types need explicit lineage tracking"
-    why = (
-        "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and "
-        "provenance remain exact."
-    )
-    capability_gap = "exact generated-type lineage and normalization"
-    relation_context = (
-        "same module combines runtime type generation with lineage-sensitive registries"
+    finding_spec = FindingSpec(
+        pattern_id=7,
+        title="Generated types need explicit lineage tracking",
+        why=(
+            "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and "
+            "provenance remain exact."
+        ),
+        capability_gap="exact generated-type lineage and normalization",
+        relation_context="same module combines runtime type generation with lineage-sensitive registries",
     )
 
     def _module_evidence(
@@ -723,14 +687,16 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
 
 class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     detector_id = "manual_virtual_membership"
-    pattern_id = 9
-    title = "Manual class-marker membership should become custom isinstance semantics"
-    why = (
-        "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks "
-        "suggest a custom isinstance/subclass boundary rather than scattered manual probing."
+    finding_spec = FindingSpec(
+        pattern_id=9,
+        title="Manual class-marker membership should become custom isinstance semantics",
+        why=(
+            "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks "
+            "suggest a custom isinstance/subclass boundary rather than scattered manual probing."
+        ),
+        capability_gap="runtime-checkable virtual membership on nominal class identity",
+        relation_context="same membership question repeated through class-marker probing",
     )
-    capability_gap = "runtime-checkable virtual membership on nominal class identity"
-    relation_context = "same membership question repeated through class-marker probing"
 
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
@@ -751,14 +717,16 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
 
 class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     detector_id = "dynamic_interface_generation"
-    pattern_id = 10
-    title = "Dynamic interface generation is present or required"
-    why = (
-        "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles "
-        "when structure alone cannot express membership."
+    finding_spec = FindingSpec(
+        pattern_id=10,
+        title="Dynamic interface generation is present or required",
+        why=(
+            "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles "
+            "when structure alone cannot express membership."
+        ),
+        capability_gap="explicit runtime-generated nominal interface identity",
+        relation_context="same module generates interface-like nominal types at runtime",
     )
-    capability_gap = "explicit runtime-generated nominal interface identity"
-    relation_context = "same module generates interface-like nominal types at runtime"
 
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
@@ -775,14 +743,16 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
 
 class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     detector_id = "sentinel_type_marker"
-    pattern_id = 11
-    title = "Unique sentinel type marker is present or should be used"
-    why = (
-        "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when "
-        "exact capability identity matters more than payload."
+    finding_spec = FindingSpec(
+        pattern_id=11,
+        title="Unique sentinel type marker is present or should be used",
+        why=(
+            "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when "
+            "exact capability identity matters more than payload."
+        ),
+        capability_gap="exact capability-marker identity independent of structure",
+        relation_context="same module creates or uses unique nominal sentinel markers",
     )
-    capability_gap = "exact capability-marker identity independent of structure"
-    relation_context = "same module creates or uses unique nominal sentinel markers"
 
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
@@ -797,15 +767,15 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
 
 class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     detector_id = "dynamic_method_injection"
-    pattern_id = 12
-    title = "Dynamic method injection belongs in a type-namespace pattern"
-    why = (
-        "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, "
-        "not in repeated instance-level patching."
-    )
-    capability_gap = "shared type-namespace mutation for a nominal family"
-    relation_context = (
-        "same module mutates class behavior through runtime namespace injection"
+    finding_spec = FindingSpec(
+        pattern_id=12,
+        title="Dynamic method injection belongs in a type-namespace pattern",
+        why=(
+            "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, "
+            "not in repeated instance-level patching."
+        ),
+        capability_gap="shared type-namespace mutation for a nominal family",
+        relation_context="same module mutates class behavior through runtime namespace injection",
     )
 
     def _module_evidence(

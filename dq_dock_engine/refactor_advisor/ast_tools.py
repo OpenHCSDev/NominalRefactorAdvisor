@@ -366,6 +366,8 @@ def _builder_call_shape(
     class_name: str | None,
     function_name: str | None,
 ) -> BuilderCallShape | None:
+    if function_name is None:
+        return None
     keyword_pairs = [(kw.arg, kw.value) for kw in node.keywords if kw.arg is not None]
     if len(keyword_pairs) < 3:
         return None
