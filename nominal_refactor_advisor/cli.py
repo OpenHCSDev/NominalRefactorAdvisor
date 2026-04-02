@@ -113,6 +113,8 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
             f"registrations {plan.outcome.registration_sites_removed}; "
             f"shared algorithms {plan.outcome.shared_algorithm_sites_centralized}"
         )
+        for action in plan.actions:
+            lines.append(f"   - Action: {action.kind} -> {action.description}")
         for step in plan.plan_steps:
             lines.append(f"   - Plan step: {step}")
         for title in plan.supporting_findings[:5]:

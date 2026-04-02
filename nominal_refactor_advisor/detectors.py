@@ -17,6 +17,7 @@ from .ast_tools import (
     collect_export_dict_shapes,
     collect_method_shapes,
     collect_registration_shapes,
+    fingerprint_function,
 )
 from .models import (
     CERTIFIED,
@@ -45,6 +46,7 @@ from .taxonomy import (
     HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     CapabilityTag,
+    CertificationLevel,
     ObservationTag,
 )
 
@@ -291,7 +293,7 @@ class SemanticDataclassRecommendation:
     matched_schema_name: str | None
     rationale: str
     scaffold: str
-    certification: str
+    certification: CertificationLevel
 
 
 @dataclass(frozen=True)
@@ -301,6 +303,21 @@ class SemanticDictBagCandidate:
     key_names: tuple[str, ...]
     context_kind: str
     recommendation: SemanticDataclassRecommendation
+
+
+@dataclass(frozen=True)
+class ProjectionHelperShape:
+    file_path: str
+    function_name: str
+    lineno: int
+    outer_call_name: str
+    aggregator_name: str
+    iterable_fingerprint: str
+    projected_attribute: str
+
+    @property
+    def symbol(self) -> str:
+        return self.function_name
 
 
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
@@ -1291,6 +1308,79 @@ class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
         return findings
 
 
+class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
+    detector_id = "repeated_projection_helpers"
+    finding_spec = FindingSpec(
+        pattern_id=14,
+        title="Repeated projection helper wrappers should become one projector",
+        why=(
+            "The docs treat parallel projection helpers as a coherence failure: once several helpers differ only in "
+            "which semantic attribute they project, the wrapper structure should be centralized in one authoritative "
+            "projector and the varying projection should become a parameter."
+        ),
+        capability_gap="single authoritative projection helper for a repeated semantic wrapper family",
+        relation_context="same helper wrapper shape repeated across sibling module functions",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_HELPER,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        grouped: dict[tuple[str, str, str], list[ProjectionHelperShape]] = defaultdict(
+            list
+        )
+        for function in _iter_functions(module.module):
+            if function not in module.module.body:
+                continue
+            shape = _projection_helper_shape(module, function)
+            if shape is None:
+                continue
+            grouped[
+                (
+                    shape.outer_call_name,
+                    shape.aggregator_name,
+                    shape.iterable_fingerprint,
+                )
+            ].append(shape)
+
+        findings: list[RefactorFinding] = []
+        for shapes in grouped.values():
+            if len(shapes) < 2:
+                continue
+            attributes = {shape.projected_attribute for shape in shapes}
+            if len(attributes) < 2:
+                continue
+            ordered = sorted(shapes, key=lambda item: (item.file_path, item.lineno))
+            evidence = tuple(
+                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                for shape in ordered[:6]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"Projection helper wrappers {', '.join(shape.function_name for shape in ordered[:4])} repeat the same wrapper shape while only projecting different attributes."
+                    ),
+                    evidence,
+                    scaffold=_projection_helper_scaffold(ordered),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(ordered),
+                        field_count=len(attributes),
+                    ),
+                )
+            )
+        return findings
+
+
 class SemanticDictBagDetector(PerModuleIssueDetector):
     detector_id = "semantic_dict_bag"
     finding_spec = FindingSpec(
@@ -1943,6 +2033,7 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         StringDispatchDetector(),
         NumericLiteralDispatchDetector(),
         RepeatedHardcodedStringDetector(),
+        RepeatedProjectionHelperDetector(),
         SemanticDictBagDetector(),
         BidirectionalRegistryDetector(),
     )
@@ -2564,6 +2655,59 @@ def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunct
         for node in ast.walk(module)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
+
+
+def _projection_helper_shape(
+    module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ProjectionHelperShape | None:
+    body = _trim_docstring_body(function.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    returned = body[0].value
+    if not isinstance(returned, ast.Call) or len(returned.args) != 1:
+        return None
+    outer_call_name = _call_name(returned.func)
+    if outer_call_name not in {"tuple", "list", "set"}:
+        return None
+    inner_call = returned.args[0]
+    if not isinstance(inner_call, ast.Call) or len(inner_call.args) != 1:
+        return None
+    aggregator_name = _call_name(inner_call.func)
+    if aggregator_name is None:
+        return None
+    generator = inner_call.args[0]
+    if not isinstance(generator, ast.GeneratorExp) or len(generator.generators) != 1:
+        return None
+    comp = generator.generators[0]
+    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
+        return None
+    if not isinstance(generator.elt, ast.Attribute):
+        return None
+    if not isinstance(generator.elt.value, ast.Name):
+        return None
+    if generator.elt.value.id != comp.target.id:
+        return None
+    return ProjectionHelperShape(
+        file_path=str(module.path),
+        function_name=function.name,
+        lineno=function.lineno,
+        outer_call_name=outer_call_name,
+        aggregator_name=aggregator_name,
+        iterable_fingerprint=fingerprint_function(function),
+        projected_attribute=generator.elt.attr,
+    )
+
+
+def _projection_helper_scaffold(shapes: list[ProjectionHelperShape]) -> str:
+    function_names = ", ".join(shape.function_name for shape in shapes)
+    attributes = ", ".join(sorted({shape.projected_attribute for shape in shapes}))
+    return (
+        "def _render_projection(items, projector):\n"
+        "    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n"
+        f"# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n"
+        f"# Projected fields: {attributes}"
+    )
 
 
 def _function_has_param(

@@ -372,6 +372,16 @@ class FindingSpec:
 
 
 @dataclass(frozen=True)
+class RefactorAction(SemanticRecord):
+    kind: str
+    description: str
+    target: str | None = None
+    symbols: tuple[str, ...] = ()
+    evidence: tuple[SourceLocation, ...] = ()
+    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
+
+
+@dataclass(frozen=True)
 class RefactorPlan(SemanticRecord):
     subsystem: str
     summary: str
@@ -387,6 +397,7 @@ class RefactorPlan(SemanticRecord):
     supporting_findings: tuple[str, ...]
     evidence: tuple[SourceLocation, ...]
     outcome: OutcomeEstimate
+    actions: tuple[RefactorAction, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -653,6 +653,38 @@ def second():
     )
 
 
+def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def dedupe(items):
+    return items
+
+
+def capability_labels(capabilities):
+    return tuple(dedupe(tag.label for tag in capabilities))
+
+
+def capability_distinctions(capabilities):
+    return tuple(dedupe(tag.distinction for tag in capabilities))
+
+
+def observation_labels(observations):
+    return tuple(dedupe(tag.label for tag in observations))
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_projection_helpers"
+    )
+
+    assert "_render_projection" in (finding.scaffold or "")
+
+
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -799,6 +831,8 @@ REGISTRY["beta"] = Beta
     assert plan.outcome.loci_of_change_before > plan.outcome.loci_of_change_after
     assert plan.outcome.registration_sites_removed == 2
     assert plan.outcome.repeated_mappings_centralized >= 3
+    assert any(action.kind == "create_abc_base" for action in plan.actions)
+    assert any(action.kind == "create_metaclass" for action in plan.actions)
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
@@ -828,3 +862,4 @@ class Beta:
     assert "Subsystem plans:" in output
     assert "Primary pattern:" in output
     assert "Outcome:" in output
+    assert "Action:" in output

@@ -72,6 +72,7 @@ class ObservationTag(StrEnum):
     NORMALIZED_AST = "normalized_ast"
     PARTIAL_VIEW = "partial_view"
     PREDICATE_CHAIN = "predicate_chain"
+    PROJECTION_HELPER = "projection_helper"
     PROJECTION_DICT = "projection_dict"
     REGISTRY_POPULATION = "registry_population"
     REPEATED_METHOD_ROLES = "repeated_method_roles"
@@ -162,6 +163,7 @@ _OBSERVATION_LABELS = {
     ObservationTag.NORMALIZED_AST: "normalized AST shape",
     ObservationTag.PARTIAL_VIEW: "partial-view fallbacks",
     ObservationTag.PREDICATE_CHAIN: "predicate chains",
+    ObservationTag.PROJECTION_HELPER: "projection helper wrappers",
     ObservationTag.PROJECTION_DICT: "projection dictionaries",
     ObservationTag.REGISTRY_POPULATION: "registry population sites",
     ObservationTag.REPEATED_METHOD_ROLES: "repeated method-role groups",

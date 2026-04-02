@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
+from operator import attrgetter
 from pathlib import Path
 
 from .models import (
@@ -11,12 +12,19 @@ from .models import (
     ImpactDelta,
     STRONG_HEURISTIC,
     OutcomeEstimate,
+    RefactorAction,
     RefactorFinding,
     RefactorPlan,
     SourceLocation,
 )
 from .patterns import PATTERN_SPECS
-from .taxonomy import CapabilityTag, CertificationLevel, ObservationTag
+from .taxonomy import (
+    CapabilityTag,
+    CertificationLevel,
+    HIGH_CONFIDENCE,
+    MEDIUM_CONFIDENCE,
+    ObservationTag,
+)
 
 
 _PATTERN_DEPENDENCIES = {
@@ -174,6 +182,99 @@ class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
         )
 
 
+def _combined_evidence(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[SourceLocation, ...]:
+    seen: set[tuple[str, int, str]] = set()
+    evidence: list[SourceLocation] = []
+    for finding in findings:
+        for item in finding.evidence:
+            key = (item.file_path, item.line, item.symbol)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append(item)
+    return tuple(sorted(evidence, key=lambda item: (item.file_path, item.line))[:8])
+
+
+def _evidence_symbols(findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for finding in findings:
+        for item in finding.evidence:
+            if item.symbol in seen:
+                continue
+            seen.add(item.symbol)
+            ordered.append(item.symbol)
+    return tuple(ordered)
+
+
+class PatternActionBuilder(ABC):
+    @abstractmethod
+    def build(
+        self,
+        subsystem: str,
+        pattern_id: int,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorAction, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ActionTemplate:
+    kind: str
+    description: str
+    confidence: object
+
+
+class GenericPatternActionBuilder(PatternActionBuilder):
+    def build(
+        self,
+        subsystem: str,
+        pattern_id: int,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorAction, ...]:
+        template = ActionTemplate(
+            kind="apply_pattern",
+            description=f"Apply Pattern {pattern_id}: {PATTERN_SPECS[pattern_id].prescription}",
+            confidence=MEDIUM_CONFIDENCE,
+        )
+        return _actions_from_templates(subsystem, findings, (template,))
+
+
+class TemplatedPatternActionBuilder(PatternActionBuilder):
+    def __init__(self, templates: tuple[ActionTemplate, ...]) -> None:
+        self.templates = templates
+
+    def build(
+        self,
+        subsystem: str,
+        pattern_id: int,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorAction, ...]:
+        return _actions_from_templates(subsystem, findings, self.templates)
+
+
+def _actions_from_templates(
+    subsystem: str,
+    findings: tuple[RefactorFinding, ...],
+    templates: tuple[ActionTemplate, ...],
+) -> tuple[RefactorAction, ...]:
+    evidence = _combined_evidence(findings)
+    symbols = _evidence_symbols(findings)
+    return tuple(
+        RefactorAction(
+            kind=template.kind,
+            description=template.description.format(subsystem=subsystem),
+            target=subsystem,
+            symbols=symbols,
+            evidence=evidence,
+            confidence=template.confidence,
+        )
+        for template in templates
+    )
+
+
 _GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
 _PATTERN_PLAN_STEP_BUILDERS: dict[int, PatternPlanStepBuilder] = {
     3: ClosedFamilyDispatchPlanStepBuilder(),
@@ -181,6 +282,90 @@ _PATTERN_PLAN_STEP_BUILDERS: dict[int, PatternPlanStepBuilder] = {
     6: AutoRegisterPlanStepBuilder(),
     13: BidirectionalRegistryPlanStepBuilder(),
     14: AuthoritativeMappingPlanStepBuilder(),
+}
+
+_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
+_PATTERN_ACTION_BUILDERS: dict[int, PatternActionBuilder] = {
+    3: TemplatedPatternActionBuilder(
+        (
+            ActionTemplate(
+                kind="create_dispatch_authority",
+                description="Create one enum/type-keyed dispatch authority for `{subsystem}`.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="replace_branch_sites",
+                description="Replace the repeated branch/lookup sites with a single dispatch entry point.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+        )
+    ),
+    5: TemplatedPatternActionBuilder(
+        (
+            ActionTemplate(
+                kind="create_abc_base",
+                description="Create one ABC base in `{subsystem}` for the repeated behavior family.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="extract_template_method",
+                description="Move the shared orchestration statements from the repeated methods into one concrete template method.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="leave_residual_hooks",
+                description="Leave only irreducible per-class residue as abstract hooks or mixin-provided concerns.",
+                confidence=MEDIUM_CONFIDENCE,
+            ),
+        )
+    ),
+    6: TemplatedPatternActionBuilder(
+        (
+            ActionTemplate(
+                kind="create_metaclass",
+                description="Create `AutoRegisterMeta` or an equivalent registry base for `{subsystem}`.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="add_declarative_hooks",
+                description="Add declarative class-level registration hooks such as `registry_key` on the participating classes.",
+                confidence=MEDIUM_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="delete_manual_registration",
+                description="Delete the manual registration writes after routing the family through the metaclass/base.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+        )
+    ),
+    13: TemplatedPatternActionBuilder(
+        (
+            ActionTemplate(
+                kind="create_bidirectional_registry",
+                description="Create one authoritative forward/reverse registry for `{subsystem}`.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="delete_mirrored_updates",
+                description="Delete mirrored forward/reverse update sites once the bijective registry is in place.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+        )
+    ),
+    14: TemplatedPatternActionBuilder(
+        (
+            ActionTemplate(
+                kind="create_authoritative_schema",
+                description="Create one authoritative builder/schema in `{subsystem}` for the repeated field mapping family.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+            ActionTemplate(
+                kind="replace_mapping_sites",
+                description="Replace each repeated constructor/export/projection site with the authoritative builder/schema.",
+                confidence=HIGH_CONFIDENCE,
+            ),
+        )
+    ),
 }
 
 
@@ -337,10 +522,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     ordered_patterns = _order_patterns(selected_patterns, cluster.findings)
     primary_pattern_id = ordered_patterns[0]
     outcome = _estimate_outcome(cluster.findings, ordered_patterns)
-    missing_capabilities = _capability_labels(_unique_capabilities(cluster.findings))
-    collapsed_distinctions = _capability_distinctions(
-        _unique_capabilities(cluster.findings)
-    )
+    capabilities = _unique_capabilities(cluster.findings)
+    missing_capabilities = _render_tag_values(capabilities, attrgetter("label"))
+    collapsed_distinctions = _render_tag_values(capabilities, attrgetter("distinction"))
     current_partial_view = _current_partial_view(cluster.findings)
     summary = _plan_summary(cluster.subsystem, ordered_patterns, cluster.findings)
     supporting_findings = tuple(
@@ -350,6 +534,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     plan_steps = _build_plan_steps(
         cluster.subsystem, ordered_patterns, cluster.findings
     )
+    actions = _build_plan_actions(cluster.subsystem, ordered_patterns, cluster.findings)
     return RefactorPlan(
         subsystem=cluster.subsystem,
         summary=summary,
@@ -365,6 +550,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
         supporting_findings=supporting_findings,
         evidence=cluster.evidence,
         outcome=outcome,
+        actions=actions,
     )
 
 
@@ -523,8 +709,9 @@ def _plan_summary(
 
 
 def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
-    observations = _observation_labels(
-        sorted({tag for finding in findings for tag in finding.observation_tags})
+    observations = _render_tag_values(
+        sorted({tag for finding in findings for tag in finding.observation_tags}),
+        attrgetter("label"),
     )
     if not observations:
         return "The subsystem is currently described by mixed structural observations."
@@ -566,22 +753,23 @@ def _pattern_step(
     return builder.build(subsystem, pattern_id, tuple(supporting))
 
 
-def _capability_labels(
-    capabilities: list[CapabilityTag],
-) -> tuple[str, ...]:
-    return tuple(_dedupe_preserve_order(tag.label for tag in capabilities))
+def _build_plan_actions(
+    subsystem: str, pattern_ids: list[int], findings: tuple[RefactorFinding, ...]
+) -> tuple[RefactorAction, ...]:
+    actions: list[RefactorAction] = []
+    for pattern_id in pattern_ids:
+        supporting = tuple(
+            finding for finding in findings if finding.pattern_id == pattern_id
+        )
+        builder = _PATTERN_ACTION_BUILDERS.get(
+            pattern_id, _GENERIC_PATTERN_ACTION_BUILDER
+        )
+        actions.extend(builder.build(subsystem, pattern_id, supporting))
+    return tuple(actions)
 
 
-def _capability_distinctions(
-    capabilities: list[CapabilityTag],
-) -> tuple[str, ...]:
-    return tuple(_dedupe_preserve_order(tag.distinction for tag in capabilities))
-
-
-def _observation_labels(
-    observations: list[ObservationTag],
-) -> tuple[str, ...]:
-    return tuple(_dedupe_preserve_order(tag.label for tag in observations))
+def _render_tag_values(items, projector) -> tuple[str, ...]:
+    return tuple(_dedupe_preserve_order(projector(item) for item in items))
 
 
 def _unique_capabilities(findings: tuple[RefactorFinding, ...]) -> list[CapabilityTag]:
