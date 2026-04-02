@@ -201,6 +201,8 @@ class FieldObservation:
     origin_kind: FieldOriginKind
     is_dataclass_family: bool
     value_fingerprint: str | None = None
+    annotation_text: str | None = None
+    annotation_fingerprint: str | None = None
 
     @property
     def symbol(self) -> str:
@@ -716,6 +718,8 @@ def _class_body_field_observation(
                 if stmt.value is not None
                 else None
             ),
+            annotation_text=ast.unparse(stmt.annotation),
+            annotation_fingerprint=_annotation_fingerprint(stmt.annotation),
         )
     if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
         target = stmt.targets[0]
@@ -734,6 +738,24 @@ def _class_body_field_observation(
     return None
 
 
+def _annotation_fingerprint(node: ast.AST) -> str:
+    return ast.dump(copy.deepcopy(node), include_attributes=False)
+
+
+def _parameter_annotation_map(
+    function: ast.FunctionDef,
+) -> dict[str, tuple[str, str]]:
+    annotations: dict[str, tuple[str, str]] = {}
+    for arg in function.args.args:
+        if arg.annotation is None:
+            continue
+        annotations[arg.arg] = (
+            ast.unparse(arg.annotation),
+            _annotation_fingerprint(arg.annotation),
+        )
+    return annotations
+
+
 def _init_field_observations(
     parsed_module: ParsedModule,
     class_name: str,
@@ -741,6 +763,7 @@ def _init_field_observations(
     function: ast.FunctionDef,
 ) -> list[FieldObservation]:
     observations: list[FieldObservation] = []
+    parameter_annotations = _parameter_annotation_map(function)
     for stmt in function.body:
         value: ast.AST | None = None
         target: ast.AST | None = None
@@ -769,6 +792,16 @@ def _init_field_observations(
                 is_dataclass_family=is_dataclass_family,
                 value_fingerprint=(
                     _fingerprint_builder_value(value) if value is not None else None
+                ),
+                annotation_text=(
+                    parameter_annotations[value.id][0]
+                    if isinstance(value, ast.Name) and value.id in parameter_annotations
+                    else None
+                ),
+                annotation_fingerprint=(
+                    parameter_annotations[value.id][1]
+                    if isinstance(value, ast.Name) and value.id in parameter_annotations
+                    else None
                 ),
             )
         )

@@ -360,6 +360,7 @@ class FieldFamilyCandidate:
     execution_level: StructuralExecutionLevel
     observations: tuple[FieldObservation, ...]
     dataclass_count: int
+    field_type_map: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -530,6 +531,25 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         return findings
 
 
+def _shared_field_type_map(
+    observations: tuple[FieldObservation, ...], field_names: tuple[str, ...]
+) -> tuple[tuple[str, str], ...] | None:
+    typed_fields: list[tuple[str, str]] = []
+    for field_name in field_names:
+        annotations = {
+            (item.annotation_fingerprint, item.annotation_text)
+            for item in observations
+            if item.field_name == field_name and item.annotation_fingerprint is not None
+        }
+        if len({fingerprint for fingerprint, _ in annotations}) > 1:
+            return None
+        if annotations:
+            _, annotation_text = next(iter(annotations))
+            if annotation_text is not None:
+                typed_fields.append((field_name, annotation_text))
+    return tuple(typed_fields)
+
+
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
     observations = collect_field_observations(module)
     graph = ObservationGraph(
@@ -610,6 +630,9 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
                 key=lambda item: (item.file_path, item.lineno, item.symbol),
             )
         )
+        field_type_map = _shared_field_type_map(supporting_observations, field_names)
+        if field_type_map is None:
+            continue
         candidates.append(
             FieldFamilyCandidate(
                 class_names=supporting_classes,
@@ -624,6 +647,7 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
                         for item in supporting_observations
                     )
                 ),
+                field_type_map=field_type_map,
             )
         )
 
@@ -659,7 +683,11 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
 
 def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
     base_name = _shared_field_base_name(candidate.class_names)
-    field_block = "\n".join(f"    {field}: object" for field in candidate.field_names)
+    field_type_lookup = dict(candidate.field_type_map)
+    field_block = "\n".join(
+        f"    {field}: {field_type_lookup.get(field, 'object')}"
+        for field in candidate.field_names
+    )
     if candidate.dataclass_count == len(candidate.class_names):
         return (
             "@dataclass(frozen=True)\n"

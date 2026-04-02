@@ -837,6 +837,36 @@ class BetaResult:
     assert finding.pattern_id == 5
     assert "pose_id" in finding.summary
     assert "ResultBase" in (finding.scaffold or "")
+    assert "pose_id: int" in (finding.scaffold or "")
+
+
+def test_does_not_merge_dataclass_fields_with_conflicting_types(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+    alpha_only: int
+
+
+@dataclass
+class BetaResult:
+    pose_id: str
+    score: float
+    beta_only: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "repeated_field_family" for finding in findings
+    )
 
 
 def test_plan_extracts_shared_fields_to_abc_base(tmp_path: Path) -> None:
