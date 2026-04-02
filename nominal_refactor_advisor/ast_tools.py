@@ -331,12 +331,29 @@ def fingerprint_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return ast.dump(normalized, include_attributes=False)
 
 
-def _decorator_name(node: ast.AST) -> str:
+def _terminal_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
         return node.attr
-    return node.__class__.__name__
+    return None
+
+
+def _subscript_base_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    return _terminal_name(node.value)
+
+
+def _node_matches_name(node: ast.AST, expected_name: str) -> bool:
+    return (
+        _terminal_name(node) == expected_name
+        or _subscript_base_name(node) == expected_name
+    )
+
+
+def _node_display_name(node: ast.AST) -> str:
+    return _terminal_name(node) or node.__class__.__name__
 
 
 def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
@@ -358,7 +375,7 @@ def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
                     and not node.name.startswith("__"),
                     param_count=len(node.args.args),
                     decorators=tuple(
-                        _decorator_name(dec) for dec in node.decorator_list
+                        _node_display_name(dec) for dec in node.decorator_list
                     ),
                     fingerprint=fingerprint_function(node),
                     statement_texts=tuple(ast.unparse(stmt) for stmt in node.body),
@@ -436,7 +453,7 @@ def collect_registration_shapes(parsed_module: ParsedModule) -> list[Registratio
         if node.value.id not in known_classes:
             continue
         for target in node.targets:
-            registry_name = _registry_target_name(target)
+            registry_name = _subscript_base_name(target)
             if registry_name is None:
                 continue
             key_fingerprint = _registration_key_fingerprint(target)
@@ -503,7 +520,7 @@ def _class_body_field_observation(
     if not is_dataclass_family:
         return None
     if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-        if _is_classvar_annotation(stmt.annotation):
+        if _node_matches_name(stmt.annotation, "ClassVar"):
             return None
         return FieldObservation(
             file_path=str(parsed_module.path),
@@ -602,7 +619,7 @@ def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObserva
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             is_dataclass_family = any(
-                _decorator_name(decorator) == "dataclass"
+                _node_matches_name(decorator, "dataclass")
                 for decorator in node.decorator_list
             )
             self.class_stack.append((node.name, is_dataclass_family))
@@ -643,7 +660,7 @@ def _builder_call_shape(
     keyword_pairs = [(kw.arg, kw.value) for kw in node.keywords if kw.arg is not None]
     if len(keyword_pairs) < 3:
         return None
-    callee_name = _call_name(node.func)
+    callee_name = _terminal_name(node.func)
     if callee_name is None:
         return None
     keyword_names = tuple(name for name, _ in keyword_pairs)
@@ -655,7 +672,7 @@ def _builder_call_shape(
         source_roots.update(_root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
-        name for name, value in keyword_pairs if _leaf_name(value) == name
+        name for name, value in keyword_pairs if _terminal_name(value) == name
     )
     return BuilderCallShape(
         file_path=str(parsed_module.path),
@@ -697,7 +714,7 @@ def _export_dict_shape(
         return None
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
-        name for name, value in key_pairs if _leaf_name(value) == name
+        name for name, value in key_pairs if _terminal_name(value) == name
     )
     return ExportDictShape(
         file_path=str(parsed_module.path),
@@ -710,22 +727,6 @@ def _export_dict_shape(
         source_name=source_name,
         identity_field_names=identity_field_names,
     )
-
-
-def _call_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _leaf_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
 
 
 class _BuilderValueNormalizer(ast.NodeTransformer):
@@ -769,17 +770,6 @@ def _root_names(node: ast.AST) -> set[str]:
     return roots
 
 
-def _registry_target_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Subscript):
-        return None
-    target = node.value
-    if isinstance(target, ast.Name):
-        return target.id
-    if isinstance(target, ast.Attribute):
-        return target.attr
-    return None
-
-
 def _registration_key_fingerprint(node: ast.AST) -> str | None:
     if not isinstance(node, ast.Subscript):
         return None
@@ -797,7 +787,7 @@ def _collect_registration_call_shapes(
             continue
         if node.func.attr not in {"register", "add", "register_class", "register_type"}:
             continue
-        registry_name = _call_name(node.func.value)
+        registry_name = _terminal_name(node.func.value)
         if registry_name is None:
             continue
         if not node.args:
@@ -829,7 +819,7 @@ def _collect_decorator_registration_shapes(
         for decorator in node.decorator_list:
             if not isinstance(decorator, ast.Call):
                 continue
-            decorator_name = _call_name(decorator.func)
+            decorator_name = _terminal_name(decorator.func)
             if decorator_name not in {
                 "register",
                 "register_class",
@@ -839,7 +829,7 @@ def _collect_decorator_registration_shapes(
                 continue
             if not decorator.args:
                 continue
-            registry_name = _call_name(decorator.args[0])
+            registry_name = _terminal_name(decorator.args[0])
             if registry_name is None:
                 continue
             key_expr = (

@@ -594,6 +594,34 @@ class BetaResult:
     assert len(pose_fiber.observations) == 2
 
 
+def test_ignores_classvar_fields_via_generic_annotation_matcher(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+from typing import ClassVar
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    cache: ClassVar[dict[str, int]] = {}
+
+
+@dataclass
+class BetaResult:
+    pose_id: int
+    cache: ClassVar[dict[str, int]] = {}
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_field_observations(module)
+
+    assert all(item.field_name != "cache" for item in observations)
+
+
 def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
