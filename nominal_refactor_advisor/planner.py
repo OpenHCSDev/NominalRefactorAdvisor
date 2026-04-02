@@ -194,6 +194,14 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> str:
+        field_names = _field_names_from_findings(findings)
+        field_execution_level = _field_execution_level_from_findings(findings)
+        if field_names and field_execution_level != "unknown_level":
+            return (
+                f"Create one ABC field base for `{subsystem}` and lift shared fields "
+                f"{_human_join(list(field_names))} from {_class_list_from_findings(findings)} at "
+                f"{field_execution_level.replace('_', ' ')}."
+            )
         site_count = sum(finding.metrics.shared_algorithm_sites for finding in findings)
         return (
             f"Create one ABC template-method family for `{subsystem}` and move the shared orchestration from "
@@ -322,6 +330,7 @@ class ActionContext:
     mapping_problem: str
     field_list: str
     identity_field_list: str
+    field_execution_level: str
     dispatch_symbol: str
     dispatch_axis: str
     dispatch_cases: str
@@ -356,6 +365,64 @@ class TemplatedPatternActionBuilder(PatternActionBuilder):
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
         return _actions_from_templates(subsystem, findings, self.templates)
+
+
+class AbcFamilyActionBuilder(PatternActionBuilder):
+    def build(
+        self,
+        subsystem: str,
+        pattern_id: PatternId,
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorAction, ...]:
+        context = _build_action_context(subsystem, findings)
+        if context.field_execution_level != "unknown_level":
+            return _actions_from_templates(
+                subsystem,
+                findings,
+                (
+                    ActionTemplate(
+                        kind="create_abc_base",
+                        description="Create `{base_name}` in `{subsystem}` to own shared fields {field_list}.",
+                        confidence=HIGH_CONFIDENCE,
+                        create_symbol="{base_name}",
+                    ),
+                    ActionTemplate(
+                        kind="extract_shared_fields",
+                        description="Move the shared field declarations/assignments for {field_list} from {class_list} into `{base_name}` at {field_execution_level}.",
+                        confidence=HIGH_CONFIDENCE,
+                        statement_operation="move",
+                    ),
+                    ActionTemplate(
+                        kind="leave_subclass_fields",
+                        description="Leave only subclass-specific fields outside `{base_name}`.",
+                        confidence=MEDIUM_CONFIDENCE,
+                    ),
+                ),
+            )
+        return _actions_from_templates(
+            subsystem,
+            findings,
+            (
+                ActionTemplate(
+                    kind="create_abc_base",
+                    description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
+                    confidence=HIGH_CONFIDENCE,
+                    create_symbol="{base_name}",
+                ),
+                ActionTemplate(
+                    kind="extract_template_method",
+                    description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
+                    confidence=HIGH_CONFIDENCE,
+                    create_symbol="{base_name}.{template_method_name}",
+                    statement_operation="move",
+                ),
+                ActionTemplate(
+                    kind="leave_residual_hooks",
+                    description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
+                    confidence=MEDIUM_CONFIDENCE,
+                ),
+            ),
+        )
 
 
 def _actions_from_templates(
@@ -428,6 +495,7 @@ def _build_action_context(
         identity_field_list=_human_join(list(identity_field_names))
         if identity_field_names
         else "the directly copied fields",
+        field_execution_level=_field_execution_level_from_findings(findings),
         dispatch_symbol=_dispatch_symbol_from_findings(findings),
         dispatch_axis=_dispatch_axis_from_findings(findings),
         dispatch_cases=_dispatch_cases_from_findings(findings),
@@ -463,28 +531,7 @@ _PATTERN_ACTION_BUILDERS: dict[PatternId, PatternActionBuilder] = {
             ),
         )
     ),
-    PatternId.ABC_TEMPLATE_METHOD: TemplatedPatternActionBuilder(
-        (
-            ActionTemplate(
-                kind="create_abc_base",
-                description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="{base_name}",
-            ),
-            ActionTemplate(
-                kind="extract_template_method",
-                description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="{base_name}.{template_method_name}",
-                statement_operation="move",
-            ),
-            ActionTemplate(
-                kind="leave_residual_hooks",
-                description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
-                confidence=MEDIUM_CONFIDENCE,
-            ),
-        )
-    ),
+    PatternId.ABC_TEMPLATE_METHOD: AbcFamilyActionBuilder(),
     PatternId.AUTO_REGISTER_META: TemplatedPatternActionBuilder(
         (
             ActionTemplate(
@@ -952,6 +999,13 @@ def _class_names_from_findings(
     return tuple(_dedupe_preserve_order(names))
 
 
+def _class_list_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    class_names = _class_names_from_findings(findings)
+    if not class_names:
+        return "the family"
+    return _human_join(list(class_names))
+
+
 def _field_names_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
@@ -994,6 +1048,21 @@ def _identity_field_names_from_findings(
     for finding in findings:
         names.extend(finding.metrics.plan_identity_field_names)
     return tuple(_dedupe_preserve_order(names))
+
+
+def _field_execution_level_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> str:
+    levels = {
+        level
+        for finding in findings
+        if (level := finding.metrics.plan_field_execution_level) is not None
+    }
+    if not levels:
+        return "unknown_level"
+    if len(levels) == 1:
+        return next(iter(levels))
+    return "mixed_levels"
 
 
 def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:

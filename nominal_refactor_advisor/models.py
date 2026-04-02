@@ -168,6 +168,10 @@ class FindingMetrics(SemanticRecord, ABC):
     def plan_literal_cases(self) -> tuple[str, ...]:
         return ()
 
+    @property
+    def plan_field_execution_level(self) -> str | None:
+        return None
+
 
 class BehaviorFindingMetrics(FindingMetrics, ABC):
     pass
@@ -247,6 +251,39 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
     @property
     def shared_algorithm_sites(self) -> int:
         return self.duplicate_group_count
+
+
+@dataclass(frozen=True)
+class FieldFamilyMetrics(BehaviorFindingMetrics):
+    class_count: int
+    field_count: int
+    class_names: tuple[str, ...]
+    field_names: tuple[str, ...]
+    execution_level: str
+    dataclass_count: int = 0
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        removable = max((self.class_count - 1) * self.field_count, 0)
+        return ImpactDelta(
+            lower_bound_removable_loc=removable,
+            upper_bound_removable_loc=removable,
+            loci_of_change_before=self.class_count,
+            loci_of_change_after=1,
+            repeated_mappings_centralized=removable,
+        )
+
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
+        return self.class_names
+
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
+        return self.field_names
+
+    @property
+    def plan_field_execution_level(self) -> str:
+        return self.execution_level
 
 
 @dataclass(frozen=True)

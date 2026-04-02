@@ -9,10 +9,15 @@ from typing import Any
 
 from .ast_tools import (
     BuilderCallShape,
+    FieldObservation,
+    ObservationGraph,
+    ObservationKind,
     ExportDictShape,
     MethodShape,
     ParsedModule,
     RegistrationShape,
+    StructuralExecutionLevel,
+    collect_field_observations,
     collect_builder_call_shapes,
     collect_export_dict_shapes,
     collect_method_shapes,
@@ -25,6 +30,7 @@ from .models import (
     STRONG_HEURISTIC,
     BranchCountMetrics,
     DispatchCountMetrics,
+    FieldFamilyMetrics,
     FindingMetrics,
     FindingSpec,
     HierarchyCandidateMetrics,
@@ -346,6 +352,15 @@ class InlineLiteralObservation:
     literal_case: str
 
 
+@dataclass(frozen=True)
+class FieldFamilyCandidate:
+    class_names: tuple[str, ...]
+    field_names: tuple[str, ...]
+    execution_level: StructuralExecutionLevel
+    observations: tuple[FieldObservation, ...]
+    dataclass_count: int
+
+
 class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
     detector_id = "repeated_private_methods"
     finding_spec = FindingSpec(
@@ -493,6 +508,247 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                     metrics=HierarchyCandidateMetrics(
                         duplicate_group_count=len(groups),
                         class_count=len(class_names),
+                    ),
+                )
+            )
+        return findings
+
+
+def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
+    observations = collect_field_observations(module)
+    graph = ObservationGraph(
+        observations=tuple(item.structural_observation for item in observations)
+    )
+    candidate_map: dict[tuple[StructuralExecutionLevel, tuple[str, ...]], set[str]] = (
+        defaultdict(set)
+    )
+    grouped_by_level: dict[StructuralExecutionLevel, dict[str, set[str]]] = defaultdict(
+        lambda: defaultdict(set)
+    )
+
+    for field_observation in observations:
+        grouped_by_level[field_observation.execution_level][
+            field_observation.class_name
+        ].add(field_observation.field_name)
+
+    for execution_level in (
+        StructuralExecutionLevel.CLASS_BODY,
+        StructuralExecutionLevel.INIT_BODY,
+    ):
+        repeated_field_names = {
+            fiber.observed_name
+            for fiber in graph.fibers_for(ObservationKind.FIELD, execution_level)
+            if len(fiber.observations) >= 2
+        }
+        class_fields = grouped_by_level.get(execution_level, {})
+        class_names = sorted(class_fields)
+        for left_index, left_name in enumerate(class_names):
+            for right_name in class_names[left_index + 1 :]:
+                shared_fields = tuple(
+                    sorted(
+                        (class_fields[left_name] & class_fields[right_name])
+                        & repeated_field_names
+                    )
+                )
+                if len(shared_fields) < 2:
+                    continue
+                candidate_map[(execution_level, shared_fields)].update(
+                    {left_name, right_name}
+                )
+
+    candidates: list[FieldFamilyCandidate] = []
+    for (execution_level, field_names), class_names in candidate_map.items():
+        supporting_classes = tuple(
+            sorted(
+                class_name
+                for class_name, class_fields in grouped_by_level[
+                    execution_level
+                ].items()
+                if set(field_names) <= class_fields
+            )
+        )
+        if len(supporting_classes) < 2:
+            continue
+        shared_field_set = set(field_names)
+        if any(
+            len(shared_field_set)
+            / max(len(grouped_by_level[execution_level][class_name]), 1)
+            < 0.5
+            for class_name in supporting_classes
+        ):
+            continue
+        if any(
+            not (grouped_by_level[execution_level][class_name] - shared_field_set)
+            for class_name in supporting_classes
+        ):
+            continue
+        supporting_observations = tuple(
+            sorted(
+                (
+                    item
+                    for item in observations
+                    if item.execution_level == execution_level
+                    and item.class_name in supporting_classes
+                    and item.field_name in field_names
+                ),
+                key=lambda item: (item.file_path, item.lineno, item.symbol),
+            )
+        )
+        candidates.append(
+            FieldFamilyCandidate(
+                class_names=supporting_classes,
+                field_names=field_names,
+                execution_level=execution_level,
+                observations=supporting_observations,
+                dataclass_count=sum(
+                    1
+                    for class_name in supporting_classes
+                    if any(
+                        item.class_name == class_name and item.is_dataclass_family
+                        for item in supporting_observations
+                    )
+                ),
+            )
+        )
+
+    maximal_candidates: list[FieldFamilyCandidate] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (
+            item.execution_level,
+            len(item.class_names),
+            len(item.field_names),
+        ),
+        reverse=True,
+    ):
+        if any(
+            candidate.execution_level == other.execution_level
+            and set(candidate.class_names) == set(other.class_names)
+            and set(candidate.field_names) < set(other.field_names)
+            for other in maximal_candidates
+        ):
+            continue
+        maximal_candidates.append(candidate)
+    return tuple(
+        sorted(
+            maximal_candidates,
+            key=lambda item: (
+                item.execution_level,
+                item.class_names,
+                item.field_names,
+            ),
+        )
+    )
+
+
+def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
+    base_name = _shared_field_base_name(candidate.class_names)
+    field_block = "\n".join(f"    {field}: object" for field in candidate.field_names)
+    if candidate.dataclass_count == len(candidate.class_names):
+        return (
+            "@dataclass(frozen=True)\n"
+            f"class {base_name}(ABC):\n"
+            f"{field_block}\n\n"
+            f"# Move shared dataclass fields from {', '.join(candidate.class_names)} into {base_name}."
+        )
+    init_params = ", ".join(candidate.field_names)
+    assignments = "\n".join(
+        f"        self.{field} = {field}" for field in candidate.field_names
+    )
+    return (
+        f"class {base_name}(ABC):\n"
+        f"    def __init__(self, {init_params}):\n"
+        f"{assignments}\n\n"
+        f"# Move shared fields from {', '.join(candidate.class_names)} at {candidate.execution_level} into {base_name}."
+    )
+
+
+def _longest_common_prefix(values: tuple[str, ...]) -> str:
+    if not values:
+        return ""
+    prefix = values[0]
+    for value in values[1:]:
+        while prefix and not value.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix
+
+
+def _longest_common_suffix(values: tuple[str, ...]) -> str:
+    if not values:
+        return ""
+    reversed_values = tuple(value[::-1] for value in values)
+    return _longest_common_prefix(reversed_values)[::-1]
+
+
+def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
+    suffix = _longest_common_suffix(class_names)
+    if suffix:
+        return suffix if suffix.endswith("Base") else f"{suffix}Base"
+    prefix = _longest_common_prefix(class_names)
+    if prefix:
+        return prefix if prefix.endswith("Base") else f"{prefix}Base"
+    return "SharedFieldsBase"
+
+
+class RepeatedFieldFamilyDetector(PerModuleIssueDetector):
+    detector_id = "repeated_field_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Shared field family across sibling classes should move to an ABC base",
+        why=(
+            "The docs treat repeated shared state components the same way as repeated shared algorithms: when the "
+            "same field family is declared across sibling classes at the same structural execution level, the shared "
+            "component should move to one authoritative base rather than being duplicated in each leaf class."
+        ),
+        capability_gap="single authoritative state component for a nominal class family",
+        relation_context="same field family repeats across sibling classes at one structural execution level",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        candidates = _field_family_candidates(module)
+        findings: list[RefactorFinding] = []
+        for candidate in candidates:
+            if len(candidate.class_names) < 2 or len(candidate.field_names) < 2:
+                continue
+            evidence = tuple(
+                SourceLocation(
+                    item.file_path,
+                    item.lineno,
+                    item.symbol,
+                )
+                for item in candidate.observations[:8]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"Classes {', '.join(candidate.class_names)} repeat fields {candidate.field_names} at `{candidate.execution_level}`."
+                    ),
+                    evidence,
+                    relation_context=(
+                        f"same field family repeats across sibling classes at `{candidate.execution_level}`"
+                    ),
+                    scaffold=_field_family_scaffold(candidate),
+                    metrics=FieldFamilyMetrics(
+                        class_count=len(candidate.class_names),
+                        field_count=len(candidate.field_names),
+                        class_names=candidate.class_names,
+                        field_names=candidate.field_names,
+                        execution_level=candidate.execution_level,
+                        dataclass_count=candidate.dataclass_count,
                     ),
                 )
             )
@@ -2125,6 +2381,7 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         DynamicMethodInjectionDetector(),
         RepeatedPrivateMethodDetector(),
         InheritanceHierarchyCandidateDetector(),
+        RepeatedFieldFamilyDetector(),
         RepeatedBuilderCallDetector(),
         RepeatedExportDictDetector(),
         ManualClassRegistrationDetector(),

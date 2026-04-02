@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import copy
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 
@@ -11,6 +12,125 @@ class ParsedModule:
     path: Path
     module: ast.Module
     source: str
+
+
+class ObservationKind(StrEnum):
+    FIELD = "field"
+
+
+class StructuralExecutionLevel(StrEnum):
+    CLASS_BODY = "class_body"
+    INIT_BODY = "init_body"
+
+
+class FieldOriginKind(StrEnum):
+    CLASS_ASSIGNMENT = "class_assignment"
+    CLASS_ANNOTATION = "class_annotation"
+    DATACLASS_FIELD = "dataclass_field"
+    INIT_ASSIGNMENT = "init_assignment"
+
+
+@dataclass(frozen=True)
+class StructuralObservation:
+    file_path: str
+    owner_symbol: str
+    line: int
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel
+    observed_name: str
+    fiber_key: str
+
+
+@dataclass(frozen=True)
+class ObservationFiber:
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel
+    fiber_key: str
+    observations: tuple[StructuralObservation, ...]
+
+    @property
+    def observed_name(self) -> str:
+        return self.observations[0].observed_name
+
+
+@dataclass(frozen=True)
+class ObservationGraph:
+    observations: tuple[StructuralObservation, ...]
+
+    @property
+    def fibers(self) -> tuple[ObservationFiber, ...]:
+        grouped: dict[
+            tuple[ObservationKind, StructuralExecutionLevel, str],
+            list[StructuralObservation],
+        ] = {}
+        for observation in self.observations:
+            key = (
+                observation.observation_kind,
+                observation.execution_level,
+                observation.fiber_key,
+            )
+            grouped.setdefault(key, []).append(observation)
+        fibers = [
+            ObservationFiber(
+                observation_kind=kind,
+                execution_level=execution_level,
+                fiber_key=fiber_key,
+                observations=tuple(
+                    sorted(items, key=lambda item: (item.file_path, item.line))
+                ),
+            )
+            for (kind, execution_level, fiber_key), items in grouped.items()
+        ]
+        return tuple(
+            sorted(
+                fibers,
+                key=lambda item: (
+                    item.observation_kind,
+                    item.execution_level,
+                    item.fiber_key,
+                ),
+            )
+        )
+
+    def fibers_for(
+        self,
+        observation_kind: ObservationKind,
+        execution_level: StructuralExecutionLevel,
+    ) -> tuple[ObservationFiber, ...]:
+        return tuple(
+            fiber
+            for fiber in self.fibers
+            if fiber.observation_kind == observation_kind
+            and fiber.execution_level == execution_level
+        )
+
+
+@dataclass(frozen=True)
+class FieldObservation:
+    file_path: str
+    class_name: str
+    field_name: str
+    lineno: int
+    execution_level: StructuralExecutionLevel
+    origin_kind: FieldOriginKind
+    is_dataclass_family: bool
+    value_fingerprint: str | None = None
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.field_name}"
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.FIELD,
+            execution_level=self.execution_level,
+            observed_name=self.field_name,
+            fiber_key=self.field_name,
+        )
 
 
 @dataclass(frozen=True)
@@ -372,6 +492,144 @@ def collect_export_dict_shapes(parsed_module: ParsedModule) -> list[ExportDictSh
 
     Visitor().visit(parsed_module.module)
     return shapes
+
+
+def _class_body_field_observation(
+    parsed_module: ParsedModule,
+    class_name: str,
+    is_dataclass_family: bool,
+    stmt: ast.stmt,
+) -> FieldObservation | None:
+    if not is_dataclass_family:
+        return None
+    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+        if _is_classvar_annotation(stmt.annotation):
+            return None
+        return FieldObservation(
+            file_path=str(parsed_module.path),
+            class_name=class_name,
+            field_name=stmt.target.id,
+            lineno=stmt.lineno,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            origin_kind=(
+                FieldOriginKind.DATACLASS_FIELD
+                if is_dataclass_family
+                else FieldOriginKind.CLASS_ANNOTATION
+            ),
+            is_dataclass_family=is_dataclass_family,
+            value_fingerprint=(
+                _fingerprint_builder_value(stmt.value)
+                if stmt.value is not None
+                else None
+            ),
+        )
+    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            return None
+        return FieldObservation(
+            file_path=str(parsed_module.path),
+            class_name=class_name,
+            field_name=target.id,
+            lineno=stmt.lineno,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            origin_kind=FieldOriginKind.CLASS_ASSIGNMENT,
+            is_dataclass_family=is_dataclass_family,
+            value_fingerprint=_fingerprint_builder_value(stmt.value),
+        )
+    return None
+
+
+def _init_field_observations(
+    parsed_module: ParsedModule,
+    class_name: str,
+    is_dataclass_family: bool,
+    function: ast.FunctionDef,
+) -> list[FieldObservation]:
+    observations: list[FieldObservation] = []
+    for stmt in function.body:
+        value: ast.AST | None = None
+        target: ast.AST | None = None
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target = stmt.targets[0]
+            value = stmt.value
+        elif isinstance(stmt, ast.AnnAssign):
+            target = stmt.target
+            value = stmt.value
+        else:
+            continue
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+        ):
+            continue
+        observations.append(
+            FieldObservation(
+                file_path=str(parsed_module.path),
+                class_name=class_name,
+                field_name=target.attr,
+                lineno=stmt.lineno,
+                execution_level=StructuralExecutionLevel.INIT_BODY,
+                origin_kind=FieldOriginKind.INIT_ASSIGNMENT,
+                is_dataclass_family=is_dataclass_family,
+                value_fingerprint=(
+                    _fingerprint_builder_value(value) if value is not None else None
+                ),
+            )
+        )
+    return observations
+
+
+def _is_classvar_annotation(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "ClassVar"
+    if isinstance(node, ast.Subscript):
+        target = node.value
+        if isinstance(target, ast.Name):
+            return target.id == "ClassVar"
+        if isinstance(target, ast.Attribute):
+            return target.attr == "ClassVar"
+    return False
+
+
+def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObservation]:
+    observations: list[FieldObservation] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[tuple[str, bool]] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            is_dataclass_family = any(
+                _decorator_name(decorator) == "dataclass"
+                for decorator in node.decorator_list
+            )
+            self.class_stack.append((node.name, is_dataclass_family))
+            for stmt in node.body:
+                if isinstance(stmt, ast.FunctionDef) and stmt.name == "__init__":
+                    observations.extend(
+                        _init_field_observations(
+                            parsed_module,
+                            node.name,
+                            is_dataclass_family,
+                            stmt,
+                        )
+                    )
+                    continue
+                field_observation = _class_body_field_observation(
+                    parsed_module,
+                    node.name,
+                    is_dataclass_family,
+                    stmt,
+                )
+                if field_observation is not None:
+                    observations.append(field_observation)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+    Visitor().visit(parsed_module.module)
+    return observations
 
 
 def _builder_call_shape(

@@ -2,6 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_tools import (
+    ObservationGraph,
+    ObservationKind,
+    StructuralExecutionLevel,
+    collect_field_observations,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.models import DispatchCountMetrics
@@ -549,6 +556,113 @@ class Beta:
         finding.detector_id == "repeated_export_dicts" and finding.codemod_patch
         for finding in findings
     )
+
+
+def test_collects_field_observation_fibers_for_dataclass_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+    label: str
+
+
+@dataclass
+class BetaResult:
+    pose_id: int
+    score: float
+    label: str
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_field_observations(module)
+    graph = ObservationGraph(
+        tuple(item.structural_observation for item in observations)
+    )
+    fibers = graph.fibers_for(
+        ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY
+    )
+
+    pose_fiber = next(fiber for fiber in fibers if fiber.observed_name == "pose_id")
+    assert len(pose_fiber.observations) == 2
+
+
+def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+    label: str
+    alpha_only: int
+
+
+@dataclass
+class BetaResult:
+    pose_id: int
+    score: float
+    label: str
+    beta_only: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_field_family"
+    )
+
+    assert finding.pattern_id == 5
+    assert "pose_id" in finding.summary
+    assert "ResultBase" in (finding.scaffold or "")
+
+
+def test_plan_extracts_shared_fields_to_abc_base(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class AlphaController:
+    def __init__(self, pose_id, score, label, alpha_only):
+        self.pose_id = pose_id
+        self.score = score
+        self.label = label
+        self.alpha_only = alpha_only
+
+
+class BetaController:
+    def __init__(self, pose_id, score, label, beta_only):
+        self.pose_id = pose_id
+        self.score = score
+        self.label = label
+        self.beta_only = beta_only
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    plans = build_refactor_plans(findings, tmp_path)
+    plan = next(plan for plan in plans if plan.primary_pattern_id == 5)
+
+    assert any(action.kind == "extract_shared_fields" for action in plan.actions)
+    field_action = next(
+        action for action in plan.actions if action.kind == "extract_shared_fields"
+    )
+    assert field_action.statement_operation == "move"
+    assert "pose_id" in field_action.description
 
 
 def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:
