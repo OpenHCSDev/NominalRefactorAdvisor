@@ -704,8 +704,54 @@ class Sample:
         finding for finding in findings if finding.detector_id == "accessor_wrapper"
     )
 
-    assert "direct attribute/property access" in finding.title
+    assert "structural accessor wrapper" in finding.title
     assert "replace `Sample.get_status()` with `status`" in (finding.scaffold or "")
+
+
+def test_detects_structural_accessor_wrappers_without_naming_convention(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sample:
+    def status(self):
+        return self._status
+
+    def store(self, status):
+        self._status = status
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+    )
+
+    assert "structural accessor wrapper" in finding.summary
+    assert "read through" in finding.relation_context
+    assert "replace `Sample.status()` with `status`" in (finding.scaffold or "")
+
+
+def test_detects_single_structural_computed_property_candidate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sample:
+    def labels(self):
+        return tuple(self._labels)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+    )
+
+    assert "computed tuple" in finding.relation_context
+    assert "an `@property` exposing `tuple(self._labels)`" in (finding.scaffold or "")
 
 
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:

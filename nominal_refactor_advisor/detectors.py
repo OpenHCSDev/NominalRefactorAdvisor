@@ -319,7 +319,9 @@ class AccessorWrapperCandidate:
     method_name: str
     lineno: int
     target_expression: str
+    observed_attribute: str
     accessor_kind: str
+    wrapper_shape: str
 
     @property
     def symbol(self) -> str:
@@ -1408,14 +1410,14 @@ class AccessorWrapperDetector(PerModuleIssueDetector):
     detector_id = "accessor_wrapper"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Java-style accessor wrapper should be direct attribute/property access",
+        title="Trivial structural accessor wrapper should collapse to attribute/property access",
         why=(
-            "The docs treat wrappers that merely transport an already-owned fact as redundant structure. In Python, "
-            "trivial getter/setter wrappers should collapse to direct attribute access or an `@property` when computed "
-            "access is genuinely needed."
+            "The docs treat one-step observation wrappers as redundant structure: if a method only transports an "
+            "already-owned attribute or a one-step computed view of it, the authority should remain the attribute "
+            "itself, with `@property` reserved for genuine computed access."
         ),
-        capability_gap="direct authoritative attribute/property access instead of wrapper boilerplate",
-        relation_context="same class exposes an already-owned fact through trivial wrapper methods",
+        capability_gap="direct authoritative attribute/property access instead of transport wrappers",
+        relation_context="same class exposes owned facts through one-step transport wrappers",
         confidence=HIGH_CONFIDENCE,
         certification=CERTIFIED,
         capability_tags=(
@@ -1438,30 +1440,50 @@ class AccessorWrapperDetector(PerModuleIssueDetector):
         findings: list[RefactorFinding] = []
         for class_name, candidates in grouped.items():
             ordered = sorted(candidates, key=lambda item: item.lineno)
+            if not _supports_accessor_wrapper_finding(ordered):
+                continue
             evidence = tuple(
                 SourceLocation(str(module.path), candidate.lineno, candidate.symbol)
                 for candidate in ordered[:6]
             )
-            replacement_examples = ", ".join(
+            replacement_examples = "\n".join(
                 _accessor_replacement_example(candidate) for candidate in ordered[:3]
+            )
+            observed_attrs = ", ".join(
+                sorted({candidate.observed_attribute for candidate in ordered})
+            )
+            wrapper_shapes = ", ".join(
+                sorted(
+                    {candidate.wrapper_shape.replace("_", " ") for candidate in ordered}
+                )
             )
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
                     (
-                        f"Class {class_name} exposes {len(ordered)} trivial accessor wrapper(s): "
-                        f"{', '.join(candidate.method_name for candidate in ordered[:4])}."
+                        f"Class {class_name} exposes {len(ordered)} structural accessor wrapper(s) over {observed_attrs}."
                     ),
                     evidence,
+                    relation_context=(
+                        f"same class repeats {wrapper_shapes} around owned attributes instead of exposing one authoritative access path"
+                    ),
                     scaffold=(
-                        "Prefer direct dot access when the fact is already owned by the object.\n\n"
-                        "Example replacement:\n"
+                        "Collapse these transport wrappers to direct dot access when they only expose owned state. "
+                        "If a one-step computed view must remain public, express it as an `@property`.\n\n"
+                        "Example replacements:\n"
                         f"{replacement_examples}"
                     ),
                     metrics=MappingMetrics(
                         mapping_site_count=len(ordered),
-                        field_count=1,
+                        field_count=len(
+                            {candidate.observed_attribute for candidate in ordered}
+                        ),
                         mapping_name=f"{class_name} property",
+                        field_names=tuple(
+                            sorted(
+                                {candidate.observed_attribute for candidate in ordered}
+                            )
+                        ),
                     ),
                 )
             )
@@ -2782,56 +2804,64 @@ def _accessor_wrapper_candidate(
     class_name: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> AccessorWrapperCandidate | None:
+    if _is_dunder_method(function.name):
+        return None
     if _has_property_like_decorator(function):
         return None
     body = _trim_docstring_body(function.body)
     if not body:
         return None
-    getter_expr = _getter_wrapper_expression(function, body)
-    if getter_expr is not None:
+    getter_candidate = _getter_wrapper_candidate(function, body)
+    if getter_candidate is not None:
+        target_expression, observed_attribute, wrapper_shape = getter_candidate
         return AccessorWrapperCandidate(
             class_name=class_name,
             method_name=function.name,
             lineno=function.lineno,
-            target_expression=getter_expr,
+            target_expression=target_expression,
+            observed_attribute=observed_attribute,
             accessor_kind="getter",
+            wrapper_shape=wrapper_shape,
         )
-    setter_target = _setter_wrapper_target(function, body)
-    if setter_target is not None:
+    setter_candidate = _setter_wrapper_candidate(function, body)
+    if setter_candidate is not None:
+        target_expression, observed_attribute = setter_candidate
         return AccessorWrapperCandidate(
             class_name=class_name,
             method_name=function.name,
             lineno=function.lineno,
-            target_expression=setter_target,
+            target_expression=target_expression,
+            observed_attribute=observed_attribute,
             accessor_kind="setter",
+            wrapper_shape="write_through",
         )
     return None
 
 
-def _getter_wrapper_expression(
+def _getter_wrapper_candidate(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     body: list[ast.stmt],
-) -> str | None:
+) -> tuple[str, str, str] | None:
     if len(function.args.args) != 1:
-        return None
-    if not (function.name.startswith("get_") or function.name.endswith("_for_plan")):
         return None
     if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
         return None
     expr = body[0].value
     if _is_self_attribute_expression(expr):
-        return ast.unparse(expr)
-    if _is_wrapped_self_attribute_expression(expr):
-        return ast.unparse(expr)
+        observed_attribute = _self_attribute_name(expr)
+        if observed_attribute is None:
+            return None
+        return ast.unparse(expr), observed_attribute, "read_through"
+    if (wrapped := _wrapped_self_attribute_expression(expr)) is not None:
+        wrapper_name, observed_attribute = wrapped
+        return ast.unparse(expr), observed_attribute, f"computed_{wrapper_name}"
     return None
 
 
-def _setter_wrapper_target(
+def _setter_wrapper_candidate(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     body: list[ast.stmt],
-) -> str | None:
-    if not function.name.startswith("set_"):
-        return None
+) -> tuple[str, str] | None:
     if len(function.args.args) != 2:
         return None
     if len(body) != 1 or not isinstance(body[0], ast.Assign):
@@ -2849,7 +2879,10 @@ def _setter_wrapper_target(
         return None
     if not (isinstance(assign.value, ast.Name) and assign.value.id == value_arg):
         return None
-    return ast.unparse(target)
+    observed_attribute = _self_attribute_name(target)
+    if observed_attribute is None:
+        return None
+    return ast.unparse(target), observed_attribute
 
 
 def _is_self_attribute_expression(node: ast.AST) -> bool:
@@ -2860,14 +2893,52 @@ def _is_self_attribute_expression(node: ast.AST) -> bool:
     )
 
 
-def _is_wrapped_self_attribute_expression(node: ast.AST) -> bool:
+def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
     if not isinstance(node, ast.Call) or len(node.args) != 1:
-        return False
+        return None
     if not isinstance(node.func, ast.Name):
+        return None
+    if node.func.id not in {
+        "tuple",
+        "list",
+        "set",
+        "frozenset",
+        "str",
+        "int",
+        "bool",
+        "len",
+        "sorted",
+    }:
+        return None
+    if not _is_self_attribute_expression(node.args[0]):
+        return None
+    observed_attribute = _self_attribute_name(node.args[0])
+    if observed_attribute is None:
+        return None
+    return node.func.id, observed_attribute
+
+
+def _self_attribute_name(node: ast.AST) -> str | None:
+    if not _is_self_attribute_expression(node):
+        return None
+    assert isinstance(node, ast.Attribute)
+    return node.attr.lstrip("_") or node.attr
+
+
+def _supports_accessor_wrapper_finding(
+    candidates: list[AccessorWrapperCandidate],
+) -> bool:
+    if not candidates:
         return False
-    if node.func.id not in {"tuple", "list", "set", "str", "int", "bool"}:
-        return False
-    return _is_self_attribute_expression(node.args[0])
+    if any(candidate.wrapper_shape.startswith("computed_") for candidate in candidates):
+        return True
+    if len(candidates) >= 2:
+        return True
+    return False
+
+
+def _is_dunder_method(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
 
 
 def _has_property_like_decorator(
@@ -2883,18 +2954,10 @@ def _has_property_like_decorator(
 
 def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
     if candidate.accessor_kind == "setter":
-        property_name = (
-            candidate.method_name[4:]
-            if candidate.method_name.startswith("set_")
-            else candidate.method_name
-        )
-        return f"replace `{candidate.symbol}(value)` with `{property_name} = value`"
-    property_name = (
-        candidate.method_name[4:]
-        if candidate.method_name.startswith("get_")
-        else candidate.method_name.removesuffix("_for_plan")
-    )
-    return f"replace `{candidate.symbol}()` with `{property_name}`"
+        return f"- replace `{candidate.symbol}(value)` with `{candidate.observed_attribute} = value`"
+    if candidate.wrapper_shape == "read_through":
+        return f"- replace `{candidate.symbol}()` with `{candidate.observed_attribute}`"
+    return f"- replace `{candidate.symbol}()` with an `@property` exposing `{candidate.target_expression}`"
 
 
 def _function_has_param(
