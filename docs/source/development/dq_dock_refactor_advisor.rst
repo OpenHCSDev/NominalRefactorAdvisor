@@ -134,6 +134,9 @@ The CLI now already includes richer pattern guidance for each finding:
 - concrete first moves for the refactor
 - example skeletons for the strongest canonical targets
 
+The next iteration should move from generic example skeletons to issue-specific suggested scaffolds for the
+strongest detector families, especially Patterns 5, 6, and 14.
+
 The builder detector currently focuses on repeated keyword-constructor shapes. A later pass should widen it
 to export dictionaries and repeated dataclass-to-dataclass conversion blocks.
 

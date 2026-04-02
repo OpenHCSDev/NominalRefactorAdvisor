@@ -41,8 +41,10 @@ def _format_markdown(findings: list[RefactorFinding]) -> str:
         lines.append(f"   - Confidence: {finding.confidence}")
         for step in pattern.first_moves:
             lines.append(f"   - First move: {step}")
-        if pattern.example_skeleton:
-            lines.append(f"   - Example skeleton: {pattern.example_skeleton}")
+        for skeleton in pattern.example_skeletons:
+            lines.append(f"   - Example skeleton: {skeleton}")
+        if finding.scaffold:
+            lines.append(f"   - Suggested scaffold: {finding.scaffold}")
         for item in finding.evidence:
             lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
     return "\n".join(lines)

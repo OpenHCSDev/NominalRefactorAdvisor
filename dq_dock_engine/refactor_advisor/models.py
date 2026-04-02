@@ -21,6 +21,7 @@ class RefactorFinding:
     confidence: str
     relation_context: str
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
+    scaffold: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return asdict(self)
@@ -34,6 +35,7 @@ class FindingSpec:
     capability_gap: str
     relation_context: str
     confidence: str = "medium"
+    scaffold_template: str | None = None
 
     def build(
         self,
@@ -41,6 +43,7 @@ class FindingSpec:
         detector_id: str,
         summary: str,
         evidence: tuple[SourceLocation, ...],
+        scaffold: str | None = None,
     ) -> RefactorFinding:
         return RefactorFinding(
             detector_id=detector_id,
@@ -52,4 +55,5 @@ class FindingSpec:
             confidence=self.confidence,
             relation_context=self.relation_context,
             evidence=evidence,
+            scaffold=scaffold,
         )

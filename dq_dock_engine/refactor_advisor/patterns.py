@@ -10,7 +10,7 @@ class PatternSpec:
     prescription: str
     canonical_shape: str
     first_moves: tuple[str, ...]
-    example_skeleton: str | None = None
+    example_skeletons: tuple[str, ...] = ()
 
 
 PATTERN_SPECS: dict[int, PatternSpec] = {
@@ -24,7 +24,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Introduce a nominal base or explicit variant family.",
             "Move branching from attribute values to class identity.",
         ),
-        None,
     ),
     2: PatternSpec(
         2,
@@ -36,7 +35,9 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Turn predicate branches into variant classes.",
             "Let the factory enumerate the family rather than re-encoding it in if/elif chains.",
         ),
-        "class VariantBase(ABC): ...\nclass OptionalVariant(VariantBase): ...\nclass DirectVariant(VariantBase): ...",
+        (
+            "class VariantBase(ABC): ...\nclass OptionalVariant(VariantBase): ...\nclass DirectVariant(VariantBase): ...",
+        ),
     ),
     3: PatternSpec(
         3,
@@ -48,7 +49,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Replace repeated literals with one registry/table.",
             "Dispatch once on the nominal key.",
         ),
-        None,
     ),
     4: PatternSpec(
         4,
@@ -60,7 +60,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Replace field-name probing with nominal config types.",
             "Keep backend-specific behavior behind the config contract.",
         ),
-        None,
     ),
     5: PatternSpec(
         5,
@@ -72,7 +71,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Move shared orchestration, validation, and packaging into the base class.",
             "Leave only irreducible hooks or mixin-provided concerns in subclasses.",
         ),
-        "class Base(ABC):\n    def run(self, request): ...\n    @abstractmethod\n    def hook(self, request): ...",
+        (
+            "class Base(ABC):\n    def run(self, request): ...\n    @abstractmethod\n    def hook(self, request): ...",
+            "class CandidateBase(ABC):\n    def run(self, request):\n        normalized = self._normalize(request)\n        return self._execute(normalized)\n\n    @abstractmethod\n    def _execute(self, normalized): ...",
+        ),
     ),
     6: PatternSpec(
         6,
@@ -84,7 +86,10 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Move registration into one metaclass or class-level base.",
             "Expose only declarative class hooks for orthogonal differences.",
         ),
-        "class AutoRegisterMeta(ABCMeta): ...\nclass Handler(Base, metaclass=AutoRegisterMeta):\n    registry_key = 'name'",
+        (
+            "class AutoRegisterMeta(ABCMeta): ...\nclass Handler(Base, metaclass=AutoRegisterMeta):\n    registry_key = 'name'",
+            "class AutoRegisterMeta(ABCMeta):\n    registry = {}\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    registry_key: str",
+        ),
     ),
     7: PatternSpec(
         7,
@@ -96,7 +101,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Make normalization a named operation.",
             "Preserve provenance in APIs that cross the family boundary.",
         ),
-        None,
     ),
     8: PatternSpec(
         8,
@@ -108,7 +112,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Make the precedence walk an explicit shared primitive.",
             "Return value plus provenance instead of discarding origin.",
         ),
-        None,
     ),
     9: PatternSpec(
         9,
@@ -120,7 +123,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Move membership semantics to the class level.",
             "Replace repeated marker probing with one runtime-checkable boundary.",
         ),
-        None,
     ),
     10: PatternSpec(
         10,
@@ -132,7 +134,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Generate a nominal interface type for that role.",
             "Attach membership through inheritance or class-level registration.",
         ),
-        None,
     ),
     11: PatternSpec(
         11,
@@ -144,7 +145,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Use the marker as the authoritative capability key.",
             "Keep marker creation centralized.",
         ),
-        None,
     ),
     12: PatternSpec(
         12,
@@ -156,7 +156,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Move the change to the class namespace boundary.",
             "Make plugin/injection points explicit.",
         ),
-        None,
     ),
     13: PatternSpec(
         13,
@@ -168,7 +167,6 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Enforce uniqueness in both directions.",
             "Route normalization and reverse lookup through that registry.",
         ),
-        None,
     ),
     14: PatternSpec(
         14,
@@ -180,6 +178,9 @@ PATTERN_SPECS: dict[int, PatternSpec] = {
             "Declare the mapping once in a builder or projection schema.",
             "Derive exports and secondary views from that one authority.",
         ),
-        "@dataclass(frozen=True)\nclass Row: ...\n@classmethod\ndef from_source(cls, source): ...",
+        (
+            "@dataclass(frozen=True)\nclass Row: ...\n@classmethod\ndef from_source(cls, source): ...",
+            "@dataclass(frozen=True)\nclass ProjectionRow:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(...)\n",
+        ),
     ),
 }

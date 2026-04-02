@@ -221,6 +221,31 @@ def build(param_type):
     assert "Example skeleton:" in output
 
 
+def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    def _prepare(self, item):
+        ready = self.normalize(item)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+
+class Beta:
+    def _build(self, value):
+        ready = self.normalize(value)
+        checked = self.validate(ready)
+        return self.finish(checked)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    output = _format_markdown(findings)
+    assert output.count("Example skeleton:") >= 2
+
+
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
