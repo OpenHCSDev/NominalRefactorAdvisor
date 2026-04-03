@@ -12,13 +12,18 @@ from nominal_refactor_advisor.ast_tools import (
     StructuralExecutionLevel,
     collect_accessor_wrapper_candidates,
     collect_attribute_probe_observations,
+    collect_class_marker_observations,
+    collect_config_dispatch_observations,
+    collect_dynamic_method_injection_observations,
     collect_inline_literal_dispatch_observations,
+    collect_interface_generation_observations,
     collect_literal_dispatch_observations,
     collect_projection_helper_shapes,
     collect_registration_shapes,
     collect_scoped_observations,
     collect_scoped_shape_wrapper_functions,
     collect_scoped_shape_wrapper_specs,
+    collect_sentinel_type_observations,
     collect_field_observations,
     parse_python_modules,
 )
@@ -123,6 +128,29 @@ def resolve(config):
     assert any(finding.pattern_id == 4 for finding in findings)
 
 
+def test_collects_config_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(config):
+    if hasattr(config, "napari_port"):
+        return config.napari_port
+    if getattr(config, "viewer_type", None) == "fiji":
+        return 2
+    return 0
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_config_dispatch_observations(module)
+
+    assert {item.observed_attribute for item in observations} == {
+        "napari_port",
+        "viewer_type",
+    }
+
+
 def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -202,6 +230,24 @@ def check(instance):
     assert any(finding.pattern_id == 9 for finding in findings)
 
 
+def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def check(instance):
+    if hasattr(instance.__class__, "_is_global_config"):
+        return instance.__class__._is_global_config
+    return False
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_class_marker_observations(module)
+
+    assert any(item.marker_name == "_is_global_config" for item in observations)
+
+
 def test_detects_dynamic_interface_generation(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -217,6 +263,27 @@ def make_interface(name):
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 10 for finding in findings)
+
+
+def test_collects_interface_generation_observations_via_spec_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+def make_interface(name):
+    return type(name, (ABC,), {})
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_interface_generation_observations(module)
+
+    assert [item.generator_name for item in observations] == ["type"]
 
 
 def test_detects_sentinel_type_marker(tmp_path: Path) -> None:
@@ -236,6 +303,26 @@ def present(registry):
     assert any(finding.pattern_id == 11 for finding in findings)
 
 
+def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+SENTINEL = type("Sentinel", (), {})()
+
+
+def present(registry):
+    return SENTINEL in registry
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_sentinel_type_observations(module)
+
+    assert any(item.sentinel_name == "SENTINEL" for item in observations)
+    assert len(observations) >= 2
+
+
 def test_detects_dynamic_method_injection(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -248,6 +335,24 @@ def inject(target_type, method_name, method_impl):
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 12 for finding in findings)
+
+
+def test_collects_dynamic_method_injection_observations_via_spec_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def inject(target_type, method_name, method_impl):
+    setattr(target_type, method_name, method_impl)
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_dynamic_method_injection_observations(module)
+
+    assert [item.mutator_name for item in observations] == ["setattr"]
 
 
 def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:

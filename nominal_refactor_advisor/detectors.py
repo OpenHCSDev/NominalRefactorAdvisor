@@ -23,9 +23,13 @@ from .ast_tools import (
     StructuralExecutionLevel,
     collect_accessor_wrapper_candidates,
     collect_attribute_probe_observations,
+    collect_class_marker_observations,
+    collect_config_dispatch_observations,
+    collect_dynamic_method_injection_observations,
     collect_field_observations,
     collect_builder_call_shapes,
     collect_export_dict_shapes,
+    collect_interface_generation_observations,
     collect_inline_literal_dispatch_observations,
     collect_literal_dispatch_observations,
     collect_method_shapes,
@@ -33,6 +37,7 @@ from .ast_tools import (
     collect_registration_shapes,
     collect_scoped_shape_wrapper_functions,
     collect_scoped_shape_wrapper_specs,
+    collect_sentinel_type_observations,
 )
 from .models import (
     CERTIFIED,
@@ -1049,12 +1054,10 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        evidence: list[SourceLocation] = []
-        for function in _iter_functions(module.module):
-            if not _function_has_param(function, "config"):
-                continue
-            evidence.extend(_config_dispatch_evidence(module, function))
-        return tuple(evidence)
+        return tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_config_dispatch_observations(module)
+        )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
         return 2
@@ -1174,10 +1177,10 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        evidence: list[SourceLocation] = []
-        for function in _iter_functions(module.module):
-            evidence.extend(_manual_class_marker_checks(module, function))
-        return tuple(evidence)
+        return tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_class_marker_observations(module)
+        )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
         return 2
@@ -1214,7 +1217,10 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        return tuple(_dynamic_interface_sites(module)[:6])
+        return tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_interface_generation_observations(module)[:6]
+        )
 
     def _summary(
         self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
@@ -1249,7 +1255,10 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        return tuple(_sentinel_type_sites(module)[:6])
+        return tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_sentinel_type_observations(module)[:6]
+        )
 
     def _summary(
         self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
@@ -1282,7 +1291,10 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        return tuple(_dynamic_method_injection_sites(module)[:6])
+        return tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_dynamic_method_injection_observations(module)[:6]
+        )
 
     def _summary(
         self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
@@ -3061,66 +3073,6 @@ def _call_name(node: ast.AST) -> str | None:
     return None
 
 
-def _config_dispatch_evidence(
-    module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    for node in ast.walk(function):
-        if isinstance(node, ast.If) and _config_dispatch_test(node.test):
-            evidence.append(
-                SourceLocation(str(module.path), node.lineno, function.name)
-            )
-        if isinstance(node, ast.Match) and _match_subject_is_config_dispatch(
-            node.subject
-        ):
-            evidence.append(
-                SourceLocation(str(module.path), node.lineno, function.name)
-            )
-    return evidence
-
-
-def _config_dispatch_test(test: ast.AST) -> bool:
-    for node in ast.walk(test):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "hasattr" and _call_targets_config(node):
-                return True
-            if node.func.id == "getattr" and _call_targets_config(node):
-                return True
-        if isinstance(node, ast.Compare):
-            values = [node.left] + list(node.comparators)
-            if any(_is_config_attribute(value) for value in values) and any(
-                isinstance(value, ast.Constant)
-                and isinstance(value.value, (str, int, bool))
-                for value in values
-            ):
-                return True
-    return False
-
-
-def _match_subject_is_config_dispatch(subject: ast.AST) -> bool:
-    return _is_config_attribute(subject) or (
-        isinstance(subject, ast.Call)
-        and isinstance(subject.func, ast.Name)
-        and subject.func.id == "getattr"
-        and _call_targets_config(subject)
-    )
-
-
-def _call_targets_config(node: ast.Call) -> bool:
-    return bool(
-        node.args and isinstance(node.args[0], ast.Name) and node.args[0].id == "config"
-    )
-
-
-def _is_config_attribute(node: ast.AST) -> bool:
-    return (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "config"
-    )
-
-
 def _generated_type_sites(module: ParsedModule) -> list[SourceLocation]:
     sites: list[SourceLocation] = []
     for node in ast.walk(module.module):
@@ -3181,105 +3133,3 @@ def _loop_target_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
     return None
-
-
-def _manual_class_marker_checks(
-    module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    for node in ast.walk(function):
-        if (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "hasattr"
-        ):
-            target = node.args[0] if node.args else None
-            if isinstance(target, ast.Attribute) and target.attr == "__class__":
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, function.name)
-                )
-            elif isinstance(target, ast.Call) and _call_name(target.func) == "type":
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, function.name)
-                )
-        if isinstance(node, ast.Attribute) and node.attr.startswith("_is_"):
-            evidence.append(
-                SourceLocation(str(module.path), node.lineno, function.name)
-            )
-    return evidence
-
-
-def _dynamic_interface_sites(module: ParsedModule) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        if _call_name(node.func) != "type":
-            continue
-        if len(node.args) < 3:
-            continue
-        bases = node.args[1]
-        if isinstance(bases, ast.Tuple) and any(
-            isinstance(elt, ast.Name) and elt.id == "ABC" for elt in bases.elts
-        ):
-            namespace = node.args[2]
-            if isinstance(namespace, ast.Dict) and len(namespace.keys) == 0:
-                evidence.append(SourceLocation(str(module.path), node.lineno, "type"))
-    return evidence
-
-
-def _sentinel_type_sites(module: ParsedModule) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    sentinel_names: set[str] = set()
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        if not isinstance(node.value, ast.Call):
-            continue
-        if not isinstance(node.value.func, ast.Call):
-            continue
-        if _call_name(node.value.func.func) != "type":
-            continue
-        sentinel_names.add(target.id)
-        evidence.append(SourceLocation(str(module.path), node.lineno, target.id))
-    for node in ast.walk(module.module):
-        if isinstance(node, ast.Compare):
-            names = {
-                subnode.id
-                for subnode in ast.walk(node)
-                if isinstance(subnode, ast.Name)
-            }
-            if names & sentinel_names:
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, "sentinel-compare")
-                )
-        if isinstance(node, ast.Subscript):
-            names = {
-                subnode.id
-                for subnode in ast.walk(node)
-                if isinstance(subnode, ast.Name)
-            }
-            if names & sentinel_names:
-                evidence.append(
-                    SourceLocation(str(module.path), node.lineno, "sentinel-subscript")
-                )
-    return evidence
-
-
-def _dynamic_method_injection_sites(module: ParsedModule) -> list[SourceLocation]:
-    evidence: list[SourceLocation] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        if not isinstance(node.func, ast.Name) or node.func.id != "setattr":
-            continue
-        if len(node.args) < 3:
-            continue
-        target = node.args[0]
-        if isinstance(target, ast.Name) and target.id.endswith("type"):
-            evidence.append(SourceLocation(str(module.path), node.lineno, "setattr"))
-    return evidence

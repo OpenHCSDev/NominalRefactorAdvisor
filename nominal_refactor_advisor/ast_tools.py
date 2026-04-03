@@ -19,10 +19,15 @@ class ParsedModule:
 class ObservationKind(StrEnum):
     ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
+    CLASS_MARKER = "class_marker"
+    CONFIG_DISPATCH = "config_dispatch"
+    DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
     FIELD = "field"
+    INTERFACE_GENERATION = "interface_generation"
     LITERAL_DISPATCH = "literal_dispatch"
     PROJECTION_HELPER = "projection_helper"
     SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
+    SENTINEL_TYPE = "sentinel_type"
 
 
 class StructuralExecutionLevel(StrEnum):
@@ -484,6 +489,110 @@ class ScopedShapeWrapperSpec:
 
 
 @dataclass(frozen=True)
+class ConfigDispatchObservation:
+    file_path: str
+    line: int
+    symbol: str
+    observed_attribute: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.CONFIG_DISPATCH,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.observed_attribute,
+            fiber_key=self.observed_attribute,
+        )
+
+
+@dataclass(frozen=True)
+class ClassMarkerObservation:
+    file_path: str
+    line: int
+    symbol: str
+    marker_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.CLASS_MARKER,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.marker_name,
+            fiber_key=self.marker_name,
+        )
+
+
+@dataclass(frozen=True)
+class InterfaceGenerationObservation:
+    file_path: str
+    line: int
+    symbol: str
+    generator_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.INTERFACE_GENERATION,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.generator_name,
+            fiber_key=self.generator_name,
+        )
+
+
+@dataclass(frozen=True)
+class SentinelTypeObservation:
+    file_path: str
+    line: int
+    symbol: str
+    sentinel_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.SENTINEL_TYPE,
+            execution_level=StructuralExecutionLevel.MODULE_BODY,
+            observed_name=self.sentinel_name,
+            fiber_key=self.sentinel_name,
+        )
+
+
+@dataclass(frozen=True)
+class DynamicMethodInjectionObservation:
+    file_path: str
+    line: int
+    symbol: str
+    mutator_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.DYNAMIC_METHOD_INJECTION,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.mutator_name,
+            fiber_key=self.mutator_name,
+        )
+
+
+class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+@dataclass(frozen=True)
 class MethodShape:
     file_path: str
     class_name: str | None
@@ -889,6 +998,97 @@ class ExportDictShapeSpec(ContextHelperShapeSpec):
 _METHOD_SHAPE_SPEC = MethodShapeSpec()
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 _EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
+
+
+class ConfigDispatchObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec
+):
+    _registry_root = True
+
+
+class StandardConfigDispatchObservationSpec(ConfigDispatchObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        if not any(arg.arg == "config" for arg in function.args.args):
+            return None
+        return tuple(_config_dispatch_observations(parsed_module, function))
+
+
+class ClassMarkerObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec
+):
+    _registry_root = True
+
+
+class StandardClassMarkerObservationSpec(ClassMarkerObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return tuple(_class_marker_observations(parsed_module, function))
+
+
+class InterfaceGenerationObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec
+):
+    _registry_root = True
+
+
+class StandardInterfaceGenerationObservationSpec(InterfaceGenerationObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return _interface_generation_observation(parsed_module, function)
+
+
+class SentinelTypeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+class SentinelTypeAssignmentObservationSpec(
+    SentinelTypeObservationSpec, AssignObservationSpec
+):
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        if observation.class_name is not None or observation.function_name is not None:
+            return None
+        return _sentinel_type_observation(parsed_module, node)
+
+
+class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
+    def collect(self, parsed_module: ParsedModule) -> list[object]:
+        return list(_sentinel_type_usage_observations(parsed_module))
+
+
+class DynamicMethodInjectionObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec
+):
+    _registry_root = True
+
+
+class StandardDynamicMethodInjectionObservationSpec(
+    DynamicMethodInjectionObservationSpec
+):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return tuple(_dynamic_method_injection_observations(parsed_module, function))
 
 
 class AttributeProbeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -1402,6 +1602,18 @@ def collect_structural_observations(
     )
     observations.extend(
         item.structural_observation
+        for item in collect_config_dispatch_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_class_marker_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_interface_generation_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
         for item in collect_literal_dispatch_observations(parsed_module)
     )
     observations.extend(
@@ -1423,6 +1635,14 @@ def collect_structural_observations(
     observations.extend(
         item.structural_observation
         for item in collect_scoped_shape_wrapper_specs(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_sentinel_type_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_dynamic_method_injection_observations(parsed_module)
     )
     return tuple(
         sorted(
@@ -1617,6 +1837,83 @@ def collect_scoped_shape_wrapper_specs(
             for item in spec.collect(parsed_module)
             if isinstance(item, ScopedShapeWrapperSpec)
         )
+    return observations
+
+
+def collect_config_dispatch_observations(
+    parsed_module: ParsedModule,
+) -> list[ConfigDispatchObservation]:
+    observations: list[ConfigDispatchObservation] = []
+    for spec in ConfigDispatchObservationSpec.registered_specs():
+        for item in spec.collect(parsed_module):
+            if isinstance(item, ConfigDispatchObservation):
+                observations.append(item)
+            elif isinstance(item, tuple):
+                observations.extend(
+                    observation
+                    for observation in item
+                    if isinstance(observation, ConfigDispatchObservation)
+                )
+    return observations
+
+
+def collect_class_marker_observations(
+    parsed_module: ParsedModule,
+) -> list[ClassMarkerObservation]:
+    observations: list[ClassMarkerObservation] = []
+    for spec in ClassMarkerObservationSpec.registered_specs():
+        for item in spec.collect(parsed_module):
+            if isinstance(item, ClassMarkerObservation):
+                observations.append(item)
+            elif isinstance(item, tuple):
+                observations.extend(
+                    observation
+                    for observation in item
+                    if isinstance(observation, ClassMarkerObservation)
+                )
+    return observations
+
+
+def collect_interface_generation_observations(
+    parsed_module: ParsedModule,
+) -> list[InterfaceGenerationObservation]:
+    observations: list[InterfaceGenerationObservation] = []
+    for spec in InterfaceGenerationObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, InterfaceGenerationObservation)
+        )
+    return observations
+
+
+def collect_sentinel_type_observations(
+    parsed_module: ParsedModule,
+) -> list[SentinelTypeObservation]:
+    observations: list[SentinelTypeObservation] = []
+    for spec in SentinelTypeObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, SentinelTypeObservation)
+        )
+    return observations
+
+
+def collect_dynamic_method_injection_observations(
+    parsed_module: ParsedModule,
+) -> list[DynamicMethodInjectionObservation]:
+    observations: list[DynamicMethodInjectionObservation] = []
+    for spec in DynamicMethodInjectionObservationSpec.registered_specs():
+        for item in spec.collect(parsed_module):
+            if isinstance(item, DynamicMethodInjectionObservation):
+                observations.append(item)
+            elif isinstance(item, tuple):
+                observations.extend(
+                    observation
+                    for observation in item
+                    if isinstance(observation, DynamicMethodInjectionObservation)
+                )
     return observations
 
 
@@ -2059,6 +2356,290 @@ def _type_name_tuple(node: ast.AST) -> tuple[str, ...]:
             names.extend(_type_name_tuple(item))
         return tuple(names)
     return ()
+
+
+def _config_dispatch_observations(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ConfigDispatchObservation, ...]:
+    seen: set[tuple[int, str]] = set()
+    observations: list[ConfigDispatchObservation] = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.If):
+            for attr_name in _config_dispatch_attributes(node.test):
+                key = (node.lineno, attr_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observations.append(
+                    ConfigDispatchObservation(
+                        file_path=str(parsed_module.path),
+                        line=node.lineno,
+                        symbol=function.name,
+                        observed_attribute=attr_name,
+                    )
+                )
+        if isinstance(node, ast.Match):
+            for attr_name in _match_config_dispatch_attributes(node.subject):
+                key = (node.lineno, attr_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observations.append(
+                    ConfigDispatchObservation(
+                        file_path=str(parsed_module.path),
+                        line=node.lineno,
+                        symbol=function.name,
+                        observed_attribute=attr_name,
+                    )
+                )
+    return tuple(
+        sorted(observations, key=lambda item: (item.line, item.observed_attribute))
+    )
+
+
+def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
+    attrs: set[str] = set()
+    for node in ast.walk(test):
+        if isinstance(node, ast.Call) and _terminal_name_in_family(
+            node.func, _HASATTR_CALL_FAMILY
+        ):
+            if _call_targets_name(node, "config") and len(node.args) >= 2:
+                if isinstance(node.args[1], ast.Constant) and isinstance(
+                    node.args[1].value, str
+                ):
+                    attrs.add(node.args[1].value)
+        if isinstance(node, ast.Call) and _terminal_name_in_family(
+            node.func, _GETATTR_CALL_FAMILY
+        ):
+            if _call_targets_name(node, "config") and len(node.args) >= 2:
+                if isinstance(node.args[1], ast.Constant) and isinstance(
+                    node.args[1].value, str
+                ):
+                    attrs.add(node.args[1].value)
+        if isinstance(node, ast.Compare):
+            if len(node.ops) != 1 or len(node.comparators) != 1:
+                continue
+            if not isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
+                continue
+            left_name = _config_subject_name(node.left)
+            right_name = _config_subject_name(node.comparators[0])
+            left_literal = _literal_dispatch_value(node.left)
+            right_literal = _literal_dispatch_value(node.comparators[0])
+            if left_name is not None and right_literal is not None:
+                attrs.add(left_name)
+            if right_name is not None and left_literal is not None:
+                attrs.add(right_name)
+    return tuple(sorted(attrs))
+
+
+def _match_config_dispatch_attributes(subject: ast.AST) -> tuple[str, ...]:
+    attr_name = _config_subject_name(subject)
+    if attr_name is not None:
+        return (attr_name,)
+    return ()
+
+
+def _class_marker_observations(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ClassMarkerObservation, ...]:
+    seen: set[tuple[int, str]] = set()
+    observations: list[ClassMarkerObservation] = []
+    for node in ast.walk(function):
+        if isinstance(node, ast.Call) and _terminal_name_in_family(
+            node.func, _HASATTR_CALL_FAMILY
+        ):
+            target = node.args[0] if node.args else None
+            marker_name = None
+            if _is_class_target(target):
+                marker_name = (
+                    _constant_string(node.args[1]) if len(node.args) >= 2 else None
+                )
+            if marker_name is not None:
+                key = (node.lineno, marker_name)
+                if key not in seen:
+                    seen.add(key)
+                    observations.append(
+                        ClassMarkerObservation(
+                            file_path=str(parsed_module.path),
+                            line=node.lineno,
+                            symbol=function.name,
+                            marker_name=marker_name,
+                        )
+                    )
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_is_"):
+            key = (node.lineno, node.attr)
+            if key not in seen:
+                seen.add(key)
+                observations.append(
+                    ClassMarkerObservation(
+                        file_path=str(parsed_module.path),
+                        line=node.lineno,
+                        symbol=function.name,
+                        marker_name=node.attr,
+                    )
+                )
+    return tuple(sorted(observations, key=lambda item: (item.line, item.marker_name)))
+
+
+def _interface_generation_observation(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> InterfaceGenerationObservation | None:
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if _terminal_name(node.func) != "type":
+            continue
+        if len(node.args) < 3:
+            continue
+        bases = node.args[1]
+        namespace = node.args[2]
+        if not isinstance(namespace, ast.Dict) or namespace.keys:
+            continue
+        if not isinstance(bases, ast.Tuple):
+            continue
+        if any(_terminal_name(base) == "ABC" for base in bases.elts):
+            return InterfaceGenerationObservation(
+                file_path=str(parsed_module.path),
+                line=node.lineno,
+                symbol=function.name,
+                generator_name="type",
+            )
+    return None
+
+
+def _sentinel_type_observation(
+    parsed_module: ParsedModule,
+    node: ast.Assign,
+) -> SentinelTypeObservation | None:
+    if len(node.targets) != 1:
+        return None
+    target = node.targets[0]
+    if not isinstance(target, ast.Name):
+        return None
+    if not isinstance(node.value, ast.Call):
+        return None
+    if not isinstance(node.value.func, ast.Call):
+        return None
+    if _terminal_name(node.value.func.func) != "type":
+        return None
+    return SentinelTypeObservation(
+        file_path=str(parsed_module.path),
+        line=node.lineno,
+        symbol=target.id,
+        sentinel_name=target.id,
+    )
+
+
+def _sentinel_type_usage_observations(
+    parsed_module: ParsedModule,
+) -> tuple[SentinelTypeObservation, ...]:
+    sentinel_names = {
+        item.sentinel_name
+        for node in ast.walk(parsed_module.module)
+        if isinstance(node, ast.Assign)
+        if (item := _sentinel_type_observation(parsed_module, node)) is not None
+    }
+    observations: list[SentinelTypeObservation] = []
+    seen: set[tuple[int, str]] = set()
+    for node in ast.walk(parsed_module.module):
+        if isinstance(node, (ast.Compare, ast.Subscript)):
+            names = {
+                subnode.id
+                for subnode in ast.walk(node)
+                if isinstance(subnode, ast.Name)
+            }
+            for name in sorted(names & sentinel_names):
+                key = (node.lineno, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                observations.append(
+                    SentinelTypeObservation(
+                        file_path=str(parsed_module.path),
+                        line=node.lineno,
+                        symbol=f"sentinel:{name}",
+                        sentinel_name=name,
+                    )
+                )
+    return tuple(sorted(observations, key=lambda item: (item.line, item.sentinel_name)))
+
+
+def _dynamic_method_injection_observations(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[DynamicMethodInjectionObservation, ...]:
+    observations: list[DynamicMethodInjectionObservation] = []
+    for node in ast.walk(function):
+        if not isinstance(node, ast.Call):
+            continue
+        if _terminal_name(node.func) != "setattr":
+            continue
+        if len(node.args) < 3:
+            continue
+        target = node.args[0]
+        if isinstance(target, ast.Name) and target.id.endswith("type"):
+            observations.append(
+                DynamicMethodInjectionObservation(
+                    file_path=str(parsed_module.path),
+                    line=node.lineno,
+                    symbol=function.name,
+                    mutator_name="setattr",
+                )
+            )
+    return tuple(sorted(observations, key=lambda item: item.line))
+
+
+def _call_targets_name(node: ast.Call, expected_name: str) -> bool:
+    return bool(
+        node.args
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id == expected_name
+    )
+
+
+def _constant_string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _attribute_name_if_root(node: ast.AST, expected_root: str) -> str | None:
+    if not isinstance(node, ast.Attribute):
+        return None
+    if isinstance(node.value, ast.Name) and node.value.id == expected_root:
+        return node.attr
+    return None
+
+
+def _config_subject_name(node: ast.AST) -> str | None:
+    attr_name = _attribute_name_if_root(node, "config")
+    if attr_name is not None:
+        return attr_name
+    if isinstance(node, ast.Call) and _terminal_name_in_family(
+        node.func, _GETATTR_CALL_FAMILY
+    ):
+        if _call_targets_name(node, "config") and len(node.args) >= 2:
+            return _constant_string(node.args[1])
+    return None
+
+
+def _literal_dispatch_value(node: ast.AST) -> object | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, bool)):
+        return node.value
+    return None
+
+
+def _is_class_target(node: ast.AST | None) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Attribute) and node.attr == "__class__":
+        return True
+    if isinstance(node, ast.Call) and _terminal_name(node.func) == "type":
+        return True
+    return False
 
 
 def _builder_call_shape(
