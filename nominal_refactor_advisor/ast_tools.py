@@ -19,15 +19,26 @@ class ParsedModule:
 class ObservationKind(StrEnum):
     ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
+    BUILDER_CALL = "builder_call"
     CLASS_MARKER = "class_marker"
     CONFIG_DISPATCH = "config_dispatch"
+    DUAL_AXIS_RESOLUTION = "dual_axis_resolution"
     DYNAMIC_METHOD_INJECTION = "dynamic_method_injection"
+    EXPORT_DICT = "export_dict"
     FIELD = "field"
     INTERFACE_GENERATION = "interface_generation"
+    LINEAGE_MAPPING = "lineage_mapping"
     LITERAL_DISPATCH = "literal_dispatch"
+    METHOD_SHAPE = "method_shape"
     PROJECTION_HELPER = "projection_helper"
+    RUNTIME_TYPE_GENERATION = "runtime_type_generation"
     SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
     SENTINEL_TYPE = "sentinel_type"
+
+
+class LiteralKind(StrEnum):
+    STRING = "string"
+    NUMERIC = "numeric"
 
 
 class StructuralExecutionLevel(StrEnum):
@@ -109,6 +120,74 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
     @classmethod
     def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         return tuple(spec_type() for spec_type in cls._registered_spec_types)
+
+    @classmethod
+    def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
+        seen: set[type[AutoRegisteredModuleShapeSpec]] = set()
+        ordered: list[AutoRegisteredModuleShapeSpec] = []
+        queue = list(cls.__subclasses__())
+        while queue:
+            current = queue.pop(0)
+            queue.extend(current.__subclasses__())
+            registry = current.__dict__.get("_registered_spec_types")
+            if registry is None:
+                continue
+            for spec_type in registry:
+                if spec_type in seen:
+                    continue
+                seen.add(spec_type)
+                ordered.append(spec_type())
+        return tuple(ordered)
+
+
+class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
+    _registry_root: ClassVar[bool] = False
+    _registered_spec_types: ClassVar[list[type["CollectedFamily"]]]
+    item_type: ClassVar[type[object]]
+
+    @classmethod
+    def registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
+        return tuple(cls._registered_spec_types)
+
+    @classmethod
+    @abstractmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        raise NotImplementedError
+
+
+def collect_family_items(
+    parsed_module: ParsedModule,
+    family: type[CollectedFamily],
+) -> list[object]:
+    return [
+        item
+        for item in _flatten_collected_items(family.collect(parsed_module))
+        if isinstance(item, family.item_type)
+    ]
+
+
+class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
+    spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        return _collect_items_from_spec_root(
+            cls.spec_root,
+            parsed_module,
+            cls.item_type,
+        )
+
+
+class SingleSpecCollectedFamily(CollectedFamily, ABC):
+    spec: ClassVar[ModuleShapeSpec]
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        return [
+            item
+            for item in _flatten_collected_items(cls.spec.collect(parsed_module))
+            if isinstance(item, cls.item_type)
+        ]
 
 
 class ScopedShapeSpec(ModuleShapeSpec, ABC):
@@ -247,6 +326,13 @@ class StructuralObservation:
     fiber_key: str
 
 
+class StructuralObservationCarrier(ABC):
+    @property
+    @abstractmethod
+    def structural_observation(self) -> StructuralObservation:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class ObservationFiber:
     observation_kind: ObservationKind
@@ -312,7 +398,7 @@ class ObservationGraph:
 
 
 @dataclass(frozen=True)
-class FieldObservation:
+class FieldObservation(StructuralObservationCarrier):
     file_path: str
     class_name: str
     field_name: str
@@ -342,7 +428,7 @@ class FieldObservation:
 
 
 @dataclass(frozen=True)
-class AttributeProbeObservation:
+class AttributeProbeObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -365,14 +451,14 @@ class AttributeProbeObservation:
 
 
 @dataclass(frozen=True)
-class LiteralDispatchObservation:
+class LiteralDispatchObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
     axis_fingerprint: str
     axis_expression: str
     literal_cases: tuple[str, ...]
-    literal_kind: str
+    literal_kind: LiteralKind
     execution_level: StructuralExecutionLevel
     branch_lines: tuple[int, ...] = ()
     scope_owner: str | None = None
@@ -391,7 +477,7 @@ class LiteralDispatchObservation:
 
 
 @dataclass(frozen=True)
-class ProjectionHelperShape:
+class ProjectionHelperShape(StructuralObservationCarrier):
     file_path: str
     function_name: str
     lineno: int
@@ -420,7 +506,7 @@ class ProjectionHelperShape:
 
 
 @dataclass(frozen=True)
-class AccessorWrapperCandidate:
+class AccessorWrapperCandidate(StructuralObservationCarrier):
     file_path: str
     class_name: str
     method_name: str
@@ -448,7 +534,7 @@ class AccessorWrapperCandidate:
 
 
 @dataclass(frozen=True)
-class ScopedShapeWrapperFunction:
+class ScopedShapeWrapperFunction(StructuralObservationCarrier):
     file_path: str
     function_name: str
     lineno: int
@@ -468,7 +554,7 @@ class ScopedShapeWrapperFunction:
 
 
 @dataclass(frozen=True)
-class ScopedShapeWrapperSpec:
+class ScopedShapeWrapperSpec(StructuralObservationCarrier):
     file_path: str
     spec_name: str
     lineno: int
@@ -489,7 +575,7 @@ class ScopedShapeWrapperSpec:
 
 
 @dataclass(frozen=True)
-class ConfigDispatchObservation:
+class ConfigDispatchObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -509,7 +595,7 @@ class ConfigDispatchObservation:
 
 
 @dataclass(frozen=True)
-class ClassMarkerObservation:
+class ClassMarkerObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -529,7 +615,7 @@ class ClassMarkerObservation:
 
 
 @dataclass(frozen=True)
-class InterfaceGenerationObservation:
+class InterfaceGenerationObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -549,7 +635,7 @@ class InterfaceGenerationObservation:
 
 
 @dataclass(frozen=True)
-class SentinelTypeObservation:
+class SentinelTypeObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -569,7 +655,7 @@ class SentinelTypeObservation:
 
 
 @dataclass(frozen=True)
-class DynamicMethodInjectionObservation:
+class DynamicMethodInjectionObservation(StructuralObservationCarrier):
     file_path: str
     line: int
     symbol: str
@@ -588,12 +674,73 @@ class DynamicMethodInjectionObservation:
         )
 
 
+@dataclass(frozen=True)
+class RuntimeTypeGenerationObservation(StructuralObservationCarrier):
+    file_path: str
+    line: int
+    symbol: str
+    generator_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.RUNTIME_TYPE_GENERATION,
+            execution_level=StructuralExecutionLevel.MODULE_BODY,
+            observed_name=self.generator_name,
+            fiber_key=self.generator_name,
+        )
+
+
+@dataclass(frozen=True)
+class LineageMappingObservation(StructuralObservationCarrier):
+    file_path: str
+    line: int
+    symbol: str
+    mapping_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.LINEAGE_MAPPING,
+            execution_level=StructuralExecutionLevel.MODULE_BODY,
+            observed_name=self.mapping_name,
+            fiber_key=self.mapping_name,
+        )
+
+
+@dataclass(frozen=True)
+class DualAxisResolutionObservation(StructuralObservationCarrier):
+    file_path: str
+    line: int
+    symbol: str
+    outer_axis_name: str
+    inner_axis_name: str
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.line,
+            observation_kind=ObservationKind.DUAL_AXIS_RESOLUTION,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=f"{self.outer_axis_name}:{self.inner_axis_name}",
+            fiber_key=f"{self.outer_axis_name}:{self.inner_axis_name}",
+        )
+
+
 class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
 
 
 @dataclass(frozen=True)
-class MethodShape:
+class MethodShape(StructuralObservationCarrier):
     file_path: str
     class_name: str | None
     method_name: str
@@ -611,9 +758,21 @@ class MethodShape:
             return f"{self.class_name}.{self.method_name}"
         return self.method_name
 
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.METHOD_SHAPE,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.method_name,
+            fiber_key=f"{self.is_private}:{self.param_count}:{self.fingerprint}",
+        )
+
 
 @dataclass(frozen=True)
-class BuilderCallShape:
+class BuilderCallShape(StructuralObservationCarrier):
     file_path: str
     class_name: str | None
     function_name: str | None
@@ -631,6 +790,20 @@ class BuilderCallShape:
         if self.class_name:
             owner = f"{self.class_name}.{owner}"
         return f"{owner}:{self.callee_name}"
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.BUILDER_CALL,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.callee_name,
+            fiber_key=(
+                f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -710,7 +883,7 @@ class RegistrationShape:
 
 
 @dataclass(frozen=True)
-class ExportDictShape:
+class ExportDictShape(StructuralObservationCarrier):
     file_path: str
     class_name: str | None
     function_name: str | None
@@ -727,6 +900,18 @@ class ExportDictShape:
         if self.class_name:
             owner = f"{self.class_name}.{owner}"
         return f"{owner}:export-dict"
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.EXPORT_DICT,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=",".join(self.key_names),
+            fiber_key=f"{self.key_names}:{self.value_fingerprint}",
+        )
 
 
 def parse_python_modules(root: Path) -> list[ParsedModule]:
@@ -936,6 +1121,31 @@ def collect_scoped_shapes(
     return spec.collect(parsed_module)
 
 
+def _flatten_collected_items(items: list[object]) -> tuple[object, ...]:
+    flattened: list[object] = []
+    for item in items:
+        if isinstance(item, tuple):
+            flattened.extend(item)
+        else:
+            flattened.append(item)
+    return tuple(flattened)
+
+
+def _collect_items_from_spec_root(
+    spec_root: type[AutoRegisteredModuleShapeSpec],
+    parsed_module: ParsedModule,
+    item_type: type[object],
+) -> list[object]:
+    items: list[object] = []
+    for spec in spec_root.registered_specs():
+        items.extend(
+            item
+            for item in _flatten_collected_items(spec.collect(parsed_module))
+            if isinstance(item, item_type)
+        )
+    return items
+
+
 def _execution_level_for_scope(function_name: str | None) -> StructuralExecutionLevel:
     if function_name is None:
         return StructuralExecutionLevel.MODULE_BODY
@@ -1091,6 +1301,58 @@ class StandardDynamicMethodInjectionObservationSpec(
         return tuple(_dynamic_method_injection_observations(parsed_module, function))
 
 
+class RuntimeTypeGenerationObservationSpec(
+    AutoRegisteredModuleShapeSpec, ObservationShapeSpec, ABC
+):
+    _registry_root = True
+
+
+class TypeCallGenerationObservationSpec(RuntimeTypeGenerationObservationSpec):
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (ast.Call,)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> RuntimeTypeGenerationObservation | None:
+        node = observation.node
+        if not isinstance(node, ast.Call):
+            return None
+        return _runtime_type_generation_observation(parsed_module, node, observation)
+
+
+class LineageMappingObservationSpec(
+    AutoRegisteredModuleShapeSpec, AssignObservationSpec, ABC
+):
+    _registry_root = True
+
+
+class StandardLineageMappingObservationSpec(LineageMappingObservationSpec):
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return _lineage_mapping_observation(parsed_module, node)
+
+
+class DualAxisResolutionObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
+):
+    _registry_root = True
+
+
+class StandardDualAxisResolutionObservationSpec(DualAxisResolutionObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return _dual_axis_resolution_observation(parsed_module, function)
+
+
 class AttributeProbeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
 
@@ -1195,7 +1457,7 @@ class TypedLiteralObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
 
 class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     _registry_root = True
-    literal_kind: ClassVar[str]
+    literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         parent_map = _parent_map(parsed_module.module)
@@ -1224,17 +1486,17 @@ class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
 
 class StringLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
     literal_type = str
-    literal_kind = "string"
+    literal_kind = LiteralKind.STRING
 
 
 class NumericLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
     literal_type = int
-    literal_kind = "numeric"
+    literal_kind = LiteralKind.NUMERIC
 
 
 class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     _registry_root = True
-    literal_kind: ClassVar[str]
+    literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         observations: list[object] = []
@@ -1253,7 +1515,7 @@ class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
 
 class InlineStringLiteralDispatchObservationSpec(InlineLiteralDispatchObservationSpec):
     literal_type = str
-    literal_kind = "string"
+    literal_kind = LiteralKind.STRING
 
 
 class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -1508,142 +1770,165 @@ class ScopedShapeWrapperSpecObservationSpec(
         return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
 
 
-def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
-    return [
-        shape
-        for shape in collect_scoped_shapes(parsed_module, _METHOD_SHAPE_SPEC)
-        if isinstance(shape, MethodShape)
-    ]
+class ObservationFamily(CollectedFamily, ABC):
+    _registry_root = True
 
 
-def collect_builder_call_shapes(parsed_module: ParsedModule) -> list[BuilderCallShape]:
-    return [
-        shape
-        for shape in collect_scoped_shapes(parsed_module, _BUILDER_CALL_SHAPE_SPEC)
-        if isinstance(shape, BuilderCallShape)
-    ]
+class ShapeFamily(CollectedFamily, ABC):
+    _registry_root = True
 
 
-def collect_registration_shapes(parsed_module: ParsedModule) -> list[RegistrationShape]:
-    shapes: list[RegistrationShape] = []
-    for spec in RegistrationShapeSpec.registered_specs():
-        shapes.extend(
-            shape
-            for shape in spec.collect(parsed_module)
-            if isinstance(shape, RegistrationShape)
-        )
-    return shapes
+class MethodShapeFamily(SingleSpecCollectedFamily, ShapeFamily):
+    item_type = MethodShape
+    spec = _METHOD_SHAPE_SPEC
 
 
-def collect_export_dict_shapes(parsed_module: ParsedModule) -> list[ExportDictShape]:
-    return [
-        shape
-        for shape in collect_scoped_shapes(parsed_module, _EXPORT_DICT_SHAPE_SPEC)
-        if isinstance(shape, ExportDictShape)
-    ]
+class BuilderCallShapeFamily(SingleSpecCollectedFamily, ShapeFamily):
+    item_type = BuilderCallShape
+    spec = _BUILDER_CALL_SHAPE_SPEC
 
 
-def collect_attribute_probe_observations(
-    parsed_module: ParsedModule,
-) -> list[AttributeProbeObservation]:
-    observations: list[AttributeProbeObservation] = []
-    for spec in AttributeProbeObservationSpec.registered_specs():
-        observations.extend(
+class RegistrationShapeFamily(RegisteredSpecCollectedFamily, ShapeFamily):
+    item_type = RegistrationShape
+    spec_root = RegistrationShapeSpec
+
+
+class ExportDictShapeFamily(SingleSpecCollectedFamily, ShapeFamily):
+    item_type = ExportDictShape
+    spec = _EXPORT_DICT_SHAPE_SPEC
+
+
+class FieldObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = FieldObservation
+    spec_root = FieldObservationSpec
+
+
+class ProjectionHelperObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = ProjectionHelperShape
+    spec_root = ProjectionHelperObservationSpec
+
+
+class AccessorWrapperObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = AccessorWrapperCandidate
+    spec_root = AccessorWrapperObservationSpec
+
+
+class ScopedShapeWrapperFunctionFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = ScopedShapeWrapperFunction
+    spec_root = ScopedShapeWrapperObservationSpec
+
+
+class ScopedShapeWrapperSpecFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = ScopedShapeWrapperSpec
+    spec_root = ScopedShapeWrapperObservationSpec
+
+
+class ConfigDispatchObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = ConfigDispatchObservation
+    spec_root = ConfigDispatchObservationSpec
+
+
+class ClassMarkerObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = ClassMarkerObservation
+    spec_root = ClassMarkerObservationSpec
+
+
+class InterfaceGenerationObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = InterfaceGenerationObservation
+    spec_root = InterfaceGenerationObservationSpec
+
+
+class SentinelTypeObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = SentinelTypeObservation
+    spec_root = SentinelTypeObservationSpec
+
+
+class DynamicMethodInjectionObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = DynamicMethodInjectionObservation
+    spec_root = DynamicMethodInjectionObservationSpec
+
+
+class RuntimeTypeGenerationObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = RuntimeTypeGenerationObservation
+    spec_root = RuntimeTypeGenerationObservationSpec
+
+
+class LineageMappingObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = LineageMappingObservation
+    spec_root = LineageMappingObservationSpec
+
+
+class DualAxisResolutionObservationFamily(
+    RegisteredSpecCollectedFamily, ObservationFamily
+):
+    item_type = DualAxisResolutionObservation
+    spec_root = DualAxisResolutionObservationSpec
+
+
+class AttributeProbeObservationFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = AttributeProbeObservation
+    spec_root = AttributeProbeObservationSpec
+
+
+class TypedLiteralObservationFamily(ObservationFamily, ABC):
+    _registry_skip = True
+    item_type = LiteralDispatchObservation
+    spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
+    literal_kind: ClassVar[LiteralKind]
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        return [
             item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, AttributeProbeObservation)
-        )
-    return observations
-
-
-def collect_literal_dispatch_observations(
-    parsed_module: ParsedModule,
-    literal_type: type[object] | None = None,
-) -> list[LiteralDispatchObservation]:
-    observations: list[LiteralDispatchObservation] = []
-    for spec in LiteralDispatchObservationSpec.registered_specs_for_literal_type(
-        literal_type
-    ):
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
+            for item in _collect_items_from_spec_root(
+                cls.spec_root,
+                parsed_module,
+                LiteralDispatchObservation,
+            )
             if isinstance(item, LiteralDispatchObservation)
-        )
-    return observations
+            if item.literal_kind == cls.literal_kind
+        ]
 
 
-def collect_inline_literal_dispatch_observations(
-    parsed_module: ParsedModule,
-    literal_type: type[object] | None = None,
-) -> list[LiteralDispatchObservation]:
-    observations: list[LiteralDispatchObservation] = []
-    for spec in InlineLiteralDispatchObservationSpec.registered_specs_for_literal_type(
-        literal_type
-    ):
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, LiteralDispatchObservation)
-        )
-    return observations
+class StringLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = LiteralDispatchObservationSpec
+    literal_kind = LiteralKind.STRING
+
+
+class NumericLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = LiteralDispatchObservationSpec
+    literal_kind = LiteralKind.NUMERIC
+
+
+class InlineStringLiteralDispatchObservationFamily(TypedLiteralObservationFamily):
+    spec_root = InlineLiteralDispatchObservationSpec
+    literal_kind = LiteralKind.STRING
 
 
 def collect_structural_observations(
     parsed_module: ParsedModule,
 ) -> tuple[StructuralObservation, ...]:
     observations: list[StructuralObservation] = []
-    observations.extend(
-        item.structural_observation
-        for item in collect_field_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_attribute_probe_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_config_dispatch_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_class_marker_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_interface_generation_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_literal_dispatch_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_inline_literal_dispatch_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_projection_helper_shapes(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_accessor_wrapper_candidates(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_scoped_shape_wrapper_functions(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_scoped_shape_wrapper_specs(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_sentinel_type_observations(parsed_module)
-    )
-    observations.extend(
-        item.structural_observation
-        for item in collect_dynamic_method_injection_observations(parsed_module)
-    )
+    for family in (
+        ShapeFamily.registered_families() + ObservationFamily.registered_families()
+    ):
+        observations.extend(
+            item.structural_observation
+            for item in collect_family_items(parsed_module, family)
+            if isinstance(item, StructuralObservationCarrier)
+        )
     return tuple(
         sorted(
             observations,
@@ -1777,146 +2062,6 @@ def _init_field_observations(
     return observations
 
 
-def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObservation]:
-    observations: list[FieldObservation] = []
-    for spec in FieldObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, FieldObservation)
-        )
-    return observations
-
-
-def collect_projection_helper_shapes(
-    parsed_module: ParsedModule,
-) -> list[ProjectionHelperShape]:
-    observations: list[ProjectionHelperShape] = []
-    for spec in ProjectionHelperObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, ProjectionHelperShape)
-        )
-    return observations
-
-
-def collect_accessor_wrapper_candidates(
-    parsed_module: ParsedModule,
-) -> list[AccessorWrapperCandidate]:
-    observations: list[AccessorWrapperCandidate] = []
-    for spec in AccessorWrapperObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, AccessorWrapperCandidate)
-        )
-    return observations
-
-
-def collect_scoped_shape_wrapper_functions(
-    parsed_module: ParsedModule,
-) -> list[ScopedShapeWrapperFunction]:
-    observations: list[ScopedShapeWrapperFunction] = []
-    for spec in ScopedShapeWrapperObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, ScopedShapeWrapperFunction)
-        )
-    return observations
-
-
-def collect_scoped_shape_wrapper_specs(
-    parsed_module: ParsedModule,
-) -> list[ScopedShapeWrapperSpec]:
-    observations: list[ScopedShapeWrapperSpec] = []
-    for spec in ScopedShapeWrapperObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, ScopedShapeWrapperSpec)
-        )
-    return observations
-
-
-def collect_config_dispatch_observations(
-    parsed_module: ParsedModule,
-) -> list[ConfigDispatchObservation]:
-    observations: list[ConfigDispatchObservation] = []
-    for spec in ConfigDispatchObservationSpec.registered_specs():
-        for item in spec.collect(parsed_module):
-            if isinstance(item, ConfigDispatchObservation):
-                observations.append(item)
-            elif isinstance(item, tuple):
-                observations.extend(
-                    observation
-                    for observation in item
-                    if isinstance(observation, ConfigDispatchObservation)
-                )
-    return observations
-
-
-def collect_class_marker_observations(
-    parsed_module: ParsedModule,
-) -> list[ClassMarkerObservation]:
-    observations: list[ClassMarkerObservation] = []
-    for spec in ClassMarkerObservationSpec.registered_specs():
-        for item in spec.collect(parsed_module):
-            if isinstance(item, ClassMarkerObservation):
-                observations.append(item)
-            elif isinstance(item, tuple):
-                observations.extend(
-                    observation
-                    for observation in item
-                    if isinstance(observation, ClassMarkerObservation)
-                )
-    return observations
-
-
-def collect_interface_generation_observations(
-    parsed_module: ParsedModule,
-) -> list[InterfaceGenerationObservation]:
-    observations: list[InterfaceGenerationObservation] = []
-    for spec in InterfaceGenerationObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, InterfaceGenerationObservation)
-        )
-    return observations
-
-
-def collect_sentinel_type_observations(
-    parsed_module: ParsedModule,
-) -> list[SentinelTypeObservation]:
-    observations: list[SentinelTypeObservation] = []
-    for spec in SentinelTypeObservationSpec.registered_specs():
-        observations.extend(
-            item
-            for item in spec.collect(parsed_module)
-            if isinstance(item, SentinelTypeObservation)
-        )
-    return observations
-
-
-def collect_dynamic_method_injection_observations(
-    parsed_module: ParsedModule,
-) -> list[DynamicMethodInjectionObservation]:
-    observations: list[DynamicMethodInjectionObservation] = []
-    for spec in DynamicMethodInjectionObservationSpec.registered_specs():
-        for item in spec.collect(parsed_module):
-            if isinstance(item, DynamicMethodInjectionObservation):
-                observations.append(item)
-            elif isinstance(item, tuple):
-                observations.extend(
-                    observation
-                    for observation in item
-                    if isinstance(observation, DynamicMethodInjectionObservation)
-                )
-    return observations
-
-
 def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
     return {
         child: parent
@@ -1966,7 +2111,7 @@ def _literal_dispatch_observation_from_if(
     parsed_module: ParsedModule,
     node: ast.If,
     literal_type: type[object],
-    literal_kind: str,
+    literal_kind: LiteralKind,
     parent_map: dict[ast.AST, ast.AST],
 ) -> LiteralDispatchObservation | None:
     literal_cases: list[str] = []
@@ -2019,7 +2164,7 @@ def _inline_literal_dispatch_groups(
     owner_name: str | None,
     block: list[ast.stmt],
     literal_type: type[object],
-    literal_kind: str,
+    literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
     groups: dict[str, list[tuple[int, str, str]]] = {}
     for stmt in block:
@@ -2590,6 +2735,76 @@ def _dynamic_method_injection_observations(
                 )
             )
     return tuple(sorted(observations, key=lambda item: item.line))
+
+
+def _runtime_type_generation_observation(
+    parsed_module: ParsedModule,
+    node: ast.Call,
+    observation: ScopedAstObservation,
+) -> RuntimeTypeGenerationObservation | None:
+    generator_name = _terminal_name(node.func)
+    if generator_name not in {"type", "make_dataclass", "new_class"}:
+        return None
+    return RuntimeTypeGenerationObservation(
+        file_path=str(parsed_module.path),
+        line=node.lineno,
+        symbol=observation.function_name or generator_name,
+        generator_name=generator_name,
+    )
+
+
+def _lineage_mapping_observation(
+    parsed_module: ParsedModule,
+    node: ast.Assign,
+) -> LineageMappingObservation | None:
+    for target in node.targets:
+        if not isinstance(target, ast.Subscript):
+            continue
+        name = _terminal_name(target.value)
+        if name and any(
+            token in name.lower()
+            for token in ("lazy", "base", "type", "mapping", "registry")
+        ):
+            return LineageMappingObservation(
+                file_path=str(parsed_module.path),
+                line=node.lineno,
+                symbol=name,
+                mapping_name=name,
+            )
+    return None
+
+
+def _dual_axis_resolution_observation(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> DualAxisResolutionObservation | None:
+    for node in ast.walk(function):
+        if not isinstance(node, ast.For):
+            continue
+        inner_loops = [child for child in node.body if isinstance(child, ast.For)]
+        if not inner_loops:
+            continue
+        outer_name = _loop_target_name(node.target)
+        inner_name = _loop_target_name(inner_loops[0].target)
+        text = ast.dump(inner_loops[0].iter, include_attributes=False)
+        if "__mro__" in text or "mro" in text.lower() or "type" in text.lower():
+            if outer_name and any(
+                token in outer_name.lower() for token in ("scope", "context", "level")
+            ):
+                return DualAxisResolutionObservation(
+                    file_path=str(parsed_module.path),
+                    line=node.lineno,
+                    symbol=function.name,
+                    outer_axis_name=outer_name,
+                    inner_axis_name=inner_name or "mro_type",
+                )
+    return None
+
+
+def _loop_target_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
 
 
 def _call_targets_name(node: ast.Call, expected_name: str) -> bool:

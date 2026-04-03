@@ -5,26 +5,35 @@ from pathlib import Path
 from typing import cast
 
 from nominal_refactor_advisor.ast_tools import (
+    AccessorWrapperObservationFamily,
+    AttributeProbeObservationFamily,
+    BuilderCallShapeFamily,
+    ClassMarkerObservationFamily,
+    ConfigDispatchObservationFamily,
+    DualAxisResolutionObservationFamily,
+    DynamicMethodInjectionObservationFamily,
+    ExportDictShapeFamily,
     FieldObservationSpec,
+    FieldObservationFamily,
+    InlineStringLiteralDispatchObservationFamily,
+    InterfaceGenerationObservationFamily,
+    LineageMappingObservationFamily,
+    MethodShapeFamily,
     ObservationGraph,
     ObservationKind,
+    ProjectionHelperObservationFamily,
     RegistrationShapeSpec,
+    RegistrationShapeFamily,
+    RuntimeTypeGenerationObservationFamily,
+    ScopedShapeWrapperFunctionFamily,
+    ScopedShapeWrapperSpecFamily,
+    SentinelTypeObservationFamily,
+    StringLiteralDispatchObservationFamily,
+    NumericLiteralDispatchObservationFamily,
     StructuralExecutionLevel,
-    collect_accessor_wrapper_candidates,
-    collect_attribute_probe_observations,
-    collect_class_marker_observations,
-    collect_config_dispatch_observations,
-    collect_dynamic_method_injection_observations,
-    collect_inline_literal_dispatch_observations,
-    collect_interface_generation_observations,
-    collect_literal_dispatch_observations,
-    collect_projection_helper_shapes,
-    collect_registration_shapes,
+    build_observation_graph,
+    collect_family_items,
     collect_scoped_observations,
-    collect_scoped_shape_wrapper_functions,
-    collect_scoped_shape_wrapper_specs,
-    collect_sentinel_type_observations,
-    collect_field_observations,
     parse_python_modules,
 )
 from nominal_refactor_advisor.cli import _format_markdown
@@ -143,7 +152,7 @@ def resolve(config):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_config_dispatch_observations(module)
+    observations = collect_family_items(module, ConfigDispatchObservationFamily)
 
     assert {item.observed_attribute for item in observations} == {
         "napari_port",
@@ -196,6 +205,33 @@ BASE_TO_LAZY[Base] = LazyBase
     assert any(finding.pattern_id == 7 for finding in findings)
 
 
+def test_collects_generated_type_lineage_observations_via_spec_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+BASE_TO_LAZY = {}
+
+
+class Base:
+    pass
+
+
+LazyBase = type("LazyBase", (Base,), {})
+BASE_TO_LAZY[Base] = LazyBase
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    generation = collect_family_items(module, RuntimeTypeGenerationObservationFamily)
+    lineage = collect_family_items(module, LineageMappingObservationFamily)
+
+    assert [item.generator_name for item in generation] == ["type"]
+    assert [item.mapping_name for item in lineage] == ["BASE_TO_LAZY"]
+
+
 def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -212,6 +248,30 @@ def resolve(scope_stack, obj):
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 8 for finding in findings)
+
+
+def test_collects_dual_axis_resolution_observations_via_spec_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def resolve(scope_stack, obj):
+    for scope in scope_stack:
+        for mro_type in type(obj).__mro__:
+            if scope and mro_type:
+                return scope, mro_type
+    return None
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_family_items(module, DualAxisResolutionObservationFamily)
+
+    assert len(observations) == 1
+    assert observations[0].outer_axis_name == "scope"
+    assert observations[0].inner_axis_name == "mro_type"
 
 
 def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
@@ -243,7 +303,7 @@ def check(instance):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_class_marker_observations(module)
+    observations = collect_family_items(module, ClassMarkerObservationFamily)
 
     assert any(item.marker_name == "_is_global_config" for item in observations)
 
@@ -281,7 +341,7 @@ def make_interface(name):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_interface_generation_observations(module)
+    observations = collect_family_items(module, InterfaceGenerationObservationFamily)
 
     assert [item.generator_name for item in observations] == ["type"]
 
@@ -317,7 +377,7 @@ def present(registry):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_sentinel_type_observations(module)
+    observations = collect_family_items(module, SentinelTypeObservationFamily)
 
     assert any(item.sentinel_name == "SENTINEL" for item in observations)
     assert len(observations) >= 2
@@ -350,7 +410,7 @@ def inject(target_type, method_name, method_impl):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_dynamic_method_injection_observations(module)
+    observations = collect_family_items(module, DynamicMethodInjectionObservationFamily)
 
     assert [item.mutator_name for item in observations] == ["setattr"]
 
@@ -472,7 +532,7 @@ def resolve(widget):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_attribute_probe_observations(module)
+    observations = collect_family_items(module, AttributeProbeObservationFamily)
 
     assert {item.probe_kind for item in observations} == {
         "hasattr",
@@ -505,8 +565,10 @@ def walk(node):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    chains = collect_literal_dispatch_observations(module, str)
-    inline_groups = collect_inline_literal_dispatch_observations(module, str)
+    chains = collect_family_items(module, StringLiteralDispatchObservationFamily)
+    inline_groups = collect_family_items(
+        module, InlineStringLiteralDispatchObservationFamily
+    )
 
     assert any(item.axis_expression == "kind" for item in chains)
     assert any(item.axis_expression == "node.kind" for item in inline_groups)
@@ -819,6 +881,42 @@ _BUILDER_CALL_SHAPE_SPEC = ScopedShapeSpec(
     assert "ScopedShapeSpec" in (finding.scaffold or "")
 
 
+def test_detects_manual_indexed_family_expansion(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class FieldObservationSpec: ...
+class FieldObservation: ...
+class ConfigDispatchObservationSpec: ...
+class ConfigDispatchObservation: ...
+
+
+def collect_field_observations(parsed_module):
+    return [
+        item
+        for item in _collect_items_from_spec_root(
+            FieldObservationSpec, parsed_module, FieldObservation
+        )
+        if isinstance(item, FieldObservation)
+    ]
+
+
+def collect_config_dispatch_observations(parsed_module):
+    return [
+        item
+        for item in _collect_items_from_spec_root(
+            ConfigDispatchObservationSpec, parsed_module, ConfigDispatchObservation
+        )
+        if isinstance(item, ConfigDispatchObservation)
+    ]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert any(finding.detector_id == "manual_indexed_family" for finding in findings)
+
+
 def test_collects_scoped_shape_wrapper_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
@@ -844,8 +942,8 @@ _METHOD_SHAPE_SPEC = ScopedShapeSpec(
     )
 
     module = parse_python_modules(tmp_path)[0]
-    functions = collect_scoped_shape_wrapper_functions(module)
-    specs = collect_scoped_shape_wrapper_specs(module)
+    functions = collect_family_items(module, ScopedShapeWrapperFunctionFamily)
+    specs = collect_family_items(module, ScopedShapeWrapperSpecFamily)
 
     assert [item.function_name for item in functions] == [
         "_build_method_shape_from_observation"
@@ -910,7 +1008,7 @@ REGISTRY["beta"] = Alpha
     )
 
     module = parse_python_modules(tmp_path)[0]
-    shapes = collect_registration_shapes(module)
+    shapes = collect_family_items(module, RegistrationShapeFamily)
 
     assert {shape.registration_style for shape in shapes} == {
         "decorator_registration",
@@ -970,7 +1068,7 @@ def scores(items):
     )
 
     module = parse_python_modules(tmp_path)[0]
-    shapes = collect_projection_helper_shapes(module)
+    shapes = collect_family_items(module, ProjectionHelperObservationFamily)
 
     assert {shape.projected_attribute for shape in shapes} == {"label", "score"}
 
@@ -990,7 +1088,7 @@ class Sample:
     )
 
     module = parse_python_modules(tmp_path)[0]
-    candidates = collect_accessor_wrapper_candidates(module)
+    candidates = collect_family_items(module, AccessorWrapperObservationFamily)
 
     assert {candidate.accessor_kind for candidate in candidates} == {"getter", "setter"}
 
@@ -1019,7 +1117,7 @@ class BetaResult:
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_field_observations(module)
+    observations = collect_family_items(module, FieldObservationFamily)
     graph = ObservationGraph(
         tuple(item.structural_observation for item in observations)
     )
@@ -1054,7 +1152,7 @@ class BetaResult:
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_field_observations(module)
+    observations = collect_family_items(module, FieldObservationFamily)
 
     assert all(item.field_name != "cache" for item in observations)
 
@@ -1076,7 +1174,7 @@ class AlphaResult:
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_field_observations(module)
+    observations = collect_family_items(module, FieldObservationFamily)
 
     assert all(item.field_name != "cache" for item in observations)
 
@@ -1097,7 +1195,7 @@ class AlphaResult:
     )
 
     module = parse_python_modules(tmp_path)[0]
-    observations = collect_field_observations(module)
+    observations = collect_family_items(module, FieldObservationFamily)
 
     assert {item.field_name for item in observations} == {"pose_id", "score"}
 
@@ -1236,6 +1334,46 @@ def convert(kind, value):
     assert "fibers" in payload
     assert any(item["observation_kind"] == "field" for item in observations)
     assert any(item["observation_kind"] == "literal_dispatch" for item in fibers)
+
+
+def test_observation_graph_auto_includes_registered_observation_families(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+BASE_TO_LAZY = {}
+SENTINEL = type("Sentinel", (), {})()
+
+
+class Base:
+    pass
+
+
+LazyBase = type("LazyBase", (Base,), {})
+BASE_TO_LAZY[Base] = LazyBase
+
+
+def resolve(config, obj):
+    if hasattr(config, "kind"):
+        return config.kind
+    for scope in [1]:
+        for mro_type in type(obj).__mro__:
+            if scope and mro_type:
+                return scope, mro_type
+    return SENTINEL
+""",
+    )
+
+    graph = build_observation_graph(parse_python_modules(tmp_path))
+    kinds = {item.observation_kind for item in graph.observations}
+
+    assert ObservationKind.CONFIG_DISPATCH in kinds
+    assert ObservationKind.RUNTIME_TYPE_GENERATION in kinds
+    assert ObservationKind.LINEAGE_MAPPING in kinds
+    assert ObservationKind.DUAL_AXIS_RESOLUTION in kinds
+    assert ObservationKind.SENTINEL_TYPE in kinds
 
 
 def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:

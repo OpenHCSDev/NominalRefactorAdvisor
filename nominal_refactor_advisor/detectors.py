@@ -9,35 +9,40 @@ from typing import Any
 
 from .ast_tools import (
     AccessorWrapperCandidate,
+    AccessorWrapperObservationFamily,
+    AttributeProbeObservationFamily,
     BuilderCallShape,
+    BuilderCallShapeFamily,
+    ClassMarkerObservationFamily,
     FieldObservation,
+    FieldObservationFamily,
+    ConfigDispatchObservationFamily,
+    DualAxisResolutionObservationFamily,
+    DynamicMethodInjectionObservationFamily,
+    ExportDictShapeFamily,
+    InterfaceGenerationObservationFamily,
     ObservationGraph,
     ObservationKind,
     ExportDictShape,
+    LineageMappingObservationFamily,
     MethodShape,
+    MethodShapeFamily,
     ParsedModule,
     ProjectionHelperShape,
+    ProjectionHelperObservationFamily,
     RegistrationShape,
+    RegistrationShapeFamily,
+    RuntimeTypeGenerationObservationFamily,
     ScopedShapeWrapperFunction,
+    ScopedShapeWrapperFunctionFamily,
     ScopedShapeWrapperSpec,
+    ScopedShapeWrapperSpecFamily,
+    SentinelTypeObservationFamily,
+    StringLiteralDispatchObservationFamily,
+    NumericLiteralDispatchObservationFamily,
+    InlineStringLiteralDispatchObservationFamily,
     StructuralExecutionLevel,
-    collect_accessor_wrapper_candidates,
-    collect_attribute_probe_observations,
-    collect_class_marker_observations,
-    collect_config_dispatch_observations,
-    collect_dynamic_method_injection_observations,
-    collect_field_observations,
-    collect_builder_call_shapes,
-    collect_export_dict_shapes,
-    collect_interface_generation_observations,
-    collect_inline_literal_dispatch_observations,
-    collect_literal_dispatch_observations,
-    collect_method_shapes,
-    collect_projection_helper_shapes,
-    collect_registration_shapes,
-    collect_scoped_shape_wrapper_functions,
-    collect_scoped_shape_wrapper_specs,
-    collect_sentinel_type_observations,
+    collect_family_items,
 )
 from .models import (
     CERTIFIED,
@@ -217,6 +222,36 @@ class GroupedShapeIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
+class FiberCollectedShapeIssueDetector(GroupedShapeIssueDetector, ABC):
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
+
+    def _collect_shapes(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[object]:
+        shapes = tuple(
+            shape
+            for module in modules
+            for shape in self._module_shapes(module)
+            if self._include_shape(shape, config)
+        )
+        groups = _fiber_grouped_shapes(
+            modules,
+            shapes,
+            self.observation_kind,
+            self.execution_level,
+        )
+        return [shape for group in groups for shape in group]
+
+    @abstractmethod
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
+        raise NotImplementedError
+
+
 def _as_method_shape(shape: object) -> MethodShape:
     if not isinstance(shape, MethodShape):
         raise TypeError(f"Expected MethodShape, got {type(shape)!r}")
@@ -239,6 +274,50 @@ def _as_export_shape(shape: object) -> ExportDictShape:
     if not isinstance(shape, ExportDictShape):
         raise TypeError(f"Expected ExportDictShape, got {type(shape)!r}")
     return shape
+
+
+def _shape_identity(shape: object) -> tuple[str, int, str]:
+    if isinstance(shape, MethodShape):
+        return (shape.file_path, shape.lineno, shape.symbol)
+    if isinstance(shape, BuilderCallShape):
+        return (shape.file_path, shape.lineno, shape.symbol)
+    if isinstance(shape, ExportDictShape):
+        return (shape.file_path, shape.lineno, shape.symbol)
+    raise TypeError(f"Unsupported shape type: {type(shape)!r}")
+
+
+def _fiber_grouped_shapes(
+    modules: list[ParsedModule],
+    shapes: tuple[object, ...],
+    observation_kind: ObservationKind,
+    execution_level: StructuralExecutionLevel,
+) -> list[tuple[object, ...]]:
+    lookup = {_shape_identity(shape): shape for shape in shapes}
+    groups: list[tuple[object, ...]] = []
+    graph = ObservationGraph(
+        tuple(
+            shape.structural_observation
+            for shape in shapes
+            if isinstance(shape, (MethodShape, BuilderCallShape, ExportDictShape))
+        )
+    )
+    for fiber in graph.fibers_for(observation_kind, execution_level):
+        grouped_items = [
+            lookup[(item.file_path, item.line, item.owner_symbol)]
+            for item in fiber.observations
+            if (item.file_path, item.line, item.owner_symbol) in lookup
+        ]
+        if len(grouped_items) < 2:
+            continue
+        groups.append(
+            tuple(
+                sorted(
+                    grouped_items,
+                    key=lambda item: _shape_identity(item),
+                )
+            )
+        )
+    return groups
 
 
 @dataclass(frozen=True)
@@ -270,8 +349,18 @@ class FieldFamilyCandidate:
     field_type_map: tuple[tuple[str, str], ...] = ()
 
 
-class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
+@dataclass(frozen=True)
+class IndexedFamilyWrapperCandidate:
+    function_name: str
+    lineno: int
+    collector_name: str
+    spec_root_name: str
+    item_type_name: str
+
+
+class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
     detector_id = "repeated_private_methods"
+    observation_kind = ObservationKind.METHOD_SHAPE
     finding_spec = FindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated non-orthogonal method skeleton across classes",
@@ -296,10 +385,15 @@ class RepeatedPrivateMethodDetector(GroupedShapeIssueDetector):
         ),
     )
 
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
-        return list(_collect_repeated_method_shapes(modules, config))
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+        return tuple(collect_family_items(module, MethodShapeFamily))
+
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
+        method = _as_method_shape(shape)
+        return bool(
+            method.class_name
+            and method.statement_count >= config.min_duplicate_statements
+        )
 
     def _group_key(self, shape: object) -> object:
         method = _as_method_shape(shape)
@@ -443,7 +537,7 @@ def _shared_field_type_map(
 
 
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
-    observations = collect_field_observations(module)
+    observations = collect_family_items(module, FieldObservationFamily)
     graph = ObservationGraph(
         observations=tuple(item.structural_observation for item in observations)
     )
@@ -691,8 +785,9 @@ class RepeatedFieldFamilyDetector(PerModuleIssueDetector):
         return findings
 
 
-class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
+class RepeatedBuilderCallDetector(FiberCollectedShapeIssueDetector):
     detector_id = "repeated_builder_calls"
+    observation_kind = ObservationKind.BUILDER_CALL
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated field assignment should become an authoritative builder",
@@ -716,16 +811,12 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
         ),
     )
 
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
-        shapes: list[object] = []
-        for module in modules:
-            for shape in collect_builder_call_shapes(module):
-                if len(shape.keyword_names) < config.min_builder_keywords:
-                    continue
-                shapes.append(shape)
-        return shapes
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+        return tuple(collect_family_items(module, BuilderCallShapeFamily))
+
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
+        builder = _as_builder_shape(shape)
+        return len(builder.keyword_names) >= config.min_builder_keywords
 
     def _group_key(self, shape: object) -> object:
         builder = _as_builder_shape(shape)
@@ -774,8 +865,9 @@ class RepeatedBuilderCallDetector(GroupedShapeIssueDetector):
         )
 
 
-class RepeatedExportDictDetector(GroupedShapeIssueDetector):
+class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
     detector_id = "repeated_export_dicts"
+    observation_kind = ObservationKind.EXPORT_DICT
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated projection dict should become an authoritative schema",
@@ -799,15 +891,12 @@ class RepeatedExportDictDetector(GroupedShapeIssueDetector):
         ),
     )
 
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
-        return [
-            shape
-            for module in modules
-            for shape in collect_export_dict_shapes(module)
-            if len(shape.key_names) >= config.min_export_keys
-        ]
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+        return tuple(collect_family_items(module, ExportDictShapeFamily))
+
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
+        export_shape = _as_export_shape(shape)
+        return len(export_shape.key_names) >= config.min_export_keys
 
     def _group_key(self, shape: object) -> object:
         export_shape = _as_export_shape(shape)
@@ -879,7 +968,9 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[object]:
         return [
-            shape for module in modules for shape in collect_registration_shapes(module)
+            shape
+            for module in modules
+            for shape in collect_family_items(module, RegistrationShapeFamily)
         ]
 
     def _group_key(self, shape: object) -> object:
@@ -1056,7 +1147,7 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     ) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_config_dispatch_observations(module)
+            for item in collect_family_items(module, ConfigDispatchObservationFamily)
         )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
@@ -1094,8 +1185,16 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
-        generation_sites = _generated_type_sites(module)
-        lineage_sites = _type_lineage_sites(module)
+        generation_sites = [
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_family_items(
+                module, RuntimeTypeGenerationObservationFamily
+            )
+        ]
+        lineage_sites = [
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in collect_family_items(module, LineageMappingObservationFamily)
+        ]
         if not generation_sites or not lineage_sites:
             return ()
         return tuple((generation_sites + lineage_sites)[:6])
@@ -1135,17 +1234,22 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for function in _iter_functions(module.module):
-            evidence = _dual_axis_resolution_evidence(module, function)
-            if evidence is None:
-                continue
+        for observation in collect_family_items(
+            module, DualAxisResolutionObservationFamily
+        ):
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
                     (
-                        f"{function.name} nests scope-like and MRO/type-like iteration in one precedence walk."
+                        f"{observation.symbol} nests scope-like axis `{observation.outer_axis_name}` with MRO/type-like axis `{observation.inner_axis_name}`."
                     ),
-                    evidence,
+                    (
+                        SourceLocation(
+                            observation.file_path,
+                            observation.line,
+                            observation.symbol,
+                        ),
+                    ),
                     metrics=ResolutionAxisMetrics(resolution_axis_count=2),
                 )
             )
@@ -1179,7 +1283,7 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     ) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_class_marker_observations(module)
+            for item in collect_family_items(module, ClassMarkerObservationFamily)
         )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
@@ -1219,7 +1323,9 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     ) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_interface_generation_observations(module)[:6]
+            for item in collect_family_items(
+                module, InterfaceGenerationObservationFamily
+            )[:6]
         )
 
     def _summary(
@@ -1257,7 +1363,7 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     ) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_sentinel_type_observations(module)[:6]
+            for item in collect_family_items(module, SentinelTypeObservationFamily)[:6]
         )
 
     def _summary(
@@ -1293,7 +1399,9 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     ) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_dynamic_method_injection_observations(module)[:6]
+            for item in collect_family_items(
+                module, DynamicMethodInjectionObservationFamily
+            )[:6]
         )
 
     def _summary(
@@ -1329,7 +1437,7 @@ class AttributeProbeDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        observations = collect_attribute_probe_observations(module)
+        observations = collect_family_items(module, AttributeProbeObservationFamily)
         total = len(observations)
         if total < config.min_attribute_probes:
             return []
@@ -1375,7 +1483,9 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_inline_literal_dispatch_observations(module, str):
+        for observation in collect_family_items(
+            module, InlineStringLiteralDispatchObservationFamily
+        ):
             branch_count = len(observation.branch_lines)
             if branch_count < config.min_attribute_probes:
                 continue
@@ -1429,7 +1539,9 @@ class StringDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_literal_dispatch_observations(module, str):
+        for observation in collect_family_items(
+            module, StringLiteralDispatchObservationFamily
+        ):
             if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
@@ -1503,7 +1615,9 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_literal_dispatch_observations(module, int):
+        for observation in collect_family_items(
+            module, NumericLiteralDispatchObservationFamily
+        ):
             if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
@@ -1611,7 +1725,7 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
         grouped: dict[tuple[str, str, str], list[ProjectionHelperShape]] = defaultdict(
             list
         )
-        for shape in collect_projection_helper_shapes(module):
+        for shape in collect_family_items(module, ProjectionHelperObservationFamily):
             grouped[
                 (
                     shape.outer_call_name,
@@ -1678,11 +1792,11 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         wrapper_functions = {
             item.function_name: item
-            for item in collect_scoped_shape_wrapper_functions(module)
+            for item in collect_family_items(module, ScopedShapeWrapperFunctionFamily)
         }
         wrapper_specs = [
             spec
-            for spec in collect_scoped_shape_wrapper_specs(module)
+            for spec in collect_family_items(module, ScopedShapeWrapperSpecFamily)
             if spec.function_name in wrapper_functions
             and spec.node_types == wrapper_functions[spec.function_name].node_types
         ]
@@ -1726,6 +1840,59 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         ]
 
 
+class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
+    detector_id = "manual_indexed_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Manually expanded indexed family should become one nominal family abstraction",
+        why=(
+            "The same collection scaffold is being hand-expanded over a latent family index. The docs prefer one "
+            "authoritative nominal family abstraction whose members provide only the varying family metadata."
+        ),
+        capability_gap="single authoritative indexed family abstraction",
+        relation_context="same normalized family scaffold repeated across sibling top-level functions",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        groups: dict[str, list[IndexedFamilyWrapperCandidate]] = defaultdict(list)
+        for candidate in _indexed_family_wrapper_candidates(module):
+            groups[candidate.collector_name].append(candidate)
+        findings: list[RefactorFinding] = []
+        for candidates in groups.values():
+            if len(candidates) < 2:
+                continue
+            ordered = sorted(candidates, key=lambda item: item.lineno)
+            evidence = tuple(
+                SourceLocation(str(module.path), item.lineno, item.function_name)
+                for item in ordered[:6]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{module.path} hand-expands indexed family members {', '.join(item.function_name for item in ordered[:4])} over `{ordered[0].collector_name}`."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "Introduce one nominal family abstraction that owns the shared collection scaffold and encode only the varying family index metadata in subclasses or descriptors."
+                    ),
+                )
+            )
+        return findings
+
+
 class AccessorWrapperDetector(PerModuleIssueDetector):
     detector_id = "accessor_wrapper"
     finding_spec = FindingSpec(
@@ -1754,7 +1921,7 @@ class AccessorWrapperDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         grouped: dict[str, list[AccessorWrapperCandidate]] = defaultdict(list)
-        for candidate in collect_accessor_wrapper_candidates(module):
+        for candidate in collect_family_items(module, AccessorWrapperObservationFamily):
             grouped[candidate.class_name].append(candidate)
 
         findings: list[RefactorFinding] = []
@@ -2412,6 +2579,7 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         RepeatedHardcodedStringDetector(),
         RepeatedProjectionHelperDetector(),
         ScopedShapeWrapperDetector(),
+        ManualIndexedFamilyExpansionDetector(),
         AccessorWrapperDetector(),
         SemanticDictBagDetector(),
         BidirectionalRegistryDetector(),
@@ -2628,26 +2796,31 @@ def _collect_mirrored_assignments(node: ast.ClassDef) -> list[tuple[int, str]]:
 def _collect_repeated_method_shapes(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[MethodShape, ...]:
-    return tuple(
-        method
-        for module in modules
-        for method in collect_method_shapes(module)
-        if method.class_name
-        and method.statement_count >= config.min_duplicate_statements
-    )
+    groups = _group_repeated_methods(modules, config)
+    return tuple(method for group in groups for method in group)
 
 
 def _group_repeated_methods(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> list[tuple[MethodShape, ...]]:
-    groups: dict[tuple[bool, int, str], list[MethodShape]] = defaultdict(list)
-    for method in _collect_repeated_method_shapes(modules, config):
-        key = (method.is_private, method.param_count, method.fingerprint)
-        groups[key].append(method)
+    methods = tuple(
+        method
+        for module in modules
+        for method in collect_family_items(module, MethodShapeFamily)
+        if method.class_name
+        and method.statement_count >= config.min_duplicate_statements
+    )
+    groups = _fiber_grouped_shapes(
+        modules,
+        tuple(methods),
+        ObservationKind.METHOD_SHAPE,
+        StructuralExecutionLevel.FUNCTION_BODY,
+    )
     return [
-        tuple(sorted(methods, key=lambda item: (item.file_path, item.lineno)))
-        for methods in groups.values()
-        if len(methods) >= 2 and len({method.class_name for method in methods}) >= 2
+        tuple(_as_method_shape(method) for method in group)
+        for group in groups
+        if len(group) >= 2
+        and len({_as_method_shape(method).class_name for method in group}) >= 2
     ]
 
 
@@ -2993,6 +3166,73 @@ def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
     return f"- replace `{candidate.symbol}()` with an `@property` exposing `{candidate.target_expression}`"
 
 
+def _indexed_family_wrapper_candidates(
+    module: ParsedModule,
+) -> tuple[IndexedFamilyWrapperCandidate, ...]:
+    candidates: list[IndexedFamilyWrapperCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
+            continue
+        value = node.body[0].value
+        if not isinstance(value, ast.ListComp) or len(value.generators) != 1:
+            continue
+        generator = value.generators[0]
+        if not isinstance(generator.target, ast.Name) or generator.target.id != "item":
+            continue
+        if not isinstance(generator.iter, ast.Call):
+            continue
+        collector_name = _call_name(generator.iter.func)
+        if collector_name not in {
+            "_collect_items_from_spec_root",
+            "collect_family_items",
+        }:
+            continue
+        if collector_name == "_collect_items_from_spec_root":
+            if len(generator.iter.args) < 3:
+                continue
+            spec_root_name = _call_name(generator.iter.args[0])
+            item_type_name = _call_name(generator.iter.args[2])
+        else:
+            if len(generator.iter.args) < 2:
+                continue
+            spec_root_name = _call_name(generator.iter.args[1])
+            item_type_name = _call_name(generator.iter.args[1])
+        if spec_root_name is None or item_type_name is None:
+            continue
+        if not _is_instance_filter(generator.ifs, item_type_name):
+            continue
+        candidates.append(
+            IndexedFamilyWrapperCandidate(
+                function_name=node.name,
+                lineno=node.lineno,
+                collector_name=collector_name,
+                spec_root_name=spec_root_name,
+                item_type_name=item_type_name,
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: item.lineno))
+
+
+def _is_instance_filter(filters: list[ast.expr], item_type_name: str) -> bool:
+    for condition in filters:
+        if not isinstance(condition, ast.Call):
+            continue
+        if _call_name(condition.func) != "isinstance":
+            continue
+        if len(condition.args) != 2:
+            continue
+        if (
+            not isinstance(condition.args[0], ast.Name)
+            or condition.args[0].id != "item"
+        ):
+            continue
+        if _call_name(condition.args[1]) == item_type_name:
+            return True
+    return False
+
+
 def _function_has_param(
     function: ast.FunctionDef | ast.AsyncFunctionDef, param_name: str
 ) -> bool:
@@ -3070,66 +3310,4 @@ def _call_name(node: ast.AST) -> str | None:
         return node.id
     if isinstance(node, ast.Attribute):
         return node.attr
-    return None
-
-
-def _generated_type_sites(module: ParsedModule) -> list[SourceLocation]:
-    sites: list[SourceLocation] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        call_name = _call_name(node.func)
-        if call_name in {"type", "make_dataclass", "new_class"}:
-            sites.append(
-                SourceLocation(str(module.path), node.lineno, call_name or "type")
-            )
-    return sites
-
-
-def _type_lineage_sites(module: ParsedModule) -> list[SourceLocation]:
-    sites: list[SourceLocation] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if not isinstance(target, ast.Subscript):
-                continue
-            name = _call_name(target.value)
-            if name and any(
-                token in name.lower()
-                for token in ("lazy", "base", "type", "mapping", "registry")
-            ):
-                sites.append(SourceLocation(str(module.path), node.lineno, name))
-    return sites
-
-
-def _dual_axis_resolution_evidence(
-    module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[SourceLocation, ...] | None:
-    for node in ast.walk(function):
-        if not isinstance(node, ast.For):
-            continue
-        inner_loops = [child for child in node.body if isinstance(child, ast.For)]
-        if not inner_loops:
-            continue
-        outer_name = _loop_target_name(node.target)
-        inner_name = _loop_target_name(inner_loops[0].target)
-        text = ast.dump(inner_loops[0].iter, include_attributes=False)
-        if "__mro__" in text or "mro" in text.lower() or "type" in text.lower():
-            if outer_name and any(
-                token in outer_name.lower() for token in ("scope", "context", "level")
-            ):
-                return (
-                    SourceLocation(str(module.path), node.lineno, function.name),
-                    SourceLocation(
-                        str(module.path), inner_loops[0].lineno, function.name
-                    ),
-                )
-    return None
-
-
-def _loop_target_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
     return None
