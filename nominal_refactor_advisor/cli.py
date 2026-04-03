@@ -5,9 +5,10 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from .ast_tools import build_observation_graph, parse_python_modules
+from .ast_tools import parse_python_modules
 from .detectors import DetectorConfig, default_detectors
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
+from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
 

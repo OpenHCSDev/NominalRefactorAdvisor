@@ -29,8 +29,6 @@ from .ast_tools import (
     InterfaceGenerationObservation,
     InterfaceGenerationObservationFamily,
     LiteralDispatchObservation,
-    ObservationGraph,
-    ObservationKind,
     ExportDictShape,
     LineageMappingObservation,
     LineageMappingObservationFamily,
@@ -49,12 +47,9 @@ from .ast_tools import (
     ScopedShapeWrapperSpecFamily,
     SentinelTypeObservation,
     SentinelTypeObservationFamily,
-    StructuralObservation,
-    StructuralObservationCarrier,
     StringLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
-    StructuralExecutionLevel,
     collect_family_items,
 )
 from .models import (
@@ -79,6 +74,13 @@ from .models import (
     SourceLocation,
     impact_delta_semantic_bag_descriptor,
     metric_semantic_bag_descriptors,
+)
+from .observation_graph import (
+    ObservationGraph,
+    ObservationKind,
+    StructuralExecutionLevel,
+    StructuralObservation,
+    StructuralObservationCarrier,
 )
 from .patterns import PatternId
 from .taxonomy import (
