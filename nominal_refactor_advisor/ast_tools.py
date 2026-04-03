@@ -319,11 +319,16 @@ class AssignObservationSpec(ObservationShapeSpec, ABC):
 class StructuralObservation:
     file_path: str
     owner_symbol: str
+    nominal_witness: str
     line: int
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     observed_name: str
     fiber_key: str
+
+    @property
+    def structural_identity(self) -> tuple[str, int, str]:
+        return (self.file_path, self.line, self.owner_symbol)
 
 
 class StructuralObservationCarrier(ABC):
@@ -343,6 +348,42 @@ class ObservationFiber:
     @property
     def observed_name(self) -> str:
         return self.observations[0].observed_name
+
+    @property
+    def nominal_witnesses(self) -> tuple[str, ...]:
+        return tuple(sorted({item.nominal_witness for item in self.observations}))
+
+
+@dataclass(frozen=True)
+class NominalWitnessGroup:
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel
+    nominal_witness: str
+    observations: tuple[StructuralObservation, ...]
+
+    @property
+    def observed_names(self) -> tuple[str, ...]:
+        return tuple(sorted({item.observed_name for item in self.observations}))
+
+    @property
+    def fiber_keys(self) -> tuple[str, ...]:
+        return tuple(sorted({item.fiber_key for item in self.observations}))
+
+
+@dataclass(frozen=True)
+class ObservationCohort:
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel
+    nominal_witnesses: tuple[str, ...]
+    fibers: tuple[ObservationFiber, ...]
+
+    @property
+    def observed_names(self) -> tuple[str, ...]:
+        return tuple(fiber.observed_name for fiber in self.fibers)
+
+    @property
+    def fiber_keys(self) -> tuple[str, ...]:
+        return tuple(fiber.fiber_key for fiber in self.fibers)
 
 
 @dataclass(frozen=True)
@@ -396,6 +437,117 @@ class ObservationGraph:
             and fiber.execution_level == execution_level
         )
 
+    def fibers_with_min_observations(
+        self,
+        observation_kind: ObservationKind,
+        execution_level: StructuralExecutionLevel,
+        minimum_observations: int,
+    ) -> tuple[ObservationFiber, ...]:
+        return tuple(
+            fiber
+            for fiber in self.fibers_for(observation_kind, execution_level)
+            if len(fiber.observations) >= minimum_observations
+        )
+
+    def witness_groups_for(
+        self,
+        observation_kind: ObservationKind,
+        execution_level: StructuralExecutionLevel,
+    ) -> tuple[NominalWitnessGroup, ...]:
+        grouped: dict[str, list[StructuralObservation]] = {}
+        for observation in self.observations:
+            if observation.observation_kind != observation_kind:
+                continue
+            if observation.execution_level != execution_level:
+                continue
+            grouped.setdefault(observation.nominal_witness, []).append(observation)
+        groups = [
+            NominalWitnessGroup(
+                observation_kind=observation_kind,
+                execution_level=execution_level,
+                nominal_witness=nominal_witness,
+                observations=tuple(
+                    sorted(
+                        items,
+                        key=lambda item: (
+                            item.file_path,
+                            item.line,
+                            item.owner_symbol,
+                        ),
+                    )
+                ),
+            )
+            for nominal_witness, items in grouped.items()
+        ]
+        return tuple(sorted(groups, key=lambda item: item.nominal_witness))
+
+    def coherence_cohorts_for(
+        self,
+        observation_kind: ObservationKind,
+        execution_level: StructuralExecutionLevel,
+        minimum_witnesses: int = 2,
+        minimum_fibers: int = 2,
+    ) -> tuple[ObservationCohort, ...]:
+        fibers = self.fibers_for(observation_kind, execution_level)
+        relevant_fibers = {
+            fiber.fiber_key: fiber
+            for fiber in fibers
+            if len(fiber.nominal_witnesses) >= minimum_witnesses
+        }
+        witness_to_fiber_keys = {
+            group.nominal_witness: frozenset(
+                fiber_key
+                for fiber_key in group.fiber_keys
+                if fiber_key in relevant_fibers
+            )
+            for group in self.witness_groups_for(observation_kind, execution_level)
+        }
+        witness_names = tuple(
+            sorted(
+                witness
+                for witness, fiber_keys in witness_to_fiber_keys.items()
+                if len(fiber_keys) >= minimum_fibers
+            )
+        )
+        cohorts: dict[tuple[tuple[str, ...], tuple[str, ...]], ObservationCohort] = {}
+        for left_index, left_name in enumerate(witness_names):
+            left_keys = witness_to_fiber_keys[left_name]
+            for right_name in witness_names[left_index + 1 :]:
+                shared_keys = tuple(
+                    sorted(left_keys & witness_to_fiber_keys[right_name])
+                )
+                if len(shared_keys) < minimum_fibers:
+                    continue
+                shared_key_set = frozenset(shared_keys)
+                supporting_witnesses = tuple(
+                    sorted(
+                        witness
+                        for witness, fiber_keys in witness_to_fiber_keys.items()
+                        if shared_key_set <= fiber_keys
+                    )
+                )
+                if len(supporting_witnesses) < minimum_witnesses:
+                    continue
+                cohorts[(supporting_witnesses, shared_keys)] = ObservationCohort(
+                    observation_kind=observation_kind,
+                    execution_level=execution_level,
+                    nominal_witnesses=supporting_witnesses,
+                    fibers=tuple(
+                        relevant_fibers[fiber_key] for fiber_key in shared_keys
+                    ),
+                )
+        return tuple(
+            sorted(
+                cohorts.values(),
+                key=lambda item: (
+                    item.observation_kind,
+                    item.execution_level,
+                    item.nominal_witnesses,
+                    item.fiber_keys,
+                ),
+            )
+        )
+
 
 @dataclass(frozen=True)
 class FieldObservation(StructuralObservationCarrier):
@@ -419,6 +571,7 @@ class FieldObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.class_name,
             line=self.lineno,
             observation_kind=ObservationKind.FIELD,
             execution_level=self.execution_level,
@@ -442,6 +595,7 @@ class AttributeProbeObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.ATTRIBUTE_PROBE,
             execution_level=self.execution_level,
@@ -468,6 +622,7 @@ class LiteralDispatchObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.scope_owner or self.symbol,
             line=self.line,
             observation_kind=ObservationKind.LITERAL_DISPATCH,
             execution_level=self.execution_level,
@@ -495,6 +650,7 @@ class ProjectionHelperShape(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.function_name,
             line=self.lineno,
             observation_kind=ObservationKind.PROJECTION_HELPER,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -525,6 +681,7 @@ class AccessorWrapperCandidate(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.class_name,
             line=self.lineno,
             observation_kind=ObservationKind.ACCESSOR_WRAPPER,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -545,6 +702,7 @@ class ScopedShapeWrapperFunction(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.function_name,
+            nominal_witness=self.function_name,
             line=self.lineno,
             observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
             execution_level=StructuralExecutionLevel.MODULE_BODY,
@@ -566,6 +724,7 @@ class ScopedShapeWrapperSpec(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.spec_name,
+            nominal_witness=self.function_name,
             line=self.lineno,
             observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
             execution_level=StructuralExecutionLevel.MODULE_BODY,
@@ -586,6 +745,7 @@ class ConfigDispatchObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.CONFIG_DISPATCH,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -606,6 +766,7 @@ class ClassMarkerObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.CLASS_MARKER,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -626,6 +787,7 @@ class InterfaceGenerationObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.INTERFACE_GENERATION,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -646,6 +808,7 @@ class SentinelTypeObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.SENTINEL_TYPE,
             execution_level=StructuralExecutionLevel.MODULE_BODY,
@@ -666,6 +829,7 @@ class DynamicMethodInjectionObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.DYNAMIC_METHOD_INJECTION,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -686,6 +850,7 @@ class RuntimeTypeGenerationObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.RUNTIME_TYPE_GENERATION,
             execution_level=StructuralExecutionLevel.MODULE_BODY,
@@ -706,6 +871,7 @@ class LineageMappingObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.LINEAGE_MAPPING,
             execution_level=StructuralExecutionLevel.MODULE_BODY,
@@ -727,6 +893,7 @@ class DualAxisResolutionObservation(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.symbol,
             line=self.line,
             observation_kind=ObservationKind.DUAL_AXIS_RESOLUTION,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -763,6 +930,7 @@ class MethodShape(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.class_name or self.symbol,
             line=self.lineno,
             observation_kind=ObservationKind.METHOD_SHAPE,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -796,6 +964,7 @@ class BuilderCallShape(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.class_name or self.function_name or self.symbol,
             line=self.lineno,
             observation_kind=ObservationKind.BUILDER_CALL,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,
@@ -906,6 +1075,7 @@ class ExportDictShape(StructuralObservationCarrier):
         return StructuralObservation(
             file_path=self.file_path,
             owner_symbol=self.symbol,
+            nominal_witness=self.class_name or self.function_name or self.symbol,
             line=self.lineno,
             observation_kind=ObservationKind.EXPORT_DICT,
             execution_level=StructuralExecutionLevel.FUNCTION_BODY,

@@ -5,25 +5,34 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence, TypeVar, cast
 
 from .ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
+    AttributeProbeObservation,
     AttributeProbeObservationFamily,
     BuilderCallShape,
     BuilderCallShapeFamily,
+    ClassMarkerObservation,
     ClassMarkerObservationFamily,
+    CollectedFamily,
+    ConfigDispatchObservation,
     FieldObservation,
     FieldObservationFamily,
     ConfigDispatchObservationFamily,
+    DualAxisResolutionObservation,
     DualAxisResolutionObservationFamily,
+    DynamicMethodInjectionObservation,
     DynamicMethodInjectionObservationFamily,
     ExportDictShapeFamily,
+    InterfaceGenerationObservation,
     InterfaceGenerationObservationFamily,
+    LiteralDispatchObservation,
     ObservationGraph,
     ObservationKind,
     ExportDictShape,
+    LineageMappingObservation,
     LineageMappingObservationFamily,
     MethodShape,
     MethodShapeFamily,
@@ -32,12 +41,16 @@ from .ast_tools import (
     ProjectionHelperObservationFamily,
     RegistrationShape,
     RegistrationShapeFamily,
+    RuntimeTypeGenerationObservation,
     RuntimeTypeGenerationObservationFamily,
     ScopedShapeWrapperFunction,
     ScopedShapeWrapperFunctionFamily,
     ScopedShapeWrapperSpec,
     ScopedShapeWrapperSpecFamily,
+    SentinelTypeObservation,
     SentinelTypeObservationFamily,
+    StructuralObservation,
+    StructuralObservationCarrier,
     StringLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
@@ -252,6 +265,22 @@ class FiberCollectedShapeIssueDetector(GroupedShapeIssueDetector, ABC):
         raise NotImplementedError
 
 
+CollectedItemT = TypeVar("CollectedItemT")
+
+
+def _collect_typed_family_items(
+    module: ParsedModule,
+    family: type[CollectedFamily],
+    item_type: type[CollectedItemT],
+) -> tuple[CollectedItemT, ...]:
+    items = tuple(collect_family_items(module, family))
+    if not all(isinstance(item, item_type) for item in items):
+        raise TypeError(
+            f"Collected items for {family.__name__} did not match {item_type.__name__}"
+        )
+    return cast(tuple[CollectedItemT, ...], items)
+
+
 def _as_method_shape(shape: object) -> MethodShape:
     if not isinstance(shape, MethodShape):
         raise TypeError(f"Expected MethodShape, got {type(shape)!r}")
@@ -276,14 +305,42 @@ def _as_export_shape(shape: object) -> ExportDictShape:
     return shape
 
 
-def _shape_identity(shape: object) -> tuple[str, int, str]:
-    if isinstance(shape, MethodShape):
-        return (shape.file_path, shape.lineno, shape.symbol)
-    if isinstance(shape, BuilderCallShape):
-        return (shape.file_path, shape.lineno, shape.symbol)
-    if isinstance(shape, ExportDictShape):
-        return (shape.file_path, shape.lineno, shape.symbol)
-    raise TypeError(f"Unsupported shape type: {type(shape)!r}")
+def _as_projection_helper_shape(shape: object) -> ProjectionHelperShape:
+    if not isinstance(shape, ProjectionHelperShape):
+        raise TypeError(f"Expected ProjectionHelperShape, got {type(shape)!r}")
+    return shape
+
+
+def _as_accessor_wrapper_candidate(shape: object) -> AccessorWrapperCandidate:
+    if not isinstance(shape, AccessorWrapperCandidate):
+        raise TypeError(f"Expected AccessorWrapperCandidate, got {type(shape)!r}")
+    return shape
+
+
+def _carrier_identity(carrier: object) -> tuple[str, int, str]:
+    if not isinstance(carrier, StructuralObservationCarrier):
+        raise TypeError(f"Unsupported structural carrier: {type(carrier)!r}")
+    return carrier.structural_observation.structural_identity
+
+
+def _carrier_lookup(items: tuple[object, ...]) -> dict[tuple[str, int, str], object]:
+    return {_carrier_identity(item): item for item in items}
+
+
+def _materialize_observations(
+    observations: tuple[StructuralObservation, ...],
+    lookup: dict[tuple[str, int, str], object],
+) -> tuple[object, ...]:
+    return tuple(
+        sorted(
+            (
+                lookup[item.structural_identity]
+                for item in observations
+                if item.structural_identity in lookup
+            ),
+            key=_carrier_identity,
+        )
+    )
 
 
 def _fiber_grouped_shapes(
@@ -292,7 +349,8 @@ def _fiber_grouped_shapes(
     observation_kind: ObservationKind,
     execution_level: StructuralExecutionLevel,
 ) -> list[tuple[object, ...]]:
-    lookup = {_shape_identity(shape): shape for shape in shapes}
+    del modules
+    lookup = _carrier_lookup(shapes)
     groups: list[tuple[object, ...]] = []
     graph = ObservationGraph(
         tuple(
@@ -302,21 +360,10 @@ def _fiber_grouped_shapes(
         )
     )
     for fiber in graph.fibers_for(observation_kind, execution_level):
-        grouped_items = [
-            lookup[(item.file_path, item.line, item.owner_symbol)]
-            for item in fiber.observations
-            if (item.file_path, item.line, item.owner_symbol) in lookup
-        ]
+        grouped_items = _materialize_observations(fiber.observations, lookup)
         if len(grouped_items) < 2:
             continue
-        groups.append(
-            tuple(
-                sorted(
-                    grouped_items,
-                    key=lambda item: _shape_identity(item),
-                )
-            )
-        )
+        groups.append(grouped_items)
     return groups
 
 
@@ -386,7 +433,9 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
     )
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(collect_family_items(module, MethodShapeFamily))
+        return tuple(
+            _collect_typed_family_items(module, MethodShapeFamily, MethodShape)
+        )
 
     def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
         method = _as_method_shape(shape)
@@ -468,20 +517,37 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        repeated_groups = _group_repeated_methods(modules, config)
-        family_groups: dict[frozenset[str], list[tuple[MethodShape, ...]]] = (
-            defaultdict(list)
-        )
-        for methods in repeated_groups:
-            class_names = frozenset(
-                method.class_name for method in methods if method.class_name is not None
+        repeated_methods = tuple(
+            method
+            for module in modules
+            for method in _collect_typed_family_items(
+                module, MethodShapeFamily, MethodShape
             )
-            if len(class_names) < 2:
-                continue
-            family_groups[class_names].append(methods)
+            if method.class_name
+            and method.statement_count >= config.min_duplicate_statements
+        )
+        graph = ObservationGraph(
+            tuple(method.structural_observation for method in repeated_methods)
+        )
+        lookup = _carrier_lookup(tuple(repeated_methods))
 
         findings: list[RefactorFinding] = []
-        for class_names, groups in family_groups.items():
+        for cohort in graph.coherence_cohorts_for(
+            ObservationKind.METHOD_SHAPE,
+            StructuralExecutionLevel.FUNCTION_BODY,
+            minimum_witnesses=2,
+            minimum_fibers=1,
+        ):
+            groups = [
+                tuple(
+                    _as_method_shape(item)
+                    for item in _materialize_observations(fiber.observations, lookup)
+                )
+                for fiber in cohort.fibers
+            ]
+            if not groups:
+                continue
+            class_names = frozenset(cohort.nominal_witnesses)
             method_count_by_class: dict[str, int] = defaultdict(int)
             for methods in groups:
                 for method in methods:
@@ -493,12 +559,11 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
             )
             if not supports_family:
                 continue
-            evidence: list[SourceLocation] = []
-            for methods in groups:
-                for method in methods:
-                    evidence.append(
-                        SourceLocation(method.file_path, method.lineno, method.symbol)
-                    )
+            evidence = [
+                SourceLocation(method.file_path, method.lineno, method.symbol)
+                for methods in groups
+                for method in methods
+            ]
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
@@ -537,105 +602,77 @@ def _shared_field_type_map(
 
 
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
-    observations = collect_family_items(module, FieldObservationFamily)
+    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
+        module, FieldObservationFamily, FieldObservation
+    )
     graph = ObservationGraph(
         observations=tuple(item.structural_observation for item in observations)
     )
-    candidate_map: dict[tuple[StructuralExecutionLevel, tuple[str, ...]], set[str]] = (
-        defaultdict(set)
-    )
-    grouped_by_level: dict[StructuralExecutionLevel, dict[str, set[str]]] = defaultdict(
-        lambda: defaultdict(set)
-    )
-
-    for field_observation in observations:
-        grouped_by_level[field_observation.execution_level][
-            field_observation.class_name
-        ].add(field_observation.field_name)
-
+    candidates: list[FieldFamilyCandidate] = []
     for execution_level in (
         StructuralExecutionLevel.CLASS_BODY,
         StructuralExecutionLevel.INIT_BODY,
     ):
-        repeated_field_names = {
-            fiber.observed_name
-            for fiber in graph.fibers_for(ObservationKind.FIELD, execution_level)
-            if len(fiber.observations) >= 2
+        grouped_by_level = {
+            group.nominal_witness: set(group.observed_names)
+            for group in graph.witness_groups_for(
+                ObservationKind.FIELD, execution_level
+            )
         }
-        class_fields = grouped_by_level.get(execution_level, {})
-        class_names = sorted(class_fields)
-        for left_index, left_name in enumerate(class_names):
-            for right_name in class_names[left_index + 1 :]:
-                shared_fields = tuple(
-                    sorted(
-                        (class_fields[left_name] & class_fields[right_name])
-                        & repeated_field_names
-                    )
-                )
-                if len(shared_fields) < 2:
-                    continue
-                candidate_map[(execution_level, shared_fields)].update(
-                    {left_name, right_name}
-                )
-
-    candidates: list[FieldFamilyCandidate] = []
-    for (execution_level, field_names), class_names in candidate_map.items():
-        supporting_classes = tuple(
-            sorted(
-                class_name
-                for class_name, class_fields in grouped_by_level[
-                    execution_level
-                ].items()
-                if set(field_names) <= class_fields
-            )
-        )
-        if len(supporting_classes) < 2:
-            continue
-        shared_field_set = set(field_names)
-        if any(
-            len(shared_field_set)
-            / max(len(grouped_by_level[execution_level][class_name]), 1)
-            < 0.5
-            for class_name in supporting_classes
+        for cohort in graph.coherence_cohorts_for(
+            ObservationKind.FIELD,
+            execution_level,
+            minimum_witnesses=2,
+            minimum_fibers=2,
         ):
-            continue
-        if any(
-            not (grouped_by_level[execution_level][class_name] - shared_field_set)
-            for class_name in supporting_classes
-        ):
-            continue
-        supporting_observations = tuple(
-            sorted(
-                (
-                    item
-                    for item in observations
-                    if item.execution_level == execution_level
-                    and item.class_name in supporting_classes
-                    and item.field_name in field_names
-                ),
-                key=lambda item: (item.file_path, item.lineno, item.symbol),
+            field_names = tuple(sorted(cohort.observed_names))
+            supporting_classes = cohort.nominal_witnesses
+            shared_field_set = set(field_names)
+            if any(
+                len(shared_field_set) / max(len(grouped_by_level[class_name]), 1) < 0.5
+                for class_name in supporting_classes
+            ):
+                continue
+            if any(
+                not (grouped_by_level[class_name] - shared_field_set)
+                for class_name in supporting_classes
+            ):
+                continue
+            supporting_observations: tuple[FieldObservation, ...] = tuple(
+                sorted(
+                    (
+                        item
+                        for item in observations
+                        if item.execution_level == execution_level
+                        and item.class_name in supporting_classes
+                        and item.field_name in field_names
+                    ),
+                    key=lambda item: (item.file_path, item.lineno, item.symbol),
+                )
             )
-        )
-        field_type_map = _shared_field_type_map(supporting_observations, field_names)
-        if field_type_map is None:
-            continue
-        candidates.append(
-            FieldFamilyCandidate(
-                class_names=supporting_classes,
-                field_names=field_names,
-                execution_level=execution_level,
-                observations=supporting_observations,
-                dataclass_count=sum(
-                    1
-                    for class_name in supporting_classes
-                    if any(
-                        item.class_name == class_name and item.is_dataclass_family
-                        for item in supporting_observations
-                    )
-                ),
-                field_type_map=field_type_map,
+            field_type_map = _shared_field_type_map(
+                supporting_observations,
+                field_names,
             )
-        )
+            if field_type_map is None:
+                continue
+            candidates.append(
+                FieldFamilyCandidate(
+                    class_names=supporting_classes,
+                    field_names=field_names,
+                    execution_level=execution_level,
+                    observations=supporting_observations,
+                    dataclass_count=sum(
+                        1
+                        for class_name in supporting_classes
+                        if any(
+                            item.class_name == class_name and item.is_dataclass_family
+                            for item in supporting_observations
+                        )
+                    ),
+                    field_type_map=field_type_map,
+                )
+            )
 
     maximal_candidates: list[FieldFamilyCandidate] = []
     for candidate in sorted(
@@ -812,7 +849,11 @@ class RepeatedBuilderCallDetector(FiberCollectedShapeIssueDetector):
     )
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(collect_family_items(module, BuilderCallShapeFamily))
+        return tuple(
+            _collect_typed_family_items(
+                module, BuilderCallShapeFamily, BuilderCallShape
+            )
+        )
 
     def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
         builder = _as_builder_shape(shape)
@@ -892,7 +933,9 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
     )
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(collect_family_items(module, ExportDictShapeFamily))
+        return tuple(
+            _collect_typed_family_items(module, ExportDictShapeFamily, ExportDictShape)
+        )
 
     def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
         export_shape = _as_export_shape(shape)
@@ -970,7 +1013,9 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         return [
             shape
             for module in modules
-            for shape in collect_family_items(module, RegistrationShapeFamily)
+            for shape in _collect_typed_family_items(
+                module, RegistrationShapeFamily, RegistrationShape
+            )
         ]
 
     def _group_key(self, shape: object) -> object:
@@ -1145,9 +1190,16 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        observations: tuple[ConfigDispatchObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                ConfigDispatchObservationFamily,
+                ConfigDispatchObservation,
+            )
+        )
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(module, ConfigDispatchObservationFamily)
+            for item in observations
         )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
@@ -1185,15 +1237,27 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        generation_observations: tuple[RuntimeTypeGenerationObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                RuntimeTypeGenerationObservationFamily,
+                RuntimeTypeGenerationObservation,
+            )
+        )
         generation_sites = [
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(
-                module, RuntimeTypeGenerationObservationFamily
-            )
+            for item in generation_observations
         ]
+        lineage_observations: tuple[LineageMappingObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                LineageMappingObservationFamily,
+                LineageMappingObservation,
+            )
+        )
         lineage_sites = [
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(module, LineageMappingObservationFamily)
+            for item in lineage_observations
         ]
         if not generation_sites or not lineage_sites:
             return ()
@@ -1234,9 +1298,14 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_family_items(
-            module, DualAxisResolutionObservationFamily
-        ):
+        observations: tuple[DualAxisResolutionObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                DualAxisResolutionObservationFamily,
+                DualAxisResolutionObservation,
+            )
+        )
+        for observation in observations:
             findings.append(
                 self.finding_spec.build(
                     self.detector_id,
@@ -1281,9 +1350,14 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        observations: tuple[ClassMarkerObservation, ...] = _collect_typed_family_items(
+            module,
+            ClassMarkerObservationFamily,
+            ClassMarkerObservation,
+        )
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(module, ClassMarkerObservationFamily)
+            for item in observations
         )
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
@@ -1321,11 +1395,16 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        observations: tuple[InterfaceGenerationObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                InterfaceGenerationObservationFamily,
+                InterfaceGenerationObservation,
+            )
+        )
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(
-                module, InterfaceGenerationObservationFamily
-            )[:6]
+            for item in observations[:6]
         )
 
     def _summary(
@@ -1361,9 +1440,14 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        observations: tuple[SentinelTypeObservation, ...] = _collect_typed_family_items(
+            module,
+            SentinelTypeObservationFamily,
+            SentinelTypeObservation,
+        )
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(module, SentinelTypeObservationFamily)[:6]
+            for item in observations[:6]
         )
 
     def _summary(
@@ -1397,11 +1481,16 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     def _module_evidence(
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
+        observations: tuple[DynamicMethodInjectionObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                DynamicMethodInjectionObservationFamily,
+                DynamicMethodInjectionObservation,
+            )
+        )
         return tuple(
             SourceLocation(item.file_path, item.line, item.symbol)
-            for item in collect_family_items(
-                module, DynamicMethodInjectionObservationFamily
-            )[:6]
+            for item in observations[:6]
         )
 
     def _summary(
@@ -1437,7 +1526,13 @@ class AttributeProbeDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        observations = collect_family_items(module, AttributeProbeObservationFamily)
+        observations: tuple[AttributeProbeObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                AttributeProbeObservationFamily,
+                AttributeProbeObservation,
+            )
+        )
         total = len(observations)
         if total < config.min_attribute_probes:
             return []
@@ -1483,9 +1578,14 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_family_items(
-            module, InlineStringLiteralDispatchObservationFamily
-        ):
+        observations: tuple[LiteralDispatchObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                InlineStringLiteralDispatchObservationFamily,
+                LiteralDispatchObservation,
+            )
+        )
+        for observation in observations:
             branch_count = len(observation.branch_lines)
             if branch_count < config.min_attribute_probes:
                 continue
@@ -1539,9 +1639,14 @@ class StringDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_family_items(
-            module, StringLiteralDispatchObservationFamily
-        ):
+        observations: tuple[LiteralDispatchObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                StringLiteralDispatchObservationFamily,
+                LiteralDispatchObservation,
+            )
+        )
+        for observation in observations:
             if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
@@ -1615,9 +1720,14 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for observation in collect_family_items(
-            module, NumericLiteralDispatchObservationFamily
-        ):
+        observations: tuple[LiteralDispatchObservation, ...] = (
+            _collect_typed_family_items(
+                module,
+                NumericLiteralDispatchObservationFamily,
+                LiteralDispatchObservation,
+            )
+        )
+        for observation in observations:
             if len(observation.literal_cases) < config.min_string_cases:
                 continue
             findings.append(
@@ -1722,26 +1832,29 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        grouped: dict[tuple[str, str, str], list[ProjectionHelperShape]] = defaultdict(
-            list
+        shapes: tuple[ProjectionHelperShape, ...] = _collect_typed_family_items(
+            module,
+            ProjectionHelperObservationFamily,
+            ProjectionHelperShape,
         )
-        for shape in collect_family_items(module, ProjectionHelperObservationFamily):
-            grouped[
-                (
-                    shape.outer_call_name,
-                    shape.aggregator_name,
-                    shape.iterable_fingerprint,
-                )
-            ].append(shape)
+        graph = ObservationGraph(
+            tuple(shape.structural_observation for shape in shapes)
+        )
+        lookup = _carrier_lookup(tuple(shapes))
 
         findings: list[RefactorFinding] = []
-        for shapes in grouped.values():
-            if len(shapes) < 2:
-                continue
-            attributes = {shape.projected_attribute for shape in shapes}
+        for fiber in graph.fibers_with_min_observations(
+            ObservationKind.PROJECTION_HELPER,
+            StructuralExecutionLevel.FUNCTION_BODY,
+            minimum_observations=2,
+        ):
+            ordered = tuple(
+                _as_projection_helper_shape(item)
+                for item in _materialize_observations(fiber.observations, lookup)
+            )
+            attributes = {shape.projected_attribute for shape in ordered}
             if len(attributes) < 2:
                 continue
-            ordered = sorted(shapes, key=lambda item: (item.file_path, item.lineno))
             evidence = tuple(
                 SourceLocation(shape.file_path, shape.lineno, shape.symbol)
                 for shape in ordered[:6]
@@ -1753,7 +1866,7 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
                         f"Projection helper wrappers {', '.join(shape.function_name for shape in ordered[:4])} repeat the same wrapper shape while only projecting different attributes."
                     ),
                     evidence,
-                    scaffold=_projection_helper_scaffold(ordered),
+                    scaffold=_projection_helper_scaffold(list(ordered)),
                     metrics=MappingMetrics(
                         mapping_site_count=len(ordered),
                         field_count=len(attributes),
@@ -1790,13 +1903,26 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
+        wrapper_function_items: tuple[ScopedShapeWrapperFunction, ...] = (
+            _collect_typed_family_items(
+                module,
+                ScopedShapeWrapperFunctionFamily,
+                ScopedShapeWrapperFunction,
+            )
+        )
         wrapper_functions = {
-            item.function_name: item
-            for item in collect_family_items(module, ScopedShapeWrapperFunctionFamily)
+            item.function_name: item for item in wrapper_function_items
         }
+        wrapper_spec_items: tuple[ScopedShapeWrapperSpec, ...] = (
+            _collect_typed_family_items(
+                module,
+                ScopedShapeWrapperSpecFamily,
+                ScopedShapeWrapperSpec,
+            )
+        )
         wrapper_specs = [
             spec
-            for spec in collect_family_items(module, ScopedShapeWrapperSpecFamily)
+            for spec in wrapper_spec_items
             if spec.function_name in wrapper_functions
             and spec.node_types == wrapper_functions[spec.function_name].node_types
         ]
@@ -1920,14 +2046,30 @@ class AccessorWrapperDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        grouped: dict[str, list[AccessorWrapperCandidate]] = defaultdict(list)
-        for candidate in collect_family_items(module, AccessorWrapperObservationFamily):
-            grouped[candidate.class_name].append(candidate)
+        candidates: tuple[AccessorWrapperCandidate, ...] = _collect_typed_family_items(
+            module,
+            AccessorWrapperObservationFamily,
+            AccessorWrapperCandidate,
+        )
+        graph = ObservationGraph(
+            tuple(candidate.structural_observation for candidate in candidates)
+        )
+        lookup = _carrier_lookup(tuple(candidates))
 
         findings: list[RefactorFinding] = []
-        for class_name, candidates in grouped.items():
-            ordered = sorted(candidates, key=lambda item: item.lineno)
-            if not _supports_accessor_wrapper_finding(ordered):
+        for witness_group in graph.witness_groups_for(
+            ObservationKind.ACCESSOR_WRAPPER,
+            StructuralExecutionLevel.FUNCTION_BODY,
+        ):
+            class_name = witness_group.nominal_witness
+            ordered = tuple(
+                _as_accessor_wrapper_candidate(item)
+                for item in _materialize_observations(
+                    witness_group.observations,
+                    lookup,
+                )
+            )
+            if not _supports_accessor_wrapper_finding(list(ordered)):
                 continue
             evidence = tuple(
                 SourceLocation(str(module.path), candidate.lineno, candidate.symbol)
@@ -2806,7 +2948,9 @@ def _group_repeated_methods(
     methods = tuple(
         method
         for module in modules
-        for method in collect_family_items(module, MethodShapeFamily)
+        for method in _collect_typed_family_items(
+            module, MethodShapeFamily, MethodShape
+        )
         if method.class_name
         and method.statement_count >= config.min_duplicate_statements
     )
@@ -3135,7 +3279,7 @@ def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunct
     ]
 
 
-def _projection_helper_scaffold(shapes: list[ProjectionHelperShape]) -> str:
+def _projection_helper_scaffold(shapes: Sequence[ProjectionHelperShape]) -> str:
     function_names = ", ".join(shape.function_name for shape in shapes)
     attributes = ", ".join(sorted({shape.projected_attribute for shape in shapes}))
     return (
@@ -3147,7 +3291,7 @@ def _projection_helper_scaffold(shapes: list[ProjectionHelperShape]) -> str:
 
 
 def _supports_accessor_wrapper_finding(
-    candidates: list[AccessorWrapperCandidate],
+    candidates: Sequence[AccessorWrapperCandidate],
 ) -> bool:
     if not candidates:
         return False

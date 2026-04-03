@@ -478,7 +478,8 @@ class Alpha:
     def _score(self, item):
         scored = self.compute(item)
         bounded = self.bound(scored)
-        return self.package(bounded)
+        packaged = self.package(bounded)
+        return self.finish(packaged)
 
 
 class Beta:
@@ -490,7 +491,8 @@ class Beta:
     def _evaluate(self, value):
         scored = self.compute(value)
         bounded = self.bound(scored)
-        return self.package(bounded)
+        packaged = self.package(bounded)
+        return self.finish(packaged)
 """,
     )
 
@@ -498,6 +500,64 @@ class Beta:
     assert any(
         finding.detector_id == "inheritance_hierarchy_candidate" for finding in findings
     )
+
+
+def test_observation_graph_recovers_method_coherence_cohort(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    def _prepare(self, item):
+        ready = self.normalize(item)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+    def _score(self, item):
+        scored = self.compute(item)
+        bounded = self.bound(scored)
+        packaged = self.package(bounded)
+        return self.finish(packaged)
+
+
+class Beta:
+    def _build(self, value):
+        ready = self.normalize(value)
+        checked = self.validate(ready)
+        return self.finish(checked)
+
+    def _evaluate(self, value):
+        scored = self.compute(value)
+        bounded = self.bound(scored)
+        packaged = self.package(bounded)
+        return self.finish(packaged)
+
+
+class Gamma:
+    def _render(self, payload):
+        ready = self.normalize(payload)
+        checked = self.validate(ready)
+        return self.finish(checked)
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_family_items(module, MethodShapeFamily)
+    graph = ObservationGraph(
+        tuple(item.structural_observation for item in observations)
+    )
+
+    cohorts = graph.coherence_cohorts_for(
+        ObservationKind.METHOD_SHAPE,
+        StructuralExecutionLevel.FUNCTION_BODY,
+        minimum_witnesses=2,
+        minimum_fibers=2,
+    )
+
+    cohort = next(
+        item for item in cohorts if item.nominal_witnesses == ("Alpha", "Beta")
+    )
+    assert len(cohort.fibers) == 2
 
 
 def test_detects_attribute_probe_dispatch(tmp_path: Path) -> None:
@@ -1155,6 +1215,61 @@ class BetaResult:
     observations = collect_family_items(module, FieldObservationFamily)
 
     assert all(item.field_name != "cache" for item in observations)
+
+
+def test_observation_graph_recovers_field_coherence_cohort(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass
+class AlphaResult:
+    pose_id: int
+    score: float
+    label: str
+    rank: int
+    alpha_only: int
+
+
+@dataclass
+class BetaResult:
+    pose_id: int
+    score: float
+    label: str
+    rank: int
+    beta_only: int
+
+
+@dataclass
+class GammaResult:
+    pose_id: int
+    score: float
+    gamma_only: int
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    observations = collect_family_items(module, FieldObservationFamily)
+    graph = ObservationGraph(
+        tuple(item.structural_observation for item in observations)
+    )
+
+    cohorts = graph.coherence_cohorts_for(
+        ObservationKind.FIELD,
+        StructuralExecutionLevel.CLASS_BODY,
+        minimum_witnesses=2,
+        minimum_fibers=2,
+    )
+
+    cohort = next(
+        item
+        for item in cohorts
+        if item.nominal_witnesses == ("AlphaResult", "BetaResult")
+    )
+    assert set(cohort.observed_names) == {"pose_id", "score", "label", "rank"}
 
 
 def test_ignores_namespaced_classvar_fields_via_family_matcher(tmp_path: Path) -> None:
