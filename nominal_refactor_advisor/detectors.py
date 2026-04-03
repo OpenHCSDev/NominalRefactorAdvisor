@@ -5,6 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import combinations
 from typing import Any, Sequence, TypeVar, cast
 
 from .ast_tools import (
@@ -64,6 +65,8 @@ from .models import (
     HierarchyCandidateMetrics,
     ImpactDelta,
     MappingMetrics,
+    OrchestrationMetrics,
+    ParameterThreadMetrics,
     ProbeCountMetrics,
     RefactorFinding,
     RegistrationMetrics,
@@ -101,9 +104,15 @@ class DetectorConfig:
     min_export_keys: int = 3
     min_registration_sites: int = 2
     min_hardcoded_string_sites: int = 3
+    min_orchestration_function_lines: int = 150
+    min_orchestration_branches: int = 15
+    min_orchestration_calls: int = 50
+    min_shared_parameters: int = 5
+    min_parameter_family_function_lines: int = 40
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "DetectorConfig":
+        namespace_values = vars(namespace)
         return cls(
             min_duplicate_statements=int(namespace.min_duplicate_statements),
             min_string_cases=int(namespace.min_string_cases),
@@ -112,6 +121,19 @@ class DetectorConfig:
             min_export_keys=int(namespace.min_export_keys),
             min_registration_sites=int(namespace.min_registration_sites),
             min_hardcoded_string_sites=int(namespace.min_hardcoded_string_sites),
+            min_orchestration_function_lines=int(
+                namespace_values.get("min_orchestration_function_lines", 150)
+            ),
+            min_orchestration_branches=int(
+                namespace_values.get("min_orchestration_branches", 15)
+            ),
+            min_orchestration_calls=int(
+                namespace_values.get("min_orchestration_calls", 50)
+            ),
+            min_shared_parameters=int(namespace_values.get("min_shared_parameters", 5)),
+            min_parameter_family_function_lines=int(
+                namespace_values.get("min_parameter_family_function_lines", 40)
+            ),
         )
 
 
@@ -283,6 +305,203 @@ def _collect_typed_family_items(
     return cast(tuple[CollectedItemT, ...], items)
 
 
+_GENERIC_PARAMETER_NAMES = frozenset(
+    {
+        "args",
+        "cls",
+        "config",
+        "configs",
+        "evidence",
+        "finding",
+        "findings",
+        "group",
+        "groups",
+        "item",
+        "items",
+        "kwargs",
+        "module",
+        "modules",
+        "node",
+        "nodes",
+        "observation",
+        "observations",
+        "parsed_module",
+        "path",
+        "paths",
+        "root",
+        "self",
+        "shape",
+        "shapes",
+        "tmp_path",
+    }
+)
+
+
+def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
+    return tuple(
+        item.arg
+        for item in (
+            tuple(node.args.posonlyargs)
+            + tuple(node.args.args)
+            + tuple(node.args.kwonlyargs)
+        )
+        if item.arg not in {"self", "cls"}
+    )
+
+
+def _callee_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        value_name = ast.unparse(node.func.value)
+        return f"{value_name}.{node.func.attr}"
+    return None
+
+
+def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
+    profiles: list[FunctionProfile] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self._record(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self._record(node)
+
+        def _record(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+            end_lineno = node.end_lineno if node.end_lineno is not None else node.lineno
+            callee_names = tuple(
+                sorted(
+                    {
+                        name
+                        for subnode in ast.walk(node)
+                        if isinstance(subnode, ast.Call)
+                        for name in (_callee_name(subnode),)
+                        if name is not None
+                    }
+                )
+            )
+            profiles.append(
+                FunctionProfile(
+                    file_path=str(module.path),
+                    qualname=".".join((*self.class_stack, node.name)),
+                    lineno=node.lineno,
+                    line_count=end_lineno - node.lineno + 1,
+                    branch_count=sum(
+                        isinstance(subnode, ast.If) for subnode in ast.walk(node)
+                    ),
+                    call_count=sum(
+                        isinstance(subnode, ast.Call) for subnode in ast.walk(node)
+                    ),
+                    callee_names=callee_names,
+                    parameter_names=_parameter_names(node),
+                )
+            )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(sorted(profiles, key=lambda item: (item.lineno, item.qualname)))
+
+
+def _parameter_thread_family_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[ParameterThreadFamilyCandidate, ...]:
+    profiles = tuple(
+        profile
+        for profile in _function_profiles(module)
+        if len(profile.semantic_parameter_names) >= config.min_shared_parameters
+    )
+    candidate_map: dict[
+        tuple[str, ...],
+        tuple[FunctionProfile, ...],
+    ] = {}
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for left, right in combinations(profiles, 2):
+        shared_parameter_names = tuple(
+            sorted(
+                set(left.semantic_parameter_names) & set(right.semantic_parameter_names)
+            )
+        )
+        if len(shared_parameter_names) < config.min_shared_parameters:
+            continue
+        functions = tuple(
+            profile
+            for profile in profiles
+            if set(shared_parameter_names) <= set(profile.semantic_parameter_names)
+        )
+        if len(functions) < 2:
+            continue
+        if not any(
+            profile.line_count >= config.min_parameter_family_function_lines
+            for profile in functions
+        ):
+            continue
+        adjacency[left.qualname].add(right.qualname)
+        adjacency[right.qualname].add(left.qualname)
+        existing = candidate_map.get(shared_parameter_names)
+        if existing is None or len(functions) > len(existing):
+            candidate_map[shared_parameter_names] = functions
+
+    candidates = [
+        ParameterThreadFamilyCandidate(
+            shared_parameter_names=shared_parameter_names,
+            functions=functions,
+        )
+        for shared_parameter_names, functions in candidate_map.items()
+    ]
+    if not candidates:
+        return ()
+
+    profile_lookup = {profile.qualname: profile for profile in profiles}
+    component_candidates: list[ParameterThreadFamilyCandidate] = []
+    visited: set[str] = set()
+    for profile in profiles:
+        if profile.qualname in visited or profile.qualname not in adjacency:
+            continue
+        stack = [profile.qualname]
+        component_names: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component_names.add(current)
+            stack.extend(sorted(adjacency[current] - visited))
+        best_candidate = max(
+            (
+                candidate
+                for candidate in candidates
+                if {item.qualname for item in candidate.functions} <= component_names
+            ),
+            key=lambda item: (
+                len(item.shared_parameter_names) * len(item.functions),
+                len(item.functions),
+                len(item.shared_parameter_names),
+                max(profile_lookup[name].line_count for name in component_names),
+            ),
+        )
+        component_candidates.append(best_candidate)
+    return tuple(
+        sorted(
+            component_candidates,
+            key=lambda item: (
+                -len(item.shared_parameter_names),
+                -len(item.functions),
+                item.functions[0].qualname,
+            ),
+        )
+    )
+
+
 def _as_method_shape(shape: object) -> MethodShape:
     if not isinstance(shape, MethodShape):
         raise TypeError(f"Expected MethodShape, got {type(shape)!r}")
@@ -405,6 +624,40 @@ class IndexedFamilyWrapperCandidate:
     collector_name: str
     spec_root_name: str
     item_type_name: str
+
+
+@dataclass(frozen=True)
+class FunctionProfile:
+    file_path: str
+    qualname: str
+    lineno: int
+    line_count: int
+    branch_count: int
+    call_count: int
+    callee_names: tuple[str, ...]
+    parameter_names: tuple[str, ...]
+
+    @property
+    def callee_family_count(self) -> int:
+        return len(self.callee_names)
+
+    @property
+    def semantic_parameter_names(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in self.parameter_names
+            if name not in _GENERIC_PARAMETER_NAMES and not name.startswith("_")
+        )
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.lineno, self.qualname)
+
+
+@dataclass(frozen=True)
+class ParameterThreadFamilyCandidate:
+    shared_parameter_names: tuple[str, ...]
+    functions: tuple[FunctionProfile, ...]
 
 
 class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
@@ -578,6 +831,99 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                     metrics=HierarchyCandidateMetrics(
                         duplicate_group_count=len(groups),
                         class_count=len(class_names),
+                    ),
+                )
+            )
+        return findings
+
+
+class OrchestrationHubDetector(PerModuleIssueDetector):
+    detector_id = "orchestration_hub"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Oversized orchestration hub",
+        why=(
+            "One function is owning too many control branches, helper calls, and phase transitions at once. "
+            "The architecture wants explicit staged boundaries so the orchestration surface remains nominal and legible."
+        ),
+        capability_gap="explicit staged orchestration boundaries with named phase contracts",
+        relation_context="one owner centralizes many operational phases and helper families",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for profile in _function_profiles(module):
+            if profile.line_count < config.min_orchestration_function_lines:
+                continue
+            if profile.branch_count < config.min_orchestration_branches:
+                continue
+            if profile.call_count < config.min_orchestration_calls:
+                continue
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner."
+                    ),
+                    (profile.evidence,),
+                    metrics=OrchestrationMetrics(
+                        function_line_count=profile.line_count,
+                        branch_site_count=profile.branch_count,
+                        call_site_count=profile.call_count,
+                        parameter_count=len(profile.parameter_names),
+                        callee_family_count=profile.callee_family_count,
+                    ),
+                )
+            )
+        return findings
+
+
+class ParameterThreadFamilyDetector(PerModuleIssueDetector):
+    detector_id = "parameter_thread_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
+        title="Repeated threaded semantic parameter family",
+        why=(
+            "Several helpers keep re-threading the same semantic parameter bundle instead of carrying one nominal context. "
+            "That weakens provenance and makes each helper signature a partially duplicated view of the same authority."
+        ),
+        capability_gap="one authoritative context/request record for a shared semantic parameter family",
+        relation_context="the same semantic parameter bundle is threaded through several sibling helpers",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for candidate in _parameter_thread_family_candidates(module, config):
+            function_names = tuple(item.qualname for item in candidate.functions)
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(candidate.shared_parameter_names)}` across {len(candidate.functions)} helpers."
+                    ),
+                    tuple(item.evidence for item in candidate.functions[:6]),
+                    metrics=ParameterThreadMetrics(
+                        function_count=len(candidate.functions),
+                        shared_parameter_count=len(candidate.shared_parameter_names),
+                        shared_parameter_names=candidate.shared_parameter_names,
                     ),
                 )
             )
@@ -2710,6 +3056,8 @@ def default_detectors() -> tuple[IssueDetector, ...]:
         DynamicInterfaceGenerationDetector(),
         SentinelTypeMarkerDetector(),
         DynamicMethodInjectionDetector(),
+        OrchestrationHubDetector(),
+        ParameterThreadFamilyDetector(),
         RepeatedPrivateMethodDetector(),
         InheritanceHierarchyCandidateDetector(),
         RepeatedFieldFamilyDetector(),

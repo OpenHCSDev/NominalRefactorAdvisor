@@ -461,6 +461,55 @@ class DispatchCountMetrics(CountedDispatchMetrics):
 
 
 @dataclass(frozen=True)
+class OrchestrationMetrics(BehaviorFindingMetrics):
+    function_line_count: int
+    branch_site_count: int
+    call_site_count: int
+    parameter_count: int
+    callee_family_count: int
+
+    @property
+    def shared_algorithm_sites(self) -> int:
+        return self.branch_site_count
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        removable = max(self.function_line_count // 2, 0)
+        return ImpactDelta(
+            lower_bound_removable_loc=removable,
+            upper_bound_removable_loc=max(self.function_line_count - 1, removable),
+            loci_of_change_before=1,
+            loci_of_change_after=max(self.callee_family_count, 2),
+            shared_algorithm_sites_centralized=max(self.callee_family_count - 1, 0),
+        )
+
+
+@dataclass(frozen=True)
+class ParameterThreadMetrics(FindingMetrics):
+    function_count: int
+    shared_parameter_count: int
+    shared_parameter_names: tuple[str, ...]
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        removable = max(
+            (self.function_count - 1) * self.shared_parameter_count,
+            0,
+        )
+        return ImpactDelta(
+            lower_bound_removable_loc=removable,
+            upper_bound_removable_loc=removable,
+            loci_of_change_before=self.function_count,
+            loci_of_change_after=1,
+            repeated_mappings_centralized=removable,
+        )
+
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
+        return self.shared_parameter_names
+
+
+@dataclass(frozen=True)
 class RefactorFinding(SemanticRecord):
     detector_id: str
     pattern_id: PatternId

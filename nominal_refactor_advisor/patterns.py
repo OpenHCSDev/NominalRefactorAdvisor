@@ -21,6 +21,8 @@ class PatternId(IntEnum):
     TYPE_NAMESPACE_INJECTION = 12
     BIDIRECTIONAL_LOOKUP = 13
     AUTHORITATIVE_SCHEMA = 14
+    STAGED_ORCHESTRATION = 15
+    AUTHORITATIVE_CONTEXT = 16
 
 
 @dataclass(frozen=True)
@@ -268,6 +270,44 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         (
             "@dataclass(frozen=True)\nclass Row: ...\n@classmethod\ndef from_source(cls, source): ...",
             "@dataclass(frozen=True)\nclass ProjectionRow:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(...)\n",
+        ),
+    ),
+    PatternId.STAGED_ORCHESTRATION: PatternSpec(
+        PatternId.STAGED_ORCHESTRATION,
+        "Staged Orchestration Boundary",
+        "Split oversized control hubs into explicit nominal stages with named phase boundaries and small orchestration surfaces.",
+        "One nominal pipeline/stage family that owns sequencing, with each stage carrying one focused contract.",
+        (
+            "Identify the phase boundaries hidden inside the control hub.",
+            "Extract stage-specific helpers or stage objects with one declared responsibility each.",
+            "Leave only top-level sequencing and fail-loud stage transitions in the orchestration entry point.",
+        ),
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            "@dataclass(frozen=True)\nclass StageContext: ...\n\ndef run_pipeline(ctx: StageContext):\n    prepared = prepare_stage(ctx)\n    scored = score_stage(prepared)\n    return certify_stage(scored)",
+        ),
+    ),
+    PatternId.AUTHORITATIVE_CONTEXT: PatternSpec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Authoritative Context Record",
+        "Replace repeated threaded semantic parameter bundles with one nominal request/context record that owns shared provenance.",
+        "Dataclass or nominal context object passed across helpers instead of re-threading the same semantic parameter family.",
+        (
+            "Recover the shared semantic parameter family from overlapping helper signatures.",
+            "Introduce one nominal context/request record that owns those fields.",
+            "Collapse helper signatures to the context plus only the truly local parameters.",
+        ),
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (
+            "@dataclass(frozen=True)\nclass ScoringContextRecord:\n    request: Request\n    scoring_context: object\n    electrostatics: object | None\n\ndef score_exact(ctx: ScoringContextRecord, poses): ...",
         ),
     ),
 }

@@ -35,6 +35,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import analyze_path
+from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.models import DispatchCountMetrics
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
@@ -42,6 +43,7 @@ from nominal_refactor_advisor.observation_graph import (
     StructuralExecutionLevel,
     build_observation_graph,
 )
+from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
 
 
@@ -76,6 +78,129 @@ class Beta:
     assert any(finding.pattern_id == 5 and finding.scaffold for finding in findings)
     assert any(
         finding.pattern_id == 5 and finding.codemod_patch for finding in findings
+    )
+
+
+def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
+    branch_body = "\n".join(
+        f"""
+    if branch_{index}(request):
+        value = phase_{index}(value)
+    else:
+        value = fallback_{index}(value)
+    audit_{index}(value)
+""".rstrip()
+        for index in range(12)
+    )
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "def orchestrate(request):\n"
+            "    value = start(request)\n"
+            f"{branch_body}\n"
+            "    finalized = finalize(value)\n"
+            "    publish(finalized)\n"
+            "    return finalized\n"
+        ),
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_orchestration_function_lines=40,
+            min_orchestration_branches=10,
+            min_orchestration_calls=24,
+        ),
+    )
+
+    assert any(
+        finding.pattern_id == PatternId.STAGED_ORCHESTRATION for finding in findings
+    )
+
+
+def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def score_exact(
+    request,
+    scoring_context,
+    electrostatics,
+    receptor_coords,
+    receptor_radii,
+    quaternion,
+    translation,
+    candidate_coords,
+):
+    posed = rigid(candidate_coords, quaternion, translation)
+    audited = audit_pose(posed, receptor_coords)
+    return compute_exact(
+        request,
+        scoring_context,
+        electrostatics,
+        receptor_coords,
+        receptor_radii,
+        audited,
+    )
+
+
+def score_softened(
+    request,
+    scoring_context,
+    electrostatics,
+    receptor_coords,
+    receptor_radii,
+    quaternion,
+    translation,
+    candidate_coords,
+):
+    posed = rigid(candidate_coords, quaternion, translation)
+    audited = audit_pose(posed, receptor_coords)
+    return compute_softened(
+        request,
+        scoring_context,
+        electrostatics,
+        receptor_coords,
+        receptor_radii,
+        audited,
+    )
+
+
+def certify_pose(
+    request,
+    scoring_context,
+    electrostatics,
+    receptor_coords,
+    receptor_radii,
+    quaternion,
+    translation,
+    pose_index,
+):
+    posed = derive_pose(pose_index, quaternion, translation)
+    audited = audit_pose(posed, receptor_coords)
+    return certify(
+        request,
+        scoring_context,
+        electrostatics,
+        receptor_coords,
+        receptor_radii,
+        audited,
+    )
+""",
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_shared_parameters=5,
+            min_parameter_family_function_lines=8,
+        ),
+    )
+
+    assert any(
+        finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT for finding in findings
     )
 
 
