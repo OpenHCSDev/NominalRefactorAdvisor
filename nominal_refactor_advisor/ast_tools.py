@@ -17,9 +17,12 @@ class ParsedModule:
 
 
 class ObservationKind(StrEnum):
+    ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
     FIELD = "field"
     LITERAL_DISPATCH = "literal_dispatch"
+    PROJECTION_HELPER = "projection_helper"
+    SCOPED_SHAPE_WRAPPER = "scoped_shape_wrapper"
 
 
 class StructuralExecutionLevel(StrEnum):
@@ -182,6 +185,52 @@ class ContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
         )
 
 
+class FunctionObservationSpec(ObservationShapeSpec, ABC):
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        node = observation.node
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return None
+        return self.build_from_function(parsed_module, node, observation)
+
+    @abstractmethod
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        raise NotImplementedError
+
+
+class AssignObservationSpec(ObservationShapeSpec, ABC):
+    @property
+    def node_types(self) -> tuple[type[ast.AST], ...]:
+        return (ast.Assign,)
+
+    def build_from_observation(
+        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    ) -> object | None:
+        node = observation.node
+        if not isinstance(node, ast.Assign):
+            return None
+        return self.build_from_assign(parsed_module, node, observation)
+
+    @abstractmethod
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class StructuralObservation:
     file_path: str
@@ -333,6 +382,104 @@ class LiteralDispatchObservation:
             execution_level=self.execution_level,
             observed_name=self.axis_expression,
             fiber_key=f"{self.literal_kind}:{self.axis_fingerprint}",
+        )
+
+
+@dataclass(frozen=True)
+class ProjectionHelperShape:
+    file_path: str
+    function_name: str
+    lineno: int
+    outer_call_name: str
+    aggregator_name: str
+    iterable_fingerprint: str
+    projected_attribute: str
+
+    @property
+    def symbol(self) -> str:
+        return self.function_name
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.PROJECTION_HELPER,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.projected_attribute,
+            fiber_key=(
+                f"{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AccessorWrapperCandidate:
+    file_path: str
+    class_name: str
+    method_name: str
+    lineno: int
+    target_expression: str
+    observed_attribute: str
+    accessor_kind: str
+    wrapper_shape: str
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.method_name}"
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            line=self.lineno,
+            observation_kind=ObservationKind.ACCESSOR_WRAPPER,
+            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
+            observed_name=self.observed_attribute,
+            fiber_key=f"{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}",
+        )
+
+
+@dataclass(frozen=True)
+class ScopedShapeWrapperFunction:
+    file_path: str
+    function_name: str
+    lineno: int
+    node_types: tuple[str, ...]
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.function_name,
+            line=self.lineno,
+            observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
+            execution_level=StructuralExecutionLevel.MODULE_BODY,
+            observed_name=self.function_name,
+            fiber_key=f"function:{'/'.join(self.node_types)}",
+        )
+
+
+@dataclass(frozen=True)
+class ScopedShapeWrapperSpec:
+    file_path: str
+    spec_name: str
+    lineno: int
+    function_name: str
+    node_types: tuple[str, ...]
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.spec_name,
+            line=self.lineno,
+            observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
+            execution_level=StructuralExecutionLevel.MODULE_BODY,
+            observed_name=self.function_name,
+            fiber_key=f"spec:{'/'.join(self.node_types)}:{self.function_name}",
         )
 
 
@@ -707,27 +854,27 @@ def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
     return _name_family({item.node.name for item in _class_observations(parsed_module)})
 
 
-class MethodShapeSpec(ObservationShapeSpec):
-    @property
-    def node_types(self) -> tuple[type[ast.AST], ...]:
-        return (ast.FunctionDef, ast.AsyncFunctionDef)
-
-    def build_from_observation(
-        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+class MethodShapeSpec(FunctionObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
     ) -> MethodShape | None:
-        node = observation.node
-        assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         return MethodShape(
             file_path=str(parsed_module.path),
             class_name=observation.class_name,
-            method_name=node.name,
-            lineno=node.lineno,
-            statement_count=len(node.body),
-            is_private=node.name.startswith("_") and not node.name.startswith("__"),
-            param_count=len(node.args.args),
-            decorators=tuple(_node_display_name(dec) for dec in node.decorator_list),
-            fingerprint=fingerprint_function(node),
-            statement_texts=tuple(ast.unparse(stmt) for stmt in node.body),
+            method_name=function.name,
+            lineno=function.lineno,
+            statement_count=len(function.body),
+            is_private=function.name.startswith("_")
+            and not function.name.startswith("__"),
+            param_count=len(function.args.args),
+            decorators=tuple(
+                _node_display_name(dec) for dec in function.decorator_list
+            ),
+            fingerprint=fingerprint_function(function),
+            statement_texts=tuple(ast.unparse(stmt) for stmt in function.body),
         )
 
 
@@ -1086,6 +1233,81 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
         return observations
 
 
+class ProjectionHelperObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
+):
+    _registry_root = True
+
+
+class StandardProjectionHelperObservationSpec(ProjectionHelperObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> ProjectionHelperShape | None:
+        if observation.class_name is not None:
+            return None
+        return _projection_helper_shape_from_function(parsed_module, function)
+
+
+class AccessorWrapperObservationSpec(
+    AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
+):
+    _registry_root = True
+
+
+class StandardAccessorWrapperObservationSpec(AccessorWrapperObservationSpec):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> AccessorWrapperCandidate | None:
+        if observation.class_name is None:
+            return None
+        return _accessor_wrapper_candidate_from_function(
+            parsed_module,
+            observation.class_name,
+            function,
+        )
+
+
+class ScopedShapeWrapperObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
+    _registry_root = True
+
+
+class ScopedShapeWrapperFunctionObservationSpec(
+    ScopedShapeWrapperObservationSpec, FunctionObservationSpec
+):
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> ScopedShapeWrapperFunction | None:
+        if (
+            not isinstance(function, ast.FunctionDef)
+            or observation.class_name is not None
+        ):
+            return None
+        return _scoped_shape_wrapper_function_from_function(parsed_module, function)
+
+
+class ScopedShapeWrapperSpecObservationSpec(
+    ScopedShapeWrapperObservationSpec, AssignObservationSpec
+):
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> ScopedShapeWrapperSpec | None:
+        if observation.class_name is not None or observation.function_name is not None:
+            return None
+        return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
+
+
 def collect_method_shapes(parsed_module: ParsedModule) -> list[MethodShape]:
     return [
         shape
@@ -1185,6 +1407,22 @@ def collect_structural_observations(
     observations.extend(
         item.structural_observation
         for item in collect_inline_literal_dispatch_observations(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_projection_helper_shapes(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_accessor_wrapper_candidates(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_scoped_shape_wrapper_functions(parsed_module)
+    )
+    observations.extend(
+        item.structural_observation
+        for item in collect_scoped_shape_wrapper_specs(parsed_module)
     )
     return tuple(
         sorted(
@@ -1330,6 +1568,58 @@ def collect_field_observations(parsed_module: ParsedModule) -> list[FieldObserva
     return observations
 
 
+def collect_projection_helper_shapes(
+    parsed_module: ParsedModule,
+) -> list[ProjectionHelperShape]:
+    observations: list[ProjectionHelperShape] = []
+    for spec in ProjectionHelperObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, ProjectionHelperShape)
+        )
+    return observations
+
+
+def collect_accessor_wrapper_candidates(
+    parsed_module: ParsedModule,
+) -> list[AccessorWrapperCandidate]:
+    observations: list[AccessorWrapperCandidate] = []
+    for spec in AccessorWrapperObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, AccessorWrapperCandidate)
+        )
+    return observations
+
+
+def collect_scoped_shape_wrapper_functions(
+    parsed_module: ParsedModule,
+) -> list[ScopedShapeWrapperFunction]:
+    observations: list[ScopedShapeWrapperFunction] = []
+    for spec in ScopedShapeWrapperObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, ScopedShapeWrapperFunction)
+        )
+    return observations
+
+
+def collect_scoped_shape_wrapper_specs(
+    parsed_module: ParsedModule,
+) -> list[ScopedShapeWrapperSpec]:
+    observations: list[ScopedShapeWrapperSpec] = []
+    for spec in ScopedShapeWrapperObservationSpec.registered_specs():
+        observations.extend(
+            item
+            for item in spec.collect(parsed_module)
+            if isinstance(item, ScopedShapeWrapperSpec)
+        )
+    return observations
+
+
 def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
     return {
         child: parent
@@ -1467,6 +1757,308 @@ def _inline_literal_dispatch_groups(
             )
         )
     return tuple(sorted(observations, key=lambda item: item.line))
+
+
+def _is_docstring_expr(node: ast.stmt) -> bool:
+    return (
+        isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    )
+
+
+def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
+    if body and _is_docstring_expr(body[0]):
+        return body[1:]
+    return body
+
+
+def _projection_helper_shape_from_function(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ProjectionHelperShape | None:
+    body = _trim_docstring_body(function.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    returned = body[0].value
+    if not isinstance(returned, ast.Call) or len(returned.args) != 1:
+        return None
+    outer_call_name = _terminal_name(returned.func)
+    if outer_call_name not in {"tuple", "list", "set"}:
+        return None
+    inner_call = returned.args[0]
+    if not isinstance(inner_call, ast.Call) or len(inner_call.args) != 1:
+        return None
+    aggregator_name = _terminal_name(inner_call.func)
+    if aggregator_name is None:
+        return None
+    generator = inner_call.args[0]
+    if not isinstance(generator, ast.GeneratorExp) or len(generator.generators) != 1:
+        return None
+    comp = generator.generators[0]
+    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
+        return None
+    if not isinstance(generator.elt, ast.Attribute):
+        return None
+    if not isinstance(generator.elt.value, ast.Name):
+        return None
+    if generator.elt.value.id != comp.target.id:
+        return None
+    return ProjectionHelperShape(
+        file_path=str(parsed_module.path),
+        function_name=function.name,
+        lineno=function.lineno,
+        outer_call_name=outer_call_name,
+        aggregator_name=aggregator_name,
+        iterable_fingerprint=fingerprint_function(function),
+        projected_attribute=generator.elt.attr,
+    )
+
+
+def _accessor_wrapper_candidate_from_function(
+    parsed_module: ParsedModule,
+    class_name: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> AccessorWrapperCandidate | None:
+    if _is_dunder_method(function.name):
+        return None
+    if _has_property_like_decorator(function):
+        return None
+    body = _trim_docstring_body(function.body)
+    if not body:
+        return None
+    getter_candidate = _getter_wrapper_candidate(function, body)
+    if getter_candidate is not None:
+        target_expression, observed_attribute, wrapper_shape = getter_candidate
+        return AccessorWrapperCandidate(
+            file_path=str(parsed_module.path),
+            class_name=class_name,
+            method_name=function.name,
+            lineno=function.lineno,
+            target_expression=target_expression,
+            observed_attribute=observed_attribute,
+            accessor_kind="getter",
+            wrapper_shape=wrapper_shape,
+        )
+    setter_candidate = _setter_wrapper_candidate(function, body)
+    if setter_candidate is not None:
+        target_expression, observed_attribute = setter_candidate
+        return AccessorWrapperCandidate(
+            file_path=str(parsed_module.path),
+            class_name=class_name,
+            method_name=function.name,
+            lineno=function.lineno,
+            target_expression=target_expression,
+            observed_attribute=observed_attribute,
+            accessor_kind="setter",
+            wrapper_shape="write_through",
+        )
+    return None
+
+
+def _scoped_shape_wrapper_function_from_function(
+    parsed_module: ParsedModule,
+    function: ast.FunctionDef,
+) -> ScopedShapeWrapperFunction | None:
+    if len(function.args.args) != 2:
+        return None
+    body = _trim_docstring_body(function.body)
+    if len(body) < 3:
+        return None
+    first_stmt = body[0]
+    if not (
+        isinstance(first_stmt, ast.Assign)
+        and len(first_stmt.targets) == 1
+        and isinstance(first_stmt.targets[0], ast.Name)
+        and first_stmt.targets[0].id == "node"
+        and isinstance(first_stmt.value, ast.Attribute)
+        and isinstance(first_stmt.value.value, ast.Name)
+        and first_stmt.value.value.id == function.args.args[1].arg
+        and first_stmt.value.attr == "node"
+    ):
+        return None
+    second_stmt = body[1]
+    if not isinstance(second_stmt, ast.If):
+        return None
+    node_types = _guarded_node_types(second_stmt.test, "node")
+    if not node_types:
+        return None
+    if not (
+        len(second_stmt.body) == 1
+        and isinstance(second_stmt.body[0], ast.Return)
+        and isinstance(second_stmt.body[0].value, ast.Constant)
+        and second_stmt.body[0].value.value is None
+    ):
+        return None
+    if not isinstance(body[-1], ast.Return) or body[-1].value is None:
+        return None
+    return ScopedShapeWrapperFunction(
+        file_path=str(parsed_module.path),
+        function_name=function.name,
+        lineno=function.lineno,
+        node_types=node_types,
+    )
+
+
+def _scoped_shape_wrapper_spec_from_assign(
+    parsed_module: ParsedModule,
+    node: ast.Assign,
+) -> ScopedShapeWrapperSpec | None:
+    if len(node.targets) != 1:
+        return None
+    target = node.targets[0]
+    if not isinstance(target, ast.Name):
+        return None
+    if not isinstance(node.value, ast.Call):
+        return None
+    if _terminal_name(node.value.func) != "ScopedShapeSpec":
+        return None
+    node_types: tuple[str, ...] = ()
+    function_name = None
+    for keyword in node.value.keywords:
+        if keyword.arg == "node_types":
+            node_types = _type_name_tuple(keyword.value)
+        if keyword.arg == "build_shape":
+            function_name = _terminal_name(keyword.value)
+    if not node_types or function_name is None:
+        return None
+    return ScopedShapeWrapperSpec(
+        file_path=str(parsed_module.path),
+        spec_name=target.id,
+        lineno=node.lineno,
+        function_name=function_name,
+        node_types=node_types,
+    )
+
+
+def _getter_wrapper_candidate(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    body: list[ast.stmt],
+) -> tuple[str, str, str] | None:
+    if len(function.args.args) != 1:
+        return None
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return None
+    expr = body[0].value
+    if _is_self_attribute_expression(expr):
+        observed_attribute = _self_attribute_name(expr)
+        if observed_attribute is None:
+            return None
+        return ast.unparse(expr), observed_attribute, "read_through"
+    wrapped = _wrapped_self_attribute_expression(expr)
+    if wrapped is not None:
+        wrapper_name, observed_attribute = wrapped
+        return ast.unparse(expr), observed_attribute, f"computed_{wrapper_name}"
+    return None
+
+
+def _setter_wrapper_candidate(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    body: list[ast.stmt],
+) -> tuple[str, str] | None:
+    if len(function.args.args) != 2:
+        return None
+    if len(body) != 1 or not isinstance(body[0], ast.Assign):
+        return None
+    assign = body[0]
+    if len(assign.targets) != 1:
+        return None
+    target = assign.targets[0]
+    value_arg = function.args.args[1].arg
+    if not (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return None
+    if not (isinstance(assign.value, ast.Name) and assign.value.id == value_arg):
+        return None
+    observed_attribute = _self_attribute_name(target)
+    if observed_attribute is None:
+        return None
+    return ast.unparse(target), observed_attribute
+
+
+def _is_self_attribute_expression(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+
+
+def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(node, ast.Call) or len(node.args) != 1:
+        return None
+    if not isinstance(node.func, ast.Name):
+        return None
+    if node.func.id not in {
+        "tuple",
+        "list",
+        "set",
+        "frozenset",
+        "str",
+        "int",
+        "bool",
+        "len",
+        "sorted",
+    }:
+        return None
+    if not _is_self_attribute_expression(node.args[0]):
+        return None
+    observed_attribute = _self_attribute_name(node.args[0])
+    if observed_attribute is None:
+        return None
+    return node.func.id, observed_attribute
+
+
+def _self_attribute_name(node: ast.AST) -> str | None:
+    if not _is_self_attribute_expression(node):
+        return None
+    assert isinstance(node, ast.Attribute)
+    return node.attr.lstrip("_") or node.attr
+
+
+def _is_dunder_method(name: str) -> bool:
+    return name.startswith("__") and name.endswith("__")
+
+
+def _has_property_like_decorator(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    for decorator in function.decorator_list:
+        if isinstance(decorator, ast.Name) and decorator.id == "property":
+            return True
+        if isinstance(decorator, ast.Attribute) and decorator.attr == "setter":
+            return True
+    return False
+
+
+def _guarded_node_types(test: ast.AST, expected_name: str) -> tuple[str, ...]:
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _guarded_node_types(test.operand, expected_name)
+    if not isinstance(test, ast.Call):
+        return ()
+    if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
+        return ()
+    if len(test.args) != 2:
+        return ()
+    if not isinstance(test.args[0], ast.Name) or test.args[0].id != expected_name:
+        return ()
+    return _type_name_tuple(test.args[1])
+
+
+def _type_name_tuple(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (node.attr,)
+    if isinstance(node, ast.Tuple):
+        names: list[str] = []
+        for item in node.elts:
+            names.extend(_type_name_tuple(item))
+        return tuple(names)
+    return ()
 
 
 def _builder_call_shape(

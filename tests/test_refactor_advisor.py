@@ -10,11 +10,15 @@ from nominal_refactor_advisor.ast_tools import (
     ObservationKind,
     RegistrationShapeSpec,
     StructuralExecutionLevel,
+    collect_accessor_wrapper_candidates,
     collect_attribute_probe_observations,
     collect_inline_literal_dispatch_observations,
     collect_literal_dispatch_observations,
+    collect_projection_helper_shapes,
     collect_registration_shapes,
     collect_scoped_observations,
+    collect_scoped_shape_wrapper_functions,
+    collect_scoped_shape_wrapper_specs,
     collect_field_observations,
     parse_python_modules,
 )
@@ -710,6 +714,40 @@ _BUILDER_CALL_SHAPE_SPEC = ScopedShapeSpec(
     assert "ScopedShapeSpec" in (finding.scaffold or "")
 
 
+def test_collects_scoped_shape_wrapper_observations_via_spec_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import ast
+
+
+def _build_method_shape_from_observation(parsed_module, observation):
+    node = observation.node
+    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return None
+    return (parsed_module, node)
+
+
+_METHOD_SHAPE_SPEC = ScopedShapeSpec(
+    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),
+    build_shape=_build_method_shape_from_observation,
+)
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    functions = collect_scoped_shape_wrapper_functions(module)
+    specs = collect_scoped_shape_wrapper_specs(module)
+
+    assert [item.function_name for item in functions] == [
+        "_build_method_shape_from_observation"
+    ]
+    assert [item.spec_name for item in specs] == ["_METHOD_SHAPE_SPEC"]
+
+
 def test_detects_namespaced_auto_register_decorator_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -810,6 +848,46 @@ class Beta:
         finding.detector_id == "repeated_export_dicts" and finding.codemod_patch
         for finding in findings
     )
+
+
+def test_collects_projection_helper_shapes_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def labels(items):
+    return tuple(sorted(item.label for item in items))
+
+
+def scores(items):
+    return tuple(sorted(item.score for item in items))
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    shapes = collect_projection_helper_shapes(module)
+
+    assert {shape.projected_attribute for shape in shapes} == {"label", "score"}
+
+
+def test_collects_accessor_wrapper_candidates_via_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sample:
+    def current(self):
+        return self._current
+
+    def update(self, current):
+        self._current = current
+""",
+    )
+
+    module = parse_python_modules(tmp_path)[0]
+    candidates = collect_accessor_wrapper_candidates(module)
+
+    assert {candidate.accessor_kind for candidate in candidates} == {"getter", "setter"}
 
 
 def test_collects_field_observation_fibers_for_dataclass_family(tmp_path: Path) -> None:
