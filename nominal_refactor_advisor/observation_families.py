@@ -1033,59 +1033,16 @@ _FAMILY_EXPORTS = _materialize_declared_families()
 _FAMILY_EXPORT_NAMES = tuple(_FAMILY_EXPORTS)
 
 
-_STATIC_EXPORT_NAMES = (
-    "AccessorWrapperObservationSpec",
-    "AssignmentRegistrationShapeSpec",
-    "AttributeErrorProbeObservationSpec",
-    "AttributeProbeObservationSpec",
-    "AutoRegisteredModuleShapeSpec",
-    "BuilderCallShapeSpec",
-    "CallAttributeProbeObservationSpec",
-    "CallRegistrationShapeSpec",
-    "ClassMarkerObservationSpec",
-    "ClassObservationSpec",
-    "ConfigDispatchObservationSpec",
-    "DataclassBodyFieldObservationSpec",
-    "DecoratorRegistrationShapeSpec",
-    "DualAxisResolutionObservationSpec",
-    "DynamicMethodInjectionObservationSpec",
-    "ExportDictShapeSpec",
-    "FieldObservationSpec",
-    "GetAttrProbeObservationSpec",
-    "HasAttrProbeObservationSpec",
-    "InitAssignmentFieldObservationSpec",
-    "InlineLiteralDispatchObservationSpec",
-    "InlineStringLiteralDispatchObservationSpec",
-    "InterfaceGenerationObservationSpec",
-    "KnownClassFamilyShapeSpec",
-    "LineageMappingObservationSpec",
-    "LiteralDispatchObservationSpec",
-    "MethodShapeSpec",
-    "NumericLiteralDispatchObservationSpec",
-    "ObservationFamily",
-    "ProjectionHelperObservationSpec",
-    "RegistrationShapeSpec",
-    "RuntimeTypeGenerationObservationSpec",
-    "ScopedShapeWrapperFunctionObservationSpec",
-    "ScopedShapeWrapperObservationSpec",
-    "ScopedShapeWrapperSpecObservationSpec",
-    "SentinelTypeAssignmentObservationSpec",
-    "SentinelTypeObservationSpec",
-    "SentinelTypeUsageObservationSpec",
-    "ShapeFamily",
-    "StandardAccessorWrapperObservationSpec",
-    "StandardClassMarkerObservationSpec",
-    "StandardConfigDispatchObservationSpec",
-    "StandardDualAxisResolutionObservationSpec",
-    "StandardDynamicMethodInjectionObservationSpec",
-    "StandardInterfaceGenerationObservationSpec",
-    "StandardLineageMappingObservationSpec",
-    "StandardProjectionHelperObservationSpec",
-    "StringLiteralDispatchObservationSpec",
-    "TypeCallGenerationObservationSpec",
-    "TypedLiteralObservationFamily",
-    "TypedLiteralObservationSpec",
+def _is_public_export(name: str, value: object) -> bool:
+    if name.startswith("_"):
+        return False
+    if name == "AutoRegisteredModuleShapeSpec":
+        return True
+    if not isinstance(value, type) or value.__module__ != __name__:
+        return False
+    return issubclass(value, (CollectedFamily, AutoRegisteredModuleShapeSpec))
+
+
+__all__ = sorted(
+    name for name, value in globals().items() if _is_public_export(name, value)
 )
-
-
-__all__ = [*_FAMILY_EXPORT_NAMES, *_STATIC_EXPORT_NAMES]

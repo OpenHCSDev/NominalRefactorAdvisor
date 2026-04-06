@@ -1700,6 +1700,15 @@ class TypeIndexedDefinitionBoilerplateGroup:
 
 
 @dataclass(frozen=True)
+class DerivedExportSurfaceCandidate:
+    file_path: str
+    export_symbol: str
+    line: int
+    exported_names: tuple[str, ...]
+    derivable_root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -3181,6 +3190,70 @@ class TypeIndexedDefinitionBoilerplateDetector(CandidateFindingDetector):
                 registry_name=group.base_names[0],
                 class_names=group.definition_class_names,
                 class_key_pairs=group.assigned_names,
+            ),
+        )
+
+
+class DerivedExportSurfaceDetector(CandidateFindingDetector):
+    detector_id = "derived_export_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Manual export surfaces should derive from the authoritative type family",
+        why=(
+            "A module manually enumerates export names even though those exports are derivable from one local nominal class family. "
+            "That creates a second authority for the public surface."
+        ),
+        capability_gap="one derived export surface projected from the authoritative class family",
+        relation_context="manual export tuple/list repeats names already implied by local type families",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _derived_export_surface_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        export_candidate = cast(DerivedExportSurfaceCandidate, candidate)
+        root_names = ", ".join(export_candidate.derivable_root_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{export_candidate.export_symbol}` manually enumerates {len(export_candidate.exported_names)} exported names that are derivable from local `{root_names}` families."
+            ),
+            (
+                SourceLocation(
+                    export_candidate.file_path,
+                    export_candidate.line,
+                    export_candidate.export_symbol,
+                ),
+            ),
+            scaffold=(
+                "def public_exports() -> tuple[str, ...]:\n"
+                "    return tuple(\n"
+                "        sorted(\n"
+                "            name\n"
+                "            for name, value in globals().items()\n"
+                "            if is_public_export(name, value)\n"
+                "        )\n"
+                "    )"
+            ),
+            codemod_patch=(
+                f"# Delete `{export_candidate.export_symbol}` as a handwritten export list.\n"
+                "# Derive the public export surface from the authoritative local type family or generated-family registry instead."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(export_candidate.exported_names),
+                field_count=len(export_candidate.derivable_root_names),
+                mapping_name=export_candidate.export_symbol,
+                field_names=export_candidate.derivable_root_names,
             ),
         )
 
@@ -6405,6 +6478,38 @@ def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int,
     return aliases
 
 
+def _module_string_sequence_assignments(
+    module: ParsedModule,
+) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
+    assignments: list[tuple[str, int, tuple[str, ...]]] = []
+    for statement in _trim_docstring_body(module.module.body):
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                target_name = target.id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is None or value is None:
+            continue
+        if not isinstance(value, (ast.Tuple, ast.List)):
+            continue
+        string_items = tuple(
+            item.value
+            for item in value.elts
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        )
+        if len(string_items) != len(value.elts) or len(string_items) < 3:
+            continue
+        assignments.append((target_name, statement.lineno, string_items))
+    return tuple(assignments)
+
+
 def _is_simple_classvar_value(node: ast.AST) -> bool:
     if isinstance(node, (ast.Name, ast.Attribute, ast.Constant)):
         return True
@@ -6526,6 +6631,53 @@ def _type_indexed_definition_boilerplate_groups(
         if len(items) >= 3
         for ordered in [tuple(sorted(items, key=lambda item: (item[2], item[0])))]
     )
+
+
+def _derived_export_surface_candidates(
+    module: ParsedModule,
+) -> tuple[DerivedExportSurfaceCandidate, ...]:
+    index = NominalAuthorityIndex((module,))
+    candidates: list[DerivedExportSurfaceCandidate] = []
+    for export_symbol, line, exported_names in _module_string_sequence_assignments(
+        module
+    ):
+        local_shapes = [
+            shapes[0]
+            for exported_name in exported_names
+            if (shapes := index.shapes_named(exported_name))
+            and shapes[0].file_path == str(module.path)
+        ]
+        if len(local_shapes) < 6 or len(local_shapes) * 5 < len(exported_names) * 4:
+            continue
+        root_names = tuple(
+            sorted(
+                root_name
+                for root_name in {"AutoRegisteredModuleShapeSpec", "CollectedFamily"}
+                if sum(
+                    1
+                    for shape in local_shapes
+                    if root_name
+                    in {
+                        *shape.declared_base_names,
+                        *shape.ancestor_names,
+                        shape.class_name,
+                    }
+                )
+                >= 3
+            )
+        )
+        if not root_names:
+            continue
+        candidates.append(
+            DerivedExportSurfaceCandidate(
+                file_path=str(module.path),
+                export_symbol=export_symbol,
+                line=line,
+                exported_names=exported_names,
+                derivable_root_names=root_names,
+            )
+        )
+    return tuple(candidates)
 
 
 def _declarative_family_boilerplate_groups(

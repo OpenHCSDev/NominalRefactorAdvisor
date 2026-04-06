@@ -2951,6 +2951,72 @@ GammaFamily = GammaFamilyDefinition.family_type
     assert "typed declaration table" in (finding.codemod_patch or "")
 
 
+def test_detects_manual_derived_export_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class AutoRegisteredModuleShapeSpec(ABC):
+    pass
+
+
+class CollectedFamily(ABC):
+    pass
+
+
+class AlphaSpec(AutoRegisteredModuleShapeSpec):
+    pass
+
+
+class BetaSpec(AutoRegisteredModuleShapeSpec):
+    pass
+
+
+class GammaFamily(CollectedFamily):
+    pass
+
+
+class DeltaFamily(CollectedFamily):
+    pass
+
+
+class EpsilonSpec(AutoRegisteredModuleShapeSpec):
+    pass
+
+
+class ZetaFamily(CollectedFamily):
+    pass
+
+
+_STATIC_EXPORT_NAMES = (
+    "AlphaSpec",
+    "BetaSpec",
+    "GammaFamily",
+    "DeltaFamily",
+    "EpsilonSpec",
+    "ZetaFamily",
+)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "derived_export_surface"
+    )
+
+    assert "_STATIC_EXPORT_NAMES" in finding.summary
+    assert (
+        "AutoRegisteredModuleShapeSpec" in finding.summary
+        or "CollectedFamily" in finding.summary
+    )
+    assert "public_exports" in (finding.scaffold or "")
+
+
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
