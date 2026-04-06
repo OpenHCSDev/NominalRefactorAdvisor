@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -37,11 +38,11 @@ class CapabilityTag(StrEnum):
 
     @property
     def label(self) -> str:
-        return _CAPABILITY_LABELS[self]
+        return _CAPABILITY_SPECS[self].label
 
     @property
     def distinction(self) -> str:
-        return _CAPABILITY_DISTINCTIONS[self]
+        return _CAPABILITY_SPECS[self].distinction
 
 
 class ObservationTag(StrEnum):
@@ -93,48 +94,89 @@ class ObservationTag(StrEnum):
         return _OBSERVATION_LABELS[self]
 
 
-_CAPABILITY_LABELS = {
-    CapabilityTag.AUTHORITATIVE_DISPATCH: "authoritative closed-family dispatch",
-    CapabilityTag.AUTHORITATIVE_MAPPING: "authoritative mapping ownership",
-    CapabilityTag.BIDIRECTIONAL_NORMALIZATION: "bidirectional normalization",
-    CapabilityTag.CAPABILITY_MARKER_IDENTITY: "exact capability-marker identity",
-    CapabilityTag.CLASS_LEVEL_REGISTRATION: "class-level registration",
-    CapabilityTag.CLOSED_FAMILY_DISPATCH: "closed-family dispatch",
-    CapabilityTag.DUAL_AXIS_RESOLUTION: "dual-axis precedence resolution",
-    CapabilityTag.ENUMERATION: "exhaustive family enumeration",
-    CapabilityTag.EXACT_LOOKUP: "exact reverse lookup",
-    CapabilityTag.FAIL_LOUD_CONTRACTS: "fail-loud nominal contracts",
-    CapabilityTag.GENERATED_INTERFACE_IDENTITY: "runtime-generated interface identity",
-    CapabilityTag.MRO_ORDERING: "MRO-aware ordering",
-    CapabilityTag.NOMINAL_IDENTITY: "semantic family identity",
-    CapabilityTag.PROVENANCE: "provenance observability",
-    CapabilityTag.SHARED_ALGORITHM_AUTHORITY: "shared algorithm authority",
-    CapabilityTag.SHARED_TYPE_NAMESPACE: "shared type-namespace authority",
-    CapabilityTag.TYPE_LINEAGE: "generated-type lineage",
-    CapabilityTag.UNIT_RATE_COHERENCE: "unit-rate coherence",
-    CapabilityTag.VIRTUAL_MEMBERSHIP: "explicit virtual membership",
-}
+@dataclass(frozen=True)
+class CapabilitySpec:
+    label: str
+    distinction: str
 
-_CAPABILITY_DISTINCTIONS = {
-    CapabilityTag.AUTHORITATIVE_DISPATCH: "which declared rule family owns dispatch",
-    CapabilityTag.AUTHORITATIVE_MAPPING: "which mapping is the single writable source",
-    CapabilityTag.BIDIRECTIONAL_NORMALIZATION: "which companion type is the forward or reverse authority",
-    CapabilityTag.CAPABILITY_MARKER_IDENTITY: "which exact capability marker is present",
-    CapabilityTag.CLASS_LEVEL_REGISTRATION: "which classes belong in the registry",
-    CapabilityTag.CLOSED_FAMILY_DISPATCH: "which closed variant case applies",
-    CapabilityTag.DUAL_AXIS_RESOLUTION: "which scope x type pair should win precedence",
-    CapabilityTag.ENUMERATION: "which variants belong to the family",
-    CapabilityTag.EXACT_LOOKUP: "which reverse companion should be recovered",
-    CapabilityTag.FAIL_LOUD_CONTRACTS: "which role family a value actually belongs to",
-    CapabilityTag.GENERATED_INTERFACE_IDENTITY: "which generated interface identity is being claimed",
-    CapabilityTag.MRO_ORDERING: "which declared precedence order should apply",
-    CapabilityTag.NOMINAL_IDENTITY: "which semantic role a class or object has",
-    CapabilityTag.PROVENANCE: "which declaration supplied a fact",
-    CapabilityTag.SHARED_ALGORITHM_AUTHORITY: "which algorithm skeleton is authoritative",
-    CapabilityTag.SHARED_TYPE_NAMESPACE: "which class namespace owns shared behavior",
-    CapabilityTag.TYPE_LINEAGE: "which generated type descends from which base identity",
-    CapabilityTag.UNIT_RATE_COHERENCE: "which fact owner should be authoritative",
-    CapabilityTag.VIRTUAL_MEMBERSHIP: "which classes explicitly claim a runtime role",
+
+_CAPABILITY_SPECS = {
+    CapabilityTag.AUTHORITATIVE_DISPATCH: CapabilitySpec(
+        label="authoritative closed-family dispatch",
+        distinction="which declared rule family owns dispatch",
+    ),
+    CapabilityTag.AUTHORITATIVE_MAPPING: CapabilitySpec(
+        label="authoritative mapping ownership",
+        distinction="which mapping is the single writable source",
+    ),
+    CapabilityTag.BIDIRECTIONAL_NORMALIZATION: CapabilitySpec(
+        label="bidirectional normalization",
+        distinction="which companion type is the forward or reverse authority",
+    ),
+    CapabilityTag.CAPABILITY_MARKER_IDENTITY: CapabilitySpec(
+        label="exact capability-marker identity",
+        distinction="which exact capability marker is present",
+    ),
+    CapabilityTag.CLASS_LEVEL_REGISTRATION: CapabilitySpec(
+        label="class-level registration",
+        distinction="which classes belong in the registry",
+    ),
+    CapabilityTag.CLOSED_FAMILY_DISPATCH: CapabilitySpec(
+        label="closed-family dispatch",
+        distinction="which closed variant case applies",
+    ),
+    CapabilityTag.DUAL_AXIS_RESOLUTION: CapabilitySpec(
+        label="dual-axis precedence resolution",
+        distinction="which scope x type pair should win precedence",
+    ),
+    CapabilityTag.ENUMERATION: CapabilitySpec(
+        label="exhaustive family enumeration",
+        distinction="which variants belong to the family",
+    ),
+    CapabilityTag.EXACT_LOOKUP: CapabilitySpec(
+        label="exact reverse lookup",
+        distinction="which reverse companion should be recovered",
+    ),
+    CapabilityTag.FAIL_LOUD_CONTRACTS: CapabilitySpec(
+        label="fail-loud nominal contracts",
+        distinction="which role family a value actually belongs to",
+    ),
+    CapabilityTag.GENERATED_INTERFACE_IDENTITY: CapabilitySpec(
+        label="runtime-generated interface identity",
+        distinction="which generated interface identity is being claimed",
+    ),
+    CapabilityTag.MRO_ORDERING: CapabilitySpec(
+        label="MRO-aware ordering",
+        distinction="which declared precedence order should apply",
+    ),
+    CapabilityTag.NOMINAL_IDENTITY: CapabilitySpec(
+        label="semantic family identity",
+        distinction="which semantic role a class or object has",
+    ),
+    CapabilityTag.PROVENANCE: CapabilitySpec(
+        label="provenance observability",
+        distinction="which declaration supplied a fact",
+    ),
+    CapabilityTag.SHARED_ALGORITHM_AUTHORITY: CapabilitySpec(
+        label="shared algorithm authority",
+        distinction="which algorithm skeleton is authoritative",
+    ),
+    CapabilityTag.SHARED_TYPE_NAMESPACE: CapabilitySpec(
+        label="shared type-namespace authority",
+        distinction="which class namespace owns shared behavior",
+    ),
+    CapabilityTag.TYPE_LINEAGE: CapabilitySpec(
+        label="generated-type lineage",
+        distinction="which generated type descends from which base identity",
+    ),
+    CapabilityTag.UNIT_RATE_COHERENCE: CapabilitySpec(
+        label="unit-rate coherence",
+        distinction="which fact owner should be authoritative",
+    ),
+    CapabilityTag.VIRTUAL_MEMBERSHIP: CapabilitySpec(
+        label="explicit virtual membership",
+        distinction="which classes explicitly claim a runtime role",
+    ),
 }
 
 _OBSERVATION_LABELS = {

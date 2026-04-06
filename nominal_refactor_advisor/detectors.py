@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Any, Sequence, TypeVar, cast
+from typing import Any, ClassVar, Sequence, TypeVar, cast
 
 from .ast_tools import (
     AccessorWrapperCandidate,
@@ -140,6 +141,30 @@ class DetectorConfig:
 
 class IssueDetector(ABC):
     detector_id: str
+    detector_priority: ClassVar[int] = 0
+    _registered_detector_types: ClassVar[list[type["IssueDetector"]]] = []
+    _definition_order: ClassVar[int] = 0
+    _detector_registration_index: ClassVar[int]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if inspect.isabstract(cls):
+            return
+        cls._detector_registration_index = IssueDetector._definition_order
+        IssueDetector._definition_order += 1
+        IssueDetector._registered_detector_types.append(cls)
+
+    @classmethod
+    def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
+        return tuple(
+            sorted(
+                cls._registered_detector_types,
+                key=lambda item: (
+                    item.detector_priority,
+                    item._detector_registration_index,
+                ),
+            )
+        )
 
     def detect(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -170,6 +195,26 @@ class PerModuleIssueDetector(IssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
+class CandidateFindingDetector(PerModuleIssueDetector, ABC):
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in self._candidate_items(module, config)
+        ]
+
+    @abstractmethod
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         raise NotImplementedError
 
 
@@ -1532,47 +1577,68 @@ class FragmentedFamilyAuthorityCandidate:
 
 
 @dataclass(frozen=True)
-class ExistingNominalAuthorityReuseCandidate:
+class WitnessCarrierCandidate(ABC):
     file_path: str
-    class_name: str
     line: int
+    subject_name: str
+    name_family: tuple[str, ...]
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.subject_name)
+
+
+@dataclass(frozen=True)
+class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
     compatible_authority_file_path: str
     compatible_authority_name: str
     compatible_authority_line: int
     reuse_kind: str
     shared_role_names: tuple[str, ...]
-    shared_field_names: tuple[str, ...]
+
+    @property
+    def class_name(self) -> str:
+        return self.subject_name
+
+    @property
+    def shared_field_names(self) -> tuple[str, ...]:
+        return self.name_family
 
 
 @dataclass(frozen=True)
-class FindingAssemblyPipelineCandidate:
-    file_path: str
-    class_name: str
-    line: int
+class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
     method_name: str
     candidate_source_name: str
     metrics_type_name: str | None
     scaffold_helper_name: str | None
     patch_helper_name: str | None
 
+    @property
+    def class_name(self) -> str:
+        return self.subject_name
+
 
 @dataclass(frozen=True)
-class GuardedDelegatorCandidate:
-    file_path: str
-    class_name: str
-    line: int
+class GuardedDelegatorCandidate(WitnessCarrierCandidate):
     method_name: str
     guard_role: str
     delegate_name: str
     scope_role: str
 
+    @property
+    def class_name(self) -> str:
+        return self.subject_name
+
 
 @dataclass(frozen=True)
-class StructuralObservationPropertyCandidate:
-    file_path: str
-    class_name: str
-    line: int
-    keyword_names: tuple[str, ...]
+class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
+    @property
+    def class_name(self) -> str:
+        return self.subject_name
+
+    @property
+    def keyword_names(self) -> tuple[str, ...]:
+        return self.name_family
 
 
 @dataclass(frozen=True)
@@ -1629,18 +1695,6 @@ class EnumStrategyDispatchCandidate:
     @property
     def evidence(self) -> SourceLocation:
         return SourceLocation(self.file_path, self.lineno, self.qualname)
-
-
-@dataclass(frozen=True)
-class WitnessCarrierCandidate(ABC):
-    file_path: str
-    line: int
-    subject_name: str
-    name_family: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.subject_name)
 
 
 @dataclass(frozen=True)
@@ -1918,7 +1972,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         return findings
 
 
-class OrchestrationHubDetector(PerModuleIssueDetector):
+class OrchestrationHubDetector(CandidateFindingDetector):
     detector_id = "orchestration_hub"
     finding_spec = FindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
@@ -1938,39 +1992,38 @@ class OrchestrationHubDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for profile in _function_profiles(module):
-            if profile.line_count < config.min_orchestration_function_lines:
-                continue
-            if profile.branch_count < config.min_orchestration_branches:
-                continue
-            if profile.call_count < config.min_orchestration_calls:
-                continue
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner."
-                    ),
-                    (profile.evidence,),
-                    scaffold=_orchestration_stage_scaffold(profile),
-                    codemod_patch=_orchestration_stage_patch(profile),
-                    metrics=OrchestrationMetrics(
-                        function_line_count=profile.line_count,
-                        branch_site_count=profile.branch_count,
-                        call_site_count=profile.call_count,
-                        parameter_count=len(profile.parameter_names),
-                        callee_family_count=profile.callee_family_count,
-                    ),
-                )
-            )
-        return findings
+    ) -> Sequence[object]:
+        return tuple(
+            profile
+            for profile in _function_profiles(module)
+            if profile.line_count >= config.min_orchestration_function_lines
+            and profile.branch_count >= config.min_orchestration_branches
+            and profile.call_count >= config.min_orchestration_calls
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        profile = cast(FunctionProfile, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner."
+            ),
+            (profile.evidence,),
+            scaffold=_orchestration_stage_scaffold(profile),
+            codemod_patch=_orchestration_stage_patch(profile),
+            metrics=OrchestrationMetrics(
+                function_line_count=profile.line_count,
+                branch_site_count=profile.branch_count,
+                call_site_count=profile.call_count,
+                parameter_count=len(profile.parameter_names),
+                callee_family_count=profile.callee_family_count,
+            ),
+        )
 
 
-class ParameterThreadFamilyDetector(PerModuleIssueDetector):
+class ParameterThreadFamilyDetector(CandidateFindingDetector):
     detector_id = "parameter_thread_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
@@ -1990,32 +2043,31 @@ class ParameterThreadFamilyDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for candidate in _parameter_thread_family_candidates(module, config):
-            function_names = tuple(item.qualname for item in candidate.functions)
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(candidate.shared_parameter_names)}` across {len(candidate.functions)} helpers."
-                    ),
-                    tuple(item.evidence for item in candidate.functions[:6]),
-                    scaffold=_authoritative_context_scaffold(candidate),
-                    codemod_patch=_authoritative_context_patch(candidate),
-                    metrics=ParameterThreadMetrics(
-                        function_count=len(candidate.functions),
-                        shared_parameter_count=len(candidate.shared_parameter_names),
-                        shared_parameter_names=candidate.shared_parameter_names,
-                    ),
-                )
-            )
-        return findings
+    ) -> Sequence[object]:
+        return _parameter_thread_family_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        parameter_family = cast(ParameterThreadFamilyCandidate, candidate)
+        function_names = tuple(item.qualname for item in parameter_family.functions)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(parameter_family.shared_parameter_names)}` across {len(parameter_family.functions)} helpers."
+            ),
+            tuple(item.evidence for item in parameter_family.functions[:6]),
+            scaffold=_authoritative_context_scaffold(parameter_family),
+            codemod_patch=_authoritative_context_patch(parameter_family),
+            metrics=ParameterThreadMetrics(
+                function_count=len(parameter_family.functions),
+                shared_parameter_count=len(parameter_family.shared_parameter_names),
+                shared_parameter_names=parameter_family.shared_parameter_names,
+            ),
+        )
 
 
-class EnumStrategyDispatchDetector(PerModuleIssueDetector):
+class EnumStrategyDispatchDetector(CandidateFindingDetector):
     detector_id = "enum_strategy_dispatch"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
@@ -2035,32 +2087,31 @@ class EnumStrategyDispatchDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _enum_strategy_dispatch_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"`{candidate.qualname}` branches on `{candidate.dispatch_axis}` across closed cases {', '.join(candidate.case_names)} and should delegate to a nominal strategy family."
-                    ),
-                    (candidate.evidence,),
-                    scaffold=_nominal_strategy_scaffold(candidate),
-                    codemod_patch=_nominal_strategy_patch(candidate),
-                    metrics=DispatchCountMetrics(
-                        dispatch_site_count=len(candidate.case_names),
-                        dispatch_axis=candidate.dispatch_axis,
-                        literal_cases=candidate.case_names,
-                    ),
-                )
-            )
-        return findings
+        return _enum_strategy_dispatch_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        dispatch_candidate = cast(EnumStrategyDispatchCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{dispatch_candidate.qualname}` branches on `{dispatch_candidate.dispatch_axis}` across closed cases {', '.join(dispatch_candidate.case_names)} and should delegate to a nominal strategy family."
+            ),
+            (dispatch_candidate.evidence,),
+            scaffold=_nominal_strategy_scaffold(dispatch_candidate),
+            codemod_patch=_nominal_strategy_patch(dispatch_candidate),
+            metrics=DispatchCountMetrics(
+                dispatch_site_count=len(dispatch_candidate.case_names),
+                dispatch_axis=dispatch_candidate.dispatch_axis,
+                literal_cases=dispatch_candidate.case_names,
+            ),
+        )
 
 
-class ManualFiberTagDetector(PerModuleIssueDetector):
+class ManualFiberTagDetector(CandidateFindingDetector):
     detector_id = "manual_fiber_tag"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -2080,43 +2131,42 @@ class ManualFiberTagDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _manual_fiber_tag_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"`{candidate.class_name}` branches on manual fiber tag `self.{candidate.tag_name}` across {candidate.case_names} while still carrying cross-fiber fields {candidate.assigned_field_names}."
-                    ),
-                    (
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.init_line,
-                            f"{candidate.class_name}.__init__",
-                        ),
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.method_line,
-                            f"{candidate.class_name}.{candidate.method_name}",
-                        ),
-                    ),
-                    scaffold=_manual_fiber_tag_scaffold(candidate),
-                    codemod_patch=_manual_fiber_tag_patch(candidate),
-                    metrics=DispatchCountMetrics(
-                        dispatch_site_count=len(candidate.case_names),
-                        dispatch_axis=f"self.{candidate.tag_name}",
-                        literal_cases=candidate.case_names,
-                    ),
-                )
-            )
-        return findings
+        return _manual_fiber_tag_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        fiber_candidate = cast(ManualFiberTagCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{fiber_candidate.class_name}` branches on manual fiber tag `self.{fiber_candidate.tag_name}` across {fiber_candidate.case_names} while still carrying cross-fiber fields {fiber_candidate.assigned_field_names}."
+            ),
+            (
+                SourceLocation(
+                    fiber_candidate.file_path,
+                    fiber_candidate.init_line,
+                    f"{fiber_candidate.class_name}.__init__",
+                ),
+                SourceLocation(
+                    fiber_candidate.file_path,
+                    fiber_candidate.method_line,
+                    f"{fiber_candidate.class_name}.{fiber_candidate.method_name}",
+                ),
+            ),
+            scaffold=_manual_fiber_tag_scaffold(fiber_candidate),
+            codemod_patch=_manual_fiber_tag_patch(fiber_candidate),
+            metrics=DispatchCountMetrics(
+                dispatch_site_count=len(fiber_candidate.case_names),
+                dispatch_axis=f"self.{fiber_candidate.tag_name}",
+                literal_cases=fiber_candidate.case_names,
+            ),
+        )
 
 
-class DescriptorDerivedViewDetector(PerModuleIssueDetector):
+class DescriptorDerivedViewDetector(CandidateFindingDetector):
     detector_id = "descriptor_derived_view"
     finding_spec = FindingSpec(
         pattern_id=PatternId.DESCRIPTOR_DERIVED_VIEW,
@@ -2136,38 +2186,37 @@ class DescriptorDerivedViewDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _descriptor_derived_view_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"`{candidate.class_name}` stores derived views {candidate.derived_field_names} from `{candidate.source_attr}`, but `{candidate.mutator_name}` only updates {candidate.updated_field_names}."
-                    ),
-                    (
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.init_line,
-                            f"{candidate.class_name}.__init__",
-                        ),
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.mutator_line,
-                            f"{candidate.class_name}.{candidate.mutator_name}",
-                        ),
-                    ),
-                    scaffold=_descriptor_derived_view_scaffold(candidate),
-                    codemod_patch=_descriptor_derived_view_patch(candidate),
-                )
-            )
-        return findings
+        return _descriptor_derived_view_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        view_candidate = cast(DescriptorDerivedViewCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{view_candidate.class_name}` stores derived views {view_candidate.derived_field_names} from `{view_candidate.source_attr}`, but `{view_candidate.mutator_name}` only updates {view_candidate.updated_field_names}."
+            ),
+            (
+                SourceLocation(
+                    view_candidate.file_path,
+                    view_candidate.init_line,
+                    f"{view_candidate.class_name}.__init__",
+                ),
+                SourceLocation(
+                    view_candidate.file_path,
+                    view_candidate.mutator_line,
+                    f"{view_candidate.class_name}.{view_candidate.mutator_name}",
+                ),
+            ),
+            scaffold=_descriptor_derived_view_scaffold(view_candidate),
+            codemod_patch=_descriptor_derived_view_patch(view_candidate),
+        )
 
 
-class DeferredClassRegistrationDetector(PerModuleIssueDetector):
+class DeferredClassRegistrationDetector(CandidateFindingDetector):
     detector_id = "deferred_class_registration"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
@@ -2187,40 +2236,45 @@ class DeferredClassRegistrationDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _manual_registry_candidates(module):
-            evidence = [
-                SourceLocation(
-                    candidate.file_path, candidate.line, candidate.decorator_name
-                ),
-            ]
-            evidence.extend(
-                SourceLocation(candidate.file_path, candidate.line, class_name)
-                for class_name in candidate.class_names[:5]
+        return _manual_registry_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        registry_candidate = cast(ManualRegistryCandidate, candidate)
+        evidence = [
+            SourceLocation(
+                registry_candidate.file_path,
+                registry_candidate.line,
+                registry_candidate.decorator_name,
+            ),
+        ]
+        evidence.extend(
+            SourceLocation(
+                registry_candidate.file_path,
+                registry_candidate.line,
+                class_name,
             )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Registry `{candidate.registry_name}` is updated through manual decorator `{candidate.decorator_name}` for classes {candidate.class_names}, leaving registration structurally decoupled from class creation."
-                    ),
-                    tuple(evidence),
-                    scaffold=_manual_registry_scaffold(candidate),
-                    codemod_patch=_manual_registry_patch(candidate),
-                    metrics=RegistrationMetrics(
-                        registration_site_count=len(candidate.class_names),
-                        registry_name=candidate.registry_name,
-                    ),
-                )
-            )
-        return findings
+            for class_name in registry_candidate.class_names[:5]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation."
+            ),
+            tuple(evidence),
+            scaffold=_manual_registry_scaffold(registry_candidate),
+            codemod_patch=_manual_registry_patch(registry_candidate),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(registry_candidate.class_names),
+                registry_name=registry_candidate.registry_name,
+            ),
+        )
 
 
-class StructuralConfusabilityDetector(PerModuleIssueDetector):
+class StructuralConfusabilityDetector(CandidateFindingDetector):
     detector_id = "structural_confusability"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -2240,32 +2294,33 @@ class StructuralConfusabilityDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _structural_confusability_candidates(module):
-            evidence = (
-                SourceLocation(
-                    candidate.file_path, candidate.line, candidate.function_name
-                ),
-            )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"`{candidate.function_name}` observes `{candidate.parameter_name}` only through methods {candidate.observed_method_names}, but classes {candidate.class_names} are confusable under that view."
-                    ),
-                    evidence,
-                    scaffold=_structural_confusability_scaffold(candidate),
-                    codemod_patch=_structural_confusability_patch(candidate),
-                )
-            )
-        return findings
+        return _structural_confusability_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        confusability_candidate = cast(StructuralConfusabilityCandidate, candidate)
+        evidence = (
+            SourceLocation(
+                confusability_candidate.file_path,
+                confusability_candidate.line,
+                confusability_candidate.function_name,
+            ),
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view."
+            ),
+            evidence,
+            scaffold=_structural_confusability_scaffold(confusability_candidate),
+            codemod_patch=_structural_confusability_patch(confusability_candidate),
+        )
 
 
-class SemanticWitnessFamilyDetector(PerModuleIssueDetector):
+class SemanticWitnessFamilyDetector(CandidateFindingDetector):
     detector_id = "semantic_witness_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
@@ -2285,36 +2340,37 @@ class SemanticWitnessFamilyDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _witness_carrier_family_candidates(module):
-            evidence = tuple(
-                SourceLocation(candidate.file_path, line, class_name)
-                for class_name, line in zip(
-                    candidate.class_names, candidate.line_numbers, strict=True
-                )
+        return _witness_carrier_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        witness_candidate = cast(WitnessCarrierFamilyCandidate, candidate)
+        evidence = tuple(
+            SourceLocation(witness_candidate.file_path, line, class_name)
+            for class_name, line in zip(
+                witness_candidate.class_names,
+                witness_candidate.line_numbers,
+                strict=True,
             )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Carrier classes {', '.join(candidate.class_names)} repeat the same witness roles {candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier."
-                    ),
-                    evidence,
-                    scaffold=_witness_carrier_family_scaffold(candidate),
-                    codemod_patch=_witness_carrier_family_patch(candidate),
-                    metrics=WitnessCarrierMetrics(
-                        class_count=len(candidate.class_names),
-                        shared_role_count=len(candidate.shared_role_names),
-                        class_names=candidate.class_names,
-                        shared_role_names=candidate.shared_role_names,
-                    ),
-                )
-            )
-        return findings
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Carrier classes {', '.join(witness_candidate.class_names)} repeat the same witness roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier."
+            ),
+            evidence,
+            scaffold=_witness_carrier_family_scaffold(witness_candidate),
+            codemod_patch=_witness_carrier_family_patch(witness_candidate),
+            metrics=WitnessCarrierMetrics(
+                class_count=len(witness_candidate.class_names),
+                shared_role_count=len(witness_candidate.shared_role_names),
+                class_names=witness_candidate.class_names,
+                shared_role_names=witness_candidate.shared_role_names,
+            ),
+        )
 
 
 def _witness_mixin_enforcement_candidate(
@@ -2592,7 +2648,7 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
     return "SharedFieldsBase"
 
 
-class RepeatedFieldFamilyDetector(PerModuleIssueDetector):
+class RepeatedFieldFamilyDetector(CandidateFindingDetector):
     detector_id = "repeated_field_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
@@ -2617,44 +2673,45 @@ class RepeatedFieldFamilyDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        candidates = _field_family_candidates(module)
-        findings: list[RefactorFinding] = []
-        for candidate in candidates:
-            if len(candidate.class_names) < 2 or len(candidate.field_names) < 2:
-                continue
-            evidence = tuple(
-                SourceLocation(
-                    item.file_path,
-                    item.lineno,
-                    item.symbol,
-                )
-                for item in candidate.observations[:8]
+    ) -> Sequence[object]:
+        del config
+        return tuple(
+            candidate
+            for candidate in _field_family_candidates(module)
+            if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        field_candidate = cast(FieldFamilyCandidate, candidate)
+        evidence = tuple(
+            SourceLocation(
+                item.file_path,
+                item.lineno,
+                item.symbol,
             )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Classes {', '.join(candidate.class_names)} repeat fields {candidate.field_names} at `{candidate.execution_level}`."
-                    ),
-                    evidence,
-                    relation_context=(
-                        f"same field family repeats across sibling classes at `{candidate.execution_level}`"
-                    ),
-                    scaffold=_field_family_scaffold(candidate),
-                    metrics=FieldFamilyMetrics(
-                        class_count=len(candidate.class_names),
-                        field_count=len(candidate.field_names),
-                        class_names=candidate.class_names,
-                        field_names=candidate.field_names,
-                        execution_level=candidate.execution_level,
-                        dataclass_count=candidate.dataclass_count,
-                    ),
-                )
-            )
-        return findings
+            for item in field_candidate.observations[:8]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`."
+            ),
+            evidence,
+            relation_context=(
+                f"same field family repeats across sibling classes at `{field_candidate.execution_level}`"
+            ),
+            scaffold=_field_family_scaffold(field_candidate),
+            metrics=FieldFamilyMetrics(
+                class_count=len(field_candidate.class_names),
+                field_count=len(field_candidate.field_names),
+                class_names=field_candidate.class_names,
+                field_names=field_candidate.field_names,
+                execution_level=field_candidate.execution_level,
+                dataclass_count=field_candidate.dataclass_count,
+            ),
+        )
 
 
 class RepeatedBuilderCallDetector(FiberCollectedShapeIssueDetector):
@@ -2899,7 +2956,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         )
 
 
-class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
+class SentinelAttributeSimulationDetector(CandidateFindingDetector):
     detector_id = "sentinel_attribute_simulation"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -2924,11 +2981,11 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         sentinel_attrs = _collect_class_sentinel_attrs(module.module)
-        findings: list[RefactorFinding] = []
+        candidates: list[object] = []
         for attr_name, evidence in sentinel_attrs.items():
             if len(evidence) < 2:
                 continue
@@ -2938,23 +2995,28 @@ class SentinelAttributeSimulationDetector(PerModuleIssueDetector):
             generic_name = attr_name.lower() in {"name", "label", "title"}
             if generic_name and len(branch_evidence) < 2:
                 continue
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites."
-                    ),
-                    tuple((evidence + branch_evidence)[:6]),
-                    metrics=SentinelSimulationMetrics(
-                        class_count=len(evidence),
-                        branch_site_count=len(branch_evidence),
-                    ),
-                )
-            )
-        return findings
+            candidates.append((attr_name, tuple(evidence), tuple(branch_evidence)))
+        return tuple(candidates)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        attr_name, evidence, branch_evidence = cast(
+            tuple[str, tuple[SourceLocation, ...], tuple[SourceLocation, ...]],
+            candidate,
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites."
+            ),
+            tuple((evidence + branch_evidence)[:6]),
+            metrics=SentinelSimulationMetrics(
+                class_count=len(evidence),
+                branch_site_count=len(branch_evidence),
+            ),
+        )
 
 
-class PredicateFactoryChainDetector(PerModuleIssueDetector):
+class PredicateFactoryChainDetector(CandidateFindingDetector):
     detector_id = "predicate_factory_chain"
     finding_spec = FindingSpec(
         pattern_id=PatternId.DISCRIMINATED_UNION,
@@ -2978,25 +3040,30 @@ class PredicateFactoryChainDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for function in _iter_functions(module.module):
-            branch_count = _predicate_factory_chain_branch_count(function)
-            if branch_count is None:
-                continue
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"{function.name} contains a {branch_count}-branch predicate factory chain returning variant constructors."
-                    ),
-                    (SourceLocation(str(module.path), function.lineno, function.name),),
-                    metrics=BranchCountMetrics(branch_site_count=branch_count),
-                )
-            )
-        return findings
+    ) -> Sequence[object]:
+        del config
+        return tuple(
+            (str(module.path), function, branch_count)
+            for function in _iter_functions(module.module)
+            if (branch_count := _predicate_factory_chain_branch_count(function))
+            is not None
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        file_path, function, branch_count = cast(
+            tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, int],
+            candidate,
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{function.name} contains a {branch_count}-branch predicate factory chain returning variant constructors."
+            ),
+            (SourceLocation(file_path, function.lineno, function.name),),
+            metrics=BranchCountMetrics(branch_site_count=branch_count),
+        )
 
 
 class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
@@ -3590,7 +3657,7 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         return findings
 
 
-class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
+class RepeatedHardcodedStringDetector(CandidateFindingDetector):
     detector_id = "repeated_hardcoded_strings"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -3614,33 +3681,36 @@ class RepeatedHardcodedStringDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for literal, sites in _semantic_string_literal_sites(module).items():
-            if len(sites) < config.min_hardcoded_string_sites:
-                continue
-            evidence = tuple(sites[:6])
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"String literal `{literal}` repeats across {len(sites)} semantic sites in {module.path}."
-                    ),
-                    evidence,
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(sites),
-                        field_count=1,
-                        mapping_name=literal,
-                        field_names=(literal,),
-                    ),
-                )
-            )
-        return findings
+    ) -> Sequence[object]:
+        return tuple(
+            (str(module.path), literal, tuple(sites))
+            for literal, sites in _semantic_string_literal_sites(module).items()
+            if len(sites) >= config.min_hardcoded_string_sites
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        file_path, literal, sites = cast(
+            tuple[str, str, tuple[SourceLocation, ...]],
+            candidate,
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"String literal `{literal}` repeats across {len(sites)} semantic sites in {file_path}."
+            ),
+            tuple(sites[:6]),
+            metrics=MappingMetrics(
+                mapping_site_count=len(sites),
+                field_count=1,
+                mapping_name=literal,
+                field_names=(literal,),
+            ),
+        )
 
 
-class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
+class RepeatedProjectionHelperDetector(CandidateFindingDetector):
     detector_id = "repeated_projection_helpers"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -3664,51 +3734,31 @@ class RepeatedProjectionHelperDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        shapes: tuple[ProjectionHelperShape, ...] = _collect_typed_family_items(
-            module,
-            ProjectionHelperObservationFamily,
-            ProjectionHelperShape,
-        )
-        graph = ObservationGraph(
-            tuple(shape.structural_observation for shape in shapes)
-        )
-        lookup = _carrier_lookup(tuple(shapes))
+    ) -> Sequence[object]:
+        del config
+        return _projection_helper_groups(module)
 
-        findings: list[RefactorFinding] = []
-        for fiber in graph.fibers_with_min_observations(
-            ObservationKind.PROJECTION_HELPER,
-            StructuralExecutionLevel.FUNCTION_BODY,
-            minimum_observations=2,
-        ):
-            ordered = tuple(
-                _as_projection_helper_shape(item)
-                for item in _materialize_observations(fiber.observations, lookup)
-            )
-            attributes = {shape.projected_attribute for shape in ordered}
-            if len(attributes) < 2:
-                continue
-            evidence = tuple(
-                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
-                for shape in ordered[:6]
-            )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Projection helper wrappers {', '.join(shape.function_name for shape in ordered[:4])} repeat the same wrapper shape while only projecting different attributes."
-                    ),
-                    evidence,
-                    scaffold=_projection_helper_scaffold(list(ordered)),
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(ordered),
-                        field_count=len(attributes),
-                    ),
-                )
-            )
-        return findings
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        ordered = cast(tuple[ProjectionHelperShape, ...], candidate)
+        attributes = {shape.projected_attribute for shape in ordered}
+        evidence = tuple(
+            SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+            for shape in ordered[:6]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Projection helper wrappers {', '.join(shape.function_name for shape in ordered[:4])} repeat the same wrapper shape while only projecting different attributes."
+            ),
+            evidence,
+            scaffold=_projection_helper_scaffold(list(ordered)),
+            metrics=MappingMetrics(
+                mapping_site_count=len(ordered),
+                field_count=len(attributes),
+            ),
+        )
 
 
 class ScopedShapeWrapperDetector(PerModuleIssueDetector):
@@ -3854,7 +3904,7 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
         return findings
 
 
-class AccessorWrapperDetector(PerModuleIssueDetector):
+class AccessorWrapperDetector(CandidateFindingDetector):
     detector_id = "accessor_wrapper"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -3878,80 +3928,63 @@ class AccessorWrapperDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        candidates: tuple[AccessorWrapperCandidate, ...] = _collect_typed_family_items(
-            module,
-            AccessorWrapperObservationFamily,
-            AccessorWrapperCandidate,
-        )
-        graph = ObservationGraph(
-            tuple(candidate.structural_observation for candidate in candidates)
-        )
-        lookup = _carrier_lookup(tuple(candidates))
+    ) -> Sequence[object]:
+        del config
+        return _accessor_wrapper_groups(module)
 
-        findings: list[RefactorFinding] = []
-        for witness_group in graph.witness_groups_for(
-            ObservationKind.ACCESSOR_WRAPPER,
-            StructuralExecutionLevel.FUNCTION_BODY,
-        ):
-            class_name = witness_group.nominal_witness
-            ordered = tuple(
-                _as_accessor_wrapper_candidate(item)
-                for item in _materialize_observations(
-                    witness_group.observations,
-                    lookup,
-                )
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        ordered = cast(tuple[AccessorWrapperCandidate, ...], candidate)
+        class_name = ordered[0].class_name
+        evidence = tuple(
+            SourceLocation(
+                ordered_item.file_path, ordered_item.lineno, ordered_item.symbol
             )
-            if not _supports_accessor_wrapper_finding(list(ordered)):
-                continue
-            evidence = tuple(
-                SourceLocation(str(module.path), candidate.lineno, candidate.symbol)
-                for candidate in ordered[:6]
+            for ordered_item in ordered[:6]
+        )
+        replacement_examples = "\n".join(
+            _accessor_replacement_example(ordered_item) for ordered_item in ordered[:3]
+        )
+        observed_attrs = ", ".join(
+            sorted({ordered_item.observed_attribute for ordered_item in ordered})
+        )
+        wrapper_shapes = ", ".join(
+            sorted(
+                {
+                    ordered_item.wrapper_shape.replace("_", " ")
+                    for ordered_item in ordered
+                }
             )
-            replacement_examples = "\n".join(
-                _accessor_replacement_example(candidate) for candidate in ordered[:3]
-            )
-            observed_attrs = ", ".join(
-                sorted({candidate.observed_attribute for candidate in ordered})
-            )
-            wrapper_shapes = ", ".join(
-                sorted(
-                    {candidate.wrapper_shape.replace("_", " ") for candidate in ordered}
-                )
-            )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Class {class_name} exposes {len(ordered)} structural accessor wrapper(s) over {observed_attrs}."
-                    ),
-                    evidence,
-                    relation_context=(
-                        f"same class repeats {wrapper_shapes} around owned attributes instead of exposing one authoritative access path"
-                    ),
-                    scaffold=(
-                        "Collapse these transport wrappers to direct dot access when they only expose owned state. "
-                        "If a one-step computed view must remain public, express it as an `@property`.\n\n"
-                        "Example replacements:\n"
-                        f"{replacement_examples}"
-                    ),
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(ordered),
-                        field_count=len(
-                            {candidate.observed_attribute for candidate in ordered}
-                        ),
-                        mapping_name=f"{class_name} property",
-                        field_names=tuple(
-                            sorted(
-                                {candidate.observed_attribute for candidate in ordered}
-                            )
-                        ),
-                    ),
-                )
-            )
-        return findings
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Class {class_name} exposes {len(ordered)} structural accessor wrapper(s) over {observed_attrs}."
+            ),
+            evidence,
+            relation_context=(
+                f"same class repeats {wrapper_shapes} around owned attributes instead of exposing one authoritative access path"
+            ),
+            scaffold=(
+                "Collapse these transport wrappers to direct dot access when they only expose owned state. "
+                "If a one-step computed view must remain public, express it as an `@property`.\n\n"
+                "Example replacements:\n"
+                f"{replacement_examples}"
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(ordered),
+                field_count=len(
+                    {ordered_item.observed_attribute for ordered_item in ordered}
+                ),
+                mapping_name=f"{class_name} property",
+                field_names=tuple(
+                    sorted(
+                        {ordered_item.observed_attribute for ordered_item in ordered}
+                    )
+                ),
+            ),
+        )
 
 
 class SemanticDictBagDetector(PerModuleIssueDetector):
@@ -4021,7 +4054,7 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
         return findings
 
 
-class BidirectionalRegistryDetector(PerModuleIssueDetector):
+class BidirectionalRegistryDetector(CandidateFindingDetector):
     detector_id = "bidirectional_registry"
     finding_spec = FindingSpec(
         pattern_id=PatternId.BIDIRECTIONAL_LOOKUP,
@@ -4047,43 +4080,40 @@ class BidirectionalRegistryDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        for node in ast.walk(module.module):
-            if not isinstance(node, ast.ClassDef):
-                continue
-            dict_attrs = _collect_dict_attrs(node)
-            mirrored_pairs = _collect_mirrored_assignments(node)
-            if len(dict_attrs) < 2 or not mirrored_pairs:
-                continue
-            evidence = tuple(
-                SourceLocation(str(module.path), lineno, f"{node.name}.{label}")
-                for lineno, label in mirrored_pairs[:6]
-            )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Class {node.name} appears to maintain mirrored forward/reverse registry assignments."
-                    ),
-                    evidence,
-                    observation_tags=(
-                        ObservationTag.MIRRORED_REGISTRY,
-                        ObservationTag.CLASS_LEVEL_POSITION,
-                        ObservationTag.MANUAL_SYNCHRONIZATION,
-                    ),
-                    metrics=RegistrationMetrics(
-                        registration_site_count=len(mirrored_pairs),
-                        registry_name=node.name,
-                        class_key_pairs=tuple(
-                            f"{node.name}.{label}" for _, label in mirrored_pairs
-                        ),
-                    ),
-                )
-            )
-        return findings
+    ) -> Sequence[object]:
+        del config
+        return _mirrored_registry_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        file_path, class_name, mirrored_pairs = cast(
+            tuple[str, str, tuple[tuple[int, str], ...]],
+            candidate,
+        )
+        evidence = tuple(
+            SourceLocation(file_path, lineno, f"{class_name}.{label}")
+            for lineno, label in mirrored_pairs[:6]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Class {class_name} appears to maintain mirrored forward/reverse registry assignments."
+            ),
+            evidence,
+            observation_tags=(
+                ObservationTag.MIRRORED_REGISTRY,
+                ObservationTag.CLASS_LEVEL_POSITION,
+                ObservationTag.MANUAL_SYNCHRONIZATION,
+            ),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(mirrored_pairs),
+                registry_name=class_name,
+                class_key_pairs=tuple(
+                    f"{class_name}.{label}" for _, label in mirrored_pairs
+                ),
+            ),
+        )
 
 
 _METRIC_BAG_SCHEMAS = metric_semantic_bag_descriptors()
@@ -5066,8 +5096,18 @@ def _finding_assembly_pipeline_candidates(
         candidates.append(
             FindingAssemblyPipelineCandidate(
                 file_path=str(module.path),
-                class_name=node.name,
                 line=method.lineno,
+                subject_name=node.name,
+                name_family=tuple(
+                    item
+                    for item in (
+                        candidate_source_name,
+                        metrics_type_name,
+                        scaffold_helper_name,
+                        patch_helper_name,
+                    )
+                    if item is not None
+                ),
                 method_name=method.name,
                 candidate_source_name=candidate_source_name,
                 metrics_type_name=metrics_type_name,
@@ -5178,8 +5218,13 @@ def _guarded_delegator_candidates(
             candidates.append(
                 GuardedDelegatorCandidate(
                     file_path=str(module.path),
-                    class_name=node.name,
                     line=statement.lineno,
+                    subject_name=node.name,
+                    name_family=(
+                        guard.test.__class__.__name__,
+                        delegate_name,
+                        _scope_role_name(guard.test),
+                    ),
                     method_name=statement.name,
                     guard_role=_guard_role_name(guard.test),
                     delegate_name=delegate_name,
@@ -5227,9 +5272,9 @@ def _structural_observation_property_candidates(
             candidates.append(
                 StructuralObservationPropertyCandidate(
                     file_path=str(module.path),
-                    class_name=node.name,
                     line=statement.lineno,
-                    keyword_names=keyword_names,
+                    subject_name=node.name,
+                    name_family=keyword_names,
                 )
             )
     return tuple(candidates)
@@ -5267,14 +5312,14 @@ def _existing_nominal_authority_reuse_candidates(
         candidates.append(
             ExistingNominalAuthorityReuseCandidate(
                 file_path=shape.file_path,
-                class_name=shape.class_name,
                 line=shape.line,
+                subject_name=shape.class_name,
+                name_family=shared_field_names,
                 compatible_authority_file_path=authority.file_path,
                 compatible_authority_name=authority.class_name,
                 compatible_authority_line=authority.line,
                 reuse_kind=_reuse_kind_for_authority(authority),
                 shared_role_names=_semantic_role_names_for_fields(shared_field_names),
-                shared_field_names=shared_field_names,
             )
         )
     return tuple(
@@ -5288,6 +5333,78 @@ def _existing_nominal_authority_reuse_candidates(
             ),
         )
     )
+
+
+def _projection_helper_groups(
+    module: ParsedModule,
+) -> tuple[tuple[ProjectionHelperShape, ...], ...]:
+    shapes: tuple[ProjectionHelperShape, ...] = _collect_typed_family_items(
+        module,
+        ProjectionHelperObservationFamily,
+        ProjectionHelperShape,
+    )
+    graph = ObservationGraph(tuple(shape.structural_observation for shape in shapes))
+    lookup = _carrier_lookup(tuple(shapes))
+    groups: list[tuple[ProjectionHelperShape, ...]] = []
+    for fiber in graph.fibers_with_min_observations(
+        ObservationKind.PROJECTION_HELPER,
+        StructuralExecutionLevel.FUNCTION_BODY,
+        minimum_observations=2,
+    ):
+        ordered = tuple(
+            _as_projection_helper_shape(item)
+            for item in _materialize_observations(fiber.observations, lookup)
+        )
+        attributes = {shape.projected_attribute for shape in ordered}
+        if len(attributes) < 2:
+            continue
+        groups.append(ordered)
+    return tuple(groups)
+
+
+def _accessor_wrapper_groups(
+    module: ParsedModule,
+) -> tuple[tuple[AccessorWrapperCandidate, ...], ...]:
+    candidates: tuple[AccessorWrapperCandidate, ...] = _collect_typed_family_items(
+        module,
+        AccessorWrapperObservationFamily,
+        AccessorWrapperCandidate,
+    )
+    graph = ObservationGraph(
+        tuple(candidate.structural_observation for candidate in candidates)
+    )
+    lookup = _carrier_lookup(tuple(candidates))
+    groups: list[tuple[AccessorWrapperCandidate, ...]] = []
+    for witness_group in graph.witness_groups_for(
+        ObservationKind.ACCESSOR_WRAPPER,
+        StructuralExecutionLevel.FUNCTION_BODY,
+    ):
+        ordered = tuple(
+            _as_accessor_wrapper_candidate(item)
+            for item in _materialize_observations(
+                witness_group.observations,
+                lookup,
+            )
+        )
+        if not _supports_accessor_wrapper_finding(list(ordered)):
+            continue
+        groups.append(ordered)
+    return tuple(groups)
+
+
+def _mirrored_registry_candidates(
+    module: ParsedModule,
+) -> tuple[tuple[str, str, tuple[tuple[int, str], ...]], ...]:
+    candidates: list[tuple[str, str, tuple[tuple[int, str], ...]]] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        dict_attrs = _collect_dict_attrs(node)
+        mirrored_pairs = _collect_mirrored_assignments(node)
+        if len(dict_attrs) < 2 or not mirrored_pairs:
+            continue
+        candidates.append((str(module.path), node.name, tuple(mirrored_pairs)))
+    return tuple(candidates)
 
 
 class ManualFamilyRosterDetector(IssueDetector):
@@ -5358,7 +5475,7 @@ class ManualFamilyRosterDetector(IssueDetector):
         return findings
 
 
-class FragmentedFamilyAuthorityDetector(PerModuleIssueDetector):
+class FragmentedFamilyAuthorityDetector(CandidateFindingDetector):
     detector_id = "fragmented_family_authority"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -5378,49 +5495,48 @@ class FragmentedFamilyAuthorityDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _fragmented_family_authority_candidates(module):
-            evidence = tuple(
-                SourceLocation(candidate.file_path, line, name)
-                for name, line in zip(
-                    candidate.mapping_names,
-                    candidate.line_numbers,
-                    strict=True,
-                )
+        return _fragmented_family_authority_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        authority_candidate = cast(FragmentedFamilyAuthorityCandidate, candidate)
+        evidence = tuple(
+            SourceLocation(authority_candidate.file_path, line, name)
+            for name, line in zip(
+                authority_candidate.mapping_names,
+                authority_candidate.line_numbers,
+                strict=True,
             )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Tables {', '.join(candidate.mapping_names)} split one `{candidate.key_family_name}` metadata family across {len(candidate.mapping_names)} authorities."
-                    ),
-                    evidence[:6],
-                    scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        f"class {candidate.key_family_name}Spec:\n"
-                        f"    key: {candidate.key_family_name}\n"
-                        "    priority: int\n"
-                        "    dependencies: tuple[object, ...] = ()\n"
-                        "    synergy_with: tuple[object, ...] = ()\n"
-                        "    builder: object | None = None"
-                    ),
-                    codemod_patch=(
-                        f"# Collapse {candidate.mapping_names} into one `{candidate.key_family_name}`-keyed spec table.\n"
-                        f"# Move shared keys {candidate.shared_keys} into one authoritative record instead of parallel dicts."
-                    ),
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(candidate.mapping_names),
-                        field_count=len(candidate.shared_keys),
-                        mapping_name=f"{candidate.key_family_name} spec",
-                        field_names=candidate.shared_keys,
-                    ),
-                )
-            )
-        return findings
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Tables {', '.join(authority_candidate.mapping_names)} split one `{authority_candidate.key_family_name}` metadata family across {len(authority_candidate.mapping_names)} authorities."
+            ),
+            evidence[:6],
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                f"class {authority_candidate.key_family_name}Spec:\n"
+                f"    key: {authority_candidate.key_family_name}\n"
+                "    priority: int\n"
+                "    dependencies: tuple[object, ...] = ()\n"
+                "    synergy_with: tuple[object, ...] = ()\n"
+                "    builder: object | None = None"
+            ),
+            codemod_patch=(
+                f"# Collapse {authority_candidate.mapping_names} into one `{authority_candidate.key_family_name}`-keyed spec table.\n"
+                f"# Move shared keys {authority_candidate.shared_keys} into one authoritative record instead of parallel dicts."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(authority_candidate.mapping_names),
+                field_count=len(authority_candidate.shared_keys),
+                mapping_name=f"{authority_candidate.key_family_name} spec",
+                field_names=authority_candidate.shared_keys,
+            ),
+        )
 
 
 class ExistingNominalAuthorityReuseDetector(IssueDetector):
@@ -5639,7 +5755,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         ]
 
 
-class StructuralObservationProjectionDetector(PerModuleIssueDetector):
+class StructuralObservationProjectionDetector(CandidateFindingDetector):
     detector_id = "structural_observation_projection"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -5659,98 +5775,63 @@ class StructuralObservationProjectionDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
+    def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
+    ) -> Sequence[object]:
         del config
         grouped: dict[tuple[str, ...], list[StructuralObservationPropertyCandidate]] = (
             defaultdict(list)
         )
         for candidate in _structural_observation_property_candidates(module):
             grouped[candidate.keyword_names].append(candidate)
-        findings: list[RefactorFinding] = []
-        for keyword_names, candidates in grouped.items():
-            if len(candidates) < 3:
-                continue
-            evidence = tuple(
-                SourceLocation(
-                    candidate.file_path, candidate.line, candidate.class_name
-                )
-                for candidate in candidates[:6]
-            )
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    (
-                        f"Classes {', '.join(candidate.class_name for candidate in candidates[:5])} rebuild the same StructuralObservation schema over roles {keyword_names}."
-                    ),
-                    evidence,
-                    scaffold=(
-                        "class StructuralObservationTemplate(StructuralObservationCarrier, ABC):\n"
-                        "    observation_kind: ClassVar[ObservationKind]\n"
-                        "    execution_level: ClassVar[StructuralExecutionLevel]\n\n"
-                        "    @property\n"
-                        "    def structural_observation(self) -> StructuralObservation:\n"
-                        "        return StructuralObservation(...)"
-                    ),
-                    codemod_patch=(
-                        f"# Introduce one projection template for roles {keyword_names}.\n"
-                        "# Leave only owner_symbol, nominal_witness, observed_name, and fiber_key hooks on the concrete carriers."
-                    ),
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(candidates),
-                        field_count=len(keyword_names),
-                        mapping_name="StructuralObservation",
-                        field_names=keyword_names,
-                    ),
-                )
-            )
-        return findings
+        return tuple(
+            (keyword_names, tuple(candidates))
+            for keyword_names, candidates in grouped.items()
+            if len(candidates) >= 3
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        keyword_names, grouped_candidates = cast(
+            tuple[
+                tuple[str, ...],
+                tuple[StructuralObservationPropertyCandidate, ...],
+            ],
+            candidate,
+        )
+        evidence = tuple(
+            SourceLocation(item.file_path, item.line, item.class_name)
+            for item in grouped_candidates[:6]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild the same StructuralObservation schema over roles {keyword_names}."
+            ),
+            evidence,
+            scaffold=(
+                "class StructuralObservationTemplate(StructuralObservationCarrier, ABC):\n"
+                "    observation_kind: ClassVar[ObservationKind]\n"
+                "    execution_level: ClassVar[StructuralExecutionLevel]\n\n"
+                "    @property\n"
+                "    def structural_observation(self) -> StructuralObservation:\n"
+                "        return StructuralObservation(...)"
+            ),
+            codemod_patch=(
+                f"# Introduce one projection template for roles {keyword_names}.\n"
+                "# Leave only owner_symbol, nominal_witness, observed_name, and fiber_key hooks on the concrete carriers."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(grouped_candidates),
+                field_count=len(keyword_names),
+                mapping_name="StructuralObservation",
+                field_names=keyword_names,
+            ),
+        )
 
 
 def default_detectors() -> tuple[IssueDetector, ...]:
-    return (
-        SentinelAttributeSimulationDetector(),
-        PredicateFactoryChainDetector(),
-        ConfigAttributeDispatchDetector(),
-        GeneratedTypeLineageDetector(),
-        DualAxisResolutionDetector(),
-        ManualVirtualMembershipDetector(),
-        DynamicInterfaceGenerationDetector(),
-        SentinelTypeMarkerDetector(),
-        DynamicMethodInjectionDetector(),
-        SemanticWitnessFamilyDetector(),
-        MixinEnforcementDetector(),
-        ManualFiberTagDetector(),
-        DescriptorDerivedViewDetector(),
-        DeferredClassRegistrationDetector(),
-        StructuralConfusabilityDetector(),
-        EnumStrategyDispatchDetector(),
-        OrchestrationHubDetector(),
-        ParameterThreadFamilyDetector(),
-        FindingAssemblyPipelineDetector(),
-        RepeatedPrivateMethodDetector(),
-        InheritanceHierarchyCandidateDetector(),
-        ExistingNominalAuthorityReuseDetector(),
-        RepeatedFieldFamilyDetector(),
-        RepeatedBuilderCallDetector(),
-        RepeatedExportDictDetector(),
-        FragmentedFamilyAuthorityDetector(),
-        StructuralObservationProjectionDetector(),
-        ManualFamilyRosterDetector(),
-        ManualClassRegistrationDetector(),
-        AttributeProbeDetector(),
-        InlineLiteralDispatchDetector(),
-        StringDispatchDetector(),
-        NumericLiteralDispatchDetector(),
-        RepeatedHardcodedStringDetector(),
-        RepeatedProjectionHelperDetector(),
-        ScopedShapeWrapperDetector(),
-        GuardedDelegatorSpecDetector(),
-        ManualIndexedFamilyExpansionDetector(),
-        AccessorWrapperDetector(),
-        SemanticDictBagDetector(),
-        BidirectionalRegistryDetector(),
+    return tuple(
+        detector_type() for detector_type in IssueDetector.registered_detector_types()
     )
 
 

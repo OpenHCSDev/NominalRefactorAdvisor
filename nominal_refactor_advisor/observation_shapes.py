@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from .observation_graph import (
     ObservationKind,
@@ -28,8 +29,58 @@ class FieldOriginKind(StrEnum):
     INIT_ASSIGNMENT = "init_assignment"
 
 
+class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
+    @property
+    @abstractmethod
+    def observation_kind(self) -> ObservationKind:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def observation_line(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def owner_symbol(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def nominal_witness(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def observed_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def fiber_key(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=str(getattr(self, "file_path")),
+            owner_symbol=self.owner_symbol,
+            nominal_witness=self.nominal_witness,
+            line=self.observation_line,
+            observation_kind=self.observation_kind,
+            execution_level=self.observation_execution_level,
+            observed_name=self.observed_name,
+            fiber_key=self.fiber_key,
+        )
+
+
 @dataclass(frozen=True)
-class FieldObservation(StructuralObservationCarrier):
+class FieldObservation(StructuralObservationTemplate):
     file_path: str
     class_name: str
     field_name: str
@@ -46,21 +97,36 @@ class FieldObservation(StructuralObservationCarrier):
         return f"{self.class_name}.{self.field_name}"
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.class_name,
-            line=self.lineno,
-            observation_kind=ObservationKind.FIELD,
-            execution_level=self.execution_level,
-            observed_name=self.field_name,
-            fiber_key=self.field_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.FIELD
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return self.execution_level
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name
+
+    @property
+    def observed_name(self) -> str:
+        return self.field_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.field_name
 
 
 @dataclass(frozen=True)
-class AttributeProbeObservation(StructuralObservationCarrier):
+class AttributeProbeObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
@@ -69,22 +135,36 @@ class AttributeProbeObservation(StructuralObservationCarrier):
     execution_level: StructuralExecutionLevel
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        observed_name = self.observed_attribute or self.probe_kind
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.ATTRIBUTE_PROBE,
-            execution_level=self.execution_level,
-            observed_name=observed_name,
-            fiber_key=f"{self.probe_kind}:{observed_name}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.ATTRIBUTE_PROBE
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return self.execution_level
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.observed_attribute or self.probe_kind
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.probe_kind}:{self.observed_name}"
 
 
 @dataclass(frozen=True)
-class LiteralDispatchObservation(StructuralObservationCarrier):
+class LiteralDispatchObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
@@ -97,21 +177,36 @@ class LiteralDispatchObservation(StructuralObservationCarrier):
     scope_owner: str | None = None
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.scope_owner or self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.LITERAL_DISPATCH,
-            execution_level=self.execution_level,
-            observed_name=self.axis_expression,
-            fiber_key=f"{self.literal_kind}:{self.axis_fingerprint}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.LITERAL_DISPATCH
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return self.execution_level
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.scope_owner or self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.axis_expression
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.literal_kind}:{self.axis_fingerprint}"
 
 
 @dataclass(frozen=True)
-class ProjectionHelperShape(StructuralObservationCarrier):
+class ProjectionHelperShape(StructuralObservationTemplate):
     file_path: str
     function_name: str
     lineno: int
@@ -125,23 +220,38 @@ class ProjectionHelperShape(StructuralObservationCarrier):
         return self.function_name
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.function_name,
-            line=self.lineno,
-            observation_kind=ObservationKind.PROJECTION_HELPER,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.projected_attribute,
-            fiber_key=(
-                f"{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}"
-            ),
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.PROJECTION_HELPER
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.function_name
+
+    @property
+    def observed_name(self) -> str:
+        return self.projected_attribute
+
+    @property
+    def fiber_key(self) -> str:
+        return (
+            f"{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}"
         )
 
 
 @dataclass(frozen=True)
-class AccessorWrapperCandidate(StructuralObservationCarrier):
+class AccessorWrapperCandidate(StructuralObservationTemplate):
     file_path: str
     class_name: str
     method_name: str
@@ -156,42 +266,72 @@ class AccessorWrapperCandidate(StructuralObservationCarrier):
         return f"{self.class_name}.{self.method_name}"
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.class_name,
-            line=self.lineno,
-            observation_kind=ObservationKind.ACCESSOR_WRAPPER,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.observed_attribute,
-            fiber_key=f"{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.ACCESSOR_WRAPPER
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name
+
+    @property
+    def observed_name(self) -> str:
+        return self.observed_attribute
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}"
 
 
 @dataclass(frozen=True)
-class ScopedShapeWrapperFunction(StructuralObservationCarrier):
+class ScopedShapeWrapperFunction(StructuralObservationTemplate):
     file_path: str
     function_name: str
     lineno: int
     node_types: tuple[str, ...]
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.function_name,
-            nominal_witness=self.function_name,
-            line=self.lineno,
-            observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
-            execution_level=StructuralExecutionLevel.MODULE_BODY,
-            observed_name=self.function_name,
-            fiber_key=f"function:{'/'.join(self.node_types)}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.SCOPED_SHAPE_WRAPPER
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.MODULE_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.function_name
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.function_name
+
+    @property
+    def observed_name(self) -> str:
+        return self.function_name
+
+    @property
+    def fiber_key(self) -> str:
+        return f"function:{'/'.join(self.node_types)}"
 
 
 @dataclass(frozen=True)
-class ScopedShapeWrapperSpec(StructuralObservationCarrier):
+class ScopedShapeWrapperSpec(StructuralObservationTemplate):
     file_path: str
     spec_name: str
     lineno: int
@@ -199,168 +339,288 @@ class ScopedShapeWrapperSpec(StructuralObservationCarrier):
     node_types: tuple[str, ...]
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.spec_name,
-            nominal_witness=self.function_name,
-            line=self.lineno,
-            observation_kind=ObservationKind.SCOPED_SHAPE_WRAPPER,
-            execution_level=StructuralExecutionLevel.MODULE_BODY,
-            observed_name=self.function_name,
-            fiber_key=f"spec:{'/'.join(self.node_types)}:{self.function_name}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.SCOPED_SHAPE_WRAPPER
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.MODULE_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.spec_name
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.function_name
+
+    @property
+    def observed_name(self) -> str:
+        return self.function_name
+
+    @property
+    def fiber_key(self) -> str:
+        return f"spec:{'/'.join(self.node_types)}:{self.function_name}"
 
 
 @dataclass(frozen=True)
-class ConfigDispatchObservation(StructuralObservationCarrier):
+class ConfigDispatchObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     observed_attribute: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.CONFIG_DISPATCH,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.observed_attribute,
-            fiber_key=self.observed_attribute,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.CONFIG_DISPATCH
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.observed_attribute
+
+    @property
+    def fiber_key(self) -> str:
+        return self.observed_attribute
 
 
 @dataclass(frozen=True)
-class ClassMarkerObservation(StructuralObservationCarrier):
+class ClassMarkerObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     marker_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.CLASS_MARKER,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.marker_name,
-            fiber_key=self.marker_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.CLASS_MARKER
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.marker_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.marker_name
 
 
 @dataclass(frozen=True)
-class InterfaceGenerationObservation(StructuralObservationCarrier):
+class InterfaceGenerationObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     generator_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.INTERFACE_GENERATION,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.generator_name,
-            fiber_key=self.generator_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.INTERFACE_GENERATION
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.generator_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.generator_name
 
 
 @dataclass(frozen=True)
-class SentinelTypeObservation(StructuralObservationCarrier):
+class SentinelTypeObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     sentinel_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.SENTINEL_TYPE,
-            execution_level=StructuralExecutionLevel.MODULE_BODY,
-            observed_name=self.sentinel_name,
-            fiber_key=self.sentinel_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.SENTINEL_TYPE
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.MODULE_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.sentinel_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.sentinel_name
 
 
 @dataclass(frozen=True)
-class DynamicMethodInjectionObservation(StructuralObservationCarrier):
+class DynamicMethodInjectionObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     mutator_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.DYNAMIC_METHOD_INJECTION,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.mutator_name,
-            fiber_key=self.mutator_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.DYNAMIC_METHOD_INJECTION
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.mutator_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.mutator_name
 
 
 @dataclass(frozen=True)
-class RuntimeTypeGenerationObservation(StructuralObservationCarrier):
+class RuntimeTypeGenerationObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     generator_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.RUNTIME_TYPE_GENERATION,
-            execution_level=StructuralExecutionLevel.MODULE_BODY,
-            observed_name=self.generator_name,
-            fiber_key=self.generator_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.RUNTIME_TYPE_GENERATION
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.MODULE_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.generator_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.generator_name
 
 
 @dataclass(frozen=True)
-class LineageMappingObservation(StructuralObservationCarrier):
+class LineageMappingObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
     mapping_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.LINEAGE_MAPPING,
-            execution_level=StructuralExecutionLevel.MODULE_BODY,
-            observed_name=self.mapping_name,
-            fiber_key=self.mapping_name,
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.LINEAGE_MAPPING
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.MODULE_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.mapping_name
+
+    @property
+    def fiber_key(self) -> str:
+        return self.mapping_name
 
 
 @dataclass(frozen=True)
-class DualAxisResolutionObservation(StructuralObservationCarrier):
+class DualAxisResolutionObservation(StructuralObservationTemplate):
     file_path: str
     line: int
     symbol: str
@@ -368,21 +628,36 @@ class DualAxisResolutionObservation(StructuralObservationCarrier):
     inner_axis_name: str
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.symbol,
-            line=self.line,
-            observation_kind=ObservationKind.DUAL_AXIS_RESOLUTION,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=f"{self.outer_axis_name}:{self.inner_axis_name}",
-            fiber_key=f"{self.outer_axis_name}:{self.inner_axis_name}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.DUAL_AXIS_RESOLUTION
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.line
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return f"{self.outer_axis_name}:{self.inner_axis_name}"
+
+    @property
+    def fiber_key(self) -> str:
+        return self.observed_name
 
 
 @dataclass(frozen=True)
-class MethodShape(StructuralObservationCarrier):
+class MethodShape(StructuralObservationTemplate):
     file_path: str
     class_name: str | None
     method_name: str
@@ -401,21 +676,36 @@ class MethodShape(StructuralObservationCarrier):
         return self.method_name
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.class_name or self.symbol,
-            line=self.lineno,
-            observation_kind=ObservationKind.METHOD_SHAPE,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.method_name,
-            fiber_key=f"{self.is_private}:{self.param_count}:{self.fingerprint}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.METHOD_SHAPE
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name or self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.method_name
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.is_private}:{self.param_count}:{self.fingerprint}"
 
 
 @dataclass(frozen=True)
-class BuilderCallShape(StructuralObservationCarrier):
+class BuilderCallShape(StructuralObservationTemplate):
     file_path: str
     class_name: str | None
     function_name: str | None
@@ -435,19 +725,32 @@ class BuilderCallShape(StructuralObservationCarrier):
         return f"{owner}:{self.callee_name}"
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.class_name or self.function_name or self.symbol,
-            line=self.lineno,
-            observation_kind=ObservationKind.BUILDER_CALL,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=self.callee_name,
-            fiber_key=(
-                f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
-            ),
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.BUILDER_CALL
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name or self.function_name or self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return self.callee_name
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
 
 
 @dataclass(frozen=True)
@@ -527,7 +830,7 @@ class RegistrationShape:
 
 
 @dataclass(frozen=True)
-class ExportDictShape(StructuralObservationCarrier):
+class ExportDictShape(StructuralObservationTemplate):
     file_path: str
     class_name: str | None
     function_name: str | None
@@ -546,17 +849,32 @@ class ExportDictShape(StructuralObservationCarrier):
         return f"{owner}:export-dict"
 
     @property
-    def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            nominal_witness=self.class_name or self.function_name or self.symbol,
-            line=self.lineno,
-            observation_kind=ObservationKind.EXPORT_DICT,
-            execution_level=StructuralExecutionLevel.FUNCTION_BODY,
-            observed_name=",".join(self.key_names),
-            fiber_key=f"{self.key_names}:{self.value_fingerprint}",
-        )
+    def observation_kind(self) -> ObservationKind:
+        return ObservationKind.EXPORT_DICT
+
+    @property
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return StructuralExecutionLevel.FUNCTION_BODY
+
+    @property
+    def observation_line(self) -> int:
+        return self.lineno
+
+    @property
+    def owner_symbol(self) -> str:
+        return self.symbol
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name or self.function_name or self.symbol
+
+    @property
+    def observed_name(self) -> str:
+        return ",".join(self.key_names)
+
+    @property
+    def fiber_key(self) -> str:
+        return f"{self.key_names}:{self.value_fingerprint}"
 
 
 __all__ = [

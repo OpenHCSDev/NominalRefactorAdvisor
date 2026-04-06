@@ -28,139 +28,20 @@ from .taxonomy import (
 )
 
 
-_PATTERN_DEPENDENCIES = {
-    PatternId.CLOSED_FAMILY_DISPATCH: {
-        PatternId.NOMINAL_BOUNDARY,
-        PatternId.DISCRIMINATED_UNION,
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.AUTO_REGISTER_META,
-    },
-    PatternId.ABC_TEMPLATE_METHOD: {
-        PatternId.NOMINAL_BOUNDARY,
-        PatternId.CONFIG_CONTRACTS,
-    },
-    PatternId.DUAL_AXIS_RESOLUTION: {
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.TYPE_LINEAGE,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-    },
-    PatternId.VIRTUAL_MEMBERSHIP: {PatternId.DYNAMIC_INTERFACE},
-    PatternId.TYPE_NAMESPACE_INJECTION: {PatternId.DYNAMIC_INTERFACE},
-    PatternId.BIDIRECTIONAL_LOOKUP: {PatternId.TYPE_LINEAGE},
-    PatternId.AUTHORITATIVE_SCHEMA: {
-        PatternId.ABC_TEMPLATE_METHOD,
-        PatternId.AUTO_REGISTER_META,
-        PatternId.TYPE_LINEAGE,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-    },
-}
-
-_PATTERN_SYNERGY = {
-    PatternId.NOMINAL_BOUNDARY: {
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.ABC_TEMPLATE_METHOD,
-    },
-    PatternId.DISCRIMINATED_UNION: {
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.ABC_TEMPLATE_METHOD,
-    },
-    PatternId.CLOSED_FAMILY_DISPATCH: {
-        PatternId.NOMINAL_BOUNDARY,
-        PatternId.DISCRIMINATED_UNION,
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.AUTO_REGISTER_META,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.CONFIG_CONTRACTS: {
-        PatternId.NOMINAL_BOUNDARY,
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.ABC_TEMPLATE_METHOD,
-        PatternId.DUAL_AXIS_RESOLUTION,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.ABC_TEMPLATE_METHOD: {
-        PatternId.NOMINAL_BOUNDARY,
-        PatternId.DISCRIMINATED_UNION,
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.AUTO_REGISTER_META,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.AUTO_REGISTER_META: {
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.ABC_TEMPLATE_METHOD,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.TYPE_LINEAGE: {
-        PatternId.DUAL_AXIS_RESOLUTION,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.DUAL_AXIS_RESOLUTION: {
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.TYPE_LINEAGE,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-    },
-    PatternId.VIRTUAL_MEMBERSHIP: {
-        PatternId.DYNAMIC_INTERFACE,
-        PatternId.SENTINEL_TYPE_MARKER,
-        PatternId.TYPE_NAMESPACE_INJECTION,
-    },
-    PatternId.DYNAMIC_INTERFACE: {
-        PatternId.VIRTUAL_MEMBERSHIP,
-        PatternId.SENTINEL_TYPE_MARKER,
-        PatternId.TYPE_NAMESPACE_INJECTION,
-    },
-    PatternId.SENTINEL_TYPE_MARKER: {
-        PatternId.VIRTUAL_MEMBERSHIP,
-        PatternId.DYNAMIC_INTERFACE,
-        PatternId.TYPE_NAMESPACE_INJECTION,
-    },
-    PatternId.TYPE_NAMESPACE_INJECTION: {
-        PatternId.VIRTUAL_MEMBERSHIP,
-        PatternId.DYNAMIC_INTERFACE,
-        PatternId.SENTINEL_TYPE_MARKER,
-    },
-    PatternId.BIDIRECTIONAL_LOOKUP: {
-        PatternId.AUTO_REGISTER_META,
-        PatternId.TYPE_LINEAGE,
-        PatternId.DUAL_AXIS_RESOLUTION,
-        PatternId.AUTHORITATIVE_SCHEMA,
-    },
-    PatternId.AUTHORITATIVE_SCHEMA: {
-        PatternId.CLOSED_FAMILY_DISPATCH,
-        PatternId.CONFIG_CONTRACTS,
-        PatternId.ABC_TEMPLATE_METHOD,
-        PatternId.AUTO_REGISTER_META,
-        PatternId.TYPE_LINEAGE,
-        PatternId.BIDIRECTIONAL_LOOKUP,
-    },
-}
-
-_PATTERN_PRIORITY = {
-    PatternId.NOMINAL_BOUNDARY: 95,
-    PatternId.DISCRIMINATED_UNION: 92,
-    PatternId.CONFIG_CONTRACTS: 90,
-    PatternId.ABC_TEMPLATE_METHOD: 88,
-    PatternId.AUTO_REGISTER_META: 84,
-    PatternId.TYPE_LINEAGE: 80,
-    PatternId.DYNAMIC_INTERFACE: 76,
-    PatternId.VIRTUAL_MEMBERSHIP: 74,
-    PatternId.SENTINEL_TYPE_MARKER: 72,
-    PatternId.TYPE_NAMESPACE_INJECTION: 70,
-    PatternId.BIDIRECTIONAL_LOOKUP: 66,
-    PatternId.DUAL_AXIS_RESOLUTION: 62,
-    PatternId.CLOSED_FAMILY_DISPATCH: 58,
-    PatternId.AUTHORITATIVE_SCHEMA: 40,
-}
-
-
 @dataclass(frozen=True)
 class _FindingCluster:
     subsystem: str
     findings: tuple[RefactorFinding, ...]
     evidence: tuple[SourceLocation, ...]
+
+
+@dataclass(frozen=True)
+class PatternPlanningSpec:
+    priority: int = 0
+    dependencies: tuple[PatternId, ...] = ()
+    synergy_with: tuple[PatternId, ...] = ()
+    plan_step_builder: PatternPlanStepBuilder | None = None
+    action_builder: PatternActionBuilder | None = None
 
 
 class PatternPlanStepBuilder(ABC):
@@ -504,91 +385,240 @@ def _build_action_context(
 
 
 _GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
-_PATTERN_PLAN_STEP_BUILDERS: dict[PatternId, PatternPlanStepBuilder] = {
-    PatternId.CLOSED_FAMILY_DISPATCH: ClosedFamilyDispatchPlanStepBuilder(),
-    PatternId.ABC_TEMPLATE_METHOD: TemplateMethodPlanStepBuilder(),
-    PatternId.AUTO_REGISTER_META: AutoRegisterPlanStepBuilder(),
-    PatternId.BIDIRECTIONAL_LOOKUP: BidirectionalRegistryPlanStepBuilder(),
-    PatternId.AUTHORITATIVE_SCHEMA: AuthoritativeMappingPlanStepBuilder(),
+_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
+_CLOSED_FAMILY_DISPATCH_ACTION_BUILDER = TemplatedPatternActionBuilder(
+    (
+        ActionTemplate(
+            kind="create_dispatch_authority",
+            description="Create `{dispatch_symbol}` in `{subsystem}` for `{dispatch_axis}` over cases {dispatch_cases}.",
+            confidence=HIGH_CONFIDENCE,
+            create_symbol="{dispatch_symbol}",
+        ),
+        ActionTemplate(
+            kind="replace_branch_sites",
+            description="Replace the repeated `{dispatch_axis}` branch/lookup sites with `{dispatch_symbol}` over cases {dispatch_cases}.",
+            confidence=HIGH_CONFIDENCE,
+            replace_with="{dispatch_symbol}",
+            statement_operation="replace",
+        ),
+    )
+)
+_AUTO_REGISTER_ACTION_BUILDER = TemplatedPatternActionBuilder(
+    (
+        ActionTemplate(
+            kind="create_metaclass",
+            description="Create `AutoRegisterMeta` for `{registry_name}` in `{subsystem}`.",
+            confidence=HIGH_CONFIDENCE,
+            create_symbol="AutoRegisterMeta",
+        ),
+        ActionTemplate(
+            kind="add_declarative_hooks",
+            description="Add declarative class-level hooks such as `registry_key` to {registry_hook_examples}.",
+            confidence=MEDIUM_CONFIDENCE,
+        ),
+        ActionTemplate(
+            kind="delete_manual_registration",
+            description="Delete the manual registration writes after routing {class_list} through `AutoRegisterMeta`.",
+            confidence=HIGH_CONFIDENCE,
+            remove_symbols_from_evidence=True,
+            statement_operation="delete",
+        ),
+    )
+)
+_BIDIRECTIONAL_LOOKUP_ACTION_BUILDER = TemplatedPatternActionBuilder(
+    (
+        ActionTemplate(
+            kind="create_bidirectional_registry",
+            description="Create `{registry_name}BidirectionalRegistry` in `{subsystem}` as the authoritative forward/reverse registry.",
+            confidence=HIGH_CONFIDENCE,
+            create_symbol="{registry_name}BidirectionalRegistry",
+        ),
+        ActionTemplate(
+            kind="delete_mirrored_updates",
+            description="Delete the mirrored update sites once `{registry_name}BidirectionalRegistry` is in place.",
+            confidence=HIGH_CONFIDENCE,
+            remove_symbols_from_evidence=True,
+            statement_operation="delete",
+        ),
+    )
+)
+_AUTHORITATIVE_SCHEMA_ACTION_BUILDER = TemplatedPatternActionBuilder(
+    (
+        ActionTemplate(
+            kind="create_authoritative_schema",
+            description="Create `{mapping_symbol}` in `{subsystem}` to collapse the repeated {mapping_problem}.",
+            confidence=HIGH_CONFIDENCE,
+            create_symbol="{mapping_symbol}",
+        ),
+        ActionTemplate(
+            kind="replace_mapping_sites",
+            description="Replace the repeated constructor/export/projection sites with `{mapping_call}`.",
+            confidence=HIGH_CONFIDENCE,
+            replace_with="{mapping_call}",
+            statement_operation="replace",
+        ),
+    )
+)
+
+_PATTERN_PLANNING_SPECS: dict[PatternId, PatternPlanningSpec] = {
+    PatternId.NOMINAL_BOUNDARY: PatternPlanningSpec(
+        priority=95,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.ABC_TEMPLATE_METHOD,
+        ),
+    ),
+    PatternId.DISCRIMINATED_UNION: PatternPlanningSpec(
+        priority=92,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+        ),
+    ),
+    PatternId.CONFIG_CONTRACTS: PatternPlanningSpec(
+        priority=90,
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+    ),
+    PatternId.ABC_TEMPLATE_METHOD: PatternPlanningSpec(
+        priority=88,
+        dependencies=(PatternId.NOMINAL_BOUNDARY, PatternId.CONFIG_CONTRACTS),
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder=TemplateMethodPlanStepBuilder(),
+        action_builder=AbcFamilyActionBuilder(),
+    ),
+    PatternId.AUTO_REGISTER_META: PatternPlanningSpec(
+        priority=84,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder=AutoRegisterPlanStepBuilder(),
+        action_builder=_AUTO_REGISTER_ACTION_BUILDER,
+    ),
+    PatternId.TYPE_LINEAGE: PatternPlanningSpec(
+        priority=80,
+        synergy_with=(
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+    ),
+    PatternId.DYNAMIC_INTERFACE: PatternPlanningSpec(
+        priority=76,
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.SENTINEL_TYPE_MARKER,
+            PatternId.TYPE_NAMESPACE_INJECTION,
+        ),
+    ),
+    PatternId.VIRTUAL_MEMBERSHIP: PatternPlanningSpec(
+        priority=74,
+        dependencies=(PatternId.DYNAMIC_INTERFACE,),
+        synergy_with=(
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.SENTINEL_TYPE_MARKER,
+            PatternId.TYPE_NAMESPACE_INJECTION,
+        ),
+    ),
+    PatternId.SENTINEL_TYPE_MARKER: PatternPlanningSpec(
+        priority=72,
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.TYPE_NAMESPACE_INJECTION,
+        ),
+    ),
+    PatternId.TYPE_NAMESPACE_INJECTION: PatternPlanningSpec(
+        priority=70,
+        dependencies=(PatternId.DYNAMIC_INTERFACE,),
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.SENTINEL_TYPE_MARKER,
+        ),
+    ),
+    PatternId.BIDIRECTIONAL_LOOKUP: PatternPlanningSpec(
+        priority=66,
+        dependencies=(PatternId.TYPE_LINEAGE,),
+        synergy_with=(
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder=BidirectionalRegistryPlanStepBuilder(),
+        action_builder=_BIDIRECTIONAL_LOOKUP_ACTION_BUILDER,
+    ),
+    PatternId.DUAL_AXIS_RESOLUTION: PatternPlanningSpec(
+        priority=62,
+        dependencies=(
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        synergy_with=(
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+    ),
+    PatternId.CLOSED_FAMILY_DISPATCH: PatternPlanningSpec(
+        priority=58,
+        dependencies=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+        ),
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder=ClosedFamilyDispatchPlanStepBuilder(),
+        action_builder=_CLOSED_FAMILY_DISPATCH_ACTION_BUILDER,
+    ),
+    PatternId.AUTHORITATIVE_SCHEMA: PatternPlanningSpec(
+        priority=40,
+        dependencies=(
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        plan_step_builder=AuthoritativeMappingPlanStepBuilder(),
+        action_builder=_AUTHORITATIVE_SCHEMA_ACTION_BUILDER,
+    ),
 }
 
-_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
-_PATTERN_ACTION_BUILDERS: dict[PatternId, PatternActionBuilder] = {
-    PatternId.CLOSED_FAMILY_DISPATCH: TemplatedPatternActionBuilder(
-        (
-            ActionTemplate(
-                kind="create_dispatch_authority",
-                description="Create `{dispatch_symbol}` in `{subsystem}` for `{dispatch_axis}` over cases {dispatch_cases}.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="{dispatch_symbol}",
-            ),
-            ActionTemplate(
-                kind="replace_branch_sites",
-                description="Replace the repeated `{dispatch_axis}` branch/lookup sites with `{dispatch_symbol}` over cases {dispatch_cases}.",
-                confidence=HIGH_CONFIDENCE,
-                replace_with="{dispatch_symbol}",
-                statement_operation="replace",
-            ),
-        )
-    ),
-    PatternId.ABC_TEMPLATE_METHOD: AbcFamilyActionBuilder(),
-    PatternId.AUTO_REGISTER_META: TemplatedPatternActionBuilder(
-        (
-            ActionTemplate(
-                kind="create_metaclass",
-                description="Create `AutoRegisterMeta` for `{registry_name}` in `{subsystem}`.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="AutoRegisterMeta",
-            ),
-            ActionTemplate(
-                kind="add_declarative_hooks",
-                description="Add declarative class-level hooks such as `registry_key` to {registry_hook_examples}.",
-                confidence=MEDIUM_CONFIDENCE,
-            ),
-            ActionTemplate(
-                kind="delete_manual_registration",
-                description="Delete the manual registration writes after routing {class_list} through `AutoRegisterMeta`.",
-                confidence=HIGH_CONFIDENCE,
-                remove_symbols_from_evidence=True,
-                statement_operation="delete",
-            ),
-        )
-    ),
-    PatternId.BIDIRECTIONAL_LOOKUP: TemplatedPatternActionBuilder(
-        (
-            ActionTemplate(
-                kind="create_bidirectional_registry",
-                description="Create `{registry_name}BidirectionalRegistry` in `{subsystem}` as the authoritative forward/reverse registry.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="{registry_name}BidirectionalRegistry",
-            ),
-            ActionTemplate(
-                kind="delete_mirrored_updates",
-                description="Delete the mirrored update sites once `{registry_name}BidirectionalRegistry` is in place.",
-                confidence=HIGH_CONFIDENCE,
-                remove_symbols_from_evidence=True,
-                statement_operation="delete",
-            ),
-        )
-    ),
-    PatternId.AUTHORITATIVE_SCHEMA: TemplatedPatternActionBuilder(
-        (
-            ActionTemplate(
-                kind="create_authoritative_schema",
-                description="Create `{mapping_symbol}` in `{subsystem}` to collapse the repeated {mapping_problem}.",
-                confidence=HIGH_CONFIDENCE,
-                create_symbol="{mapping_symbol}",
-            ),
-            ActionTemplate(
-                kind="replace_mapping_sites",
-                description="Replace the repeated constructor/export/projection sites with `{mapping_call}`.",
-                confidence=HIGH_CONFIDENCE,
-                replace_with="{mapping_call}",
-                statement_operation="replace",
-            ),
-        )
-    ),
-}
+
+def _pattern_planning_spec(pattern_id: PatternId) -> PatternPlanningSpec:
+    return _PATTERN_PLANNING_SPECS.get(pattern_id, PatternPlanningSpec())
 
 
 def build_refactor_plans(
@@ -670,8 +700,9 @@ def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -
 
 
 def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
-    return right in _PATTERN_SYNERGY.get(left, set()) or left in _PATTERN_SYNERGY.get(
-        right, set()
+    return (
+        right in _pattern_planning_spec(left).synergy_with
+        or left in _pattern_planning_spec(right).synergy_with
     )
 
 
@@ -787,7 +818,9 @@ def _select_pattern_cover(
             score = (
                 sum(pattern_counts[pattern_id] for pattern_id in subset),
                 sum(certified_counts[pattern_id] for pattern_id in subset),
-                sum(_PATTERN_PRIORITY.get(pattern_id, 0) for pattern_id in subset),
+                sum(
+                    _pattern_planning_spec(pattern_id).priority for pattern_id in subset
+                ),
                 tuple(pattern_counts[pattern_id] for pattern_id in subset),
             )
             if best_score is None or score > best_score:
@@ -806,7 +839,7 @@ def _order_patterns(
 
     pattern_set = set(pattern_ids)
     dependencies = {
-        pattern_id: set(_PATTERN_DEPENDENCIES.get(pattern_id, set())) & pattern_set
+        pattern_id: set(_pattern_planning_spec(pattern_id).dependencies) & pattern_set
         for pattern_id in pattern_ids
     }
     pattern_counts = Counter(finding.pattern_id for finding in findings)
@@ -819,7 +852,7 @@ def _order_patterns(
     while ready:
         ready.sort(
             key=lambda pattern_id: (
-                _PATTERN_PRIORITY.get(pattern_id, 0),
+                _pattern_planning_spec(pattern_id).priority,
                 pattern_counts[pattern_id],
                 certified_counts[pattern_id],
                 -pattern_id,
@@ -841,7 +874,10 @@ def _order_patterns(
             pattern_id for pattern_id in pattern_ids if pattern_id not in ordered
         ]
         remaining.sort(
-            key=lambda pattern_id: (_PATTERN_PRIORITY.get(pattern_id, 0), -pattern_id),
+            key=lambda pattern_id: (
+                _pattern_planning_spec(pattern_id).priority,
+                -pattern_id,
+            ),
             reverse=True,
         )
         ordered.extend(remaining)
@@ -961,8 +997,9 @@ def _pattern_step(
     findings: tuple[RefactorFinding, ...],
 ) -> str:
     supporting = [finding for finding in findings if finding.pattern_id == pattern_id]
-    builder = _PATTERN_PLAN_STEP_BUILDERS.get(
-        pattern_id, _GENERIC_PATTERN_PLAN_STEP_BUILDER
+    builder = (
+        _pattern_planning_spec(pattern_id).plan_step_builder
+        or _GENERIC_PATTERN_PLAN_STEP_BUILDER
     )
     return builder.build(subsystem, pattern_id, tuple(supporting))
 
@@ -977,8 +1014,9 @@ def _build_plan_actions(
         supporting = tuple(
             finding for finding in findings if finding.pattern_id == pattern_id
         )
-        builder = _PATTERN_ACTION_BUILDERS.get(
-            pattern_id, _GENERIC_PATTERN_ACTION_BUILDER
+        builder = (
+            _pattern_planning_spec(pattern_id).action_builder
+            or _GENERIC_PATTERN_ACTION_BUILDER
         )
         actions.extend(builder.build(subsystem, pattern_id, supporting))
     return tuple(actions)

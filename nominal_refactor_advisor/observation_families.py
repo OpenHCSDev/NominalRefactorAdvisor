@@ -131,8 +131,75 @@ class ConfigDispatchObservationSpec(
     _registry_root = True
 
 
-class StandardConfigDispatchObservationSpec(ConfigDispatchObservationSpec):
+class ScopeFilteredFunctionObservationSpec(FunctionObservationSpec, ABC):
+    @abstractmethod
+    def accepts_scope(self, observation: ScopedAstObservation) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_scoped_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        raise NotImplementedError
+
     def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        if not self.accepts_scope(observation):
+            return None
+        return self.build_scoped_function(parsed_module, function, observation)
+
+
+class ModuleOnlyFunctionObservationSpec(ScopeFilteredFunctionObservationSpec, ABC):
+    def accepts_scope(self, observation: ScopedAstObservation) -> bool:
+        return observation.class_name is None
+
+
+class ClassOnlyFunctionObservationSpec(ScopeFilteredFunctionObservationSpec, ABC):
+    def accepts_scope(self, observation: ScopedAstObservation) -> bool:
+        return observation.class_name is not None
+
+
+class ScopeFilteredAssignObservationSpec(AssignObservationSpec, ABC):
+    @abstractmethod
+    def accepts_scope(self, observation: ScopedAstObservation) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_scoped_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        raise NotImplementedError
+
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        if not self.accepts_scope(observation):
+            return None
+        return self.build_scoped_assign(parsed_module, node, observation)
+
+
+class ModuleOnlyAssignObservationSpec(ScopeFilteredAssignObservationSpec, ABC):
+    def accepts_scope(self, observation: ScopedAstObservation) -> bool:
+        return observation.class_name is None and observation.function_name is None
+
+
+class StandardConfigDispatchObservationSpec(
+    ConfigDispatchObservationSpec, ModuleOnlyFunctionObservationSpec
+):
+    def build_scoped_function(
         self,
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -180,16 +247,14 @@ class SentinelTypeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
 
 
 class SentinelTypeAssignmentObservationSpec(
-    SentinelTypeObservationSpec, AssignObservationSpec
+    SentinelTypeObservationSpec, ModuleOnlyAssignObservationSpec
 ):
-    def build_from_assign(
+    def build_scoped_assign(
         self,
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
     ) -> object | None:
-        if observation.class_name is not None or observation.function_name is not None:
-            return None
         return _sentinel_type_observation(parsed_module, node)
 
 
@@ -222,17 +287,18 @@ class RuntimeTypeGenerationObservationSpec(
     _registry_root = True
 
 
-class TypeCallGenerationObservationSpec(RuntimeTypeGenerationObservationSpec):
-    @property
-    def node_types(self) -> tuple[type[ast.AST], ...]:
-        return (ast.Call,)
+class TypeCallGenerationObservationSpec(
+    RuntimeTypeGenerationObservationSpec, ContextForwardingShapeSpec
+):
+    node_type = ast.Call
 
-    def build_from_observation(
-        self, parsed_module: ParsedModule, observation: ScopedAstObservation
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
     ) -> RuntimeTypeGenerationObservation | None:
-        node = observation.node
-        if not isinstance(node, ast.Call):
-            return None
+        assert isinstance(node, ast.Call)
         return _runtime_type_generation_observation(parsed_module, node, observation)
 
 
@@ -616,36 +682,39 @@ class ProjectionHelperObservationSpec(
     _registry_root = True
 
 
-class StandardProjectionHelperObservationSpec(ProjectionHelperObservationSpec):
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> ProjectionHelperShape | None:
-        if observation.class_name is not None:
-            return None
-        return _projection_helper_shape_from_function(parsed_module, function)
-
-
 class AccessorWrapperObservationSpec(
     AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
 ):
     _registry_root = True
 
 
-class StandardAccessorWrapperObservationSpec(AccessorWrapperObservationSpec):
-    def build_from_function(
+class StandardProjectionHelperObservationSpec(
+    ProjectionHelperObservationSpec, ModuleOnlyFunctionObservationSpec
+):
+    def build_scoped_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> ProjectionHelperShape | None:
+        return _projection_helper_shape_from_function(parsed_module, function)
+
+
+class StandardAccessorWrapperObservationSpec(
+    AccessorWrapperObservationSpec, ClassOnlyFunctionObservationSpec
+):
+    def build_scoped_function(
         self,
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
     ) -> AccessorWrapperCandidate | None:
-        if observation.class_name is None:
+        class_name = observation.class_name
+        if class_name is None:
             return None
         return _accessor_wrapper_candidate_from_function(
             parsed_module,
-            observation.class_name,
+            class_name,
             function,
         )
 
@@ -655,33 +724,28 @@ class ScopedShapeWrapperObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
 
 
 class ScopedShapeWrapperFunctionObservationSpec(
-    ScopedShapeWrapperObservationSpec, FunctionObservationSpec
+    ScopedShapeWrapperObservationSpec, ModuleOnlyFunctionObservationSpec
 ):
-    def build_from_function(
+    def build_scoped_function(
         self,
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
     ) -> ScopedShapeWrapperFunction | None:
-        if (
-            not isinstance(function, ast.FunctionDef)
-            or observation.class_name is not None
-        ):
+        if not isinstance(function, ast.FunctionDef):
             return None
         return _scoped_shape_wrapper_function_from_function(parsed_module, function)
 
 
 class ScopedShapeWrapperSpecObservationSpec(
-    ScopedShapeWrapperObservationSpec, AssignObservationSpec
+    ScopedShapeWrapperObservationSpec, ModuleOnlyAssignObservationSpec
 ):
-    def build_from_assign(
+    def build_scoped_assign(
         self,
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
     ) -> ScopedShapeWrapperSpec | None:
-        if observation.class_name is not None or observation.function_name is not None:
-            return None
         return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
 
 
