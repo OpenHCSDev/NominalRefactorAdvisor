@@ -1719,6 +1719,15 @@ class DerivedIndexedSurfaceCandidate:
 
 
 @dataclass(frozen=True)
+class RegisteredUnionSurfaceCandidate:
+    file_path: str
+    line: int
+    owner_name: str
+    accessor_name: str
+    root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -3326,6 +3335,66 @@ class DerivedIndexedSurfaceDetector(CandidateFindingDetector):
         )
 
 
+class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
+    detector_id = "registered_union_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTO_REGISTER_META,
+        title="Manual registered-family unions should derive from the registry root",
+        why=(
+            "A module manually unions registered families or specs from several roots even though the registration substrate can derive the full family set from one authoritative root traversal."
+        ),
+        capability_gap="one derived registry-union query on the authoritative registration root",
+        relation_context="manual registry root union repeats information already present in class-time registration",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _registered_union_surface_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        union_candidate = cast(RegisteredUnionSurfaceCandidate, candidate)
+        accessor_target = (
+            "CollectedFamily.all_registered_families()"
+            if union_candidate.accessor_name == "registered_families"
+            else "AutoRegisteredModuleShapeSpec.all_registered_specs()"
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}."
+            ),
+            (
+                SourceLocation(
+                    union_candidate.file_path,
+                    union_candidate.line,
+                    union_candidate.owner_name,
+                ),
+            ),
+            scaffold=(
+                f"def {union_candidate.owner_name}(...):\n    return {accessor_target}"
+            ),
+            codemod_patch=(
+                f"# Replace the manual union over {union_candidate.root_names} with `{accessor_target}`.\n"
+                "# Let the registration substrate derive the full family/spec set from one authoritative root traversal."
+            ),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(union_candidate.root_names),
+                class_count=len(union_candidate.root_names),
+                registry_name=union_candidate.accessor_name,
+                class_names=union_candidate.root_names,
+            ),
+        )
+
+
 class AlternateConstructorFamilyDetector(CandidateFindingDetector):
     detector_id = "alternate_constructor_family"
     finding_spec = FindingSpec(
@@ -4158,6 +4227,9 @@ class AttributeProbeDetector(PerModuleIssueDetector):
                 AttributeProbeObservationFamily,
                 AttributeProbeObservation,
             )
+        )
+        observations = tuple(
+            item for item in observations if not _is_framework_attribute_probe(item)
         )
         total = len(observations)
         if total < config.min_attribute_probes:
@@ -6831,6 +6903,85 @@ def _derived_indexed_surface_candidates(
     return tuple(candidates)
 
 
+def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
+    calls: list[ast.Call] = []
+
+    def collect_calls(current: ast.AST) -> bool:
+        if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
+            return collect_calls(current.left) and collect_calls(current.right)
+        if isinstance(current, ast.Call):
+            calls.append(current)
+            return True
+        return False
+
+    if not collect_calls(node) or len(calls) < 2:
+        return None
+    accessor_names = {
+        call.func.attr
+        for call in calls
+        if isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and not call.args
+        and not call.keywords
+    }
+    if len(accessor_names) != 1:
+        return None
+    accessor_name = next(iter(accessor_names))
+    if accessor_name not in {"registered_families", "registered_specs"}:
+        return None
+    root_names = tuple(
+        sorted(
+            call.func.value.id
+            for call in calls
+            if isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+        )
+    )
+    return (accessor_name, root_names)
+
+
+def _registered_union_surface_candidates(
+    module: ParsedModule,
+) -> tuple[RegisteredUnionSurfaceCandidate, ...]:
+    candidates: list[RegisteredUnionSurfaceCandidate] = []
+    for node in ast.walk(module.module):
+        owner_name = "<module>"
+        value: ast.AST | None = None
+        line = getattr(node, "lineno", 1)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            owner_name = node.name
+            for statement in _trim_docstring_body(node.body):
+                if isinstance(statement, ast.For):
+                    value = statement.iter
+                    line = statement.lineno
+                    break
+                if isinstance(statement, ast.Assign):
+                    value = statement.value
+                    line = statement.lineno
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name):
+                owner_name = target.id
+                value = node.value
+                line = node.lineno
+        if value is None:
+            continue
+        registered_surface = _registered_surface_roots(value)
+        if registered_surface is None:
+            continue
+        accessor_name, root_names = registered_surface
+        candidates.append(
+            RegisteredUnionSurfaceCandidate(
+                file_path=str(module.path),
+                line=line,
+                owner_name=owner_name,
+                accessor_name=accessor_name,
+                root_names=root_names,
+            )
+        )
+    return tuple(candidates)
+
+
 def _declarative_family_boilerplate_groups(
     module: ParsedModule,
 ) -> tuple[DeclarativeFamilyBoilerplateGroup, ...]:
@@ -7956,6 +8107,15 @@ def _is_framework_lineage_symbol(symbol: str) -> bool:
         "__new__",
         "collect",
         "registered_specs_for_literal_type",
+    }
+
+
+def _is_framework_attribute_probe(observation: AttributeProbeObservation) -> bool:
+    return observation.observed_attribute in {
+        "lineno",
+        "col_offset",
+        "end_lineno",
+        "end_col_offset",
     }
 
 

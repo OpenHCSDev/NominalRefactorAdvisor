@@ -961,16 +961,7 @@ class ScopedShapeWrapperSpecObservationSpec(
 
 
 def _registered_family_types() -> tuple[type[CollectedFamily], ...]:
-    seen: set[type[CollectedFamily]] = set()
-    ordered: list[type[CollectedFamily]] = []
-    for family in (
-        ShapeFamily.registered_families() + ObservationFamily.registered_families()
-    ):
-        if family in seen:
-            continue
-        seen.add(family)
-        ordered.append(family)
-    return tuple(ordered)
+    return CollectedFamily.all_registered_families()
 
 
 def family_for_item_type(item_type: type[object]) -> type[CollectedFamily]:

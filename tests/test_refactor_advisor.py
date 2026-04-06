@@ -3061,6 +3061,41 @@ FAMILY_BY_NAME = {
     assert "derived_index" in (finding.scaffold or "")
 
 
+def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class ShapeFamily:
+    @classmethod
+    def registered_families(cls):
+        return ()
+
+
+class ObservationFamily:
+    @classmethod
+    def registered_families(cls):
+        return ()
+
+
+def collect_everything():
+    for family in ShapeFamily.registered_families() + ObservationFamily.registered_families():
+        yield family
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "registered_union_surface"
+    )
+
+    assert "collect_everything" in finding.summary
+    assert "registered_families" in finding.summary
+    assert "all_registered_families" in (finding.scaffold or "")
+
+
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

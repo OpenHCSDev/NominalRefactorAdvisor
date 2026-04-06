@@ -146,6 +146,24 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
         return tuple(cls._registered_spec_types)
 
     @classmethod
+    def all_registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
+        seen: set[type[CollectedFamily]] = set()
+        ordered: list[type[CollectedFamily]] = []
+        queue = list(cls.__subclasses__())
+        while queue:
+            current = queue.pop(0)
+            queue.extend(current.__subclasses__())
+            registry = current.__dict__.get("_registered_spec_types")
+            if registry is None:
+                continue
+            for family_type in registry:
+                if family_type in seen:
+                    continue
+                seen.add(family_type)
+                ordered.append(family_type)
+        return tuple(ordered)
+
+    @classmethod
     @abstractmethod
     def collect(cls, parsed_module: ParsedModule) -> list[object]:
         raise NotImplementedError

@@ -273,12 +273,10 @@ class ObservationGraph:
 def collect_structural_observations(
     parsed_module: ParsedModule,
 ) -> tuple[StructuralObservation, ...]:
-    from .ast_tools import ObservationFamily, ShapeFamily, collect_family_items
+    from .ast_tools import CollectedFamily, collect_family_items
 
     observations: list[StructuralObservation] = []
-    for family in (
-        ShapeFamily.registered_families() + ObservationFamily.registered_families()
-    ):
+    for family in CollectedFamily.all_registered_families():
         observations.extend(
             item.structural_observation
             for item in collect_family_items(parsed_module, family)
