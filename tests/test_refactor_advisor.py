@@ -3061,6 +3061,43 @@ FAMILY_BY_NAME = {
     assert "derived_index" in (finding.scaffold or "")
 
 
+def test_detects_manual_public_api_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Alpha:
+    pass
+
+
+class Beta:
+    pass
+
+
+def gamma():
+    return 1
+
+
+def delta():
+    return 2
+
+
+__all__ = ["Alpha", "Beta", "gamma", "delta"]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_public_api_surface"
+    )
+
+    assert "__all__" in finding.summary
+    assert "public API" in finding.title
+    assert "is_public_api_export" in (finding.scaffold or "")
+
+
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

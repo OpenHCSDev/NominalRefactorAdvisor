@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
@@ -727,26 +728,22 @@ class ExportDictShape(
         return f"{self.key_names}:{self.value_fingerprint}"
 
 
-__all__ = [
-    "AccessorWrapperCandidate",
-    "AttributeProbeObservation",
-    "BuilderCallShape",
-    "ClassMarkerObservation",
-    "ConfigDispatchObservation",
-    "DualAxisResolutionObservation",
-    "DynamicMethodInjectionObservation",
-    "ExportDictShape",
-    "FieldObservation",
-    "FieldOriginKind",
-    "InterfaceGenerationObservation",
-    "LineageMappingObservation",
-    "LiteralDispatchObservation",
-    "LiteralKind",
-    "MethodShape",
-    "ProjectionHelperShape",
-    "RegistrationShape",
-    "RuntimeTypeGenerationObservation",
-    "ScopedShapeWrapperFunction",
-    "ScopedShapeWrapperSpec",
-    "SentinelTypeObservation",
-]
+def _is_public_observation_shape_export(name: str, value: object) -> bool:
+    if (
+        name.startswith("_")
+        or not isinstance(value, type)
+        or value.__module__ != __name__
+    ):
+        return False
+    if issubclass(value, StrEnum):
+        return True
+    return issubclass(value, StructuralObservationCarrier) and not inspect.isabstract(
+        value
+    )
+
+
+__all__ = sorted(
+    name
+    for name, value in globals().items()
+    if _is_public_observation_shape_export(name, value)
+)

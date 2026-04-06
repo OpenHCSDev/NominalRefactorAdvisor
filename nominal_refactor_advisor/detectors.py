@@ -1709,6 +1709,15 @@ class DerivedExportSurfaceCandidate:
 
 
 @dataclass(frozen=True)
+class ManualPublicApiSurfaceCandidate:
+    file_path: str
+    export_symbol: str
+    line: int
+    exported_names: tuple[str, ...]
+    source_name_count: int
+
+
+@dataclass(frozen=True)
 class DerivedIndexedSurfaceCandidate:
     file_path: str
     surface_name: str
@@ -3273,6 +3282,66 @@ class DerivedExportSurfaceDetector(CandidateFindingDetector):
                 field_count=len(export_candidate.derivable_root_names),
                 mapping_name=export_candidate.export_symbol,
                 field_names=export_candidate.derivable_root_names,
+            ),
+        )
+
+
+class ManualPublicApiSurfaceDetector(CandidateFindingDetector):
+    detector_id = "manual_public_api_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Manual public API surfaces should derive from the module authority",
+        why=(
+            "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. "
+            "That creates a second authority for the public surface."
+        ),
+        capability_gap="one derived public API surface projected from the module's authoritative declarations",
+        relation_context="manual public export list repeats names already present in module bindings",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _manual_public_api_surface_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        api_candidate = cast(ManualPublicApiSurfaceCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings."
+            ),
+            (
+                SourceLocation(
+                    api_candidate.file_path,
+                    api_candidate.line,
+                    api_candidate.export_symbol,
+                ),
+            ),
+            scaffold=(
+                "def is_public_api_export(name: str, value: object) -> bool:\n"
+                "    return not name.startswith('_') and is_public_binding(value)\n\n"
+                "__all__ = sorted(\n"
+                "    name for name, value in globals().items() if is_public_api_export(name, value)\n"
+                ")"
+            ),
+            codemod_patch=(
+                f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n"
+                "# Derive the public export surface from module bindings instead of restating names in a second manual surface."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(api_candidate.exported_names),
+                field_count=api_candidate.source_name_count,
+                mapping_name=api_candidate.export_symbol,
+                field_names=("module_public_bindings",),
             ),
         )
 
@@ -6815,6 +6884,52 @@ def _derived_export_surface_candidates(
                 line=line,
                 exported_names=exported_names,
                 derivable_root_names=root_names,
+            )
+        )
+    return tuple(candidates)
+
+
+def _module_public_source_names(module: ParsedModule) -> tuple[str, ...]:
+    names: set[str] = set()
+    for statement in _trim_docstring_body(module.module.body):
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not statement.name.startswith("_"):
+                names.add(statement.name)
+            continue
+        if isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                exported_name = alias.asname or alias.name
+                if not exported_name.startswith("_"):
+                    names.add(exported_name)
+            continue
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name) and not target.id.startswith("_"):
+                names.add(target.id)
+    return tuple(sorted(names))
+
+
+def _manual_public_api_surface_candidates(
+    module: ParsedModule,
+) -> tuple[ManualPublicApiSurfaceCandidate, ...]:
+    public_source_names = set(_module_public_source_names(module))
+    candidates: list[ManualPublicApiSurfaceCandidate] = []
+    for export_symbol, line, exported_names in _module_string_sequence_assignments(
+        module
+    ):
+        if export_symbol != "__all__":
+            continue
+        if len(exported_names) < 4:
+            continue
+        if not set(exported_names) <= public_source_names:
+            continue
+        candidates.append(
+            ManualPublicApiSurfaceCandidate(
+                file_path=str(module.path),
+                export_symbol=export_symbol,
+                line=line,
+                exported_names=exported_names,
+                source_name_count=len(public_source_names),
             )
         )
     return tuple(candidates)

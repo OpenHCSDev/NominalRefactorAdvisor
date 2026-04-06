@@ -18,20 +18,4 @@ from .taxonomy import (
     ObservationTag,
 )
 
-__all__ = [
-    "PATTERN_SPECS",
-    "AnalysisReport",
-    "CapabilityTag",
-    "CertificationLevel",
-    "ConfidenceLevel",
-    "ImpactDelta",
-    "ObservationTag",
-    "PatternSpec",
-    "OutcomeEstimate",
-    "RefactorFinding",
-    "RefactorPlan",
-    "SourceLocation",
-    "analyze_path",
-    "build_refactor_plans",
-    "plan_path",
-]
+__all__ = sorted(name for name in globals() if not name.startswith("_"))

@@ -297,15 +297,16 @@ def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
     return ObservationGraph(tuple(observations))
 
 
-__all__ = [
-    "NominalWitnessGroup",
-    "ObservationCohort",
-    "ObservationFiber",
-    "ObservationGraph",
-    "ObservationKind",
-    "build_observation_graph",
-    "collect_structural_observations",
-    "StructuralExecutionLevel",
-    "StructuralObservation",
-    "StructuralObservationCarrier",
-]
+def _is_public_observation_graph_export(name: str, value: object) -> bool:
+    return bool(
+        not name.startswith("_")
+        and getattr(value, "__module__", None) == __name__
+        and (isinstance(value, type) or callable(value))
+    )
+
+
+__all__ = sorted(
+    name
+    for name, value in globals().items()
+    if _is_public_observation_graph_export(name, value)
+)
