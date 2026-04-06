@@ -192,6 +192,14 @@ class BehaviorFindingMetrics(FindingMetrics, ABC):
     pass
 
 
+class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
+    class_names: tuple[str, ...]
+
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
+        return self.class_names
+
+
 class MappingFindingMetrics(FindingMetrics, ABC):
     pass
 
@@ -269,7 +277,7 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
-class FieldFamilyMetrics(BehaviorFindingMetrics):
+class FieldFamilyMetrics(ClassNamesPlanMetrics):
     class_count: int
     field_count: int
     class_names: tuple[str, ...]
@@ -285,10 +293,6 @@ class FieldFamilyMetrics(BehaviorFindingMetrics):
         )
 
     @property
-    def plan_class_names(self) -> tuple[str, ...]:
-        return self.class_names
-
-    @property
     def plan_field_names(self) -> tuple[str, ...]:
         return self.field_names
 
@@ -298,7 +302,7 @@ class FieldFamilyMetrics(BehaviorFindingMetrics):
 
 
 @dataclass(frozen=True)
-class WitnessCarrierMetrics(BehaviorFindingMetrics):
+class WitnessCarrierMetrics(ClassNamesPlanMetrics):
     class_count: int
     shared_role_count: int
     class_names: tuple[str, ...]
@@ -310,10 +314,6 @@ class WitnessCarrierMetrics(BehaviorFindingMetrics):
             self.class_count,
             self.shared_role_count,
         )
-
-    @property
-    def plan_class_names(self) -> tuple[str, ...]:
-        return self.class_names
 
     @property
     def plan_field_names(self) -> tuple[str, ...]:

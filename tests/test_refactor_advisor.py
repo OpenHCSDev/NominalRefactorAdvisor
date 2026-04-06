@@ -2626,3 +2626,42 @@ class ExportShape:
 
     assert "StructuralObservation schema" in finding.summary
     assert "StructuralObservationTemplate" in (finding.scaffold or "")
+
+
+def test_detects_repeated_property_alias_hooks_across_subclasses(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class ProjectionTemplate(ABC):
+    pass
+
+
+class AlphaProjection(ProjectionTemplate):
+    @property
+    def observation_line(self):
+        return self.lineno
+
+
+class BetaProjection(ProjectionTemplate):
+    @property
+    def observation_line(self):
+        return self.lineno
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_property_alias_hooks"
+    )
+
+    assert "ProjectionTemplate" in finding.summary
+    assert "observation_line" in finding.summary
+    assert "self.lineno" in finding.summary

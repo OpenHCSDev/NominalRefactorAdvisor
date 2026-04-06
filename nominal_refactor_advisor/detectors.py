@@ -1587,6 +1587,18 @@ class WitnessCarrierCandidate(ABC):
     def evidence(self) -> SourceLocation:
         return SourceLocation(self.file_path, self.line, self.subject_name)
 
+    @property
+    def class_name(self) -> str:
+        return self.subject_name
+
+
+class NameFamilyClassNamesMixin(ABC):
+    name_family: tuple[str, ...]
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        return self.name_family
+
 
 @dataclass(frozen=True)
 class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
@@ -1595,10 +1607,6 @@ class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
     compatible_authority_line: int
     reuse_kind: str
     shared_role_names: tuple[str, ...]
-
-    @property
-    def class_name(self) -> str:
-        return self.subject_name
 
     @property
     def shared_field_names(self) -> tuple[str, ...]:
@@ -1613,10 +1621,6 @@ class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
     scaffold_helper_name: str | None
     patch_helper_name: str | None
 
-    @property
-    def class_name(self) -> str:
-        return self.subject_name
-
 
 @dataclass(frozen=True)
 class GuardedDelegatorCandidate(WitnessCarrierCandidate):
@@ -1625,20 +1629,22 @@ class GuardedDelegatorCandidate(WitnessCarrierCandidate):
     delegate_name: str
     scope_role: str
 
-    @property
-    def class_name(self) -> str:
-        return self.subject_name
-
 
 @dataclass(frozen=True)
 class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
     @property
-    def class_name(self) -> str:
-        return self.subject_name
-
-    @property
     def keyword_names(self) -> tuple[str, ...]:
         return self.name_family
+
+
+@dataclass(frozen=True)
+class PropertyAliasHookGroup:
+    file_path: str
+    base_name: str
+    property_name: str
+    returned_attribute: str
+    class_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -1705,10 +1711,6 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
     assigned_field_names: tuple[str, ...]
 
     @property
-    def class_name(self) -> str:
-        return self.subject_name
-
-    @property
     def method_line(self) -> int:
         return self.line
 
@@ -1725,10 +1727,6 @@ class DescriptorDerivedViewCandidate(WitnessCarrierCandidate):
     updated_field_names: tuple[str, ...]
 
     @property
-    def class_name(self) -> str:
-        return self.subject_name
-
-    @property
     def mutator_line(self) -> int:
         return self.line
 
@@ -1738,7 +1736,7 @@ class DescriptorDerivedViewCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class ManualRegistryCandidate(WitnessCarrierCandidate):
+class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin):
     decorator_name: str
     unregistered_class_names: tuple[str, ...]
 
@@ -1746,13 +1744,11 @@ class ManualRegistryCandidate(WitnessCarrierCandidate):
     def registry_name(self) -> str:
         return self.subject_name
 
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return self.name_family
-
 
 @dataclass(frozen=True)
-class StructuralConfusabilityCandidate(WitnessCarrierCandidate):
+class StructuralConfusabilityCandidate(
+    WitnessCarrierCandidate, NameFamilyClassNamesMixin
+):
     parameter_name: str
     observed_method_names: tuple[str, ...]
 
@@ -1760,19 +1756,11 @@ class StructuralConfusabilityCandidate(WitnessCarrierCandidate):
     def function_name(self) -> str:
         return self.subject_name
 
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return self.name_family
-
 
 @dataclass(frozen=True)
 class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     normalized_roles: tuple[str, ...]
     normalized_role_fields: tuple[tuple[str, tuple[str, ...]], ...]
-
-    @property
-    def class_name(self) -> str:
-        return self.subject_name
 
     @property
     def field_names(self) -> tuple[str, ...]:
@@ -2710,6 +2698,76 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
                 field_names=field_candidate.field_names,
                 execution_level=field_candidate.execution_level,
                 dataclass_count=field_candidate.dataclass_count,
+            ),
+        )
+
+
+class RepeatedPropertyAliasHookDetector(CandidateFindingDetector):
+    detector_id = "repeated_property_alias_hooks"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Repeated property hook aliases should move into a shared base or mixin",
+        why=(
+            "Several subclasses re-declare the same one-line property hook over the same backing attribute. "
+            "That is non-orthogonal hook duplication and should live once in a shared base or mixin."
+        ),
+        capability_gap="single authoritative hook property implementation for a nominal subclass family",
+        relation_context="same property hook alias repeats across siblings of one base family",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _property_alias_hook_groups(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        hook_group = cast(PropertyAliasHookGroup, candidate)
+        evidence = tuple(
+            SourceLocation(
+                hook_group.file_path, line, f"{class_name}.{hook_group.property_name}"
+            )
+            for class_name, line in zip(
+                hook_group.class_names,
+                hook_group.line_numbers,
+                strict=True,
+            )
+        )
+        mixin_name = f"{_camel_case(hook_group.returned_attribute)}{_camel_case(hook_group.property_name)}Mixin"
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as `return self.{hook_group.returned_attribute}`."
+            ),
+            evidence,
+            scaffold=(
+                f"class {mixin_name}(ABC):\n"
+                "    @property\n"
+                f"    def {hook_group.property_name}(self):\n"
+                f"        return self.{hook_group.returned_attribute}"
+            ),
+            codemod_patch=(
+                f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
+            ),
+            metrics=RepeatedMethodMetrics(
+                duplicate_site_count=len(hook_group.class_names),
+                statement_count=1,
+                class_count=len(hook_group.class_names),
+                method_symbols=tuple(
+                    f"{class_name}.{hook_group.property_name}"
+                    for class_name in hook_group.class_names
+                ),
             ),
         )
 
@@ -5405,6 +5463,59 @@ def _mirrored_registry_candidates(
             continue
         candidates.append((str(module.path), node.name, tuple(mirrored_pairs)))
     return tuple(candidates)
+
+
+def _property_alias_hook_groups(
+    module: ParsedModule,
+) -> tuple[PropertyAliasHookGroup, ...]:
+    grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        base_names = tuple(
+            name for name in _declared_base_names(node) if name not in {"object"}
+        )
+        if not base_names:
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            if not any(
+                _ast_terminal_name(decorator) == "property"
+                for decorator in statement.decorator_list
+            ):
+                continue
+            if len(statement.args.args) != 1:
+                continue
+            body = _trim_docstring_body(statement.body)
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            returned = body[0].value
+            if not (
+                isinstance(returned, ast.Attribute)
+                and isinstance(returned.value, ast.Name)
+                and returned.value.id == "self"
+            ):
+                continue
+            for base_name in base_names:
+                grouped[(base_name, statement.name, returned.attr)].append(
+                    (node.name, statement.lineno)
+                )
+    return tuple(
+        PropertyAliasHookGroup(
+            file_path=str(module.path),
+            base_name=base_name,
+            property_name=property_name,
+            returned_attribute=returned_attribute,
+            class_names=tuple(class_name for class_name, _ in ordered),
+            line_numbers=tuple(line for _, line in ordered),
+        )
+        for (base_name, property_name, returned_attribute), items in sorted(
+            grouped.items()
+        )
+        if len(items) >= 2
+        for ordered in [tuple(sorted(items, key=lambda item: (item[1], item[0])))]
+    )
 
 
 class ManualFamilyRosterDetector(IssueDetector):
