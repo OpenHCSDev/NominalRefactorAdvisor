@@ -19,12 +19,18 @@ The current implementation scans Python ASTs and emits findings for all current 
 - repeated string-based closed-family dispatch
 - repeated inline literal dispatch that should be a registry, class family, or dataclass rule table
 - manually maintained bidirectional registries
+- manual fiber tags that should become host-native ``ABC`` fibers
+- manually synchronized derived views that should become descriptors or properties
+- class-registration flows where registration is decoupled from class creation
+- duck-typed confusability where a consumer needs a nominal interface witness
+- detector-local witness carriers whose shared provenance spine should live in one nominal base
+- renamed witness-role slices such as ``class_name`` vs ``class_names`` that should collapse into reusable mixins
 
 
 Primary Prescriptions
 ---------------------
 
-The tool now has explicit coverage for Patterns 1 through 14, including:
+The tool now has explicit coverage for Patterns 1 through 20, including:
 
 - Pattern 1: sentinel attribute simulation vs nominal boundary
 - Pattern 2: discriminated-union predicate chains
@@ -40,6 +46,12 @@ The tool now has explicit coverage for Patterns 1 through 14, including:
 - Pattern 12: dynamic method injection into type namespaces
 - Pattern 13: bidirectional type lookup
 - Pattern 14: authoritative constructor / projection schema
+- Pattern 15: staged orchestration boundary
+- Pattern 16: authoritative context record
+- Pattern 17: nominal strategy family
+- Pattern 18: descriptor-derived view
+- Pattern 19: nominal interface witness
+- Pattern 20: nominal witness carrier family plus mixin enforcement for orthogonal renamed witness slices
 
 Pattern 5 should be read broadly: the advisor may point toward an ``ABC`` plus concrete implementation
 classes, or toward an ``ABC`` plus mixins when some concerns are orthogonal but still belong in the
@@ -67,6 +79,31 @@ For Pattern 3, the prescription is intentionally broad: the replacement can be a
 class-registration family, or a dataclass-backed rule table. The important point is that the cases become
 data in one authoritative structure rather than repeated literal branches in code.
 
+Patterns 17 through 20 are the current paper-driven expansion of the original detector set:
+
+- Pattern 17 covers closed enum/member strategy ladders where the host already offers a better nominal
+  fiber decomposition through ``ABC`` hierarchies and automatic subclass registration.
+- Pattern 18 covers rate-1 derived views: one authoritative source field should drive descriptor-backed or
+  property-backed views rather than several stored copies that are manually resynchronized.
+- Pattern 19 covers structural confusability under partial views. If a consumer only observes ``store`` and
+  ``flush``, and several unrelated classes are confusable under that view, the fix is a nominal ``ABC``
+  witness rather than ``Protocol``-style structural coincidence.
+- Pattern 20 covers witness-carrier families inside the tool itself. If several dataclass carriers repeat the
+  same provenance spine under renamed fields such as ``class_name`` vs ``function_name`` vs
+  ``registry_name``, the advisor now normalizes those fields semantically, prescribes one shared nominal
+  base, and can additionally force mixin extraction when orthogonal renamed slices like ``class_name`` /
+  ``class_names`` need to survive together under multiple inheritance.
+
+This semantic-role normalization matters because rate-1 architecture is not purely lexical. Several families
+can carry the same witness roles under different field names. The advisor therefore distinguishes between:
+
+- lexical field repetition (same field name, same type)
+- semantic witness repetition (same provenance or focal-subject role under renamed fields)
+
+The second case is what allows the advisor to detect that ``class_name`` and ``class_names`` belong to the
+same higher-order witness family, and to prescribe a shared mixin when one carrier stores a singular name
+while another stores a name family.
+
 The advisor was first exercised on one large scientific codebase, but it is now intended as a standalone,
 general-purpose tool.
 
@@ -82,6 +119,8 @@ The implementation itself follows the docs guidance:
   classes only keep orthogonal matching logic
 - findings are authoritative dataclasses rather than loose dicts
 - no ``Protocol`` is used as a semantic boundary
+- when several classes are confusable under a consumer's partial view, the target is an ``ABC`` witness, not
+  structural duck typing
 - each finding reports capability gap and relation context, not just syntactic similarity
 
 The first implementation pass exposed two problems and was immediately iterated:
@@ -117,6 +156,12 @@ reducing false positives, and adding codemod suggestions.
 4. add repository configuration and suppression support
 5. extract more generic docs into the standalone repo over time
 
+The next detector-design pass should also push harder on three quality goals:
+
+- keep detectors deterministic and explicitly certified rather than adding opaque semantic scoring
+- widen lexical grouping into semantic-role normalization so coverage of true semantic duplication improves
+- prefer reuse of existing nominal authorities before prescribing new synthetic bases, schemas, or mixins
+
 The CLI now already includes richer pattern guidance for each finding:
 
 - the pattern prescription
@@ -134,3 +179,7 @@ That widening has now started: the advisor also detects repeated string-key proj
 including export dicts and kwargs/source-value bags, and points them toward one authoritative schema.
 
 The goal is not to produce more findings. The goal is to make each finding more canonical and less noisy.
+
+That now includes self-hosting accuracy: when the advisor sees a class or carrier that already matches an
+existing reusable nominal base, it should say so directly instead of only recommending that some new base be
+introduced.

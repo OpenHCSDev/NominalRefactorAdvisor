@@ -23,6 +23,10 @@ class PatternId(IntEnum):
     AUTHORITATIVE_SCHEMA = 14
     STAGED_ORCHESTRATION = 15
     AUTHORITATIVE_CONTEXT = 16
+    NOMINAL_STRATEGY_FAMILY = 17
+    DESCRIPTOR_DERIVED_VIEW = 18
+    NOMINAL_INTERFACE_WITNESS = 19
+    NOMINAL_WITNESS_CARRIER = 20
 
 
 @dataclass(frozen=True)
@@ -308,6 +312,83 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         ),
         (
             "@dataclass(frozen=True)\nclass ScoringContextRecord:\n    request: Request\n    scoring_context: object\n    electrostatics: object | None\n\ndef score_exact(ctx: ScoringContextRecord, poses): ...",
+        ),
+    ),
+    PatternId.NOMINAL_STRATEGY_FAMILY: PatternSpec(
+        PatternId.NOMINAL_STRATEGY_FAMILY,
+        "Nominal Strategy Family",
+        "Replace enum/member dispatch ladders with an ABC-backed strategy family whose implementations guarantee one common method.",
+        "ABC strategy root plus one implementation class per closed enum case, with one guaranteed call surface.",
+        (
+            "Identify the closed strategy axis and its concrete cases.",
+            "Introduce an ABC with one required method for the shared behavior.",
+            "Route through the implementation class family instead of branching at the call site.",
+        ),
+        (
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        (
+            "class ModeRunner(ABC):\n    @abstractmethod\n    def run(self, ctx): ...\n\nclass ObservedRunner(ModeRunner): ...\nclass CertifiedRunner(ModeRunner): ...",
+        ),
+    ),
+    PatternId.DESCRIPTOR_DERIVED_VIEW: PatternSpec(
+        PatternId.DESCRIPTOR_DERIVED_VIEW,
+        "Descriptor-Derived View",
+        "Replace manually synchronized derived attributes with descriptor- or property-mediated derived views rooted in one authoritative field.",
+        "One authoritative source field plus descriptor-backed derived views that update by access rather than manual resynchronization.",
+        (
+            "Identify the unique authoritative source field.",
+            "Turn repeated derived copies into descriptor- or property-based views.",
+            "Delete mutator-side resynchronization boilerplate so the edit set collapses back to one degree of freedom.",
+        ),
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        (
+            "class DerivedField:\n    def __set_name__(self, owner, name): ...\n    def __get__(self, obj, objtype=None): ...",
+        ),
+    ),
+    PatternId.NOMINAL_INTERFACE_WITNESS: PatternSpec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Nominal Interface Witness",
+        "Introduce an ABC-backed nominal interface when several structural implementations are confusable under the consumer's partial view.",
+        "ABC root with required methods, optional class-family registration, and consumers typed against the nominal witness instead of structural coincidence.",
+        (
+            "Identify the consumer's observed method view.",
+            "Recover the confusable implementation family under that view.",
+            "Introduce an ABC witness and type consumers against it instead of duck-typed structural matching.",
+        ),
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            "class StorageBackend(ABC):\n    @abstractmethod\n    def store(self, item): ...\n    @abstractmethod\n    def flush(self): ...",
+        ),
+    ),
+    PatternId.NOMINAL_WITNESS_CARRIER: PatternSpec(
+        PatternId.NOMINAL_WITNESS_CARRIER,
+        "Nominal Witness Carrier Family",
+        "Lift repeated detector-local witness carriers onto one nominal ABC/base dataclass, and extract orthogonal renamed witness slices into mixins when several carriers need them.",
+        "ABC or frozen base dataclass that owns shared witness provenance, plus semantic-role mixins composed through multiple inheritance for orthogonal renamed slices.",
+        (
+            "Identify the shared witness spine: provenance file, focal locus, and focal subject.",
+            "Move that shared witness structure into one nominal base carrier.",
+            "Extract orthogonal renamed witness slices like `class_name` / `class_names` into mixins and compose them with multiple inheritance.",
+        ),
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        (
+            "@dataclass(frozen=True)\nclass WitnessCandidate(ABC):\n    file_path: str\n    line: int\n    subject_name: str\n\nclass NameBearingMixin(ABC):\n    @property\n    @abstractmethod\n    def name_family(self) -> tuple[str, ...]: ...\n\n@dataclass(frozen=True)\nclass ManualFiberTagCandidate(WitnessCandidate, NameBearingMixin): ...",
         ),
     ),
 }

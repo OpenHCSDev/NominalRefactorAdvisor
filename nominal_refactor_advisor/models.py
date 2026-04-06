@@ -73,6 +73,21 @@ class ImpactDelta(SemanticRecord):
         return self.combine(other)
 
     @classmethod
+    def from_repeated_mapping_family(
+        cls,
+        owner_count: int,
+        repeated_component_count: int,
+    ) -> "ImpactDelta":
+        removable = max((owner_count - 1) * repeated_component_count, 0)
+        return cls(
+            lower_bound_removable_loc=removable,
+            upper_bound_removable_loc=removable,
+            loci_of_change_before=owner_count,
+            loci_of_change_after=1,
+            repeated_mappings_centralized=removable,
+        )
+
+    @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
         return (frozenset(field.name for field in fields(cls) if field.init),)
 
@@ -264,13 +279,9 @@ class FieldFamilyMetrics(BehaviorFindingMetrics):
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        removable = max((self.class_count - 1) * self.field_count, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=removable,
-            upper_bound_removable_loc=removable,
-            loci_of_change_before=self.class_count,
-            loci_of_change_after=1,
-            repeated_mappings_centralized=removable,
+        return ImpactDelta.from_repeated_mapping_family(
+            self.class_count,
+            self.field_count,
         )
 
     @property
@@ -284,6 +295,29 @@ class FieldFamilyMetrics(BehaviorFindingMetrics):
     @property
     def plan_field_execution_level(self) -> str:
         return self.execution_level
+
+
+@dataclass(frozen=True)
+class WitnessCarrierMetrics(BehaviorFindingMetrics):
+    class_count: int
+    shared_role_count: int
+    class_names: tuple[str, ...]
+    shared_role_names: tuple[str, ...]
+
+    @property
+    def impact_delta(self) -> ImpactDelta:
+        return ImpactDelta.from_repeated_mapping_family(
+            self.class_count,
+            self.shared_role_count,
+        )
+
+    @property
+    def plan_class_names(self) -> tuple[str, ...]:
+        return self.class_names
+
+    @property
+    def plan_field_names(self) -> tuple[str, ...]:
+        return self.shared_role_names
 
 
 @dataclass(frozen=True)

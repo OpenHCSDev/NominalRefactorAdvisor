@@ -204,6 +204,302 @@ def certify_pose(
     )
 
 
+def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+
+
+class Mode(Enum):
+    OBSERVED = "observed"
+    CERTIFIED = "certified"
+
+
+def run_mode(mode, inputs, steps):
+    if mode == Mode.OBSERVED:
+        return run_observed(inputs, steps)
+    elif mode == Mode.CERTIFIED:
+        return run_certified(inputs, steps)
+    else:
+        raise ValueError(mode)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    strategy_finding = next(
+        finding
+        for finding in findings
+        if finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
+    )
+    assert "Mode.OBSERVED" in strategy_finding.summary
+    assert strategy_finding.scaffold is not None
+    assert "class ModeRunner(ABC)" in strategy_finding.scaffold
+    assert strategy_finding.codemod_patch is not None
+    assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
+
+
+def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Notification:
+    def __init__(self, kind, recipient, subject=None, body=None, phone=None, device_token=None):
+        self.kind = kind
+        self.recipient = recipient
+        self.subject = subject
+        self.body = body
+        self.phone = phone
+        self.device_token = device_token
+
+    def send(self):
+        if self.kind == "email":
+            return smtp_send(self.recipient, self.subject, self.body)
+        elif self.kind == "sms":
+            return twilio_send(self.phone, self.body)
+        elif self.kind == "push":
+            return apns_send(self.device_token, self.body)
+        raise ValueError(self.kind)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(item for item in findings if item.detector_id == "manual_fiber_tag")
+    assert "self.kind" in finding.summary
+    assert finding.scaffold is not None
+    assert "class Notification(ABC)" in finding.scaffold
+
+
+def test_detects_descriptor_derived_view_drift(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Model:
+    def __init__(self, table_name):
+        self.table_name = table_name
+        self.select_query = f"SELECT * FROM {self.table_name}"
+        self.insert_query = f"INSERT INTO {self.table_name}"
+        self.count_query = f"SELECT COUNT(*) FROM {self.table_name}"
+
+    def rename_table(self, new_name):
+        self.table_name = new_name
+        self.select_query = f"SELECT * FROM {self.table_name}"
+        self.insert_query = f"INSERT INTO {self.table_name}"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item for item in findings if item.detector_id == "descriptor_derived_view"
+    )
+    assert "count_query" in finding.summary
+    assert finding.scaffold is not None
+    assert "class DerivedField" in finding.scaffold
+
+
+def test_detects_deferred_class_registration(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+HANDLERS = {}
+
+
+def register_handler(event_type):
+    def decorator(cls):
+        HANDLERS[event_type] = cls
+        return cls
+    return decorator
+
+
+@register_handler("user.created")
+class UserCreatedHandler:
+    def handle(self, event):
+        return event
+
+
+@register_handler("order.placed")
+class OrderPlacedHandler:
+    def handle(self, event):
+        return event
+
+
+class PaymentFailedHandler:
+    def handle(self, event):
+        return event
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item for item in findings if item.detector_id == "deferred_class_registration"
+    )
+    assert "HANDLERS" in finding.summary
+    assert finding.scaffold is not None
+    assert "__init_subclass__" in finding.scaffold
+
+
+def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def process_batch(items, backend):
+    for item in items:
+        backend.store(item)
+    backend.flush()
+
+
+class DatabaseBackend:
+    def store(self, item):
+        return item
+
+    def flush(self):
+        return None
+
+
+class CacheBackend:
+    def store(self, item):
+        return item
+
+    def flush(self):
+        return None
+
+    def invalidate(self):
+        return None
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item for item in findings if item.detector_id == "structural_confusability"
+    )
+    assert "process_batch" in finding.summary
+    assert finding.scaffold is not None
+    assert "class BackendInterface(ABC)" in finding.scaffold
+
+
+def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ManualFiberTagCandidate:
+    file_path: str
+    class_name: str
+    init_line: int
+    method_name: str
+    method_line: int
+    tag_name: str
+    case_names: tuple[str, ...]
+    assigned_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DescriptorDerivedViewCandidate:
+    file_path: str
+    class_name: str
+    source_attr: str
+    init_line: int
+    mutator_name: str
+    mutator_line: int
+    derived_field_names: tuple[str, ...]
+    updated_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualRegistryCandidate:
+    file_path: str
+    registry_name: str
+    decorator_name: str
+    class_names: tuple[str, ...]
+    unregistered_class_names: tuple[str, ...]
+    line: int
+
+
+@dataclass(frozen=True)
+class StructuralConfusabilityCandidate:
+    file_path: str
+    function_name: str
+    line: int
+    parameter_name: str
+    observed_method_names: tuple[str, ...]
+    class_names: tuple[str, ...]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item for item in findings if item.detector_id == "semantic_witness_family"
+    )
+    assert "ManualFiberTagCandidate" in finding.summary
+    assert finding.scaffold is not None
+    assert "class WitnessCarrier(ABC)" in finding.scaffold
+
+
+def test_detects_mixin_enforcement_for_renamed_semantic_roles(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ManualFiberTagCandidate:
+    file_path: str
+    class_name: str
+    init_line: int
+    method_name: str
+    method_line: int
+    tag_name: str
+    case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualRegistryCandidate:
+    file_path: str
+    registry_name: str
+    decorator_name: str
+    class_names: tuple[str, ...]
+    line: int
+
+
+@dataclass(frozen=True)
+class StructuralConfusabilityCandidate:
+    file_path: str
+    function_name: str
+    line: int
+    observed_method_names: tuple[str, ...]
+    class_names: tuple[str, ...]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == "mixin_enforcement"
+        and "class_name" in item.summary
+        and "class_names" in item.summary
+    )
+    assert finding.scaffold is not None
+    assert "class NameBearingMixin(ABC)" in finding.scaffold
+    assert "(WitnessCarrier, NameBearingMixin" in finding.scaffold
+    assert finding.codemod_patch is not None
+    assert "multiple inheritance" in finding.codemod_patch
+
+
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2030,3 +2326,303 @@ class Beta:
     assert "Outcome:" in output
     assert "Action:" in output
     assert "Action sites:" in output
+
+
+def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class IssueDetector(ABC):
+    pass
+
+
+class AlphaDetector(IssueDetector):
+    pass
+
+
+class BetaDetector(IssueDetector):
+    pass
+
+
+def default_detectors():
+    return (AlphaDetector(), BetaDetector())
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "manual_family_roster"
+    )
+
+    assert "default_detectors" in finding.summary
+    assert "IssueDetector" in finding.summary
+    assert "__init_subclass__" in (finding.scaffold or "")
+
+
+def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class PatternId:
+    ABC_TEMPLATE_METHOD = "abc"
+    AUTHORITATIVE_SCHEMA = "schema"
+    AUTO_REGISTER_META = "auto"
+
+
+_PATTERN_DEPENDENCIES = {
+    PatternId.ABC_TEMPLATE_METHOD: {PatternId.AUTHORITATIVE_SCHEMA},
+    PatternId.AUTHORITATIVE_SCHEMA: {PatternId.AUTO_REGISTER_META},
+    PatternId.AUTO_REGISTER_META: set(),
+}
+
+
+_PATTERN_PRIORITY = {
+    PatternId.ABC_TEMPLATE_METHOD: 80,
+    PatternId.AUTHORITATIVE_SCHEMA: 60,
+    PatternId.AUTO_REGISTER_META: 50,
+}
+
+
+_PATTERN_BUILDERS = {
+    PatternId.ABC_TEMPLATE_METHOD: build_abc,
+    PatternId.AUTHORITATIVE_SCHEMA: build_schema,
+    PatternId.AUTO_REGISTER_META: build_registry,
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "fragmented_family_authority"
+    )
+
+    assert "_PATTERN_DEPENDENCIES" in finding.summary
+    assert "PatternId" in finding.summary
+    assert "class PatternIdSpec" in (finding.scaffold or "")
+
+
+def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class EventCarrierBase(ABC):
+    file_path: str
+    line: int
+    subject_name: str
+    payload: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DetachedEventCarrier:
+    file_path: str
+    line: int
+    subject_name: str
+    payload: tuple[str, ...]
+    status: str
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "existing_nominal_authority_reuse"
+    )
+
+    assert "DetachedEventCarrier" in finding.summary
+    assert "EventCarrierBase" in finding.summary
+    assert "EventCarrierBase" in (finding.scaffold or "")
+
+
+def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class PerModuleIssueDetector:
+    pass
+
+
+class AlphaDetector(PerModuleIssueDetector):
+    def _findings_for_module(self, module, config):
+        findings = []
+        for candidate in alpha_candidates(module):
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    summarize_alpha(candidate),
+                    alpha_evidence(candidate),
+                    scaffold=alpha_scaffold(candidate),
+                    codemod_patch=alpha_patch(candidate),
+                    metrics=AlphaMetrics(site_count=1),
+                )
+            )
+        return findings
+
+
+class BetaDetector(PerModuleIssueDetector):
+    def _findings_for_module(self, module, config):
+        findings = []
+        for entry in beta_candidates(module):
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    summarize_beta(entry),
+                    beta_evidence(entry),
+                    scaffold=beta_scaffold(entry),
+                    codemod_patch=beta_patch(entry),
+                    metrics=BetaMetrics(site_count=1),
+                )
+            )
+        return findings
+
+
+class GammaDetector(PerModuleIssueDetector):
+    def _findings_for_module(self, module, config):
+        findings = []
+        for witness in gamma_candidates(module):
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    summarize_gamma(witness),
+                    gamma_evidence(witness),
+                    scaffold=gamma_scaffold(witness),
+                    codemod_patch=gamma_patch(witness),
+                    metrics=GammaMetrics(site_count=1),
+                )
+            )
+        return findings
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "finding_assembly_pipeline"
+    )
+
+    assert "AlphaDetector" in finding.summary
+    assert "CandidateFindingDetector" in (finding.scaffold or "")
+
+
+def test_detects_guarded_delegator_spec_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class FunctionObservationSpec:
+    pass
+
+
+class ProjectionObservationSpec(FunctionObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        if observation.class_name is not None:
+            return None
+        return _projection_helper_shape_from_function(parsed_module, function)
+
+
+class AccessorObservationSpec(FunctionObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        if observation.class_name is None:
+            return None
+        return _accessor_wrapper_candidate_from_function(parsed_module, observation.class_name, function)
+
+
+class SpecAssignmentObservationSpec(FunctionObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        if observation.function_name is None:
+            return None
+        return _spec_candidate_from_function(parsed_module, function)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "guarded_delegator_spec"
+    )
+
+    assert "Observation specs" in finding.summary
+    assert "ScopeFilteredSpec" in (finding.scaffold or "")
+
+
+def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class StructuralObservation:
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+
+
+class MethodShape:
+    @property
+    def structural_observation(self):
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            nominal_witness=self.class_name,
+            line=self.lineno,
+            observation_kind=self.observation_kind,
+            execution_level=self.execution_level,
+            observed_name=self.method_name,
+            fiber_key=self.method_name,
+        )
+
+
+class BuilderShape:
+    @property
+    def structural_observation(self):
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            nominal_witness=self.class_name,
+            line=self.lineno,
+            observation_kind=self.observation_kind,
+            execution_level=self.execution_level,
+            observed_name=self.builder_name,
+            fiber_key=self.builder_name,
+        )
+
+
+class ExportShape:
+    @property
+    def structural_observation(self):
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.symbol,
+            nominal_witness=self.class_name,
+            line=self.lineno,
+            observation_kind=self.observation_kind,
+            execution_level=self.execution_level,
+            observed_name=self.export_name,
+            fiber_key=self.export_name,
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "structural_observation_projection"
+    )
+
+    assert "StructuralObservation schema" in finding.summary
+    assert "StructuralObservationTemplate" in (finding.scaffold or "")
