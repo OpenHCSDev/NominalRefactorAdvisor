@@ -1,3 +1,10 @@
+"""Observation spec families and spec-derived family generation.
+
+This module declares the public observation specs used by the advisor and derives
+their exported collected families from the spec definitions themselves. The goal is
+to keep one nominal authority per family and derive runtime family surfaces from it.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -89,12 +96,16 @@ from .ast_tools import (
 
 @dataclass(frozen=True)
 class GeneratedFamilySpec:
+    """Declarative recipe for one generated collected family export."""
+
     item_type: type[object]
     family_root: type[CollectedFamily]
     export_name: str | None = None
 
 
 class FamilyGeneratingSpec(ABC):
+    """Spec mixin that declares which collected families derive from the spec."""
+
     family_specs: ClassVar[tuple[GeneratedFamilySpec, ...]] = ()
     _declaring_spec_types: ClassVar[list[type["FamilyGeneratingSpec"]]] = []
 
@@ -107,14 +118,20 @@ class FamilyGeneratingSpec(ABC):
 
 
 class ObservationFamily(CollectedFamily, ABC):
+    """Registry root for observation families derived from observation specs."""
+
     _registry_root = True
 
 
 class ShapeFamily(CollectedFamily, ABC):
+    """Registry root for structural shape families derived from shape specs."""
+
     _registry_root = True
 
 
 class TypedLiteralObservationFamily(ObservationFamily, ABC):
+    """Observation family root specialized by a literal-kind discriminator."""
+
     _registry_skip = True
     item_type = LiteralDispatchObservation
     spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
@@ -965,6 +982,7 @@ def _registered_family_types() -> tuple[type[CollectedFamily], ...]:
 
 
 def family_for_item_type(item_type: type[object]) -> type[CollectedFamily]:
+    """Return the generated family that owns one collected item type."""
     for family in _registered_family_types():
         if family.item_type is item_type:
             return family
@@ -972,6 +990,7 @@ def family_for_item_type(item_type: type[object]) -> type[CollectedFamily]:
 
 
 def family_for_literal_kind(literal_kind: LiteralKind) -> type[CollectedFamily]:
+    """Return the generated family that owns one literal-dispatch kind."""
     for family in _registered_family_types():
         if (
             issubclass(family, TypedLiteralObservationFamily)

@@ -1,3 +1,9 @@
+"""Canonical refactoring pattern metadata.
+
+Each pattern spec records the theory-grounded prescription, canonical shape, and
+first refactor moves that findings and plans reference in CLI output and docs.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +13,8 @@ from .taxonomy import CapabilityTag
 
 
 class PatternId(IntEnum):
+    """Stable numeric identifiers for the supported refactoring patterns."""
+
     NOMINAL_BOUNDARY = 1
     DISCRIMINATED_UNION = 2
     CLOSED_FAMILY_DISPATCH = 3
@@ -31,6 +39,8 @@ class PatternId(IntEnum):
 
 @dataclass(frozen=True)
 class PatternSpec:
+    """Documentation payload for one canonical refactoring pattern."""
+
     pattern_id: PatternId
     name: str
     prescription: str

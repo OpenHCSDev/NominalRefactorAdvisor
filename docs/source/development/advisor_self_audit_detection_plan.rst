@@ -127,10 +127,8 @@ Repeated detector-local finding assembly pipelines
 - **Current failure mode**:
   - method grouping is too lexical and too statement-count driven
   - the shared role is semantic pipeline structure, not exact AST identity
-  - per-detector summary text, evidence shape, metrics construction, scaffold helpers, and patch helpers
-    create surface variation that defeats the current fingerprinting
-  - the hierarchy detector expects repeated method-role clusters across the same class family, while the
-    strongest shared role here is the repeated ``_findings_for_module`` template
+  - per-detector summary text, evidence shape, metrics construction, scaffold helpers, and patch helpers create surface variation that defeats the current fingerprinting
+  - the hierarchy detector expects repeated method-role clusters across the same class family, while the strongest shared role here is the repeated ``_findings_for_module`` template
 - **Detection change required**: add a semantic pipeline detector or widen Pattern 5 normalization so it
   understands finding-assembly pipelines instead of only repeated exact statement skeletons
 - **Proposed detector name**: ``FindingAssemblyPipelineDetector``
@@ -151,8 +149,7 @@ Repeated guard-and-delegate observation spec wrappers
   - ``InheritanceHierarchyCandidateDetector``
 - **Current failure mode**:
   - the relevant methods are tiny wrappers and often fall below duplicate-statement thresholds
-  - the current repeated-method logic does not normalize guard-then-delegate structure such as
-    ``if class scope is wrong: return None`` followed by one helper call
+  - the current repeated-method logic does not normalize guard-then-delegate structure such as ``if class scope is wrong: return None`` followed by one helper call
   - the current hierarchy detector again expects larger repeated role families than this wrapper family
 - **Detection change required**: add a dedicated guarded-delegator detector or widen Pattern 5
   normalization to understand wrapper-spec families
@@ -173,9 +170,7 @@ Repeated ``StructuralObservation(...)`` projection builders
 - **Existing detector family that should help**: ``RepeatedBuilderCallDetector``
 - **Current failure mode**:
   - grouping uses exact callee name, keyword list, and value fingerprint
-  - semantic role overlap is high, but the current detector does not know that
-    ``owner_symbol``, ``nominal_witness``, ``observed_name``, and ``fiber_key`` are role slots inside one
-    projection family
+  - semantic role overlap is high, but the current detector does not know that ``owner_symbol``, ``nominal_witness``, ``observed_name``, and ``fiber_key`` are role slots inside one projection family
   - small expression differences such as ``self.symbol`` versus ``self.function_name`` prevent grouping
 - **Detection change required**: widen Pattern 14 normalization to recognize semantic projection-role
   families instead of exact literal builder equality
@@ -198,12 +193,9 @@ Existing compatible ``ABC`` or base is not reused
   - ``SemanticWitnessFamilyDetector``
   - ``MixinEnforcementDetector``
 - **Current failure mode**:
-  - repeated-family detectors reason over sibling duplication cohorts, not over the space of already
-    declared authorities
-  - the tool can say that several classes should share a base, but it does not ask whether a compatible
-    base already exists and should simply be inherited
-  - there is no project-wide nominal authority index for comparing concrete classes against existing
-    abstract bases, reusable dataclass carriers, or mixins
+  - repeated-family detectors reason over sibling duplication cohorts, not over the space of already declared authorities
+  - the tool can say that several classes should share a base, but it does not ask whether a compatible base already exists and should simply be inherited
+  - there is no project-wide nominal authority index for comparing concrete classes against existing abstract bases, reusable dataclass carriers, or mixins
   - prescriptions therefore over-synthesize new bases and under-reuse existing nominal structure
 - **Detection change required**: add an existing-authority reuse detector, or widen field-family and
   witness-family analysis so they first search for compatible declared authorities before proposing a new

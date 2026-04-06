@@ -1,3 +1,10 @@
+"""CLI and top-level analysis helpers.
+
+This module contains the programmatic entrypoints used by tests and automation as
+well as the command-line interface used by developers. The public helpers are the
+recommended way to analyze a path or synthesize subsystem plans from findings.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -16,6 +23,7 @@ from .planner import build_refactor_plans
 def analyze_modules(
     modules: list, config: DetectorConfig | None = None
 ) -> list[RefactorFinding]:
+    """Run all registered detectors against parsed modules."""
     config = config or DetectorConfig()
     findings: list[RefactorFinding] = []
     for detector in default_detectors():
@@ -29,11 +37,13 @@ def analyze_modules(
 def analyze_path(
     root: Path, config: DetectorConfig | None = None
 ) -> list[RefactorFinding]:
+    """Parse a filesystem root and return sorted refactor findings."""
     modules = parse_python_modules(root)
     return analyze_modules(modules, config)
 
 
 def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
+    """Analyze a path and synthesize subsystem-level refactor plans."""
     findings = analyze_path(root, config)
     return build_refactor_plans(findings, root)
 
@@ -153,6 +163,7 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
 
 
 def main() -> int:
+    """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
         description="AST-driven refactoring advisor for nominal architecture."
     )

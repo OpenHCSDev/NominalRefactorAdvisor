@@ -23,3 +23,10 @@ Run locally with:
 ```bash
 python -m nominal_refactor_advisor path/to/python/package
 ```
+
+Build the Sphinx docs with:
+
+```bash
+pip install -e .[docs]
+python -m sphinx -b html docs/source docs/_build/html
+```

@@ -1,3 +1,10 @@
+"""Detector implementations and detection substrate.
+
+This module houses both the detector registry and the concrete detector families
+used by the advisor. The public base classes below are the intended extension
+points for future detector work.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -99,6 +106,8 @@ from .taxonomy import (
 
 @dataclass(frozen=True)
 class DetectorConfig:
+    """Thresholds and tuning knobs shared by all detectors."""
+
     min_duplicate_statements: int = 3
     min_string_cases: int = 3
     min_attribute_probes: int = 2
@@ -140,6 +149,8 @@ class DetectorConfig:
 
 
 class IssueDetector(ABC):
+    """Definition-time registered detector base class."""
+
     detector_id: str
     detector_priority: ClassVar[int] = 0
     _registered_detector_types: ClassVar[list[type["IssueDetector"]]] = []
@@ -183,6 +194,8 @@ class IssueDetector(ABC):
 
 
 class PerModuleIssueDetector(IssueDetector):
+    """Detector base that evaluates one parsed module at a time."""
+
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
@@ -199,6 +212,8 @@ class PerModuleIssueDetector(IssueDetector):
 
 
 class CandidateFindingDetector(PerModuleIssueDetector, ABC):
+    """Detector base for candidate-to-finding pipelines."""
+
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
@@ -219,6 +234,8 @@ class CandidateFindingDetector(PerModuleIssueDetector, ABC):
 
 
 class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
+    """Per-module detector that first collects evidence and then builds one finding."""
+
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
@@ -247,6 +264,8 @@ class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
 
 
 class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
+    """Evidence-only detector that emits one finding from a fixed spec."""
+
     finding_spec: FindingSpec
 
     def _build_finding(
@@ -7634,6 +7653,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
 
 
 def default_detectors() -> tuple[IssueDetector, ...]:
+    """Instantiate all registered detectors in deterministic priority order."""
     return tuple(
         detector_type() for detector_type in IssueDetector.registered_detector_types()
     )

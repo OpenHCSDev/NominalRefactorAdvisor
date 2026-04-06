@@ -1,3 +1,11 @@
+"""AST parsing, registration, and collection substrate.
+
+This module provides the reusable machinery that turns Python source into parsed
+modules, registered observation/spec families, and collected semantic shapes.
+Most higher-level detectors depend on this substrate rather than walking raw ASTs
+directly.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -46,6 +54,8 @@ from .observation_shapes import (
 
 @dataclass(frozen=True)
 class ParsedModule:
+    """Parsed Python module together with its source text and path."""
+
     path: Path
     module: ast.Module
     source: str
@@ -79,6 +89,8 @@ class ClassAstObservation:
 
 
 class AutoRegisterMeta(ABCMeta):
+    """Metaclass that performs definition-time registration on registry roots."""
+
     def __new__(
         mcls,
         name: str,
@@ -104,12 +116,16 @@ class AutoRegisterMeta(ABCMeta):
 
 
 class ModuleShapeSpec(ABC):
+    """Abstract collector that emits semantic items from one parsed module."""
+
     @abstractmethod
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         raise NotImplementedError
 
 
 class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
+    """Module shape spec family whose concrete subclasses self-register."""
+
     _registry_root: ClassVar[bool] = False
     _registered_spec_types: ClassVar[list[type["AutoRegisteredModuleShapeSpec"]]]
 
@@ -137,6 +153,8 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
 
 
 class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
+    """Registered family of collected items keyed by a runtime item type."""
+
     _registry_root: ClassVar[bool] = False
     _registered_spec_types: ClassVar[list[type["CollectedFamily"]]]
     item_type: ClassVar[type[object]]
@@ -173,6 +191,7 @@ def collect_family_items(
     parsed_module: ParsedModule,
     family: type[CollectedFamily],
 ) -> list[object]:
+    """Collect and flatten items from one registered family."""
     return [
         item
         for item in _flatten_collected_items(family.collect(parsed_module))
@@ -181,6 +200,8 @@ def collect_family_items(
 
 
 class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
+    """Collected family driven by an auto-registered spec root."""
+
     spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
 
     @classmethod
@@ -193,6 +214,8 @@ class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
 
 
 class SingleSpecCollectedFamily(CollectedFamily, ABC):
+    """Collected family driven by one explicit spec instance."""
+
     spec: ClassVar[ModuleShapeSpec]
 
     @classmethod

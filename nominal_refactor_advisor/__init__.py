@@ -1,4 +1,9 @@
-"""AST-driven refactoring advisor for nominal architecture."""
+"""Public package surface for the nominal refactor advisor.
+
+The package exposes the high-level analysis and planning entrypoints together with
+the canonical result records and taxonomy values that downstream tooling is most
+likely to consume.
+"""
 
 from .cli import analyze_path, plan_path
 from .models import (

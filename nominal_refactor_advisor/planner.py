@@ -1,3 +1,9 @@
+"""Subsystem-level refactor plan synthesis.
+
+This module groups findings into subsystem clusters and turns them into ordered,
+pattern-aware plans suitable for long-running maintenance work.
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -37,6 +43,8 @@ class _FindingCluster:
 
 @dataclass(frozen=True)
 class PatternPlanningSpec:
+    """Planning metadata attached to one pattern in the plan builder."""
+
     priority: int = 0
     dependencies: tuple[PatternId, ...] = ()
     synergy_with: tuple[PatternId, ...] = ()
@@ -624,6 +632,7 @@ def _pattern_planning_spec(pattern_id: PatternId) -> PatternPlanningSpec:
 def build_refactor_plans(
     findings: list[RefactorFinding], root: Path
 ) -> list[RefactorPlan]:
+    """Group findings by subsystem and synthesize refactor plans."""
     clusters = _cluster_findings(findings, root)
     plans = [_plan_for_cluster(cluster) for cluster in clusters]
     return sorted(plans, key=lambda plan: (plan.subsystem, plan.primary_pattern_id))

@@ -1,3 +1,10 @@
+"""Typed result and metric records used across analysis and planning.
+
+The advisor routes all externally visible results through frozen dataclasses so the
+analysis pipeline, JSON output, tests, and future docs share one stable semantic
+record vocabulary.
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -19,6 +26,8 @@ from .taxonomy import (
 
 
 class SemanticRecord(ABC):
+    """Base protocol for frozen records that can be serialized to dictionaries."""
+
     def to_dict(self) -> dict[str, object]:
         record: Any = self
         return asdict(record)
@@ -26,6 +35,8 @@ class SemanticRecord(ABC):
 
 @dataclass(frozen=True)
 class SourceLocation(SemanticRecord):
+    """One evidence site in source code."""
+
     file_path: str
     line: int
     symbol: str
@@ -33,6 +44,8 @@ class SourceLocation(SemanticRecord):
 
 @dataclass(frozen=True)
 class ImpactDelta(SemanticRecord):
+    """Estimated structural impact of applying one refactor recommendation."""
+
     lower_bound_removable_loc: int = 0
     upper_bound_removable_loc: int = 0
     loci_of_change_before: int = 0
@@ -98,6 +111,8 @@ class OutcomeEstimate(ImpactDelta):
 
 
 class FindingMetrics(SemanticRecord, ABC):
+    """Base class for typed metric bags attached to findings."""
+
     @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
         if not is_dataclass(cls):
@@ -221,6 +236,8 @@ class EmptyFindingMetrics(FindingMetrics):
 
 @dataclass(frozen=True)
 class RepeatedMethodMetrics(BehaviorFindingMetrics):
+    """Metrics describing a repeated method or hook family."""
+
     duplicate_site_count: int
     statement_count: int
     class_count: int
@@ -296,6 +313,8 @@ class HierarchyCandidateMetrics(BehaviorFindingMetrics):
 
 @dataclass(frozen=True)
 class FieldFamilyMetrics(ClassNamesPlanMetrics):
+    """Metrics for repeated field families across classes."""
+
     class_count: int
     field_count: int
     class_names: tuple[str, ...]
@@ -321,6 +340,8 @@ class FieldFamilyMetrics(ClassNamesPlanMetrics):
 
 @dataclass(frozen=True)
 class WitnessCarrierMetrics(ClassNamesPlanMetrics):
+    """Metrics for repeated witness-carrier families."""
+
     class_count: int
     shared_role_count: int
     class_names: tuple[str, ...]
@@ -340,6 +361,8 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
 
 @dataclass(frozen=True)
 class MappingMetrics(MappingFindingMetrics):
+    """Metrics for repeated projection or mapping surfaces."""
+
     mapping_site_count: int
     field_count: int
     mapping_name: str | None = None
@@ -391,6 +414,8 @@ class MappingMetrics(MappingFindingMetrics):
 
 @dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics):
+    """Metrics for manual or duplicated class-registration surfaces."""
+
     registration_site_count: int
     class_count: int | None = None
     registry_name: str | None = None
@@ -443,6 +468,8 @@ class SentinelSimulationMetrics(FindingMetrics):
 
 
 class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
+    """Shared dispatch-count substrate for dispatch-oriented findings."""
+
     count_field_name: ClassVar[str]
 
     @classmethod
@@ -577,6 +604,8 @@ class ParameterThreadMetrics(FindingMetrics):
 
 @dataclass(frozen=True)
 class RefactorFinding(SemanticRecord):
+    """One concrete structural finding emitted by a detector."""
+
     detector_id: str
     pattern_id: PatternId
     title: str
@@ -635,6 +664,8 @@ class RefactorFinding(SemanticRecord):
 
 @dataclass(frozen=True)
 class FindingSpec:
+    """Reusable finding template shared by detector implementations."""
+
     pattern_id: PatternId
     title: str
     why: str
@@ -685,6 +716,8 @@ class FindingSpec:
 
 @dataclass(frozen=True)
 class RefactorAction(SemanticRecord):
+    """One proposed transformation step inside a subsystem refactor plan."""
+
     kind: str
     description: str
     target: str | None = None
@@ -700,6 +733,8 @@ class RefactorAction(SemanticRecord):
 
 @dataclass(frozen=True)
 class RefactorPlan(SemanticRecord):
+    """Subsystem-level composition of findings into an ordered refactor plan."""
+
     subsystem: str
     summary: str
     current_partial_view: str
@@ -719,18 +754,23 @@ class RefactorPlan(SemanticRecord):
 
 @dataclass(frozen=True)
 class AnalysisReport(SemanticRecord):
+    """Top-level report containing findings and synthesized plans."""
+
     findings: tuple[RefactorFinding, ...] = ()
     plans: tuple[RefactorPlan, ...] = ()
 
 
 @dataclass(frozen=True)
 class SemanticBagDescriptor(SemanticRecord):
+    """Schema descriptor for metric bags accepted by semantic dict-bag detection."""
+
     class_name: str
     base_class_name: str
     accepted_key_sets: tuple[frozenset[str], ...]
 
 
 def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
+    """Return descriptors for all concrete finding-metric types."""
     return tuple(
         SemanticBagDescriptor(
             class_name=metric_type.__name__,
@@ -743,6 +783,7 @@ def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
 
 
 def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
+    """Return the semantic bag descriptor for :class:`ImpactDelta`."""
     return SemanticBagDescriptor(
         class_name=ImpactDelta.__name__,
         base_class_name=ImpactDelta.__name__,

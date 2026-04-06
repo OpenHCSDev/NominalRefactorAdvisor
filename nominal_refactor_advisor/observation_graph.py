@@ -1,3 +1,10 @@
+"""Observation graph substrate for fibers, witness groups, and cohorts.
+
+The advisor normalizes collected semantic shapes into structural observations and
+then groups them into fibers and witness cohorts. Detectors use these groupings to
+reason about partial views, confusability, and coherence.
+"""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -10,6 +17,8 @@ if TYPE_CHECKING:
 
 
 class ObservationKind(StrEnum):
+    """Canonical observation kinds emitted by the collection substrate."""
+
     ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
     BUILDER_CALL = "builder_call"
@@ -30,6 +39,8 @@ class ObservationKind(StrEnum):
 
 
 class StructuralExecutionLevel(StrEnum):
+    """Structural execution levels used to group observations."""
+
     CLASS_BODY = "class_body"
     INIT_BODY = "init_body"
     FUNCTION_BODY = "function_body"
@@ -38,6 +49,8 @@ class StructuralExecutionLevel(StrEnum):
 
 @dataclass(frozen=True)
 class StructuralObservation:
+    """Normalized structural fact emitted by a collected shape."""
+
     file_path: str
     owner_symbol: str
     nominal_witness: str
@@ -53,6 +66,8 @@ class StructuralObservation:
 
 
 class StructuralObservationCarrier(ABC):
+    """Protocol for objects that can project to a structural observation."""
+
     @property
     @abstractmethod
     def structural_observation(self) -> StructuralObservation:
@@ -61,6 +76,8 @@ class StructuralObservationCarrier(ABC):
 
 @dataclass(frozen=True)
 class ObservationFiber:
+    """All observations that share one observation kind, level, and fiber key."""
+
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     fiber_key: str
@@ -77,6 +94,8 @@ class ObservationFiber:
 
 @dataclass(frozen=True)
 class NominalWitnessGroup:
+    """All observations of one witness under one observation kind and level."""
+
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     nominal_witness: str
@@ -93,6 +112,8 @@ class NominalWitnessGroup:
 
 @dataclass(frozen=True)
 class ObservationCohort:
+    """Coherent cluster of fibers that share the same witness family."""
+
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     nominal_witnesses: tuple[str, ...]
@@ -109,6 +130,8 @@ class ObservationCohort:
 
 @dataclass(frozen=True)
 class ObservationGraph:
+    """Query surface over normalized structural observations."""
+
     observations: tuple[StructuralObservation, ...]
 
     @property
@@ -273,6 +296,7 @@ class ObservationGraph:
 def collect_structural_observations(
     parsed_module: ParsedModule,
 ) -> tuple[StructuralObservation, ...]:
+    """Collect and sort structural observations for one parsed module."""
     from .ast_tools import CollectedFamily, collect_family_items
 
     observations: list[StructuralObservation] = []
@@ -291,6 +315,7 @@ def collect_structural_observations(
 
 
 def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
+    """Build one observation graph from a list of parsed modules."""
     observations: list[StructuralObservation] = []
     for module in modules:
         observations.extend(collect_structural_observations(module))

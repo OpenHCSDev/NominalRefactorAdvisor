@@ -1,3 +1,10 @@
+"""Collected semantic shapes and structural projection carriers.
+
+These frozen records represent the normalized items emitted by observation specs.
+Most detector families reason over these carriers indirectly through their
+structural observation projections.
+"""
+
 from __future__ import annotations
 
 import ast
@@ -19,11 +26,15 @@ if TYPE_CHECKING:
 
 
 class LiteralKind(StrEnum):
+    """Literal kinds used by literal-dispatch observations."""
+
     STRING = "string"
     NUMERIC = "numeric"
 
 
 class FieldOriginKind(StrEnum):
+    """Origins from which a field observation can be recovered."""
+
     CLASS_ASSIGNMENT = "class_assignment"
     CLASS_ANNOTATION = "class_annotation"
     DATACLASS_FIELD = "dataclass_field"
@@ -32,6 +43,8 @@ class FieldOriginKind(StrEnum):
 
 @dataclass(frozen=True)
 class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
+    """Base class for shapes that project to structural observations."""
+
     file_path: str
     OBSERVATION_KIND: ClassVar[ObservationKind]
 
@@ -617,6 +630,8 @@ class BuilderCallShape(
 
 @dataclass(frozen=True)
 class RegistrationShape:
+    """Normalized record for one recovered manual registration site."""
+
     file_path: str
     lineno: int
     registry_name: str

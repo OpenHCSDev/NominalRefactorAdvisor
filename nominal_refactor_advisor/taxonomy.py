@@ -1,3 +1,5 @@
+"""Shared taxonomy values for certification, confidence, and capability labels."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -5,17 +7,23 @@ from enum import StrEnum
 
 
 class CertificationLevel(StrEnum):
+    """How strongly the advisor believes a finding follows from the evidence."""
+
     CERTIFIED = "certified"
     STRONG_HEURISTIC = "strong_heuristic"
     SPECULATIVE = "speculative"
 
 
 class ConfidenceLevel(StrEnum):
+    """Human-facing confidence bucket for findings and plans."""
+
     HIGH = "high"
     MEDIUM = "medium"
 
 
 class CapabilityTag(StrEnum):
+    """Capabilities recovered or prescribed by the canonical pattern library."""
+
     AUTHORITATIVE_DISPATCH = "authoritative_dispatch"
     AUTHORITATIVE_MAPPING = "authoritative_mapping"
     BIDIRECTIONAL_NORMALIZATION = "bidirectional_normalization"
@@ -46,6 +54,8 @@ class CapabilityTag(StrEnum):
 
 
 class ObservationTag(StrEnum):
+    """Observation families used to explain evidence and partial views."""
+
     ACCESSOR_WRAPPER = "accessor_wrapper"
     ATTRIBUTE_PROBE = "attribute_probe"
     BRANCH_DISPATCH = "branch_dispatch"
@@ -96,6 +106,8 @@ class ObservationTag(StrEnum):
 
 @dataclass(frozen=True)
 class CapabilitySpec:
+    """Display metadata for one :class:`CapabilityTag`."""
+
     label: str
     distinction: str
 
