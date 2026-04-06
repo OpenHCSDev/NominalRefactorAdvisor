@@ -3017,6 +3017,50 @@ _STATIC_EXPORT_NAMES = (
     assert "public_exports" in (finding.scaffold or "")
 
 
+def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class CollectedFamily(ABC):
+    pass
+
+
+class AlphaFamily(CollectedFamily):
+    pass
+
+
+class BetaFamily(CollectedFamily):
+    pass
+
+
+class GammaFamily(CollectedFamily):
+    pass
+
+
+FAMILY_BY_NAME = {
+    "alpha": AlphaFamily,
+    "beta": BetaFamily,
+    "gamma": GammaFamily,
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "derived_indexed_surface"
+    )
+
+    assert "FAMILY_BY_NAME" in finding.summary
+    assert "CollectedFamily" in finding.summary
+    assert "derived_index" in (finding.scaffold or "")
+
+
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

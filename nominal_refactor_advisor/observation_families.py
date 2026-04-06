@@ -90,7 +90,7 @@ from .ast_tools import (
 @dataclass(frozen=True)
 class GeneratedFamilySpec:
     item_type: type[object]
-    family_root_name: str
+    family_root: type[CollectedFamily]
     export_name: str | None = None
 
 
@@ -106,8 +106,36 @@ class FamilyGeneratingSpec(ABC):
             )
 
 
+class ObservationFamily(CollectedFamily, ABC):
+    _registry_root = True
+
+
+class ShapeFamily(CollectedFamily, ABC):
+    _registry_root = True
+
+
+class TypedLiteralObservationFamily(ObservationFamily, ABC):
+    _registry_skip = True
+    item_type = LiteralDispatchObservation
+    spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
+    literal_kind: ClassVar[LiteralKind]
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        return [
+            item
+            for item in _collect_items_from_spec_root(
+                cls.spec_root,
+                parsed_module,
+                LiteralDispatchObservation,
+            )
+            if isinstance(item, LiteralDispatchObservation)
+            if item.literal_kind == cls.literal_kind
+        ]
+
+
 class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
-    family_specs = (GeneratedFamilySpec(MethodShape, "ShapeFamily"),)
+    family_specs = (GeneratedFamilySpec(MethodShape, ShapeFamily),)
 
     def build_from_function(
         self,
@@ -133,12 +161,12 @@ class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
 
 
 class BuilderCallShapeSpec(FamilyGeneratingSpec, ContextHelperShapeSpec):
-    family_specs = (GeneratedFamilySpec(BuilderCallShape, "ShapeFamily"),)
+    family_specs = (GeneratedFamilySpec(BuilderCallShape, ShapeFamily),)
     node_type = ast.Call
 
 
 class ExportDictShapeSpec(FamilyGeneratingSpec, ContextHelperShapeSpec):
-    family_specs = (GeneratedFamilySpec(ExportDictShape, "ShapeFamily"),)
+    family_specs = (GeneratedFamilySpec(ExportDictShape, ShapeFamily),)
     node_type = ast.Dict
 
 
@@ -154,9 +182,7 @@ class ConfigDispatchObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
 ):
     _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(ConfigDispatchObservation, "ObservationFamily"),
-    )
+    family_specs = (GeneratedFamilySpec(ConfigDispatchObservation, ObservationFamily),)
 
 
 class ScopeFilteredFunctionObservationSpec(FunctionObservationSpec, ABC):
@@ -398,7 +424,7 @@ class ClassMarkerObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
 ):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(ClassMarkerObservation, "ObservationFamily"),)
+    family_specs = (GeneratedFamilySpec(ClassMarkerObservation, ObservationFamily),)
 
 
 class StandardClassMarkerObservationSpec(
@@ -414,7 +440,7 @@ class InterfaceGenerationObservationSpec(
 ):
     _registry_root = True
     family_specs = (
-        GeneratedFamilySpec(InterfaceGenerationObservation, "ObservationFamily"),
+        GeneratedFamilySpec(InterfaceGenerationObservation, ObservationFamily),
     )
 
 
@@ -429,7 +455,7 @@ class SentinelTypeObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC
 ):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(SentinelTypeObservation, "ObservationFamily"),)
+    family_specs = (GeneratedFamilySpec(SentinelTypeObservation, ObservationFamily),)
 
 
 class SentinelTypeAssignmentObservationSpec(
@@ -450,7 +476,7 @@ class DynamicMethodInjectionObservationSpec(
 ):
     _registry_root = True
     family_specs = (
-        GeneratedFamilySpec(DynamicMethodInjectionObservation, "ObservationFamily"),
+        GeneratedFamilySpec(DynamicMethodInjectionObservation, ObservationFamily),
     )
 
 
@@ -467,7 +493,7 @@ class RuntimeTypeGenerationObservationSpec(
 ):
     _registry_root = True
     family_specs = (
-        GeneratedFamilySpec(RuntimeTypeGenerationObservation, "ObservationFamily"),
+        GeneratedFamilySpec(RuntimeTypeGenerationObservation, ObservationFamily),
     )
 
 
@@ -482,9 +508,7 @@ class LineageMappingObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, AssignObservationSpec, ABC
 ):
     _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(LineageMappingObservation, "ObservationFamily"),
-    )
+    family_specs = (GeneratedFamilySpec(LineageMappingObservation, ObservationFamily),)
 
 
 class StandardLineageMappingObservationSpec(
@@ -499,7 +523,7 @@ class DualAxisResolutionObservationSpec(
 ):
     _registry_root = True
     family_specs = (
-        GeneratedFamilySpec(DualAxisResolutionObservation, "ObservationFamily"),
+        GeneratedFamilySpec(DualAxisResolutionObservation, ObservationFamily),
     )
 
 
@@ -514,9 +538,7 @@ class AttributeProbeObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC
 ):
     _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(AttributeProbeObservation, "ObservationFamily"),
-    )
+    family_specs = (GeneratedFamilySpec(AttributeProbeObservation, ObservationFamily),)
 
 
 class CallAttributeProbeObservationSpec(
@@ -650,9 +672,7 @@ class StringLiteralDispatchObservationSpec(
     FamilyGeneratingSpec, LiteralDispatchObservationSpec
 ):
     family_specs = (
-        GeneratedFamilySpec(
-            LiteralDispatchObservation, "TypedLiteralObservationFamily"
-        ),
+        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
     )
     literal_type = str
     literal_kind = LiteralKind.STRING
@@ -662,9 +682,7 @@ class NumericLiteralDispatchObservationSpec(
     FamilyGeneratingSpec, LiteralDispatchObservationSpec
 ):
     family_specs = (
-        GeneratedFamilySpec(
-            LiteralDispatchObservation, "TypedLiteralObservationFamily"
-        ),
+        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
     )
     literal_type = int
     literal_kind = LiteralKind.NUMERIC
@@ -693,9 +711,7 @@ class InlineStringLiteralDispatchObservationSpec(
     FamilyGeneratingSpec, InlineLiteralDispatchObservationSpec
 ):
     family_specs = (
-        GeneratedFamilySpec(
-            LiteralDispatchObservation, "TypedLiteralObservationFamily"
-        ),
+        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
     )
     literal_type = str
     literal_kind = LiteralKind.STRING
@@ -703,7 +719,7 @@ class InlineStringLiteralDispatchObservationSpec(
 
 class RegistrationShapeSpec(FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(RegistrationShape, "ShapeFamily"),)
+    family_specs = (GeneratedFamilySpec(RegistrationShape, ShapeFamily),)
 
 
 class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC):
@@ -817,7 +833,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
 
 class FieldObservationSpec(FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(FieldObservation, "ObservationFamily"),)
+    family_specs = (GeneratedFamilySpec(FieldObservation, ObservationFamily),)
 
 
 class ClassObservationSpec(FieldObservationSpec, ABC):
@@ -884,14 +900,14 @@ class ProjectionHelperObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
 ):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(ProjectionHelperShape, "ObservationFamily"),)
+    family_specs = (GeneratedFamilySpec(ProjectionHelperShape, ObservationFamily),)
 
 
 class AccessorWrapperObservationSpec(
     FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
 ):
     _registry_root = True
-    family_specs = (GeneratedFamilySpec(AccessorWrapperCandidate, "ObservationFamily"),)
+    family_specs = (GeneratedFamilySpec(AccessorWrapperCandidate, ObservationFamily),)
 
 
 class StandardProjectionHelperObservationSpec(
@@ -916,12 +932,12 @@ class ScopedShapeWrapperObservationSpec(
     family_specs = (
         GeneratedFamilySpec(
             ScopedShapeWrapperFunction,
-            "ObservationFamily",
+            ObservationFamily,
             "ScopedShapeWrapperFunctionFamily",
         ),
         GeneratedFamilySpec(
             ScopedShapeWrapperSpec,
-            "ObservationFamily",
+            ObservationFamily,
             "ScopedShapeWrapperSpecFamily",
         ),
     )
@@ -944,44 +960,34 @@ class ScopedShapeWrapperSpecObservationSpec(
     shape_helper = _scoped_shape_wrapper_spec_from_assign
 
 
-class ObservationFamily(CollectedFamily, ABC):
-    _registry_root = True
-
-
-class ShapeFamily(CollectedFamily, ABC):
-    _registry_root = True
-
-
-_FAMILIES_BY_ITEM_TYPE: dict[type[object], type[CollectedFamily]] = {}
-_FAMILIES_BY_LITERAL_KIND: dict[LiteralKind, type[CollectedFamily]] = {}
+def _registered_family_types() -> tuple[type[CollectedFamily], ...]:
+    seen: set[type[CollectedFamily]] = set()
+    ordered: list[type[CollectedFamily]] = []
+    for family in (
+        ShapeFamily.registered_families() + ObservationFamily.registered_families()
+    ):
+        if family in seen:
+            continue
+        seen.add(family)
+        ordered.append(family)
+    return tuple(ordered)
 
 
 def family_for_item_type(item_type: type[object]) -> type[CollectedFamily]:
-    return _FAMILIES_BY_ITEM_TYPE[item_type]
+    for family in _registered_family_types():
+        if family.item_type is item_type:
+            return family
+    raise KeyError(item_type)
 
 
 def family_for_literal_kind(literal_kind: LiteralKind) -> type[CollectedFamily]:
-    return _FAMILIES_BY_LITERAL_KIND[literal_kind]
-
-
-class TypedLiteralObservationFamily(ObservationFamily, ABC):
-    _registry_skip = True
-    item_type = LiteralDispatchObservation
-    spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
-    literal_kind: ClassVar[LiteralKind]
-
-    @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[object]:
-        return [
-            item
-            for item in _collect_items_from_spec_root(
-                cls.spec_root,
-                parsed_module,
-                LiteralDispatchObservation,
-            )
-            if isinstance(item, LiteralDispatchObservation)
-            if item.literal_kind == cls.literal_kind
-        ]
+    for family in _registered_family_types():
+        if (
+            issubclass(family, TypedLiteralObservationFamily)
+            and family.literal_kind is literal_kind
+        ):
+            return family
+    raise KeyError(literal_kind)
 
 
 def _materialize_generated_family(
@@ -989,9 +995,7 @@ def _materialize_generated_family(
     family_spec: GeneratedFamilySpec,
 ) -> type[CollectedFamily]:
     module_globals = cast(dict[str, object], globals())
-    family_root = cast(
-        type[CollectedFamily], module_globals[family_spec.family_root_name]
-    )
+    family_root = family_spec.family_root
     export_name = (
         family_spec.export_name or spec_type.__name__.removesuffix("Spec") + "Family"
     )
@@ -1013,9 +1017,6 @@ def _materialize_generated_family(
         type[CollectedFamily],
         AutoRegisterMeta(export_name, family_bases, attributes),
     )
-    _FAMILIES_BY_ITEM_TYPE[family_spec.item_type] = family_type
-    if family_root is TypedLiteralObservationFamily:
-        _FAMILIES_BY_LITERAL_KIND[cast(Any, spec_type).literal_kind] = family_type
     module_globals[export_name] = family_type
     return family_type
 

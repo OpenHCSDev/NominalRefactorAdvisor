@@ -1709,6 +1709,16 @@ class DerivedExportSurfaceCandidate:
 
 
 @dataclass(frozen=True)
+class DerivedIndexedSurfaceCandidate:
+    file_path: str
+    surface_name: str
+    line: int
+    key_kind: str
+    value_names: tuple[str, ...]
+    derivable_root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -3254,6 +3264,64 @@ class DerivedExportSurfaceDetector(CandidateFindingDetector):
                 field_count=len(export_candidate.derivable_root_names),
                 mapping_name=export_candidate.export_symbol,
                 field_names=export_candidate.derivable_root_names,
+            ),
+        )
+
+
+class DerivedIndexedSurfaceDetector(CandidateFindingDetector):
+    detector_id = "derived_indexed_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Manual indexed module surfaces should derive from the authoritative type family",
+        why=(
+            "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. "
+            "That splits authority between the family and a second registry projection."
+        ),
+        capability_gap="one derived index projected from the authoritative local type family",
+        relation_context="manual dict index repeats keys and values already implied by local type families",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _derived_indexed_surface_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        index_candidate = cast(DerivedIndexedSurfaceCandidate, candidate)
+        root_names = ", ".join(index_candidate.derivable_root_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{index_candidate.surface_name}` manually indexes {len(index_candidate.value_names)} local types by `{index_candidate.key_kind}` even though that surface is derivable from local `{root_names}` families."
+            ),
+            (
+                SourceLocation(
+                    index_candidate.file_path,
+                    index_candidate.line,
+                    index_candidate.surface_name,
+                ),
+            ),
+            scaffold=(
+                "def derived_index() -> dict[object, type[object]]:\n"
+                "    return {project_key(item): item for item in authoritative_family()}"
+            ),
+            codemod_patch=(
+                f"# Delete `{index_candidate.surface_name}` as a handwritten index.\n"
+                "# Derive the key-to-type map from the authoritative local family instead of maintaining a second module-level registry."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(index_candidate.value_names),
+                field_count=len(index_candidate.derivable_root_names),
+                mapping_name=index_candidate.surface_name,
+                field_names=index_candidate.derivable_root_names,
             ),
         )
 
@@ -6675,6 +6743,89 @@ def _derived_export_surface_candidates(
                 line=line,
                 exported_names=exported_names,
                 derivable_root_names=root_names,
+            )
+        )
+    return tuple(candidates)
+
+
+def _dict_key_kind(value: ast.AST) -> str | None:
+    if isinstance(value, ast.Name):
+        return "type_name"
+    if isinstance(value, ast.Attribute):
+        return "enum_member"
+    if isinstance(value, ast.Constant):
+        return type(value.value).__name__
+    return None
+
+
+def _derived_indexed_surface_candidates(
+    module: ParsedModule,
+) -> tuple[DerivedIndexedSurfaceCandidate, ...]:
+    index = NominalAuthorityIndex((module,))
+    candidates: list[DerivedIndexedSurfaceCandidate] = []
+    for statement in _trim_docstring_body(module.module.body):
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                target_name = target.id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is None or not isinstance(value, ast.Dict):
+            continue
+        if len(value.keys) < 3 or len(value.keys) != len(value.values):
+            continue
+        key_kinds = {
+            key_kind
+            for key_kind in (
+                _dict_key_kind(key) for key in value.keys if key is not None
+            )
+            if key_kind is not None
+        }
+        if len(key_kinds) != 1:
+            continue
+        value_names = tuple(
+            item.id
+            for item in value.values
+            if isinstance(item, ast.Name)
+            and (shapes := index.shapes_named(item.id))
+            and shapes[0].file_path == str(module.path)
+        )
+        if len(value_names) != len(value.values):
+            continue
+        shared_roots = tuple(
+            sorted(
+                root_name
+                for root_name in {"CollectedFamily", "AutoRegisteredModuleShapeSpec"}
+                if sum(
+                    1
+                    for value_name in value_names
+                    for shape in index.shapes_named(value_name)
+                    if root_name
+                    in {
+                        *shape.declared_base_names,
+                        *shape.ancestor_names,
+                        shape.class_name,
+                    }
+                )
+                >= len(value_names)
+            )
+        )
+        if not shared_roots:
+            continue
+        candidates.append(
+            DerivedIndexedSurfaceCandidate(
+                file_path=str(module.path),
+                surface_name=target_name,
+                line=statement.lineno,
+                key_kind=next(iter(key_kinds)),
+                value_names=value_names,
+                derivable_root_names=shared_roots,
             )
         )
     return tuple(candidates)
