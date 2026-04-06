@@ -2847,3 +2847,108 @@ class CountedDispatchMetrics(ABC):
 
     assert "getattr(self, self.count_field_name)" in finding.summary
     assert "count_value" in (finding.scaffold or "")
+
+
+def test_detects_declarative_family_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class CollectedFamily(ABC):
+    pass
+
+
+class RegisteredSpecCollectedFamily(CollectedFamily):
+    pass
+
+
+class ObservationFamily(CollectedFamily):
+    pass
+
+
+class AlphaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = Alpha
+    spec_root = AlphaSpec
+
+
+class BetaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = Beta
+    spec_root = BetaSpec
+
+
+class GammaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
+    item_type = Gamma
+    spec_root = GammaSpec
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "declarative_family_boilerplate"
+    )
+
+    assert "AlphaFamily" in finding.summary
+    assert "item_type" in finding.summary
+    assert "spec_root" in finding.summary
+    assert "declarative family-definition table" in (finding.codemod_patch or "")
+
+
+def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class RegistrationShape:
+    @classmethod
+    def from_assignment(cls, parsed_module, node: Assign, registry_name, key_fingerprint):
+        return cls(
+            file_path=parsed_module.path,
+            lineno=node.lineno,
+            registry_name=registry_name,
+            registered_class=node.value.id,
+            key_fingerprint=key_fingerprint,
+            key_expression=node.target,
+            registration_style="assignment",
+        )
+
+    @classmethod
+    def from_registration_call(cls, parsed_module, node: Call, registry_name, key_fingerprint):
+        return cls(
+            file_path=parsed_module.path,
+            lineno=node.lineno,
+            registry_name=registry_name,
+            registered_class=node.func.id,
+            key_fingerprint=key_fingerprint,
+            key_expression=node.args[0],
+            registration_style="call",
+        )
+
+    @classmethod
+    def from_decorator(cls, parsed_module, node: ClassDef, registry_name, key_fingerprint):
+        return cls(
+            file_path=parsed_module.path,
+            lineno=node.lineno,
+            registry_name=registry_name,
+            registered_class=node.name,
+            key_fingerprint=key_fingerprint,
+            key_expression=node.name,
+            registration_style="decorator",
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "alternate_constructor_family"
+    )
+
+    assert "RegistrationShape" in finding.summary
+    assert "from_assignment" in finding.summary
+    assert "@singledispatchmethod" in (finding.scaffold or "")

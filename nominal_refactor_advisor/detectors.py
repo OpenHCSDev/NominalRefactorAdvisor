@@ -1675,6 +1675,31 @@ class HelperBackedObservationSpecGroup:
 
 
 @dataclass(frozen=True)
+class DeclarativeFamilyLeafCandidate(WitnessCarrierCandidate):
+    base_names: tuple[str, ...]
+    assigned_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DeclarativeFamilyBoilerplateGroup:
+    file_path: str
+    base_names: tuple[str, ...]
+    assigned_names: tuple[str, ...]
+    class_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class AlternateConstructorFamilyGroup:
+    file_path: str
+    class_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    keyword_names: tuple[str, ...]
+    source_type_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ReflectiveSelfAttributeCandidate(WitnessCarrierCandidate):
     method_name: str
     reflective_builtin: str
@@ -3016,6 +3041,138 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         ]
 
 
+class DeclarativeFamilyBoilerplateDetector(CandidateFindingDetector):
+    detector_id = "declarative_family_boilerplate"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTO_REGISTER_META,
+        title="Declarative family leaves should come from one metaprogrammed family table",
+        why=(
+            "Several family classes differ only by classvar declarations like `item_type` and `spec_root`. "
+            "That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation."
+        ),
+        capability_gap="one authoritative declarative family-definition table with class-generation or metaclass support",
+        relation_context="same class-level family declaration boilerplate repeats across sibling family leaves",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _declarative_family_boilerplate_groups(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        group = cast(DeclarativeFamilyBoilerplateGroup, candidate)
+        evidence = tuple(
+            SourceLocation(group.file_path, line, class_name)
+            for class_name, line in zip(
+                group.class_names,
+                group.line_numbers,
+                strict=True,
+            )
+        )
+        spec_name = _camel_case(group.base_names[0]) + "Declaration"
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Family classes {', '.join(group.class_names[:6])} all repeat declarative classvars {group.assigned_names} under bases {group.base_names}."
+            ),
+            evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                f"class {spec_name}:\n"
+                "    family_name: str\n"
+                "    item_type: type[object]\n"
+                "    spec_root: type[object] | None = None\n"
+                "    spec: object | None = None\n\n"
+                f"def declare_{group.base_names[0].lower()}(spec: {spec_name}) -> type[CollectedFamily]:\n"
+                "    return type(spec.family_name, (...,), {...})"
+            ),
+            codemod_patch=(
+                f"# Replace repeated family leaf classes for bases {group.base_names} with one declarative family-definition table.\n"
+                "# Generate or register the concrete family classes from that table instead of re-spelling `item_type`, `spec`, and `spec_root` in each class."
+            ),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(group.class_names),
+                class_count=len(group.class_names),
+                registry_name=group.base_names[0],
+                class_names=group.class_names,
+                class_key_pairs=group.assigned_names,
+            ),
+        )
+
+
+class AlternateConstructorFamilyDetector(CandidateFindingDetector):
+    detector_id = "alternate_constructor_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Alternate constructors should collapse into one provenance-dispatched builder",
+        why=(
+            "Several classmethods on one record class rebuild the same keyword schema from different source node types. "
+            "That provenance family should collapse into one authoritative constructor with dispatch over source kind."
+        ),
+        capability_gap="single provenance-aware builder for one record schema",
+        relation_context="same record schema is rebuilt across sibling alternate constructors for different source types",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _alternate_constructor_family_groups(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        group = cast(AlternateConstructorFamilyGroup, candidate)
+        evidence = tuple(
+            SourceLocation(group.file_path, line, f"{group.class_name}.{method_name}")
+            for method_name, line in zip(
+                group.method_names,
+                group.line_numbers,
+                strict=True,
+            )
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
+            ),
+            evidence,
+            scaffold=(
+                "@singledispatchmethod\n"
+                "@classmethod\n"
+                f"def from_source(cls, source, **context) -> {group.class_name}:\n"
+                "    raise TypeError\n\n"
+                "@from_source.register\n"
+                "@classmethod\n"
+                "def _(cls, source: SomeSource, **context):\n"
+                "    return cls(...)"
+            ),
+            codemod_patch=(
+                f"# Collapse {group.method_names} into one provenance-dispatched constructor for `{group.class_name}`.\n"
+                "# Keep source-kind differences in dispatch handlers and keep the shared record schema in one authoritative builder."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(group.method_names),
+                field_count=len(group.keyword_names),
+                mapping_name=group.class_name,
+                field_names=group.keyword_names,
+            ),
+        )
+
+
 class DynamicSelfFieldSelectionDetector(CandidateFindingDetector):
     detector_id = "dynamic_self_field_selection"
     finding_spec = FindingSpec(
@@ -3496,6 +3653,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         generation_sites = [
             SourceLocation(item.file_path, item.line, item.symbol)
             for item in generation_observations
+            if not _is_framework_lineage_symbol(item.symbol)
         ]
         lineage_observations: tuple[LineageMappingObservation, ...] = (
             _collect_typed_family_items(
@@ -3507,6 +3665,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         lineage_sites = [
             SourceLocation(item.file_path, item.line, item.symbol)
             for item in lineage_observations
+            if not _is_framework_lineage_symbol(item.symbol)
         ]
         if not generation_sites or not lineage_sites:
             return ()
@@ -6137,6 +6296,186 @@ def _dynamic_self_field_selection_candidates(
     return tuple(candidates)
 
 
+_DECLARATIVE_FAMILY_ASSIGNMENT_NAMES = frozenset(
+    {"item_type", "spec", "spec_root", "literal_kind"}
+)
+_DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES = frozenset(
+    {
+        "SingleShapeFamilyDefinition",
+        "RegisteredShapeFamilyDefinition",
+        "RegisteredObservationFamilyDefinition",
+        "TypedLiteralObservationFamilyDefinition",
+    }
+)
+
+
+def _is_simple_classvar_value(node: ast.AST) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute, ast.Constant)):
+        return True
+    if isinstance(node, ast.Tuple):
+        return all(_is_simple_classvar_value(item) for item in node.elts)
+    return False
+
+
+def _classvar_assignment_names(node: ast.ClassDef) -> tuple[str, ...] | None:
+    assigned_names: list[str] = []
+    for statement in _trim_docstring_body(node.body):
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if not isinstance(target, ast.Name) or not _is_simple_classvar_value(
+                statement.value
+            ):
+                return None
+            assigned_names.append(target.id)
+            continue
+        if isinstance(statement, ast.AnnAssign):
+            if not isinstance(statement.target, ast.Name) or statement.value is None:
+                return None
+            if not _is_simple_classvar_value(statement.value):
+                return None
+            assigned_names.append(statement.target.id)
+            continue
+        return None
+    return tuple(assigned_names)
+
+
+def _declarative_family_leaf_candidates(
+    module: ParsedModule,
+) -> tuple[DeclarativeFamilyLeafCandidate, ...]:
+    candidates: list[DeclarativeFamilyLeafCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef) or not node.name.endswith("Family"):
+            continue
+        base_names = tuple(
+            name
+            for name in _declared_base_names(node)
+            if name not in _IGNORED_ANCESTOR_NAMES
+        )
+        if not base_names or not any(name.endswith("Family") for name in base_names):
+            continue
+        if set(base_names) & _DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES:
+            continue
+        assigned_names = _classvar_assignment_names(node)
+        if assigned_names is None:
+            continue
+        if not set(assigned_names) & _DECLARATIVE_FAMILY_ASSIGNMENT_NAMES:
+            continue
+        if len(assigned_names) > 3:
+            continue
+        candidates.append(
+            DeclarativeFamilyLeafCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                subject_name=node.name,
+                name_family=assigned_names,
+                base_names=base_names,
+                assigned_names=assigned_names,
+            )
+        )
+    return tuple(candidates)
+
+
+def _declarative_family_boilerplate_groups(
+    module: ParsedModule,
+) -> tuple[DeclarativeFamilyBoilerplateGroup, ...]:
+    grouped: dict[
+        tuple[tuple[str, ...], tuple[str, ...]],
+        list[DeclarativeFamilyLeafCandidate],
+    ] = defaultdict(list)
+    for candidate in _declarative_family_leaf_candidates(module):
+        grouped[(candidate.base_names, candidate.assigned_names)].append(candidate)
+    return tuple(
+        DeclarativeFamilyBoilerplateGroup(
+            file_path=str(module.path),
+            base_names=base_names,
+            assigned_names=assigned_names,
+            class_names=tuple(item.class_name for item in ordered),
+            line_numbers=tuple(item.line for item in ordered),
+        )
+        for (base_names, assigned_names), items in sorted(grouped.items())
+        if len(items) >= 3
+        for ordered in [
+            tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
+        ]
+    )
+
+
+def _is_classmethod(node: ast.FunctionDef) -> bool:
+    return any(
+        _ast_terminal_name(decorator) == "classmethod"
+        for decorator in node.decorator_list
+    )
+
+
+def _constructor_return_call(node: ast.FunctionDef) -> ast.Call | None:
+    body = _trim_docstring_body(node.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return None
+    returned = body[0].value
+    if not isinstance(returned, ast.Call):
+        return None
+    if not isinstance(returned.func, ast.Name) or returned.func.id != "cls":
+        return None
+    return returned
+
+
+def _source_type_name_for_constructor(node: ast.FunctionDef) -> str | None:
+    if len(node.args.args) < 3:
+        return None
+    source_arg = node.args.args[2]
+    if source_arg.annotation is None:
+        return source_arg.arg
+    return ast.unparse(source_arg.annotation)
+
+
+def _alternate_constructor_family_groups(
+    module: ParsedModule,
+) -> tuple[AlternateConstructorFamilyGroup, ...]:
+    groups: list[AlternateConstructorFamilyGroup] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        constructor_methods: list[tuple[ast.FunctionDef, ast.Call, str]] = []
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            if not statement.name.startswith("from_") or not _is_classmethod(statement):
+                continue
+            return_call = _constructor_return_call(statement)
+            if return_call is None:
+                continue
+            source_type_name = _source_type_name_for_constructor(statement)
+            if source_type_name is None:
+                continue
+            constructor_methods.append((statement, return_call, source_type_name))
+        if len(constructor_methods) < 3:
+            continue
+        keyword_sets = [
+            {keyword.arg for keyword in call.keywords if keyword.arg is not None}
+            for _, call, _ in constructor_methods
+        ]
+        shared_keyword_names = tuple(
+            sorted(str(item) for item in set.intersection(*keyword_sets))
+        )
+        if len(shared_keyword_names) < 4:
+            continue
+        groups.append(
+            AlternateConstructorFamilyGroup(
+                file_path=str(module.path),
+                class_name=node.name,
+                method_names=tuple(method.name for method, _, _ in constructor_methods),
+                line_numbers=tuple(
+                    method.lineno for method, _, _ in constructor_methods
+                ),
+                keyword_names=shared_keyword_names,
+                source_type_names=tuple(
+                    source_type_name for _, _, source_type_name in constructor_methods
+                ),
+            )
+        )
+    return tuple(groups)
+
+
 def _repeated_property_hook_metrics(
     class_names: tuple[str, ...], property_name: str
 ) -> RepeatedMethodMetrics:
@@ -7150,6 +7489,18 @@ def _supports_accessor_wrapper_finding(
     if len(candidates) >= 2:
         return True
     return False
+
+
+def _is_framework_adapter_symbol(symbol: str) -> bool:
+    return symbol.startswith(("build_from_", "build_scoped_", "accepts_"))
+
+
+def _is_framework_lineage_symbol(symbol: str) -> bool:
+    return _is_framework_adapter_symbol(symbol) or symbol in {
+        "__new__",
+        "collect",
+        "registered_specs_for_literal_type",
+    }
 
 
 def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
