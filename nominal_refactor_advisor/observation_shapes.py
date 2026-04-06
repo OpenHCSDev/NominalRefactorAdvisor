@@ -8,11 +8,12 @@ structural observation projections.
 from __future__ import annotations
 
 import ast
-import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
+
+from .export_tools import PublicExportPolicy, derive_public_exports
 
 from .observation_graph import (
     ObservationKind,
@@ -743,22 +744,12 @@ class ExportDictShape(
         return f"{self.key_names}:{self.value_fingerprint}"
 
 
-def _is_public_observation_shape_export(name: str, value: object) -> bool:
-    if (
-        name.startswith("_")
-        or not isinstance(value, type)
-        or value.__module__ != __name__
-    ):
-        return False
-    if issubclass(value, StrEnum):
-        return True
-    return issubclass(value, StructuralObservationCarrier) and not inspect.isabstract(
-        value
-    )
-
-
-__all__ = sorted(
-    name
-    for name, value in globals().items()
-    if _is_public_observation_shape_export(name, value)
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    include_enums=True,
+    exclude_abstract=True,
+    root_types=(StructuralObservationCarrier,),
 )
+
+
+__all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

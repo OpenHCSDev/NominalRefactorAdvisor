@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Callable, ClassVar, cast
 
+from .export_tools import PublicExportPolicy, derive_public_exports
+
 from .observation_shapes import (
     AccessorWrapperCandidate,
     AttributeProbeObservation,
@@ -1044,16 +1046,11 @@ _FAMILY_EXPORTS = _materialize_declared_families()
 _FAMILY_EXPORT_NAMES = tuple(_FAMILY_EXPORTS)
 
 
-def _is_public_export(name: str, value: object) -> bool:
-    if name.startswith("_"):
-        return False
-    if name == "AutoRegisteredModuleShapeSpec":
-        return True
-    if not isinstance(value, type) or value.__module__ != __name__:
-        return False
-    return issubclass(value, (CollectedFamily, AutoRegisteredModuleShapeSpec))
-
-
-__all__ = sorted(
-    name for name, value in globals().items() if _is_public_export(name, value)
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    root_types=(CollectedFamily, AutoRegisteredModuleShapeSpec),
+    explicit_names=frozenset({"AutoRegisteredModuleShapeSpec"}),
 )
+
+
+__all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

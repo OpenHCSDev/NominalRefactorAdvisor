@@ -13,7 +13,7 @@ import copy
 from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, ClassVar, TypeAlias
+from typing import Callable, ClassVar, TypeAlias, TypeVar
 
 from .observation_graph import (
     NominalWitnessGroup,
@@ -115,6 +115,31 @@ class AutoRegisterMeta(ABCMeta):
         return cls
 
 
+_TRegistered = TypeVar("_TRegistered")
+
+
+def _walk_registered_descendants(
+    root: type[object],
+    *,
+    materialize: Callable[[type[object]], _TRegistered],
+) -> tuple[_TRegistered, ...]:
+    seen: set[type[object]] = set()
+    ordered: list[_TRegistered] = []
+    queue = list(root.__subclasses__())
+    while queue:
+        current = queue.pop(0)
+        queue.extend(current.__subclasses__())
+        registry = current.__dict__.get("_registered_spec_types")
+        if registry is None:
+            continue
+        for registered_type in registry:
+            if registered_type in seen:
+                continue
+            seen.add(registered_type)
+            ordered.append(materialize(registered_type))
+    return tuple(ordered)
+
+
 class ModuleShapeSpec(ABC):
     """Abstract collector that emits semantic items from one parsed module."""
 
@@ -131,25 +156,15 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
 
     @classmethod
     def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
+        """Return concrete specs registered directly under this root."""
         return tuple(spec_type() for spec_type in cls._registered_spec_types)
 
     @classmethod
     def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
-        seen: set[type[AutoRegisteredModuleShapeSpec]] = set()
-        ordered: list[AutoRegisteredModuleShapeSpec] = []
-        queue = list(cls.__subclasses__())
-        while queue:
-            current = queue.pop(0)
-            queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_spec_types")
-            if registry is None:
-                continue
-            for spec_type in registry:
-                if spec_type in seen:
-                    continue
-                seen.add(spec_type)
-                ordered.append(spec_type())
-        return tuple(ordered)
+        """Return all concrete specs reachable from descendant registry roots."""
+        return _walk_registered_descendants(
+            cls, materialize=lambda spec_type: spec_type()
+        )
 
 
 class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
@@ -161,25 +176,15 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
+        """Return concrete families registered directly under this root."""
         return tuple(cls._registered_spec_types)
 
     @classmethod
     def all_registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
-        seen: set[type[CollectedFamily]] = set()
-        ordered: list[type[CollectedFamily]] = []
-        queue = list(cls.__subclasses__())
-        while queue:
-            current = queue.pop(0)
-            queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_spec_types")
-            if registry is None:
-                continue
-            for family_type in registry:
-                if family_type in seen:
-                    continue
-                seen.add(family_type)
-                ordered.append(family_type)
-        return tuple(ordered)
+        """Return all concrete families reachable from descendant registry roots."""
+        return _walk_registered_descendants(
+            cls, materialize=lambda family_type: family_type
+        )
 
     @classmethod
     @abstractmethod

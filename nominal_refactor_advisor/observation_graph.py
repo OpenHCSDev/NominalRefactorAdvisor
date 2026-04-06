@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from .export_tools import PublicExportPolicy, derive_public_exports
+
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule
 
@@ -322,16 +324,11 @@ def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
     return ObservationGraph(tuple(observations))
 
 
-def _is_public_observation_graph_export(name: str, value: object) -> bool:
-    return bool(
-        not name.startswith("_")
-        and getattr(value, "__module__", None) == __name__
-        and (isinstance(value, type) or callable(value))
-    )
-
-
-__all__ = sorted(
-    name
-    for name, value in globals().items()
-    if _is_public_observation_graph_export(name, value)
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    types_only=False,
+    allow_callables=True,
 )
+
+
+__all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

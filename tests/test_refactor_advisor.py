@@ -3098,6 +3098,62 @@ __all__ = ["Alpha", "Beta", "gamma", "delta"]
     assert "is_public_api_export" in (finding.scaffold or "")
 
 
+def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        """
+class Root:
+    pass
+
+
+def _is_public_alpha_export(name, value):
+    if name.startswith("_"):
+        return False
+    if not isinstance(value, type) or value.__module__ != __name__:
+        return False
+    return issubclass(value, Root)
+
+
+__all__ = sorted(
+    name for name, value in globals().items() if _is_public_alpha_export(name, value)
+)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        """
+class Root:
+    pass
+
+
+def _is_public_beta_export(name, value):
+    if name.startswith("_"):
+        return False
+    if not isinstance(value, type) or value.__module__ != __name__:
+        return False
+    return issubclass(value, Root)
+
+
+__all__ = sorted(
+    name for name, value in globals().items() if _is_public_beta_export(name, value)
+)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "export_policy_predicate"
+    )
+
+    assert "_is_public_alpha_export" in finding.summary
+    assert "_is_public_beta_export" in finding.summary
+    assert "PublicExportPolicy" in (finding.scaffold or "")
+
+
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3131,6 +3187,64 @@ def collect_everything():
     assert "collect_everything" in finding.summary
     assert "registered_families" in finding.summary
     assert "all_registered_families" in (finding.scaffold or "")
+
+
+def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class AutoRegisteredModuleShapeSpec:
+    @classmethod
+    def all_registered_specs(cls):
+        seen = set()
+        ordered = []
+        queue = list(cls.__subclasses__())
+        while queue:
+            current = queue.pop(0)
+            queue.extend(current.__subclasses__())
+            registry = current.__dict__.get("_registered_spec_types")
+            if registry is None:
+                continue
+            for spec_type in registry:
+                if spec_type in seen:
+                    continue
+                seen.add(spec_type)
+                ordered.append(spec_type())
+        return tuple(ordered)
+
+
+class CollectedFamily:
+    @classmethod
+    def all_registered_families(cls):
+        seen = set()
+        ordered = []
+        queue = list(cls.__subclasses__())
+        while queue:
+            current = queue.pop(0)
+            queue.extend(current.__subclasses__())
+            registry = current.__dict__.get("_registered_spec_types")
+            if registry is None:
+                continue
+            for family_type in registry:
+                if family_type in seen:
+                    continue
+                seen.add(family_type)
+                ordered.append(family_type)
+        return tuple(ordered)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "registry_traversal_substrate"
+    )
+
+    assert "all_registered_specs" in finding.summary
+    assert "all_registered_families" in finding.summary
+    assert "walk_registered_descendants" in (finding.scaffold or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:

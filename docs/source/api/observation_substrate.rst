@@ -15,6 +15,13 @@ Observation Families
    :members: GeneratedFamilySpec, FamilyGeneratingSpec, ObservationFamily, ShapeFamily, TypedLiteralObservationFamily, family_for_item_type, family_for_literal_kind
 
 
+Export Policies
+---------------
+
+.. automodule:: nominal_refactor_advisor.export_tools
+   :members: PublicExportPolicy, matches_public_export_policy, derive_public_exports
+
+
 Observation Graph
 -----------------
 

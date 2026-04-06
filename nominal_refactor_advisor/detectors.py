@@ -1619,6 +1619,14 @@ class NameFamilyClassNamesMixin(ABC):
         return self.name_family
 
 
+class SubjectNameFunctionNameMixin(ABC):
+    subject_name: str
+
+    @property
+    def function_name(self) -> str:
+        return self.subject_name
+
+
 @dataclass(frozen=True)
 class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
     compatible_authority_file_path: str
@@ -1756,6 +1764,22 @@ class RegisteredUnionSurfaceCandidate:
 
 
 @dataclass(frozen=True)
+class ExportPolicyPredicateCandidate(
+    WitnessCarrierCandidate, SubjectNameFunctionNameMixin
+):
+    role_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegistryTraversalGroup:
+    file_path: str
+    class_names: tuple[str, ...]
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    materialization_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -1879,14 +1903,12 @@ class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin
 
 @dataclass(frozen=True)
 class StructuralConfusabilityCandidate(
-    WitnessCarrierCandidate, NameFamilyClassNamesMixin
+    WitnessCarrierCandidate,
+    NameFamilyClassNamesMixin,
+    SubjectNameFunctionNameMixin,
 ):
     parameter_name: str
     observed_method_names: tuple[str, ...]
-
-    @property
-    def function_name(self) -> str:
-        return self.subject_name
 
 
 @dataclass(frozen=True)
@@ -3365,6 +3387,78 @@ class ManualPublicApiSurfaceDetector(CandidateFindingDetector):
         )
 
 
+class ExportPolicyPredicateDetector(IssueDetector):
+    detector_id = "export_policy_predicate"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated public-export policy predicates should collapse into one declarative export policy",
+        why=(
+            "Several modules hand-code export policy predicates for derived `__all__` surfaces instead of routing those surfaces through one declarative export-policy helper."
+        ),
+        capability_gap="one declarative export-policy substrate for derived module surfaces",
+        relation_context="export-policy helper logic repeats across multiple modules with only orthogonal policy residue",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        candidates = tuple(
+            candidate
+            for module in modules
+            if (candidate := _module_export_policy_predicate_candidate(module))
+            is not None
+        )
+        if len(candidates) < 2:
+            return []
+        evidence = tuple(
+            SourceLocation(candidate.file_path, candidate.line, candidate.function_name)
+            for candidate in candidates[:6]
+        )
+        all_roles = tuple(
+            sorted({role for candidate in candidates for role in candidate.role_names})
+        )
+        return [
+            self.finding_spec.build(
+                self.detector_id,
+                (
+                    f"Export predicates {', '.join(candidate.function_name for candidate in candidates[:6])} repeat derived public-surface policy roles {all_roles}."
+                ),
+                evidence,
+                scaffold=(
+                    "@dataclass(frozen=True)\n"
+                    "class PublicExportPolicy:\n"
+                    "    include_callables: bool = False\n"
+                    "    include_types: bool = True\n"
+                    "    exclude_abstract: bool = False\n"
+                    "    include_enums: bool = False\n"
+                    "    root_types: tuple[type[object], ...] = ()\n\n"
+                    "def derive_public_exports(namespace: dict[str, object], policy: PublicExportPolicy) -> tuple[str, ...]:\n"
+                    "    return tuple(sorted(name for name, value in namespace.items() if matches_public_export_policy(name, value, policy)))"
+                ),
+                codemod_patch=(
+                    "# Replace repeated `_is_public_*_export` helpers with one declarative `PublicExportPolicy`.\n"
+                    "# Derive `__all__` from the policy instead of open-coding the predicate in each module."
+                ),
+                metrics=RepeatedMethodMetrics.from_duplicate_family(
+                    duplicate_site_count=len(candidates),
+                    statement_count=1,
+                    class_count=len(candidates),
+                    method_symbols=tuple(
+                        candidate.function_name for candidate in candidates
+                    ),
+                ),
+            )
+        ]
+
+
 class DerivedIndexedSurfaceDetector(CandidateFindingDetector):
     detector_id = "derived_indexed_surface"
     finding_spec = FindingSpec(
@@ -3481,6 +3575,87 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
                 class_names=union_candidate.root_names,
             ),
         )
+
+
+class RegistryTraversalSubstrateDetector(PerModuleIssueDetector):
+    detector_id = "registry_traversal_substrate"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTO_REGISTER_META,
+        title="Repeated registry traversal helpers should collapse into one typed traversal substrate",
+        why=(
+            "Several registry roots re-implement the same descendant traversal over class-time registration state instead of sharing one typed traversal helper."
+        ),
+        capability_gap="one authoritative typed traversal helper for registered descendants",
+        relation_context="same registry traversal algorithm repeats across sibling registry roots with only materialization residue differing",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        group = _registry_traversal_group(module)
+        if group is None:
+            return []
+        evidence = tuple(
+            SourceLocation(group.file_path, line, f"{class_name}.{method_name}")
+            for class_name, method_name, line in zip(
+                group.class_names,
+                group.method_names,
+                group.line_numbers,
+                strict=True,
+            )
+        )
+        return [
+            self.finding_spec.build(
+                self.detector_id,
+                (
+                    f"Registry roots {', '.join(group.class_names)} repeat descendant traversal helpers {', '.join(group.method_names)} with materialization modes {group.materialization_kinds}."
+                ),
+                evidence,
+                scaffold=(
+                    "def walk_registered_descendants(root: type[object], *, materialize):\n"
+                    "    seen = set()\n"
+                    "    ordered = []\n"
+                    "    queue = list(root.__subclasses__())\n"
+                    "    while queue:\n"
+                    "        current = queue.pop(0)\n"
+                    "        queue.extend(current.__subclasses__())\n"
+                    "        registry = current.__dict__.get('_registered_spec_types')\n"
+                    "        if registry is None:\n"
+                    "            continue\n"
+                    "        for registered_type in registry:\n"
+                    "            if registered_type in seen:\n"
+                    "                continue\n"
+                    "            seen.add(registered_type)\n"
+                    "            ordered.append(materialize(registered_type))\n"
+                    "    return tuple(ordered)"
+                ),
+                codemod_patch=(
+                    "# Replace repeated `all_registered_*` traversal helpers with one typed traversal substrate.\n"
+                    "# Keep only the materialization hook (`spec_type()` vs `family_type`) on the registry roots."
+                ),
+                metrics=RepeatedMethodMetrics.from_duplicate_family(
+                    duplicate_site_count=len(group.method_names),
+                    statement_count=6,
+                    class_count=len(group.class_names),
+                    method_symbols=tuple(
+                        f"{class_name}.{method_name}"
+                        for class_name, method_name in zip(
+                            group.class_names,
+                            group.method_names,
+                            strict=True,
+                        )
+                    ),
+                ),
+            )
+        ]
 
 
 class AlternateConstructorFamilyDetector(CandidateFindingDetector):
@@ -7114,6 +7289,154 @@ def _registered_union_surface_candidates(
             )
         )
     return tuple(candidates)
+
+
+def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
+    body_text = "\n".join(ast.unparse(statement) for statement in node.body)
+    roles: set[str] = set()
+    if "name.startswith('_')" in body_text:
+        roles.add("exclude_private")
+    if (
+        "__module__ != __name__" in body_text
+        or "getattr(value, '__module__', None) == __name__" in body_text
+    ):
+        roles.add("module_local")
+    if "isinstance(value, type)" in body_text:
+        roles.add("type_only")
+    if "callable(value)" in body_text:
+        roles.add("callable_ok")
+    if "issubclass(value, StrEnum)" in body_text:
+        roles.add("enum_ok")
+    if "inspect.isabstract" in body_text:
+        roles.add("exclude_abstract")
+    if (
+        "issubclass(value, (CollectedFamily, AutoRegisteredModuleShapeSpec))"
+        in body_text
+    ):
+        roles.add("registered_family_or_spec")
+    if "StructuralObservationCarrier" in body_text:
+        roles.add("structural_observation_carrier")
+    return tuple(sorted(roles))
+
+
+def _module_export_policy_predicate_candidate(
+    module: ParsedModule,
+) -> ExportPolicyPredicateCandidate | None:
+    exported_predicate_names: set[str] = set()
+    for statement in _trim_docstring_body(module.module.body):
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not (isinstance(target, ast.Name) and target.id == "__all__"):
+            continue
+        value = statement.value
+        if (
+            not isinstance(value, ast.Call)
+            or _ast_terminal_name(value.func) != "sorted"
+        ):
+            continue
+        if len(value.args) != 1 or not isinstance(value.args[0], ast.GeneratorExp):
+            continue
+        generator = value.args[0]
+        if not generator.generators or len(generator.generators[0].ifs) != 1:
+            continue
+        condition = generator.generators[0].ifs[0]
+        if not isinstance(condition, ast.Call) or not isinstance(
+            condition.func, ast.Name
+        ):
+            continue
+        exported_predicate_names.add(condition.func.id)
+    if len(exported_predicate_names) != 1:
+        return None
+    predicate_name = next(iter(exported_predicate_names))
+    predicate_node = next(
+        (
+            statement
+            for statement in _trim_docstring_body(module.module.body)
+            if isinstance(statement, ast.FunctionDef)
+            and statement.name == predicate_name
+        ),
+        None,
+    )
+    if predicate_node is None or len(predicate_node.args.args) != 2:
+        return None
+    role_names = _export_policy_role_names(predicate_node)
+    if len(role_names) < 2:
+        return None
+    return ExportPolicyPredicateCandidate(
+        file_path=str(module.path),
+        line=predicate_node.lineno,
+        subject_name=predicate_name,
+        name_family=role_names,
+        role_names=role_names,
+    )
+
+
+def _registry_materialization_kind(node: ast.FunctionDef) -> str | None:
+    body = _trim_docstring_body(node.body)
+    append_calls = [
+        call
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "append"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "ordered"
+        and len(call.args) == 1
+    ]
+    if len(append_calls) != 1:
+        return None
+    arg = append_calls[0].args[0]
+    if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
+        return "instantiate"
+    if isinstance(arg, ast.Name):
+        return "type"
+    return None
+
+
+def _is_registry_traversal_method(node: ast.FunctionDef) -> bool:
+    if not _is_classmethod(node):
+        return False
+    body_text = "\n".join(ast.unparse(statement) for statement in node.body)
+    required_fragments = (
+        "cls.__subclasses__()",
+        "current.__subclasses__()",
+        "current.__dict__.get('_registered_spec_types')",
+        "seen.add",
+        "ordered.append",
+        "return tuple(ordered)",
+    )
+    return all(fragment in body_text for fragment in required_fragments)
+
+
+def _registry_traversal_group(module: ParsedModule) -> RegistryTraversalGroup | None:
+    methods: list[tuple[str, str, int, str]] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            if not statement.name.startswith("all_registered_"):
+                continue
+            if not _is_registry_traversal_method(statement):
+                continue
+            materialization_kind = _registry_materialization_kind(statement)
+            if materialization_kind is None:
+                continue
+            methods.append(
+                (node.name, statement.name, statement.lineno, materialization_kind)
+            )
+    if len(methods) < 2:
+        return None
+    ordered = tuple(sorted(methods, key=lambda item: (item[2], item[0], item[1])))
+    return RegistryTraversalGroup(
+        file_path=str(module.path),
+        class_names=tuple(item[0] for item in ordered),
+        method_names=tuple(item[1] for item in ordered),
+        line_numbers=tuple(item[2] for item in ordered),
+        materialization_kinds=tuple(item[3] for item in ordered),
+    )
 
 
 def _declarative_family_boilerplate_groups(

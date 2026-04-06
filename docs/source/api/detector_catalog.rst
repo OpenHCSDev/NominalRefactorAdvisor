@@ -28,9 +28,11 @@ surfaces, and derived module indexes.
    DeclarativeFamilyBoilerplateDetector
    TypeIndexedDefinitionBoilerplateDetector
    RegisteredUnionSurfaceDetector
+   RegistryTraversalSubstrateDetector
    DerivedExportSurfaceDetector
    DerivedIndexedSurfaceDetector
    ManualPublicApiSurfaceDetector
+   ExportPolicyPredicateDetector
 
 
 Schema And Projection Detectors
