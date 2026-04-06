@@ -2639,7 +2639,9 @@ from abc import ABC
 
 
 class ProjectionTemplate(ABC):
-    pass
+    @property
+    def observation_kind(self):
+        raise NotImplementedError
 
 
 class AlphaProjection(ProjectionTemplate):
@@ -2665,3 +2667,183 @@ class BetaProjection(ProjectionTemplate):
     assert "ProjectionTemplate" in finding.summary
     assert "observation_line" in finding.summary
     assert "self.lineno" in finding.summary
+
+
+def test_detects_constant_property_hooks_across_subclasses(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class ObservationKind:
+    FIELD = "field"
+    METHOD = "method"
+
+
+class ProjectionTemplate(ABC):
+    @property
+    def observation_kind(self):
+        raise NotImplementedError
+
+
+class AlphaProjection(ProjectionTemplate):
+    @property
+    def observation_kind(self):
+        return ObservationKind.FIELD
+
+
+class BetaProjection(ProjectionTemplate):
+    @property
+    def observation_kind(self):
+        return ObservationKind.METHOD
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "constant_property_hooks"
+    )
+
+    assert "ProjectionTemplate" in finding.summary
+    assert "observation_kind" in finding.summary
+    assert "ObservationKind.FIELD" in finding.summary
+    assert "ObservationKind.METHOD" in finding.summary
+
+
+def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class ProjectionTemplate(ABC):
+    @property
+    def path_text(self):
+        return getattr(self, "file_path")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "reflective_self_attribute_escape"
+    )
+
+    assert "getattr(self, 'file_path')" in finding.summary
+    assert "file_path" in (finding.scaffold or "")
+
+
+def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class FunctionObservationSpec(ABC):
+    pass
+
+
+class ScopeFilteredFunctionObservationSpec(FunctionObservationSpec, ABC):
+    pass
+
+
+class AssignObservationSpec(ABC):
+    pass
+
+
+class ModuleOnlyAssignObservationSpec(AssignObservationSpec, ABC):
+    pass
+
+
+class ClassMarkerObservationSpec(FunctionObservationSpec):
+    pass
+
+
+class InterfaceGenerationObservationSpec(FunctionObservationSpec):
+    pass
+
+
+class DynamicMethodInjectionObservationSpec(FunctionObservationSpec):
+    pass
+
+
+class ProjectionHelperObservationSpec(ScopeFilteredFunctionObservationSpec):
+    pass
+
+
+class ScopedShapeWrapperObservationSpec(ModuleOnlyAssignObservationSpec):
+    pass
+
+
+class StandardClassMarkerObservationSpec(ClassMarkerObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        return tuple(_class_marker_observations(parsed_module, function))
+
+
+class StandardInterfaceGenerationObservationSpec(InterfaceGenerationObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        return _interface_generation_observation(parsed_module, function)
+
+
+class StandardDynamicMethodInjectionObservationSpec(DynamicMethodInjectionObservationSpec):
+    def build_from_function(self, parsed_module, function, observation):
+        return tuple(_dynamic_method_injection_observations(parsed_module, function))
+
+
+class StandardProjectionHelperObservationSpec(ProjectionHelperObservationSpec):
+    def build_scoped_function(self, parsed_module, function, observation):
+        return _projection_helper_shape_from_function(parsed_module, function)
+
+
+class ScopedShapeWrapperSpecObservationSpec(ScopedShapeWrapperObservationSpec):
+    def build_scoped_assign(self, parsed_module, node, observation):
+        return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "helper_backed_observation_spec"
+    )
+
+    assert "StandardClassMarkerObservationSpec" in finding.summary
+    assert "_class_marker_observations" in finding.summary
+    assert "HelperBackedFunctionObservationSpec" in (finding.scaffold or "")
+
+
+def test_detects_dynamic_self_field_selection(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class CountedDispatchMetrics(ABC):
+    count_field_name = "branch_site_count"
+
+    def _count_value(self):
+        return int(getattr(self, self.count_field_name))
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "dynamic_self_field_selection"
+    )
+
+    assert "getattr(self, self.count_field_name)" in finding.summary
+    assert "count_value" in (finding.scaffold or "")

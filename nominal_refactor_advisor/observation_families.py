@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import Any, Callable, ClassVar, cast
 
 from .observation_shapes import (
     AccessorWrapperCandidate,
@@ -196,18 +196,174 @@ class ModuleOnlyAssignObservationSpec(ScopeFilteredAssignObservationSpec, ABC):
         return observation.class_name is None and observation.function_name is None
 
 
-class StandardConfigDispatchObservationSpec(
-    ConfigDispatchObservationSpec, ModuleOnlyFunctionObservationSpec
+class TupleResultMixin(ABC):
+    @staticmethod
+    def wrap_helper_result(value: object | None) -> object | None:
+        return None if value is None else tuple(cast(Any, value))
+
+
+class FunctionAcceptanceMixin(ABC):
+    def accepts_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> bool:
+        del function, observation
+        return True
+
+
+class RequiredFunctionParameterMixin(FunctionAcceptanceMixin):
+    required_parameter_name: ClassVar[str]
+
+    def accepts_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> bool:
+        return super().accepts_function(function, observation) and any(
+            arg.arg == type(self).required_parameter_name for arg in function.args.args
+        )
+
+
+class SyncFunctionOnlyMixin(FunctionAcceptanceMixin):
+    def accepts_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> bool:
+        return super().accepts_function(function, observation) and isinstance(
+            function, ast.FunctionDef
+        )
+
+
+class HelperBackedFunctionObservationSpec(
+    FunctionAcceptanceMixin, FunctionObservationSpec, ABC
 ):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    @staticmethod
+    def wrap_helper_result(value: object | None) -> object | None:
+        return value
+
+    def accepts_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> bool:
+        del function, observation
+        return True
+
+    def build_from_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        if not self.accepts_function(function, observation):
+            return None
+        return type(self).wrap_helper_result(
+            type(self).shape_helper(parsed_module, function)
+        )
+
+
+class HelperBackedScopedFunctionObservationSpec(
+    FunctionAcceptanceMixin, ScopeFilteredFunctionObservationSpec, ABC
+):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    @staticmethod
+    def wrap_helper_result(value: object | None) -> object | None:
+        return value
+
+    def accepts_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> bool:
+        del function, observation
+        return True
+
     def build_scoped_function(
         self,
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
     ) -> object | None:
-        if not any(arg.arg == "config" for arg in function.args.args):
+        if not self.accepts_function(function, observation):
             return None
-        return tuple(_config_dispatch_observations(parsed_module, function))
+        return type(self).wrap_helper_result(
+            type(self).shape_helper(parsed_module, function)
+        )
+
+
+class ClassNamedFunctionHelperObservationSpec(ClassOnlyFunctionObservationSpec, ABC):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    @staticmethod
+    def wrap_helper_result(value: object | None) -> object | None:
+        return value
+
+    def build_scoped_function(
+        self,
+        parsed_module: ParsedModule,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        class_name = observation.class_name
+        if class_name is None:
+            return None
+        return type(self).wrap_helper_result(
+            type(self).shape_helper(parsed_module, class_name, function)
+        )
+
+
+class HelperBackedAssignObservationSpec(AssignObservationSpec, ABC):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    def build_from_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        del observation
+        return type(self).shape_helper(parsed_module, node)
+
+
+class HelperBackedScopedAssignObservationSpec(ScopeFilteredAssignObservationSpec, ABC):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    def build_scoped_assign(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.Assign,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        del observation
+        return type(self).shape_helper(parsed_module, node)
+
+
+class ObservationContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
+    shape_helper: ClassVar[Callable[..., object | None]]
+
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> object | None:
+        return type(self).shape_helper(parsed_module, node, observation)
+
+
+class StandardConfigDispatchObservationSpec(
+    ConfigDispatchObservationSpec,
+    ModuleOnlyFunctionObservationSpec,
+    RequiredFunctionParameterMixin,
+    TupleResultMixin,
+    HelperBackedScopedFunctionObservationSpec,
+):
+    required_parameter_name = "config"
+    shape_helper = _config_dispatch_observations
 
 
 class ClassMarkerObservationSpec(
@@ -216,14 +372,12 @@ class ClassMarkerObservationSpec(
     _registry_root = True
 
 
-class StandardClassMarkerObservationSpec(ClassMarkerObservationSpec):
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return tuple(_class_marker_observations(parsed_module, function))
+class StandardClassMarkerObservationSpec(
+    ClassMarkerObservationSpec,
+    TupleResultMixin,
+    HelperBackedFunctionObservationSpec,
+):
+    shape_helper = _class_marker_observations
 
 
 class InterfaceGenerationObservationSpec(
@@ -232,14 +386,11 @@ class InterfaceGenerationObservationSpec(
     _registry_root = True
 
 
-class StandardInterfaceGenerationObservationSpec(InterfaceGenerationObservationSpec):
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return _interface_generation_observation(parsed_module, function)
+class StandardInterfaceGenerationObservationSpec(
+    InterfaceGenerationObservationSpec,
+    HelperBackedFunctionObservationSpec,
+):
+    shape_helper = _interface_generation_observation
 
 
 class SentinelTypeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -247,15 +398,11 @@ class SentinelTypeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
 
 
 class SentinelTypeAssignmentObservationSpec(
-    SentinelTypeObservationSpec, ModuleOnlyAssignObservationSpec
+    SentinelTypeObservationSpec,
+    ModuleOnlyAssignObservationSpec,
+    HelperBackedScopedAssignObservationSpec,
 ):
-    def build_scoped_assign(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.Assign,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return _sentinel_type_observation(parsed_module, node)
+    shape_helper = _sentinel_type_observation
 
 
 class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
@@ -270,15 +417,11 @@ class DynamicMethodInjectionObservationSpec(
 
 
 class StandardDynamicMethodInjectionObservationSpec(
-    DynamicMethodInjectionObservationSpec
+    DynamicMethodInjectionObservationSpec,
+    TupleResultMixin,
+    HelperBackedFunctionObservationSpec,
 ):
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return tuple(_dynamic_method_injection_observations(parsed_module, function))
+    shape_helper = _dynamic_method_injection_observations
 
 
 class RuntimeTypeGenerationObservationSpec(
@@ -288,18 +431,10 @@ class RuntimeTypeGenerationObservationSpec(
 
 
 class TypeCallGenerationObservationSpec(
-    RuntimeTypeGenerationObservationSpec, ContextForwardingShapeSpec
+    RuntimeTypeGenerationObservationSpec, ObservationContextHelperShapeSpec
 ):
     node_type = ast.Call
-
-    def build_from_context(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.AST,
-        observation: ScopedAstObservation,
-    ) -> RuntimeTypeGenerationObservation | None:
-        assert isinstance(node, ast.Call)
-        return _runtime_type_generation_observation(parsed_module, node, observation)
+    shape_helper = _runtime_type_generation_observation
 
 
 class LineageMappingObservationSpec(
@@ -308,14 +443,11 @@ class LineageMappingObservationSpec(
     _registry_root = True
 
 
-class StandardLineageMappingObservationSpec(LineageMappingObservationSpec):
-    def build_from_assign(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.Assign,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return _lineage_mapping_observation(parsed_module, node)
+class StandardLineageMappingObservationSpec(
+    LineageMappingObservationSpec,
+    HelperBackedAssignObservationSpec,
+):
+    shape_helper = _lineage_mapping_observation
 
 
 class DualAxisResolutionObservationSpec(
@@ -324,14 +456,11 @@ class DualAxisResolutionObservationSpec(
     _registry_root = True
 
 
-class StandardDualAxisResolutionObservationSpec(DualAxisResolutionObservationSpec):
-    def build_from_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> object | None:
-        return _dual_axis_resolution_observation(parsed_module, function)
+class StandardDualAxisResolutionObservationSpec(
+    DualAxisResolutionObservationSpec,
+    HelperBackedFunctionObservationSpec,
+):
+    shape_helper = _dual_axis_resolution_observation
 
 
 class AttributeProbeObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -689,34 +818,18 @@ class AccessorWrapperObservationSpec(
 
 
 class StandardProjectionHelperObservationSpec(
-    ProjectionHelperObservationSpec, ModuleOnlyFunctionObservationSpec
+    ProjectionHelperObservationSpec,
+    ModuleOnlyFunctionObservationSpec,
+    HelperBackedScopedFunctionObservationSpec,
 ):
-    def build_scoped_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> ProjectionHelperShape | None:
-        return _projection_helper_shape_from_function(parsed_module, function)
+    shape_helper = _projection_helper_shape_from_function
 
 
 class StandardAccessorWrapperObservationSpec(
-    AccessorWrapperObservationSpec, ClassOnlyFunctionObservationSpec
+    AccessorWrapperObservationSpec,
+    ClassNamedFunctionHelperObservationSpec,
 ):
-    def build_scoped_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> AccessorWrapperCandidate | None:
-        class_name = observation.class_name
-        if class_name is None:
-            return None
-        return _accessor_wrapper_candidate_from_function(
-            parsed_module,
-            class_name,
-            function,
-        )
+    shape_helper = _accessor_wrapper_candidate_from_function
 
 
 class ScopedShapeWrapperObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
@@ -724,29 +837,20 @@ class ScopedShapeWrapperObservationSpec(AutoRegisteredModuleShapeSpec, ABC):
 
 
 class ScopedShapeWrapperFunctionObservationSpec(
-    ScopedShapeWrapperObservationSpec, ModuleOnlyFunctionObservationSpec
+    ScopedShapeWrapperObservationSpec,
+    ModuleOnlyFunctionObservationSpec,
+    SyncFunctionOnlyMixin,
+    HelperBackedScopedFunctionObservationSpec,
 ):
-    def build_scoped_function(
-        self,
-        parsed_module: ParsedModule,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> ScopedShapeWrapperFunction | None:
-        if not isinstance(function, ast.FunctionDef):
-            return None
-        return _scoped_shape_wrapper_function_from_function(parsed_module, function)
+    shape_helper = _scoped_shape_wrapper_function_from_function
 
 
 class ScopedShapeWrapperSpecObservationSpec(
-    ScopedShapeWrapperObservationSpec, ModuleOnlyAssignObservationSpec
+    ScopedShapeWrapperObservationSpec,
+    ModuleOnlyAssignObservationSpec,
+    HelperBackedScopedAssignObservationSpec,
 ):
-    def build_scoped_assign(
-        self,
-        parsed_module: ParsedModule,
-        node: ast.Assign,
-        observation: ScopedAstObservation,
-    ) -> ScopedShapeWrapperSpec | None:
-        return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
+    shape_helper = _scoped_shape_wrapper_spec_from_assign
 
 
 class ObservationFamily(CollectedFamily, ABC):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar
 
@@ -227,6 +227,24 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
     method_symbols: tuple[str, ...] = ()
     shared_statement_texts: tuple[str, ...] = ()
 
+    @classmethod
+    def from_duplicate_family(
+        cls,
+        *,
+        duplicate_site_count: int,
+        statement_count: int,
+        class_count: int,
+        method_symbols: tuple[str, ...],
+        shared_statement_texts: tuple[str, ...] = (),
+    ) -> RepeatedMethodMetrics:
+        return cls(
+            duplicate_site_count=duplicate_site_count,
+            statement_count=statement_count,
+            class_count=class_count,
+            method_symbols=method_symbols,
+            shared_statement_texts=shared_statement_texts,
+        )
+
     @property
     def shared_algorithm_sites(self) -> int:
         return self.duplicate_site_count
@@ -431,16 +449,18 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
         return (frozenset({cls.count_field_name}),)
 
-    def _count_value(self) -> int:
-        return int(getattr(self, self.count_field_name))
+    @property
+    @abstractmethod
+    def count_value(self) -> int:
+        raise NotImplementedError
 
     @property
     def dispatch_sites(self) -> int:
-        return self._count_value()
+        return self.count_value
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        count = self._count_value()
+        count = self.count_value
         lower_bound = max(count - 1, 0)
         return ImpactDelta(
             lower_bound_removable_loc=lower_bound,
@@ -456,6 +476,10 @@ class BranchCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "branch_site_count"
     branch_site_count: int
 
+    @property
+    def count_value(self) -> int:
+        return self.branch_site_count
+
 
 @dataclass(frozen=True)
 class ResolutionAxisMetrics(FindingMetrics):
@@ -467,6 +491,10 @@ class ProbeCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "probe_site_count"
     probe_site_count: int
 
+    @property
+    def count_value(self) -> int:
+        return self.probe_site_count
+
 
 @dataclass(frozen=True)
 class DispatchCountMetrics(CountedDispatchMetrics):
@@ -474,6 +502,10 @@ class DispatchCountMetrics(CountedDispatchMetrics):
     dispatch_site_count: int
     dispatch_axis: str | None = None
     literal_cases: tuple[str, ...] = ()
+
+    @property
+    def count_value(self) -> int:
+        return self.dispatch_site_count
 
     @classmethod
     def from_literal_family(

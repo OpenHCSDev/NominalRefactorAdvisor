@@ -29,11 +29,14 @@ class FieldOriginKind(StrEnum):
     INIT_ASSIGNMENT = "init_assignment"
 
 
+@dataclass(frozen=True)
 class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
+    file_path: str
+    OBSERVATION_KIND: ClassVar[ObservationKind]
+
     @property
-    @abstractmethod
     def observation_kind(self) -> ObservationKind:
-        raise NotImplementedError
+        return type(self).OBSERVATION_KIND
 
     @property
     @abstractmethod
@@ -68,7 +71,7 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
     @property
     def structural_observation(self) -> StructuralObservation:
         return StructuralObservation(
-            file_path=str(getattr(self, "file_path")),
+            file_path=self.file_path,
             owner_symbol=self.owner_symbol,
             nominal_witness=self.nominal_witness,
             line=self.observation_line,
@@ -87,16 +90,20 @@ class ExecutionLevelObservationMixin(ABC):
         return self.execution_level
 
 
-class FunctionBodyExecutionMixin(ABC):
+class StaticExecutionLevelMixin(ABC):
+    OBSERVATION_EXECUTION_LEVEL: ClassVar[StructuralExecutionLevel]
+
     @property
     def observation_execution_level(self) -> StructuralExecutionLevel:
-        return StructuralExecutionLevel.FUNCTION_BODY
+        return type(self).OBSERVATION_EXECUTION_LEVEL
 
 
-class ModuleBodyExecutionMixin(ABC):
-    @property
-    def observation_execution_level(self) -> StructuralExecutionLevel:
-        return StructuralExecutionLevel.MODULE_BODY
+class FunctionBodyExecutionMixin(StaticExecutionLevelMixin):
+    OBSERVATION_EXECUTION_LEVEL = StructuralExecutionLevel.FUNCTION_BODY
+
+
+class ModuleBodyExecutionMixin(StaticExecutionLevelMixin):
+    OBSERVATION_EXECUTION_LEVEL = StructuralExecutionLevel.MODULE_BODY
 
 
 class LineObservationMixin(ABC):
@@ -191,7 +198,7 @@ class FieldObservation(
     ClassNameNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.FIELD
     class_name: str
     field_name: str
     lineno: int
@@ -205,10 +212,6 @@ class FieldObservation(
     @property
     def symbol(self) -> str:
         return f"{self.class_name}.{self.field_name}"
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.FIELD
 
     @property
     def observed_name(self) -> str:
@@ -227,16 +230,12 @@ class AttributeProbeObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.ATTRIBUTE_PROBE
     line: int
     symbol: str
     probe_kind: str
     observed_attribute: str | None
     execution_level: StructuralExecutionLevel
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.ATTRIBUTE_PROBE
 
     @property
     def observed_name(self) -> str:
@@ -254,7 +253,7 @@ class LiteralDispatchObservation(
     SymbolOwnerMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.LITERAL_DISPATCH
     line: int
     symbol: str
     axis_fingerprint: str
@@ -264,10 +263,6 @@ class LiteralDispatchObservation(
     execution_level: StructuralExecutionLevel
     branch_lines: tuple[int, ...] = ()
     scope_owner: str | None = None
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.LITERAL_DISPATCH
 
     @property
     def nominal_witness(self) -> str:
@@ -290,7 +285,7 @@ class ProjectionHelperShape(
     FunctionNameNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.PROJECTION_HELPER
     function_name: str
     lineno: int
     outer_call_name: str
@@ -301,10 +296,6 @@ class ProjectionHelperShape(
     @property
     def symbol(self) -> str:
         return self.function_name
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.PROJECTION_HELPER
 
     @property
     def observed_name(self) -> str:
@@ -326,7 +317,7 @@ class AccessorWrapperCandidate(
     ObservedAttributeObservedNameMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.ACCESSOR_WRAPPER
     class_name: str
     method_name: str
     lineno: int
@@ -338,10 +329,6 @@ class AccessorWrapperCandidate(
     @property
     def symbol(self) -> str:
         return f"{self.class_name}.{self.method_name}"
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.ACCESSOR_WRAPPER
 
     @property
     def fiber_key(self) -> str:
@@ -357,14 +344,10 @@ class ScopedShapeWrapperFunction(
     FunctionNameObservedNameMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.SCOPED_SHAPE_WRAPPER
     function_name: str
     lineno: int
     node_types: tuple[str, ...]
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.SCOPED_SHAPE_WRAPPER
 
     @property
     def fiber_key(self) -> str:
@@ -379,15 +362,11 @@ class ScopedShapeWrapperSpec(
     FunctionNameObservedNameMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.SCOPED_SHAPE_WRAPPER
     spec_name: str
     lineno: int
     function_name: str
     node_types: tuple[str, ...]
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.SCOPED_SHAPE_WRAPPER
 
     @property
     def owner_symbol(self) -> str:
@@ -407,14 +386,10 @@ class ConfigDispatchObservation(
     ObservedAttributeObservedNameMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.CONFIG_DISPATCH
     line: int
     symbol: str
     observed_attribute: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.CONFIG_DISPATCH
 
     @property
     def fiber_key(self) -> str:
@@ -429,14 +404,10 @@ class ClassMarkerObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.CLASS_MARKER
     line: int
     symbol: str
     marker_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.CLASS_MARKER
 
     @property
     def observed_name(self) -> str:
@@ -457,14 +428,10 @@ class InterfaceGenerationObservation(
     GeneratorNameFiberKeyMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.INTERFACE_GENERATION
     line: int
     symbol: str
     generator_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.INTERFACE_GENERATION
 
 
 @dataclass(frozen=True)
@@ -475,14 +442,10 @@ class SentinelTypeObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.SENTINEL_TYPE
     line: int
     symbol: str
     sentinel_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.SENTINEL_TYPE
 
     @property
     def observed_name(self) -> str:
@@ -501,14 +464,10 @@ class DynamicMethodInjectionObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.DYNAMIC_METHOD_INJECTION
     line: int
     symbol: str
     mutator_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.DYNAMIC_METHOD_INJECTION
 
     @property
     def observed_name(self) -> str:
@@ -529,14 +488,10 @@ class RuntimeTypeGenerationObservation(
     GeneratorNameFiberKeyMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.RUNTIME_TYPE_GENERATION
     line: int
     symbol: str
     generator_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.RUNTIME_TYPE_GENERATION
 
 
 @dataclass(frozen=True)
@@ -547,14 +502,10 @@ class LineageMappingObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.LINEAGE_MAPPING
     line: int
     symbol: str
     mapping_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.LINEAGE_MAPPING
 
     @property
     def observed_name(self) -> str:
@@ -573,15 +524,11 @@ class DualAxisResolutionObservation(
     SymbolNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.DUAL_AXIS_RESOLUTION
     line: int
     symbol: str
     outer_axis_name: str
     inner_axis_name: str
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.DUAL_AXIS_RESOLUTION
 
     @property
     def observed_name(self) -> str:
@@ -599,7 +546,7 @@ class MethodShape(
     SymbolOwnerMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.METHOD_SHAPE
     class_name: str | None
     method_name: str
     lineno: int
@@ -615,10 +562,6 @@ class MethodShape(
         if self.class_name:
             return f"{self.class_name}.{self.method_name}"
         return self.method_name
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.METHOD_SHAPE
 
     @property
     def nominal_witness(self) -> str:
@@ -640,7 +583,7 @@ class BuilderCallShape(
     SymbolOwnerMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.BUILDER_CALL
     class_name: str | None
     function_name: str | None
     lineno: int
@@ -657,10 +600,6 @@ class BuilderCallShape(
         if self.class_name:
             owner = f"{self.class_name}.{owner}"
         return f"{owner}:{self.callee_name}"
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.BUILDER_CALL
 
     @property
     def nominal_witness(self) -> str:
@@ -758,7 +697,7 @@ class ExportDictShape(
     SymbolOwnerMixin,
     StructuralObservationTemplate,
 ):
-    file_path: str
+    OBSERVATION_KIND = ObservationKind.EXPORT_DICT
     class_name: str | None
     function_name: str | None
     lineno: int
@@ -774,10 +713,6 @@ class ExportDictShape(
         if self.class_name:
             owner = f"{self.class_name}.{owner}"
         return f"{owner}:export-dict"
-
-    @property
-    def observation_kind(self) -> ObservationKind:
-        return ObservationKind.EXPORT_DICT
 
     @property
     def nominal_witness(self) -> str:

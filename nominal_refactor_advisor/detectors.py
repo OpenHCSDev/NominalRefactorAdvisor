@@ -1648,6 +1648,47 @@ class PropertyAliasHookGroup:
 
 
 @dataclass(frozen=True)
+class ConstantPropertyHookGroup:
+    file_path: str
+    base_name: str
+    property_name: str
+    class_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    return_expressions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
+    method_name: str
+    helper_name: str
+    wrapper_kind: str
+
+
+@dataclass(frozen=True)
+class HelperBackedObservationSpecGroup:
+    file_path: str
+    class_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    method_names: tuple[str, ...]
+    helper_names: tuple[str, ...]
+    wrapper_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReflectiveSelfAttributeCandidate(WitnessCarrierCandidate):
+    method_name: str
+    reflective_builtin: str
+    attribute_name: str
+
+
+@dataclass(frozen=True)
+class DynamicSelfFieldSelectionCandidate(WitnessCarrierCandidate):
+    method_name: str
+    reflective_builtin: str
+    selector_expression: str
+
+
+@dataclass(frozen=True)
 class IndexedFamilyWrapperCandidate:
     function_name: str
     lineno: int
@@ -1856,7 +1897,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
             relation_context=relation,
             scaffold=_abc_scaffold_for_methods(methods),
             codemod_patch=_abc_patch_for_methods(methods),
-            metrics=RepeatedMethodMetrics(
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
                 duplicate_site_count=len(methods),
                 statement_count=methods[0].statement_count,
                 class_count=len(class_names),
@@ -2760,14 +2801,262 @@ class RepeatedPropertyAliasHookDetector(CandidateFindingDetector):
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
-            metrics=RepeatedMethodMetrics(
-                duplicate_site_count=len(hook_group.class_names),
-                statement_count=1,
-                class_count=len(hook_group.class_names),
-                method_symbols=tuple(
-                    f"{class_name}.{hook_group.property_name}"
-                    for class_name in hook_group.class_names
+            metrics=_repeated_property_hook_metrics(
+                hook_group.class_names, hook_group.property_name
+            ),
+        )
+
+
+class ConstantPropertyHookDetector(CandidateFindingDetector):
+    detector_id = "constant_property_hooks"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Constant property hooks should move into classvars or fixed mixins",
+        why=(
+            "Several subclasses implement the same property as a one-line constant return. "
+            "That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin."
+        ),
+        capability_gap="single authoritative constant hook implementation for a nominal subclass family",
+        relation_context="same property hook is re-declared as a constant return across one subclass family",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _constant_property_hook_groups(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        hook_group = cast(ConstantPropertyHookGroup, candidate)
+        evidence = tuple(
+            SourceLocation(
+                hook_group.file_path,
+                line,
+                f"{class_name}.{hook_group.property_name}",
+            )
+            for class_name, line in zip(
+                hook_group.class_names,
+                hook_group.line_numbers,
+                strict=True,
+            )
+        )
+        unique_returns = tuple(dict.fromkeys(hook_group.return_expressions))
+        constant_name = hook_group.property_name.upper()
+        if len(unique_returns) == 1:
+            scaffold = (
+                f"class {_camel_case(unique_returns[0].replace('.', '_'))}{_camel_case(hook_group.property_name)}Mixin(ABC):\n"
+                "    @property\n"
+                f"    def {hook_group.property_name}(self):\n"
+                f"        return {unique_returns[0]}"
+            )
+            patch = f"# Move `{hook_group.property_name}` <- `{unique_returns[0]}` into one fixed-value mixin for `{hook_group.base_name}`."
+        else:
+            scaffold = (
+                f"class {hook_group.base_name}{_camel_case(hook_group.property_name)}Base(ABC):\n"
+                f"    {constant_name}: ClassVar[object]\n\n"
+                "    @property\n"
+                f"    def {hook_group.property_name}(self):\n"
+                f"        return type(self).{constant_name}"
+            )
+            patch = f"# Replace repeated constant `{hook_group.property_name}` hooks with one classvar-backed base for `{hook_group.base_name}`."
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as constant returns {unique_returns}."
+            ),
+            evidence,
+            scaffold=scaffold,
+            codemod_patch=patch,
+            metrics=_repeated_property_hook_metrics(
+                hook_group.class_names, hook_group.property_name
+            ),
+        )
+
+
+class ReflectiveSelfAttributeEscapeDetector(CandidateFindingDetector):
+    detector_id = "reflective_self_attribute_escape"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.CONFIG_CONTRACTS,
+        title="Reflective self-attribute access hides a nominal contract",
+        why=(
+            "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. "
+            "That keeps the contract partial, stringly, and fail-soft."
+        ),
+        capability_gap="declared fail-loud nominal attribute contract on the carrier family",
+        relation_context="class template probes its own required state through reflective string access",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _reflective_self_attribute_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        reflective_candidate = cast(ReflectiveSelfAttributeCandidate, candidate)
+        carrier_name = f"{reflective_candidate.class_name}Carrier"
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` uses `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')` instead of declaring `{reflective_candidate.attribute_name}` on the nominal carrier."
+            ),
+            (
+                SourceLocation(
+                    reflective_candidate.file_path,
+                    reflective_candidate.line,
+                    f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
                 ),
+            ),
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                f"class {carrier_name}(ABC):\n"
+                f"    {reflective_candidate.attribute_name}: str"
+            ),
+            codemod_patch=(
+                f"# Delete `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')`.\n"
+                f"# Declare `{reflective_candidate.attribute_name}` once on the shared nominal carrier or abstract base instead of probing it by string."
+            ),
+        )
+
+
+class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
+    detector_id = "helper_backed_observation_spec"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Helper-backed observation specs should use a declarative spec substrate",
+        why=(
+            "Several observation-spec subclasses do nothing except forward one entrypoint to one helper. "
+            "That helper metadata should live in classvars on a shared spec substrate rather than in repeated wrapper methods."
+        ),
+        capability_gap="one declarative helper-backed observation-spec family with metaclass registration",
+        relation_context="same observation-spec wrapper shape repeats across helper-backed subclasses",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        group = _helper_backed_observation_spec_group(module)
+        if group is None:
+            return []
+        evidence = tuple(
+            SourceLocation(group.file_path, line, class_name)
+            for class_name, line in zip(
+                group.class_names,
+                group.line_numbers,
+                strict=True,
+            )
+        )
+        helper_names = tuple(dict.fromkeys(group.helper_names))
+        wrapper_kinds = tuple(dict.fromkeys(group.wrapper_kinds))
+        return [
+            self.finding_spec.build(
+                self.detector_id,
+                (
+                    f"Observation specs {', '.join(group.class_names[:6])} are helper-backed wrappers over {', '.join(helper_names[:6])} via wrapper kinds {', '.join(wrapper_kinds)}."
+                ),
+                evidence[:8],
+                scaffold=(
+                    "class HelperBackedFunctionObservationSpec(FunctionObservationSpec, ABC):\n"
+                    "    shape_helper: ClassVar[Callable[..., object | None]]\n\n"
+                    "    def build_from_function(self, parsed_module, function, observation):\n"
+                    "        return type(self).shape_helper(parsed_module, function)\n\n"
+                    "class TupleResultMixin(ABC):\n"
+                    "    @staticmethod\n"
+                    "    def wrap_result(value):\n"
+                    "        return tuple(value) if value is not None else None"
+                ),
+                codemod_patch=(
+                    "# Collapse helper-backed observation-spec wrappers into declarative helper specs.\n"
+                    "# Put helper identity, node type, result wrapping, and scope policy on classvars/mixins, and let metaclass registration discover the family."
+                ),
+                metrics=RepeatedMethodMetrics.from_duplicate_family(
+                    duplicate_site_count=len(group.class_names),
+                    statement_count=1,
+                    class_count=len(group.class_names),
+                    method_symbols=tuple(
+                        f"{class_name}.{method_name}"
+                        for class_name, method_name in zip(
+                            group.class_names,
+                            group.method_names,
+                            strict=True,
+                        )
+                    ),
+                ),
+            )
+        ]
+
+
+class DynamicSelfFieldSelectionDetector(CandidateFindingDetector):
+    detector_id = "dynamic_self_field_selection"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.CONFIG_CONTRACTS,
+        title="Dynamic self-field selection hides a nominal contract",
+        why=(
+            "A class selects one of its own fields through reflective indirection instead of declaring one fail-loud hook or one canonical field."
+        ),
+        capability_gap="declared nominal count/value hook instead of selector-driven reflective lookup",
+        relation_context="class template selects its own state through dynamic reflective field names",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _dynamic_self_field_selection_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        dynamic_candidate = cast(DynamicSelfFieldSelectionCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal hook."
+            ),
+            (dynamic_candidate.evidence,),
+            scaffold=(
+                "class DeclaredCountHook(ABC):\n"
+                "    @property\n"
+                "    @abstractmethod\n    def count_value(self) -> int: ..."
+            ),
+            codemod_patch=(
+                f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n"
+                "# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier."
             ),
         )
 
@@ -4902,7 +5191,7 @@ def _best_shared_family_base_name(
             name
             for shape in shapes
             for name in (*shape.declared_base_names, *shape.ancestor_names)
-            if name not in {"ABC", "ABCMeta", "object"}
+            if name not in _IGNORED_ANCESTOR_NAMES
         }
         if not ancestor_names:
             return None
@@ -5048,6 +5337,9 @@ _DETECTOR_BASE_NAMES = {
     "GroupedShapeIssueDetector",
     "FiberCollectedShapeIssueDetector",
 }
+
+_IGNORED_BASE_NAMES = frozenset({"ABC", "object"})
+_IGNORED_ANCESTOR_NAMES = frozenset({"ABC", "ABCMeta", "object"})
 
 
 def _is_detectorish_class(node: ast.ClassDef) -> bool:
@@ -5473,7 +5765,9 @@ def _property_alias_hook_groups(
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
-            name for name in _declared_base_names(node) if name not in {"object"}
+            name
+            for name in _declared_base_names(node)
+            if name not in _IGNORED_BASE_NAMES
         )
         if not base_names:
             continue
@@ -5515,6 +5809,344 @@ def _property_alias_hook_groups(
         )
         if len(items) >= 2
         for ordered in [tuple(sorted(items, key=lambda item: (item[1], item[0])))]
+    )
+
+
+def _is_constant_hook_expression(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) or (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id != "self"
+    )
+
+
+def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
+    return {
+        node.name: node
+        for node in ast.walk(module.module)
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _class_defines_property(node: ast.ClassDef, property_name: str) -> bool:
+    return any(
+        isinstance(statement, ast.FunctionDef)
+        and statement.name == property_name
+        and any(
+            _ast_terminal_name(decorator) == "property"
+            for decorator in statement.decorator_list
+        )
+        for statement in node.body
+    )
+
+
+def _constant_property_hook_groups(
+    module: ParsedModule,
+) -> tuple[ConstantPropertyHookGroup, ...]:
+    grouped: dict[tuple[str, str], list[tuple[str, int, str]]] = defaultdict(list)
+    class_defs_by_name = _module_class_defs_by_name(module)
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        base_names = tuple(
+            name
+            for name in _declared_base_names(node)
+            if name not in _IGNORED_BASE_NAMES
+        )
+        if not base_names:
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            if not any(
+                _ast_terminal_name(decorator) == "property"
+                for decorator in statement.decorator_list
+            ):
+                continue
+            body = _trim_docstring_body(statement.body)
+            if (
+                len(body) != 1
+                or not isinstance(body[0], ast.Return)
+                or body[0].value is None
+            ):
+                continue
+            returned = body[0].value
+            if not _is_constant_hook_expression(returned):
+                continue
+            return_expression = ast.unparse(returned)
+            for base_name in base_names:
+                base_node = class_defs_by_name.get(base_name)
+                if base_node is None or not _class_defines_property(
+                    base_node, statement.name
+                ):
+                    continue
+                grouped[(base_name, statement.name)].append(
+                    (node.name, statement.lineno, return_expression)
+                )
+    return tuple(
+        ConstantPropertyHookGroup(
+            file_path=str(module.path),
+            base_name=base_name,
+            property_name=property_name,
+            class_names=tuple(class_name for class_name, _, _ in ordered),
+            line_numbers=tuple(line for _, line, _ in ordered),
+            return_expressions=tuple(expression for _, _, expression in ordered),
+        )
+        for (base_name, property_name), items in sorted(grouped.items())
+        if len(items) >= 2
+        for ordered in [tuple(sorted(items, key=lambda item: (item[1], item[0])))]
+    )
+
+
+def _reflective_self_attribute_candidates(
+    module: ParsedModule,
+) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
+    candidates: list[ReflectiveSelfAttributeCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for subnode in ast.walk(statement):
+                if not isinstance(subnode, ast.Call):
+                    continue
+                builtin_name = _ast_terminal_name(subnode.func)
+                if builtin_name not in {"getattr", "hasattr", "setattr", "delattr"}:
+                    continue
+                if len(subnode.args) < 2:
+                    continue
+                receiver, attribute_name_node = subnode.args[0], subnode.args[1]
+                attribute_name = _constant_string(attribute_name_node)
+                if not (
+                    isinstance(receiver, ast.Name)
+                    and receiver.id == "self"
+                    and attribute_name is not None
+                ):
+                    continue
+                candidates.append(
+                    ReflectiveSelfAttributeCandidate(
+                        file_path=str(module.path),
+                        line=subnode.lineno,
+                        subject_name=node.name,
+                        name_family=(attribute_name,),
+                        method_name=statement.name,
+                        reflective_builtin=builtin_name,
+                        attribute_name=attribute_name,
+                    )
+                )
+    return tuple(candidates)
+
+
+_HELPER_BACKED_METHOD_NAMES = frozenset(
+    {
+        "build_from_function",
+        "build_scoped_function",
+        "build_from_assign",
+        "build_scoped_assign",
+        "build_from_context",
+    }
+)
+
+
+def _is_observation_spec_wrapper_class(node: ast.ClassDef) -> bool:
+    if not node.name.endswith("ObservationSpec"):
+        return False
+    return any(
+        base_name.endswith("ObservationSpec")
+        for base_name in _declared_base_names(node)
+    )
+
+
+def _helper_call_from_returned_value(node: ast.AST) -> tuple[str, bool] | None:
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "tuple"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Call)
+    ):
+        helper_name = _call_display_name(node.args[0])
+        if helper_name is None or not helper_name.startswith("_"):
+            return None
+        return (helper_name, True)
+    if isinstance(node, ast.Call):
+        helper_name = _call_display_name(node)
+        if helper_name is None or not helper_name.startswith("_"):
+            return None
+        return (helper_name, False)
+    return None
+
+
+def _helper_backed_wrapper_kind(
+    method_name: str,
+    returned_value: ast.AST,
+) -> str | None:
+    helper_call = returned_value
+    tuple_wrapped = False
+    if (
+        isinstance(returned_value, ast.Call)
+        and isinstance(returned_value.func, ast.Name)
+        and returned_value.func.id == "tuple"
+        and len(returned_value.args) == 1
+        and isinstance(returned_value.args[0], ast.Call)
+    ):
+        helper_call = returned_value.args[0]
+        tuple_wrapped = True
+    if not isinstance(helper_call, ast.Call):
+        return None
+    arg_names = tuple(ast.unparse(arg) for arg in helper_call.args)
+    if method_name in {"build_from_function", "build_scoped_function"}:
+        if arg_names == ("parsed_module", "function"):
+            return "tuple_function_helper" if tuple_wrapped else "function_helper"
+        if arg_names == ("parsed_module", "class_name", "function"):
+            return "class_named_function_helper"
+    if method_name in {"build_from_assign", "build_scoped_assign"} and arg_names == (
+        "parsed_module",
+        "node",
+    ):
+        return "assign_helper"
+    if method_name == "build_from_context" and arg_names == (
+        "parsed_module",
+        "node",
+        "observation",
+    ):
+        return "context_helper"
+    return None
+
+
+def _is_helper_wrapper_prelude(statement: ast.stmt) -> bool:
+    if isinstance(statement, ast.Assert):
+        return True
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+        return bool(
+            isinstance(target, ast.Name)
+            and isinstance(statement.value, ast.Attribute)
+            and isinstance(statement.value.value, ast.Name)
+            and statement.value.value.id == "observation"
+        )
+    if isinstance(statement, ast.If):
+        return _if_returns_none_only(statement)
+    return False
+
+
+def _helper_backed_observation_spec_candidates(
+    module: ParsedModule,
+) -> tuple[HelperBackedObservationSpecCandidate, ...]:
+    candidates: list[HelperBackedObservationSpecCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef) or not _is_observation_spec_wrapper_class(
+            node
+        ):
+            continue
+        for method in node.body:
+            if (
+                not isinstance(method, ast.FunctionDef)
+                or method.name not in _HELPER_BACKED_METHOD_NAMES
+            ):
+                continue
+            body = _trim_docstring_body(method.body)
+            if not body or len(body) > 4:
+                continue
+            if not all(
+                _is_helper_wrapper_prelude(statement) for statement in body[:-1]
+            ):
+                continue
+            tail = body[-1]
+            if not isinstance(tail, ast.Return) or tail.value is None:
+                continue
+            helper_result = _helper_call_from_returned_value(tail.value)
+            if helper_result is None:
+                continue
+            helper_name, _ = helper_result
+            wrapper_kind = _helper_backed_wrapper_kind(method.name, tail.value)
+            if wrapper_kind is None:
+                continue
+            candidates.append(
+                HelperBackedObservationSpecCandidate(
+                    file_path=str(module.path),
+                    line=method.lineno,
+                    subject_name=node.name,
+                    name_family=(method.name, helper_name, wrapper_kind),
+                    method_name=method.name,
+                    helper_name=helper_name,
+                    wrapper_kind=wrapper_kind,
+                )
+            )
+    return tuple(candidates)
+
+
+def _helper_backed_observation_spec_group(
+    module: ParsedModule,
+) -> HelperBackedObservationSpecGroup | None:
+    candidates = _helper_backed_observation_spec_candidates(module)
+    if len(candidates) < 4:
+        return None
+    ordered = tuple(sorted(candidates, key=lambda item: (item.line, item.class_name)))
+    return HelperBackedObservationSpecGroup(
+        file_path=str(module.path),
+        class_names=tuple(item.class_name for item in ordered),
+        line_numbers=tuple(item.line for item in ordered),
+        method_names=tuple(item.method_name for item in ordered),
+        helper_names=tuple(item.helper_name for item in ordered),
+        wrapper_kinds=tuple(item.wrapper_kind for item in ordered),
+    )
+
+
+def _dynamic_self_field_selection_candidates(
+    module: ParsedModule,
+) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
+    candidates: list[DynamicSelfFieldSelectionCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for subnode in ast.walk(statement):
+                if not isinstance(subnode, ast.Call):
+                    continue
+                builtin_name = _ast_terminal_name(subnode.func)
+                if builtin_name not in {"getattr", "hasattr", "setattr", "delattr"}:
+                    continue
+                if len(subnode.args) < 2:
+                    continue
+                receiver, selector_node = subnode.args[0], subnode.args[1]
+                if not isinstance(receiver, ast.Name) or receiver.id != "self":
+                    continue
+                if _constant_string(selector_node) is not None:
+                    continue
+                selector_expression = ast.unparse(selector_node)
+                if not any(
+                    token in selector_expression
+                    for token in ("self.", "type(self).", "cls.")
+                ):
+                    continue
+                candidates.append(
+                    DynamicSelfFieldSelectionCandidate(
+                        file_path=str(module.path),
+                        line=subnode.lineno,
+                        subject_name=node.name,
+                        name_family=(selector_expression,),
+                        method_name=statement.name,
+                        reflective_builtin=builtin_name,
+                        selector_expression=selector_expression,
+                    )
+                )
+    return tuple(candidates)
+
+
+def _repeated_property_hook_metrics(
+    class_names: tuple[str, ...], property_name: str
+) -> RepeatedMethodMetrics:
+    return RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(class_names),
+        statement_count=1,
+        class_count=len(class_names),
+        method_symbols=tuple(
+            f"{class_name}.{property_name}" for class_name in class_names
+        ),
     )
 
 
@@ -5782,7 +6414,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                     "# Extract one candidate-driven detector base for `_findings_for_module`.\n"
                     "# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves."
                 ),
-                metrics=RepeatedMethodMetrics(
+                metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
                     statement_count=3,
                     class_count=len(candidates),
@@ -5853,7 +6485,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                     "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n"
                     "# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
                 ),
-                metrics=RepeatedMethodMetrics(
+                metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
                     statement_count=2,
                     class_count=len({candidate.class_name for candidate in candidates}),
