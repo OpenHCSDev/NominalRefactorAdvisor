@@ -1690,6 +1690,16 @@ class DeclarativeFamilyBoilerplateGroup:
 
 
 @dataclass(frozen=True)
+class TypeIndexedDefinitionBoilerplateGroup:
+    file_path: str
+    base_names: tuple[str, ...]
+    definition_class_names: tuple[str, ...]
+    alias_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    assigned_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -3103,6 +3113,73 @@ class DeclarativeFamilyBoilerplateDetector(CandidateFindingDetector):
                 class_count=len(group.class_names),
                 registry_name=group.base_names[0],
                 class_names=group.class_names,
+                class_key_pairs=group.assigned_names,
+            ),
+        )
+
+
+class TypeIndexedDefinitionBoilerplateDetector(CandidateFindingDetector):
+    detector_id = "type_indexed_definition_boilerplate"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTO_REGISTER_META,
+        title="Type-indexed family definitions should derive from one typed declaration table",
+        why=(
+            "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. "
+            "That metadata should live once in a typed declaration table and definition-time materializer."
+        ),
+        capability_gap="one authoritative typed declaration table for family generation and export derivation",
+        relation_context="same type-indexed family definition and alias boilerplate repeats across sibling declarations",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLASS_LEVEL_REGISTRATION,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.ENUMERATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _type_indexed_definition_boilerplate_groups(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        group = cast(TypeIndexedDefinitionBoilerplateGroup, candidate)
+        evidence = tuple(
+            SourceLocation(group.file_path, line, class_name)
+            for class_name, line in zip(
+                group.definition_class_names,
+                group.line_numbers,
+                strict=True,
+            )
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
+            ),
+            evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class FamilyDeclaration(Generic[TItem]):\n"
+                "    export_name: str\n"
+                "    item_type: type[TItem]\n"
+                "    spec_root: type[object] | None = None\n"
+                "    spec: object | None = None\n"
+                "    literal_kind: object | None = None\n\n"
+                "def materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n"
+                "    return AutoRegisterMeta(...)"
+            ),
+            codemod_patch=(
+                f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
+                "# Derive runtime family classes, registry indexes, exported aliases, and `__all__` from the same declarations instead of restating them in classes plus assignments."
+            ),
+            metrics=RegistrationMetrics(
+                registration_site_count=len(group.definition_class_names),
+                class_count=len(group.definition_class_names),
+                registry_name=group.base_names[0],
+                class_names=group.definition_class_names,
                 class_key_pairs=group.assigned_names,
             ),
         )
@@ -6309,6 +6386,25 @@ _DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES = frozenset(
 )
 
 
+def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int, str]]:
+    aliases: dict[str, tuple[str, int, str]] = {}
+    for statement in _trim_docstring_body(module.module.body):
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        value = statement.value
+        if not (
+            isinstance(value, ast.Attribute)
+            and value.attr == "family_type"
+            and isinstance(value.value, ast.Name)
+        ):
+            continue
+        aliases[target.id] = (value.value.id, statement.lineno, value.attr)
+    return aliases
+
+
 def _is_simple_classvar_value(node: ast.AST) -> bool:
     if isinstance(node, (ast.Name, ast.Attribute, ast.Constant)):
         return True
@@ -6373,6 +6469,63 @@ def _declarative_family_leaf_candidates(
             )
         )
     return tuple(candidates)
+
+
+def _type_indexed_definition_boilerplate_groups(
+    module: ParsedModule,
+) -> tuple[TypeIndexedDefinitionBoilerplateGroup, ...]:
+    alias_assignments = _module_alias_assignments(module)
+    grouped: dict[
+        tuple[tuple[str, ...], tuple[str, ...]],
+        list[tuple[str, str, int]],
+    ] = defaultdict(list)
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef) or not node.name.endswith("Definition"):
+            continue
+        base_names = tuple(
+            name
+            for name in _declared_base_names(node)
+            if name not in _IGNORED_ANCESTOR_NAMES
+        )
+        if not base_names or not any(
+            name.endswith("Definition") for name in base_names
+        ):
+            continue
+        assigned_names = _classvar_assignment_names(node)
+        if assigned_names is None:
+            continue
+        if not set(assigned_names) & _DECLARATIVE_FAMILY_ASSIGNMENT_NAMES:
+            continue
+        alias_name = next(
+            (
+                alias_name
+                for alias_name, (
+                    definition_name,
+                    _,
+                    attr_name,
+                ) in alias_assignments.items()
+                if definition_name == node.name and attr_name == "family_type"
+            ),
+            None,
+        )
+        if alias_name is None:
+            continue
+        grouped[(base_names, assigned_names)].append(
+            (node.name, alias_name, node.lineno)
+        )
+    return tuple(
+        TypeIndexedDefinitionBoilerplateGroup(
+            file_path=str(module.path),
+            base_names=base_names,
+            definition_class_names=tuple(item[0] for item in ordered),
+            alias_names=tuple(item[1] for item in ordered),
+            line_numbers=tuple(item[2] for item in ordered),
+            assigned_names=assigned_names,
+        )
+        for (base_names, assigned_names), items in sorted(grouped.items())
+        if len(items) >= 3
+        for ordered in [tuple(sorted(items, key=lambda item: (item[2], item[0])))]
+    )
 
 
 def _declarative_family_boilerplate_groups(

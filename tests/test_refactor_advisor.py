@@ -2898,6 +2898,59 @@ class GammaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
     assert "declarative family-definition table" in (finding.codemod_patch or "")
 
 
+def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class CollectedFamily(ABC):
+    pass
+
+
+class RegisteredObservationFamilyDefinition(ABC):
+    pass
+
+
+class AlphaFamilyDefinition(RegisteredObservationFamilyDefinition):
+    item_type = Alpha
+    spec_root = AlphaSpec
+
+
+AlphaFamily = AlphaFamilyDefinition.family_type
+
+
+class BetaFamilyDefinition(RegisteredObservationFamilyDefinition):
+    item_type = Beta
+    spec_root = BetaSpec
+
+
+BetaFamily = BetaFamilyDefinition.family_type
+
+
+class GammaFamilyDefinition(RegisteredObservationFamilyDefinition):
+    item_type = Gamma
+    spec_root = GammaSpec
+
+
+GammaFamily = GammaFamilyDefinition.family_type
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "type_indexed_definition_boilerplate"
+    )
+
+    assert "AlphaFamilyDefinition" in finding.summary
+    assert "AlphaFamily" in finding.summary
+    assert "typed declaration table" in (finding.codemod_patch or "")
+
+
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
