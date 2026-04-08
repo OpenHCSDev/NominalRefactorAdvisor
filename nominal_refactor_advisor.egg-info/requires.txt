@@ -1,0 +1,3 @@
+
+[docs]
+Sphinx>=8.0

@@ -228,6 +228,14 @@ def main() -> int:
         default=3,
         help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
     )
+    parser.add_argument(
+        "--exclude-pattern",
+        action="append",
+        dest="excluded_pattern_ids",
+        type=int,
+        default=[],
+        help="Pattern ID to exclude from findings (can be specified multiple times).",
+    )
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)

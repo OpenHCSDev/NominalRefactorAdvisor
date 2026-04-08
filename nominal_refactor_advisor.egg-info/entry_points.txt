@@ -1,0 +1,2 @@
+[console_scripts]
+nominal-refactor-advisor = nominal_refactor_advisor.cli:main

@@ -120,10 +120,12 @@ class DetectorConfig:
     min_orchestration_calls: int = 50
     min_shared_parameters: int = 5
     min_parameter_family_function_lines: int = 40
+    excluded_pattern_ids: tuple = ()
 
     @classmethod
     def from_namespace(cls, namespace: Any) -> "DetectorConfig":
         namespace_values = vars(namespace)
+        excluded = tuple(namespace_values.get("excluded_pattern_ids", []) or [])
         return cls(
             min_duplicate_statements=int(namespace.min_duplicate_statements),
             min_string_cases=int(namespace.min_string_cases),
@@ -145,6 +147,7 @@ class DetectorConfig:
             min_parameter_family_function_lines=int(
                 namespace_values.get("min_parameter_family_function_lines", 40)
             ),
+            excluded_pattern_ids=excluded,
         )
 
 
@@ -181,6 +184,10 @@ class IssueDetector(ABC):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings = self._collect_findings(modules, config)
+        if config.excluded_pattern_ids:
+            findings = [
+                f for f in findings if f.pattern_id not in config.excluded_pattern_ids
+            ]
         return sorted(
             findings,
             key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
