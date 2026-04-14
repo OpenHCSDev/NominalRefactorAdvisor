@@ -241,6 +241,1675 @@ def run_mode(mode, inputs, steps):
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
 
 
+def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class MissingState:
+    note: str
+
+
+@dataclass(frozen=True)
+class ReadyState:
+    value: int
+
+
+@dataclass(frozen=True)
+class FailedState:
+    error: str
+
+
+State = MissingState | ReadyState | FailedState
+
+
+@dataclass(frozen=True)
+class Record:
+    state: State
+
+
+def state_status(record):
+    state = record.state
+    if isinstance(state, ReadyState):
+        return "ready"
+    if isinstance(state, FailedState):
+        return "failed"
+    return "missing"
+
+
+def state_value(record):
+    state = record.state
+    if isinstance(state, ReadyState):
+        return state.value
+    if isinstance(state, FailedState):
+        return None
+    return None
+
+
+def state_message(record):
+    state = record.state
+    if isinstance(state, MissingState):
+        return state.note
+    if isinstance(state, FailedState):
+        return state.error
+    return "ok"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    case_finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_concrete_type_case_analysis"
+    )
+    assert case_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "state" in case_finding.summary
+    assert "ReadyState" in case_finding.summary
+    assert "State" in case_finding.summary
+    assert case_finding.scaffold is not None
+    assert "class StateFamily(ABC)" in case_finding.scaffold
+
+
+def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+
+
+class SamplingStrategy(Enum):
+    RANDOM = "random"
+    GUIDED = "guided"
+    HYBRID = "hybrid"
+
+
+def run_sampling(strategy, sampler, request, guided_fn):
+    if strategy == SamplingStrategy.GUIDED:
+        return guided_fn(request)
+    if strategy == SamplingStrategy.HYBRID:
+        guided, random = sampler.hybrid(request, guided_fn)
+        return guided + random
+    return sampler.random(request)
+
+
+class Sampler:
+    def sample(self, strategy, request, guided_fn):
+        match strategy:
+            case SamplingStrategy.RANDOM:
+                return self.random(request)
+            case SamplingStrategy.GUIDED:
+                return guided_fn(request)
+            case SamplingStrategy.HYBRID:
+                guided, random = self.hybrid(request, guided_fn)
+                return guided + random
+            case _:
+                raise ValueError(strategy)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_enum_strategy_dispatch"
+    )
+
+    assert "SamplingStrategy" in finding.summary
+    assert "run_sampling" in finding.summary
+    assert "Sampler.sample" in finding.summary
+
+
+def test_detects_split_dispatch_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+from functools import singledispatch
+
+
+class ModeRunner(ABC):
+    @abstractmethod
+    def run(self, *, random_fn, source_fn):
+        raise NotImplementedError
+
+    @classmethod
+    def for_mode(cls, mode):
+        return _MODE_RUNNERS[mode]
+
+
+class RandomRunner(ModeRunner):
+    def run(self, *, random_fn, source_fn):
+        return random_fn()
+
+
+class GuidedRunner(ModeRunner):
+    def run(self, *, random_fn, source_fn):
+        return source_fn()
+
+
+_MODE_RUNNERS = {
+    Mode.RANDOM: RandomRunner(),
+    Mode.GUIDED: GuidedRunner(),
+}
+
+
+@singledispatch
+def source_for_item(item):
+    raise TypeError(type(item).__name__)
+
+
+@source_for_item.register
+def _(item: FileItem):
+    return item.path
+
+
+@source_for_item.register
+def _(item: MemoryItem):
+    return item.payload
+
+
+def orchestrate(request):
+    runner = ModeRunner.for_mode(request.mode)
+
+    def _source():
+        return source_for_item(request.item)
+
+    return runner.run(
+        random_fn=lambda: request.default_source,
+        source_fn=_source,
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "split_dispatch_authority"
+    )
+
+    assert "ModeRunner.for_mode(request.mode)" in finding.summary
+    assert "source_for_item(request.item)" in finding.summary
+    assert "ProductPolicy" in (finding.scaffold or "")
+
+
+def test_detects_closed_constant_selector(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+
+
+class Mode(Enum):
+    DIRECT = "direct"
+    FALLBACK = "fallback"
+
+
+class Plan:
+    def __init__(self, *, mode_name):
+        self.mode_name = mode_name
+
+
+class Runner:
+    def __init__(self, plan):
+        self.plan = plan
+
+
+PRIMARY_PLAN = Plan(mode_name="primary")
+FALLBACK_PLAN = Plan(mode_name="fallback")
+SAFE_PLAN = Plan(mode_name="safe")
+
+DIRECT_CONTRACT = "direct"
+FALLBACK_CONTRACT = "fallback"
+
+
+def build_runner(mode: Mode, *, enabled: bool):
+    if mode == Mode.DIRECT and enabled:
+        return Runner(PRIMARY_PLAN)
+    if enabled:
+        return Runner(FALLBACK_PLAN)
+    return Runner(SAFE_PLAN)
+
+
+def active_contract(mode: Mode):
+    if mode == Mode.DIRECT:
+        return DIRECT_CONTRACT
+    return FALLBACK_CONTRACT
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    selector_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "closed_constant_selector"
+    ]
+
+    assert len(selector_findings) == 2
+    assert any("build_runner" in finding.summary for finding in selector_findings)
+    assert any("Runner(...)" in finding.summary for finding in selector_findings)
+    assert any("active_contract" in finding.summary for finding in selector_findings)
+    assert any("SelectorRule" in (finding.scaffold or "") for finding in selector_findings)
+
+
+def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass, field
+
+
+class AlphaRequest:
+    pass
+
+
+class BetaRequest:
+    pass
+
+
+def run_alpha(request):
+    return request
+
+
+def run_beta(request):
+    return request
+
+
+@dataclass(frozen=True)
+class ExecutionSpec:
+    request_type: type
+    runner: object
+
+
+ALPHA_EXECUTION_SPEC = ExecutionSpec(request_type=AlphaRequest, runner=run_alpha)
+BETA_EXECUTION_SPEC = ExecutionSpec(request_type=BetaRequest, runner=run_beta)
+EXECUTION_SPECS = (ALPHA_EXECUTION_SPEC, BETA_EXECUTION_SPEC)
+
+
+@dataclass(frozen=True)
+class WrapperRule:
+    name: str
+    execution: ExecutionSpec
+    defaults: dict[str, object] = field(default_factory=dict)
+
+
+def build_wrapper(rule: WrapperRule):
+    def wrapper():
+        return rule.execution.runner(rule.execution.request_type())
+    wrapper.__name__ = rule.name
+    return wrapper
+
+
+WRAPPER_RULES = (
+    WrapperRule(name="run_alpha", execution=ALPHA_EXECUTION_SPEC),
+    WrapperRule(name="run_beta", execution=BETA_EXECUTION_SPEC, defaults={"key": None}),
+)
+
+globals().update({rule.name: build_wrapper(rule) for rule in WRAPPER_RULES})
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "derived_wrapper_spec_shadow"
+    )
+
+    assert "WRAPPER_RULES" in finding.summary
+    assert "EXECUTION_SPECS" in finding.summary
+    assert "execution" in finding.summary
+    assert "build_wrapper" in finding.summary
+    assert "wrapper_name" in (finding.scaffold or "")
+
+
+def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+from enum import Enum
+from typing import Generic, Sequence, TypeVar
+
+
+KeyT = TypeVar("KeyT")
+ValueT = TypeVar("ValueT")
+
+
+class Mode(Enum):
+    ALPHA = "alpha"
+    BETA = "beta"
+
+
+@dataclass(frozen=True)
+class SelectionRule(Generic[KeyT, ValueT]):
+    key: KeyT
+    selected: ValueT
+
+
+def build_index(rules: Sequence[SelectionRule[KeyT, ValueT]]) -> dict[KeyT, ValueT]:
+    return {rule.key: rule.selected for rule in rules}
+
+
+def choose(index: dict[KeyT, ValueT], key: KeyT, *, family_name: str) -> ValueT:
+    try:
+        return index[key]
+    except KeyError as error:
+        raise ValueError(f"No {family_name} registered for {key!r}.") from error
+
+
+VALUE_RULES = (
+    SelectionRule(key=Mode.ALPHA, selected="a"),
+    SelectionRule(key=Mode.BETA, selected="b"),
+)
+
+HANDLER_RULES = (
+    SelectionRule(key=Mode.ALPHA, selected=int),
+    SelectionRule(key=Mode.BETA, selected=str),
+)
+
+VALUE_BY_MODE = build_index(VALUE_RULES)
+HANDLER_BY_MODE = build_index(HANDLER_RULES)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "module_keyed_selection_helper"
+    )
+
+    assert "SelectionRule" in finding.summary
+    assert "build_index" in finding.summary
+    assert "choose" in finding.summary
+    assert "VALUE_RULES" in finding.summary
+    assert "HANDLER_RULES" in finding.summary
+    assert "KeyedRecordTable" in (finding.scaffold or "")
+
+
+def test_detects_cross_module_axis_shadow_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        """
+from abc import ABC, abstractmethod
+from enum import Enum, auto
+from typing import ClassVar, Generic, TypeVar
+
+
+KeyT = TypeVar("KeyT")
+
+
+class AutoRegisterByClassVar:
+    registry_key_attr: ClassVar[str]
+    _registry: ClassVar[dict[object, object]]
+
+    def __init_subclass__(cls, **kwargs):
+        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
+            cls._registry = {}
+        super().__init_subclass__(**kwargs)
+        key_attr = getattr(cls, "registry_key_attr", None)
+        if key_attr is None:
+            return
+        registry = getattr(cls, "_registry", None)
+        if not isinstance(registry, dict):
+            return
+        key = cls.__dict__.get(key_attr)
+        if key is not None:
+            registry[key] = cls()
+
+
+class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
+    @classmethod
+    def for_key(cls, key: KeyT):
+        return cls._registry[key]
+
+
+class Mode(Enum):
+    ALPHA = auto()
+    BETA = auto()
+
+
+class ModePolicy(KeyedNominalFamily[Mode], ABC):
+    registry_key_attr = "mode"
+    _registry = {}
+    mode: ClassVar[Mode]
+
+    @abstractmethod
+    def ratio(self) -> float:
+        raise NotImplementedError
+
+
+class AlphaModePolicy(ModePolicy):
+    mode = Mode.ALPHA
+
+    def ratio(self) -> float:
+        return 0.0
+
+
+class BetaModePolicy(ModePolicy):
+    mode = Mode.BETA
+
+    def ratio(self) -> float:
+        return 1.0
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        """
+from abc import ABC, abstractmethod
+from pkg.core import Mode
+
+
+class ModeRunner(ABC):
+    @abstractmethod
+    def run(self):
+        raise NotImplementedError
+
+    @classmethod
+    def for_mode(cls, mode: Mode):
+        return _MODE_RUNNERS[mode]
+
+
+class AlphaModeRunner(ModeRunner):
+    def run(self):
+        return "alpha"
+
+
+class BetaModeRunner(ModeRunner):
+    def run(self):
+        return "beta"
+
+
+_MODE_RUNNERS = {
+    Mode.ALPHA: AlphaModeRunner(),
+    Mode.BETA: BetaModeRunner(),
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "cross_module_axis_shadow_family"
+    )
+
+    assert "Mode" in finding.summary
+    assert "ModePolicy" in finding.summary
+    assert "ModeRunner.for_mode" in finding.summary
+    assert "AxisPolicy" in (finding.scaffold or "")
+
+
+def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/specs.py",
+        """
+from abc import ABC, abstractmethod
+from enum import Enum, auto
+from typing import ClassVar, Generic, TypeVar
+
+
+KeyT = TypeVar("KeyT")
+
+
+class AutoRegisterByClassVar:
+    registry_key_attr: ClassVar[str]
+    _registry: ClassVar[dict[object, object]]
+
+    def __init_subclass__(cls, **kwargs):
+        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
+            cls._registry = {}
+        super().__init_subclass__(**kwargs)
+        key_attr = getattr(cls, "registry_key_attr", None)
+        if key_attr is None:
+            return
+        registry = getattr(cls, "_registry", None)
+        if not isinstance(registry, dict):
+            return
+        key = cls.__dict__.get(key_attr)
+        if key is not None:
+            registry[key] = cls()
+
+
+class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
+    @classmethod
+    def for_key(cls, key: KeyT):
+        return cls._registry[key]
+
+
+class Mode(Enum):
+    ALPHA = auto()
+    BETA = auto()
+    GAMMA = auto()
+
+
+class ModeSpecPolicy(KeyedNominalFamily[Mode], ABC):
+    registry_key_attr = "mode"
+    family_label = "mode case"
+    _registry = {}
+    mode: ClassVar[Mode]
+
+    @abstractmethod
+    def describe(self) -> str:
+        raise NotImplementedError
+
+
+class AlphaModeSpec(ModeSpecPolicy):
+    mode = Mode.ALPHA
+
+    def describe(self) -> str:
+        return "alpha"
+
+
+class BetaModeSpec(ModeSpecPolicy):
+    mode = Mode.BETA
+
+    def describe(self) -> str:
+        return "beta"
+
+
+class GammaModeSpec(ModeSpecPolicy):
+    mode = Mode.GAMMA
+
+    def describe(self) -> str:
+        return "gamma"
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        """
+from abc import ABC, abstractmethod
+from typing import ClassVar
+
+from pkg.specs import KeyedNominalFamily, Mode
+
+
+class ModeAssemblyPolicy(KeyedNominalFamily[Mode], ABC):
+    registry_key_attr = "mode"
+    family_label = "mode case"
+    _registry = {}
+    mode: ClassVar[Mode]
+
+    @abstractmethod
+    def build(self) -> str:
+        raise NotImplementedError
+
+
+class AlphaModeAssembly(ModeAssemblyPolicy):
+    mode = Mode.ALPHA
+
+    def build(self) -> str:
+        return "build-alpha"
+
+
+class BetaModeAssembly(ModeAssemblyPolicy):
+    mode = Mode.BETA
+
+    def build(self) -> str:
+        return "build-beta"
+
+
+class GammaModeAssembly(ModeAssemblyPolicy):
+    mode = Mode.GAMMA
+
+    def build(self) -> str:
+        return "build-gamma"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "parallel_keyed_axis_family"
+    )
+
+    assert "Mode" in finding.summary
+    assert "ModeSpecPolicy" in finding.summary
+    assert "ModeAssemblyPolicy" in finding.summary
+    assert "AxisPolicy" in (finding.scaffold or "")
+
+
+def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from enum import Enum, auto
+from typing import ClassVar, Generic, TypeVar
+
+
+KeyT = TypeVar("KeyT")
+
+
+class AutoRegisterByClassVar:
+    registry_key_attr: ClassVar[str]
+    _registry: ClassVar[dict[object, object]]
+
+    def __init_subclass__(cls, **kwargs):
+        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
+            cls._registry = {}
+        super().__init_subclass__(**kwargs)
+        key_attr = getattr(cls, "registry_key_attr", None)
+        if key_attr is None:
+            return
+        registry = getattr(cls, "_registry", None)
+        if not isinstance(registry, dict):
+            return
+        key = cls.__dict__.get(key_attr)
+        if key is not None:
+            registry[key] = cls()
+
+
+class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
+    @classmethod
+    def for_key(cls, key: KeyT):
+        return cls._registry[key]
+
+
+class Mode(Enum):
+    ALPHA = auto()
+    BETA = auto()
+    GAMMA = auto()
+
+
+@dataclass(frozen=True)
+class ModeConfig:
+    mode: Mode
+    weight: float
+
+
+MODE_CONFIGS = {
+    Mode.ALPHA: ModeConfig(mode=Mode.ALPHA, weight=0.0),
+    Mode.BETA: ModeConfig(mode=Mode.BETA, weight=0.5),
+    Mode.GAMMA: ModeConfig(mode=Mode.GAMMA, weight=1.0),
+}
+
+
+class ModeRunner(KeyedNominalFamily[Mode], ABC):
+    registry_key_attr = "mode"
+    mode: ClassVar[Mode]
+
+    @abstractmethod
+    def run(self):
+        raise NotImplementedError
+
+
+class AlphaModeRunner(ModeRunner):
+    mode = Mode.ALPHA
+
+    def run(self):
+        return "alpha"
+
+
+class BetaModeRunner(ModeRunner):
+    mode = Mode.BETA
+
+    def run(self):
+        return "beta"
+
+
+class GammaModeRunner(ModeRunner):
+    mode = Mode.GAMMA
+
+    def run(self):
+        return "gamma"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "parallel_keyed_table_and_family"
+    )
+
+    assert "Mode" in finding.summary
+    assert "MODE_CONFIGS" in finding.summary
+    assert "ModeRunner" in finding.summary
+    assert "AxisSpec" in (finding.scaffold or "")
+
+
+def test_detects_manual_validated_pytree_spec(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+class ChildrenAuxDataPyTreeMixin:
+    def tree_flatten(self):
+        return (self._tree_children(), self._tree_aux_data())
+
+
+@dataclass(frozen=True)
+class AlphaSpec(ChildrenAuxDataPyTreeMixin):
+    left: object
+    right: object
+    cutoff: float
+
+    def validate(self):
+        if self.left.ndim != 1:
+            raise ValueError
+        if self.right.ndim != 1:
+            raise ValueError
+        if self.cutoff <= 0:
+            raise ValueError
+
+    def _tree_children(self):
+        return (self.left, self.right)
+
+    def _tree_aux_data(self):
+        return (self.cutoff,)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(*children, *aux_data)
+
+    def receptor_subset(self, indices):
+        return AlphaSpec(
+            left=self.left[indices],
+            right=self.right,
+            cutoff=self.cutoff,
+        )
+
+
+@dataclass(frozen=True)
+class BetaSpec(ChildrenAuxDataPyTreeMixin):
+    left: object
+    right: object
+    beta: float
+    cutoff: float
+
+    def validate(self):
+        if self.left.ndim != 1:
+            raise ValueError
+        if self.right.ndim != 1:
+            raise ValueError
+        if self.beta <= 0:
+            raise ValueError
+        if self.cutoff <= 0:
+            raise ValueError
+
+    def _tree_children(self):
+        return (self.left, self.right)
+
+    def _tree_aux_data(self):
+        return (self.beta, self.cutoff)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(*children, *aux_data)
+
+    def receptor_subset(self, indices):
+        return BetaSpec(
+            left=self.left[indices],
+            right=self.right,
+            beta=self.beta,
+            cutoff=self.cutoff,
+        )
+
+    def zeroed(self):
+        return BetaSpec(
+            left=zeros_like(self.left),
+            right=zeros_like(self.right),
+            beta=self.beta,
+            cutoff=self.cutoff,
+        )
+
+
+@dataclass(frozen=True)
+class GammaSpec(ChildrenAuxDataPyTreeMixin):
+    left: object
+    right: object
+    width: float
+
+    def validate(self):
+        if self.left.ndim != 1:
+            raise ValueError
+        if self.right.ndim != 1:
+            raise ValueError
+        if self.left.shape[0] != self.right.shape[0]:
+            raise ValueError
+        if self.width <= 0:
+            raise ValueError
+
+    def _tree_children(self):
+        return (self.left, self.right)
+
+    def _tree_aux_data(self):
+        return (self.width,)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(*children, *aux_data)
+
+    def zeroed(self):
+        return GammaSpec(
+            left=zeros_like(self.left),
+            right=zeros_like(self.right),
+            width=self.width,
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_validated_pytree_spec"
+    )
+
+    assert "AlphaSpec" in finding.summary
+    assert "BetaSpec" in finding.summary
+    assert "ValidatedPytreeRecord" in (finding.scaffold or "")
+
+
+def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def contains_group(handles, required):
+    return all(handle in handles for handle in required)
+
+
+def alpha_handles():
+    return ("A1", "A2")
+
+
+def beta_handles():
+    return ("B1",)
+
+
+def gamma_handles():
+    return ("C1",)
+
+
+def has_alpha_chain(plan):
+    witness = plan.witness
+    if not isinstance(witness, AlphaWitness):
+        return False
+    if plan.case != "alpha":
+        return False
+    if plan.total_gap is None:
+        return False
+    if plan.total_gap > witness.bound:
+        return False
+    return contains_group(plan.theorem_handles, alpha_handles())
+
+
+def has_beta_chain(plan):
+    witness = plan.witness
+    if not isinstance(witness, BetaWitness):
+        return False
+    if plan.case != "beta":
+        return False
+    if plan.total_gap is None:
+        return False
+    if plan.total_gap > witness.bound:
+        return False
+    return contains_group(plan.theorem_handles, beta_handles())
+
+
+def has_gamma_chain(plan):
+    witness = plan.witness
+    if not isinstance(witness, GammaWitness):
+        return False
+    if plan.case != "gamma":
+        return False
+    if plan.total_gap is None:
+        return False
+    if plan.total_gap > witness.bound:
+        return False
+    return contains_group(plan.theorem_handles, gamma_handles())
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_guard_validator_family"
+    )
+
+    assert "has_alpha_chain" in finding.summary
+    assert "has_beta_chain" in finding.summary
+    assert "ValidationCasePolicy" in (finding.scaffold or "")
+
+
+def test_detects_repeated_validate_shape_guard_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class AnchoredArray:
+    def __init__(self, positions, vectors, strengths):
+        self.positions = positions
+        self.vectors = vectors
+        self.strengths = strengths
+
+    def validate(self):
+        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:
+            raise ValueError("vectors must have shape (N, 3)")
+        if self.strengths.ndim != 1:
+            raise ValueError("strengths must be 1D")
+        if self.positions.shape[0] != self.vectors.shape[0]:
+            raise ValueError("positions and vectors must align")
+        if self.positions.shape[0] != self.strengths.shape[0]:
+            raise ValueError("positions and strengths must align")
+
+
+class IndexedArray:
+    def __init__(self, atom_rows, reference_rows, weights):
+        self.atom_rows = atom_rows
+        self.reference_rows = reference_rows
+        self.weights = weights
+
+    def validate(self):
+        if self.atom_rows.ndim != 2 or self.atom_rows.shape[1] != 3:
+            raise ValueError("rows must have shape (N, 3)")
+        if self.reference_rows.ndim != 2 or self.reference_rows.shape[1] != 3:
+            raise ValueError("references must have shape (N, 3)")
+        if self.weights.ndim != 1:
+            raise ValueError("weights must be 1D")
+        if self.atom_rows.shape[0] != self.reference_rows.shape[0]:
+            raise ValueError("row families must align")
+        if self.atom_rows.shape[0] != self.weights.shape[0]:
+            raise ValueError("rows and weights must align")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_validate_shape_guard_family"
+    )
+
+    assert "AnchoredArray.validate" in finding.summary
+    assert "IndexedArray.validate" in finding.summary
+    assert "ShapeValidatedRecord" in (finding.scaffold or "")
+
+
+def test_detects_cross_module_repeated_validate_shape_guard_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/chemistry.py",
+        """
+class AnchoredArray:
+    def __init__(self, positions, vectors, strengths):
+        self.positions = positions
+        self.vectors = vectors
+        self.strengths = strengths
+
+    def validate(self):
+        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:
+            raise ValueError("vectors must have shape (N, 3)")
+        if self.strengths.ndim != 1:
+            raise ValueError("strengths must be 1D")
+        if self.positions.shape[0] != self.vectors.shape[0]:
+            raise ValueError("positions and vectors must align")
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/scoring.py",
+        """
+class ReceptorGrid:
+    def __init__(self, centers, normals, weights):
+        self.centers = centers
+        self.normals = normals
+        self.weights = weights
+
+    def validate(self):
+        if self.centers.ndim != 2 or self.centers.shape[1] != 3:
+            raise ValueError("centers must have shape (N, 3)")
+        if self.normals.ndim != 2 or self.normals.shape[1] != 3:
+            raise ValueError("normals must have shape (N, 3)")
+        if self.weights.ndim != 1:
+            raise ValueError("weights must be 1D")
+        if self.centers.shape[0] != self.normals.shape[0]:
+            raise ValueError("centers and normals must align")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_validate_shape_guard_family"
+        and "AnchoredArray.validate" in finding.summary
+        and "ReceptorGrid.validate" in finding.summary
+    )
+
+    assert "repeat 4 shared shape/ndim guard forms" in finding.summary
+    assert "ShapeValidatedRecord" in (finding.scaffold or "")
+
+
+def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/a.py",
+        """
+class AnchoredArray:
+    def __init__(self, positions, strengths):
+        self.positions = positions
+        self.strengths = strengths
+
+    def validate(self):
+        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
+            raise ValueError("positions must have shape (N, 3)")
+        if self.strengths.ndim != 1:
+            raise ValueError("strengths must be 1D")
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/b.py",
+        """
+class IndexedArray:
+    def __init__(self, rows, mask, strengths):
+        self.rows = rows
+        self.mask = mask
+        self.strengths = strengths
+
+    def validate(self):
+        if self.rows.ndim != 2 or self.mask.ndim != 2:
+            raise ValueError("rows and masks must be 2D")
+        if self.strengths.ndim != 1:
+            raise ValueError("strengths must be 1D")
+        if self.rows.shape != self.mask.shape:
+            raise ValueError("rows and masks must match")
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/c.py",
+        """
+class ReceptorGrid:
+    def __init__(self, coords, mask):
+        self.coords = coords
+        self.mask = mask
+
+    def validate(self):
+        if self.coords.ndim != 2 or self.coords.shape[1] != 3:
+            raise ValueError("coords must have shape (N, 3)")
+        if self.coords.shape != self.mask.shape:
+            raise ValueError("coords and mask must match")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_validate_shape_guard_family"
+        and "AnchoredArray.validate" in finding.summary
+        and "IndexedArray.validate" in finding.summary
+        and "ReceptorGrid.validate" in finding.summary
+    )
+
+    assert "repeat 4 shared shape/ndim guard forms" in finding.summary
+    assert "ShapeValidatedRecord" in (finding.scaffold or "")
+
+
+def test_detects_transport_shell_template_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+from typing import Generic, TypeVar
+
+
+class ArtifactBase:
+    pass
+
+
+class AlphaArtifact(ArtifactBase):
+    pass
+
+
+class BetaArtifact(ArtifactBase):
+    pass
+
+
+ArtifactT = TypeVar("ArtifactT", bound=ArtifactBase)
+ResultT = TypeVar("ResultT")
+
+
+def materialize_artifact(artifact_cls, source, **kwargs):
+    del source, kwargs
+    return artifact_cls()
+
+
+class ArtifactShell(ABC, Generic[ArtifactT, ResultT]):
+    artifact_cls: type[ArtifactT]
+
+    def execute(self, source):
+        artifact = materialize_artifact(
+            self.artifact_cls,
+            source,
+            **self.options(source),
+        )
+        return self.package(self.operate(artifact))
+
+    def options(self, source):
+        del source
+        return {}
+
+    @abstractmethod
+    def operate(self, artifact: ArtifactT) -> ResultT:
+        raise NotImplementedError
+
+    @abstractmethod
+    def package(self, result: ResultT):
+        raise NotImplementedError
+
+
+class AlphaShell(ArtifactShell[AlphaArtifact, AlphaArtifact]):
+    artifact_cls = AlphaArtifact
+
+    def operate(self, artifact: AlphaArtifact) -> AlphaArtifact:
+        return artifact
+
+    def package(self, result: AlphaArtifact):
+        return result
+
+
+class BetaShell(ArtifactShell[BetaArtifact, BetaArtifact]):
+    artifact_cls = BetaArtifact
+
+    def operate(self, artifact: BetaArtifact) -> BetaArtifact:
+        return artifact
+
+    def package(self, result: BetaArtifact):
+        return result
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "transport_shell_template_method"
+    )
+
+    assert "ArtifactShell.execute" in finding.summary
+    assert "AlphaArtifact" in finding.summary
+    assert "BetaArtifact" in finding.summary
+    assert "operate" in finding.summary
+    assert "package" in finding.summary
+
+
+def test_detects_cross_module_spec_axis_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        """
+class AlphaArtifact:
+    pass
+
+
+class BetaArtifact:
+    pass
+
+
+def execute_alpha(artifact):
+    return artifact
+
+
+def execute_beta(artifact):
+    return artifact
+
+
+class GeneratedWrapperRule:
+    def __init__(self, *, name, artifact_cls, executor):
+        self.name = name
+        self.artifact_cls = artifact_cls
+        self.executor = executor
+
+
+WRAPPER_RULES = (
+    GeneratedWrapperRule(
+        name="wrap_alpha",
+        artifact_cls=AlphaArtifact,
+        executor=execute_alpha,
+    ),
+    GeneratedWrapperRule(
+        name="wrap_beta",
+        artifact_cls=BetaArtifact,
+        executor=execute_beta,
+    ),
+)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/benchmark.py",
+        """
+from pkg.pipeline import (
+    AlphaArtifact,
+    BetaArtifact,
+    execute_alpha,
+    execute_beta,
+)
+
+
+def package_outcome(result):
+    return result
+
+
+class BenchmarkRoute:
+    def __init__(self, *, path_name, artifact_cls, executor, outcome_builder):
+        self.path_name = path_name
+        self.artifact_cls = artifact_cls
+        self.executor = executor
+        self.outcome_builder = outcome_builder
+
+
+ALPHA_ROUTE = BenchmarkRoute(
+    path_name="alpha",
+    artifact_cls=AlphaArtifact,
+    executor=execute_alpha,
+    outcome_builder=package_outcome,
+)
+
+BETA_ROUTE = BenchmarkRoute(
+    path_name="beta",
+    artifact_cls=BetaArtifact,
+    executor=execute_beta,
+    outcome_builder=package_outcome,
+)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "cross_module_spec_axis_authority"
+    )
+
+    assert "WRAPPER_RULES" in finding.summary
+    assert "ALPHA_ROUTE" in finding.summary
+    assert "AlphaArtifact->execute_alpha" in finding.summary
+    assert "BetaArtifact->execute_beta" in finding.summary
+
+
+def test_detects_parallel_registry_projection_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class AlphaAuthority:
+    @classmethod
+    def declared_variants(cls):
+        return ()
+
+
+class BetaAuthority:
+    @classmethod
+    def declared_variants(cls):
+        return ()
+
+
+class AlphaProjection:
+    def __init__(self, *, sites):
+        self.sites = sites
+
+
+class BetaProjection:
+    def __init__(self, *, sites):
+        self.sites = sites
+
+
+def _collect_sites(structure, extractor_types):
+    return tuple(extractor_types)
+
+
+def projection_from_alpha(source):
+    return AlphaProjection(
+        sites=_collect_sites(source, AlphaAuthority.declared_variants())
+    )
+
+
+def projection_from_beta(source):
+    return BetaProjection(
+        sites=_collect_sites(source, BetaAuthority.declared_variants())
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "parallel_registry_projection_family"
+    )
+
+    assert "projection_from_alpha" in finding.summary
+    assert "projection_from_beta" in finding.summary
+    assert "AlphaAuthority" in finding.summary
+    assert "BetaAuthority" in finding.summary
+
+
+def test_detects_repeated_keyed_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/a.py",
+        """
+from abc import ABC, abstractmethod
+
+
+class AutoRegisterByClassVar:
+    pass
+
+
+class SamplingStrategyPolicy(AutoRegisterByClassVar, ABC):
+    registry_key_attr = "strategy"
+    _registry = {}
+
+    @classmethod
+    def for_strategy(cls, strategy):
+        try:
+            return cls._registry[strategy]
+        except KeyError as error:
+            raise ValueError(f"Unsupported sampling strategy: {strategy}") from error
+
+    @abstractmethod
+    def keep_ratio(self):
+        raise NotImplementedError
+
+
+class CertificationDecisionSummaryPolicy(AutoRegisterByClassVar, ABC):
+    registry_key_attr = "decision"
+    _registry = {}
+
+    @classmethod
+    def for_decision(cls, decision):
+        try:
+            return cls._registry[decision]
+        except KeyError as error:
+            raise ValueError(f"Unsupported decision: {decision}") from error
+
+    @abstractmethod
+    def format(self, value):
+        raise NotImplementedError
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/b.py",
+        """
+from abc import ABC, abstractmethod
+
+
+class AutoRegisterByClassVar:
+    pass
+
+
+class ScoringBackendFactory(AutoRegisterByClassVar, ABC):
+    registry_key_attr = "family"
+    _registry = {}
+
+    @classmethod
+    def for_family(cls, family):
+        try:
+            return cls._registry[family]
+        except KeyError as error:
+            raise ValueError(f"Unsupported family: {family}") from error
+
+    @abstractmethod
+    def create_backend(self):
+        raise NotImplementedError
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_keyed_family"
+    )
+
+    assert "SamplingStrategyPolicy" in finding.summary
+    assert "CertificationDecisionSummaryPolicy" in finding.summary
+    assert "ScoringBackendFactory" in finding.summary
+    assert "KeyedNominalFamily" in (finding.scaffold or "")
+
+
+def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class MetalChargeCompatibility:
+    charge_method: str
+    incompatibility_reasons: tuple[str, ...] = ()
+    _registry = {}
+
+    @classmethod
+    def register(cls, *, charge_method, incompatibility_reasons=()):
+        if charge_method in cls._registry:
+            raise TypeError(charge_method)
+        cls._registry[charge_method] = cls(
+            charge_method=charge_method,
+            incompatibility_reasons=incompatibility_reasons,
+        )
+
+    @classmethod
+    def for_charge_method(cls, charge_method):
+        if charge_method not in cls._registry:
+            raise TypeError(charge_method)
+        return cls._registry[charge_method]
+
+
+@dataclass(frozen=True)
+class ScoringFamilyCompatibility:
+    scoring_family: str
+    reasons: tuple[str, ...] = ()
+    _registry = {}
+
+    @classmethod
+    def register(cls, *, scoring_family, reasons=()):
+        if scoring_family in cls._registry:
+            raise TypeError(scoring_family)
+        cls._registry[scoring_family] = cls(
+            scoring_family=scoring_family,
+            reasons=reasons,
+        )
+
+    @classmethod
+    def for_scoring_family(cls, scoring_family):
+        if scoring_family not in cls._registry:
+            raise TypeError(scoring_family)
+        return cls._registry[scoring_family]
+
+
+@dataclass(frozen=True)
+class ComponentCompatibilityRule:
+    role: str
+    projector: object
+    _registry = {}
+
+    @classmethod
+    def register(cls, *, role, projector):
+        if role in cls._registry:
+            raise TypeError(role)
+        cls._registry[role] = cls(role=role, projector=projector)
+
+    @classmethod
+    def for_role(cls, role):
+        if role not in cls._registry:
+            raise TypeError(role)
+        return cls._registry[role]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_keyed_record_table"
+    )
+
+    assert "MetalChargeCompatibility" in finding.summary
+    assert "ScoringFamilyCompatibility" in finding.summary
+    assert "ComponentCompatibilityRule" in finding.summary
+    assert "KeyedRecordTable" in (finding.scaffold or "")
+
+
+def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sampler:
+    def sample_from_certified(self, key, n_poses, pocket):
+        templates, template_weights = self.certified_templates(pocket)
+        key_trans, key_rot = random.split(key)
+        indices = select_template_indices(key_trans, template_weights, n_poses)
+        translations = sample_biased_translations(
+            key_trans, templates, template_weights, n_poses
+        )
+        quaternions = sample_biased_rotations(key_rot, templates, indices, n_poses)
+        return SamplingResult(
+            translations=translations,
+            quaternions=quaternions,
+            strategy=SamplingStrategy.GUIDED,
+            n_guided=n_poses,
+            n_random=0,
+            templates_used=len(templates),
+        )
+
+    def sample_from_analysis(self, request):
+        templates, template_weights = self.analysis_templates(
+            request.coords, request.shape, request.features
+        )
+        key_trans, key_rot = random.split(request.key)
+        indices = select_template_indices(key_trans, template_weights, request.n_poses)
+        translations = sample_biased_translations(
+            key_trans, templates, template_weights, request.n_poses
+        )
+        quaternions = sample_biased_rotations(
+            key_rot, templates, indices, request.n_poses
+        )
+        return SamplingResult(
+            translations=translations,
+            quaternions=quaternions,
+            strategy=SamplingStrategy.GUIDED,
+            n_guided=request.n_poses,
+            n_random=0,
+            templates_used=len(templates),
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_result_assembly_pipeline"
+    )
+
+    assert "sample_from_certified" in finding.summary
+    assert "sample_from_analysis" in finding.summary
+    assert "sample_biased_rotations" in finding.summary
+
+
+def test_detects_nested_builder_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class SearchRequest:
+    @classmethod
+    def from_inputs(
+        cls,
+        *,
+        key,
+        ligand_com,
+        strategy,
+        n_poses=None,
+        n_poses_override=None,
+    ):
+        return cls(
+            key=key,
+            ligand_com=ligand_com,
+            strategy=strategy,
+            n_poses=n_poses,
+            n_poses_override=n_poses_override,
+        )
+
+
+class ExecutionRequest:
+    @classmethod
+    def from_detected_site(
+        cls,
+        site,
+        *,
+        key,
+        ligand_com,
+        strategy,
+        n_poses=None,
+        n_poses_override=None,
+    ):
+        return cls(
+            search=SearchRequest.from_inputs(
+                key=key,
+                ligand_com=ligand_com,
+                strategy=strategy,
+                n_poses=n_poses,
+                n_poses_override=n_poses_override,
+            ),
+            center=site.center,
+            box_size=max(site.radius, extent(site)),
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "nested_builder_shell"
+    )
+
+    assert "ExecutionRequest.from_detected_site" in finding.summary
+    assert "SearchRequest.from_inputs" in finding.summary
+    assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
+
+
 def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -381,6 +2050,55 @@ class CacheBackend:
     assert "process_batch" in finding.summary
     assert finding.scaffold is not None
     assert "class BackendInterface(ABC)" in finding.scaffold
+
+
+def test_ignores_structural_confusability_when_abstract_witness_exists(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+
+
+def process_batch(items, backend):
+    for item in items:
+        backend.store(item)
+    backend.flush()
+
+
+class BackendInterface(ABC):
+    @abstractmethod
+    def store(self, item):
+        raise NotImplementedError
+
+    @abstractmethod
+    def flush(self):
+        raise NotImplementedError
+
+
+class DatabaseBackend(BackendInterface):
+    def store(self, item):
+        return item
+
+    def flush(self):
+        return None
+
+
+class CacheBackend(BackendInterface):
+    def store(self, item):
+        return item
+
+    def flush(self):
+        return None
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        item.detector_id == "structural_confusability" for item in findings
+    )
 
 
 def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
@@ -560,6 +2278,64 @@ def resolve(config):
     assert any(finding.pattern_id == 4 for finding in findings)
 
 
+def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class VinardoConfig:
+    gaussians: tuple[tuple[float, float], ...] = ()
+    repulsion: float = 0.0
+    hydrophobic_low: float = 0.0
+    cutoff: float = 8.0
+
+
+@dataclass(frozen=True)
+class SoftLJConfig:
+    repulsion_exp: int = 8
+    attraction_exp: int = 4
+    repulsion_weight: float = 4.0
+    attraction_weight: float = 2.0
+    cutoff: float = 8.0
+
+
+class ScoringBackend(ABC):
+    _config: VinardoConfig | SoftLJConfig
+
+
+class SoftLJBackend(ScoringBackend):
+    def __init__(self, config: SoftLJConfig | None = None):
+        self._config = config if config is not None else SoftLJConfig()
+
+    def score(self):
+        cfg = self._config
+        return (
+            getattr(cfg, "gaussians"),
+            getattr(cfg, "repulsion"),
+            getattr(cfg, "hydrophobic_low"),
+            cfg.cutoff,
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "concrete_config_field_probe"
+    )
+
+    assert "SoftLJBackend.score" in finding.summary
+    assert "SoftLJConfig" in finding.summary
+    assert "gaussians" in finding.summary
+    assert "repulsion" in finding.summary
+
+
 def test_collects_config_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -653,6 +2429,25 @@ BASE_TO_LAZY[Base] = LazyBase
 
     assert [item.generator_name for item in generation] == ["type"]
     assert [item.mapping_name for item in lineage] == ["BASE_TO_LAZY"]
+
+
+def test_ignores_type_introspection_for_generated_type_lineage(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Box:
+    def clone(self):
+        return type(self)()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "generated_type_lineage" for finding in findings)
+
+    module = parse_python_modules(tmp_path)[0]
+    generation = collect_family_items(module, RuntimeTypeGenerationObservationFamily)
+    assert generation == []
 
 
 def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
@@ -1025,6 +2820,23 @@ def resolve(widget):
     assert any(item.observed_attribute == "checked" for item in observations)
 
 
+def test_ignores_array_protocol_attribute_probes(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def validate(value):
+    shape = getattr(value, "shape", None)
+    ndim = getattr(value, "ndim", None)
+    dtype = getattr(value, "dtype", None)
+    return shape, ndim, dtype
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "attribute_probes" for finding in findings)
+
+
 def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -1180,6 +2992,365 @@ REGISTRY["beta"] = BetaHandler
     assert any(
         finding.pattern_id == 6 and finding.codemod_patch for finding in findings
     )
+
+
+def test_detects_manual_concrete_subclass_roster_with_abstract_filter(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import inspect
+from abc import ABC, abstractmethod
+
+
+class Extractor(ABC):
+    _registered_types = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if not inspect.isabstract(cls):
+            cls._registered_types.append(cls)
+
+    @classmethod
+    def registered_types(cls):
+        return tuple(cls._registered_types)
+
+    @abstractmethod
+    def extract(self):
+        raise NotImplementedError
+
+
+class HydrogenExtractor(Extractor):
+    def extract(self):
+        return ("H",)
+
+
+class DonorExtractor(Extractor):
+    def extract(self):
+        return ("D",)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_concrete_subclass_roster"
+    )
+
+    assert "Extractor" in finding.summary
+    assert "_registered_types" in finding.summary
+    assert "registered_types" in finding.summary
+
+
+def test_detects_manual_concrete_subclass_roster_with_selector_guard(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class RoutedRequest(ABC):
+    route_name = None
+    _registered_types = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("route_name") is not None:
+            cls._registered_types.append(cls)
+
+    @classmethod
+    def concrete_types(cls):
+        return tuple(cls._registered_types)
+
+
+class DirectRequest(RoutedRequest):
+    route_name = "direct"
+
+
+class GuidedRequest(RoutedRequest):
+    route_name = "guided"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_concrete_subclass_roster"
+    )
+
+    assert "route_name" in finding.summary
+    assert "DirectRequest" in finding.summary
+    assert "GuidedRequest" in finding.summary
+
+
+def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+
+
+class AutoRegisterConcreteTypes:
+    pass
+
+
+class RenderRule(AutoRegisterConcreteTypes, ABC):
+    _registered_types = []
+
+    @classmethod
+    def registered_types(cls):
+        return (AlphaRenderRule, BetaRenderRule)
+
+    @classmethod
+    def resolve(cls, artifact):
+        matches = [
+            candidate
+            for candidate in cls.registered_types()
+            if candidate.matches_context(artifact)
+        ]
+        if not matches:
+            raise ValueError(type(artifact).__name__)
+        if len(matches) != 1:
+            raise TypeError([candidate.__name__ for candidate in matches])
+        return matches[0]()
+
+    @classmethod
+    @abstractmethod
+    def matches_context(cls, artifact):
+        raise NotImplementedError
+
+
+class AlphaRenderRule(RenderRule):
+    @classmethod
+    def matches_context(cls, artifact):
+        return artifact.kind == "alpha"
+
+
+class BetaRenderRule(RenderRule):
+    @classmethod
+    def matches_context(cls, artifact):
+        return artifact.kind == "beta"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "predicate_selected_concrete_family"
+    )
+
+    assert "RenderRule.resolve" in finding.summary
+    assert "matches_context(artifact)" in finding.summary
+    assert "AlphaRenderRule" in finding.summary
+    assert "BetaRenderRule" in finding.summary
+    assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
+
+
+def test_detects_manual_concrete_subclass_roster_across_modules(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        """
+from abc import ABC
+
+
+class RoutedRequest(ABC):
+    route_name = None
+    _registered_types = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("route_name") is not None:
+            cls._registered_types.append(cls)
+
+    @classmethod
+    def concrete_types(cls):
+        return tuple(cls._registered_types)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/routes.py",
+        """
+from .base import RoutedRequest
+
+
+class DirectRequest(RoutedRequest):
+    route_name = "direct"
+
+
+class GuidedRequest(RoutedRequest):
+    route_name = "guided"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_concrete_subclass_roster"
+    )
+
+    assert "DirectRequest" in finding.summary
+    assert "GuidedRequest" in finding.summary
+    assert "route_name" in finding.summary
+
+
+def test_detects_predicate_selected_concrete_family_across_modules(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        """
+from abc import ABC, abstractmethod
+from .alpha import AlphaRenderRule
+from .beta import BetaRenderRule
+
+
+class RenderRule(ABC):
+    _registered_types = []
+
+    @classmethod
+    def registered_types(cls):
+        return (AlphaRenderRule, BetaRenderRule)
+
+    @classmethod
+    def resolve(cls, artifact):
+        matches = [
+            candidate
+            for candidate in cls.registered_types()
+            if candidate.matches_context(artifact)
+        ]
+        if not matches:
+            raise ValueError(type(artifact).__name__)
+        if len(matches) != 1:
+            raise TypeError([candidate.__name__ for candidate in matches])
+        return matches[0]()
+
+    @classmethod
+    @abstractmethod
+    def matches_context(cls, artifact):
+        raise NotImplementedError
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        """
+from .base import RenderRule
+
+
+class AlphaRenderRule(RenderRule):
+    @classmethod
+    def matches_context(cls, artifact):
+        return artifact.kind == "alpha"
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        """
+from .base import RenderRule
+
+
+class BetaRenderRule(RenderRule):
+    @classmethod
+    def matches_context(cls, artifact):
+        return artifact.kind == "beta"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "predicate_selected_concrete_family"
+    )
+
+    assert "RenderRule.resolve" in finding.summary
+    assert "AlphaRenderRule" in finding.summary
+    assert "BetaRenderRule" in finding.summary
+    assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
+
+
+def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+
+
+class InvoiceFieldEmitter(ABC):
+    _registered_types = []
+
+    @abstractmethod
+    def emit(self, artifact):
+        raise NotImplementedError
+
+
+class ReceiptFieldEmitter(ABC):
+    _registered_types = []
+
+    @abstractmethod
+    def emit(self, artifact):
+        raise NotImplementedError
+
+
+class InvoiceAlphaEmitter(InvoiceFieldEmitter):
+    def emit(self, artifact):
+        return artifact.alpha
+
+
+class InvoiceBetaEmitter(InvoiceFieldEmitter):
+    def emit(self, artifact):
+        return artifact.beta
+
+
+class InvoiceGammaEmitter(InvoiceFieldEmitter):
+    def emit(self, artifact):
+        return artifact.gamma
+
+
+class ReceiptAlphaEmitter(ReceiptFieldEmitter):
+    def emit(self, artifact):
+        return artifact.alpha
+
+
+class ReceiptBetaEmitter(ReceiptFieldEmitter):
+    def emit(self, artifact):
+        return artifact.beta
+
+
+class ReceiptGammaEmitter(ReceiptFieldEmitter):
+    def emit(self, artifact):
+        return artifact.gamma
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "parallel_mirrored_leaf_family"
+    )
+
+    assert "InvoiceFieldEmitter" in finding.summary
+    assert "ReceiptFieldEmitter" in finding.summary
+    assert "alpha emitter" in finding.summary
+    assert "GeneratedLeafFamily" in (finding.scaffold or "")
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
@@ -2128,6 +4299,60 @@ class Sample:
     assert "an `@property` exposing `tuple(self._labels)`" in (finding.scaffold or "")
 
 
+def test_detects_transport_wrapper_chain(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PocketRegion:
+    coords: object
+    elements: object
+
+
+def extract_local_pocket_region_view(protein_coords, receptor_elements, box_center, box_size):
+    return PocketRegion(coords=protein_coords, elements=receptor_elements)
+
+
+def extract_local_pocket_region(protein_coords, receptor_elements, box_center, box_size):
+    region = extract_local_pocket_region_view(
+        protein_coords,
+        receptor_elements,
+        box_center,
+        box_size,
+    )
+    return region.coords, region.elements
+
+
+def _extract_local_pocket_coords_and_elements(
+    *,
+    protein_coords,
+    receptor_elements,
+    box_center,
+    box_size,
+):
+    return extract_local_pocket_region(
+        protein_coords=protein_coords,
+        receptor_elements=receptor_elements,
+        box_center=box_center,
+        box_size=box_size,
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "wrapper_chain"
+    )
+
+    assert "extract_local_pocket_region" in finding.summary
+    assert "_extract_local_pocket_coords_and_elements" in finding.summary
+    assert "extract_local_pocket_region_view" in (finding.scaffold or "")
+
+
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2447,6 +4672,257 @@ class DetachedEventCarrier:
     assert "EventCarrierBase" in (finding.scaffold or "")
 
 
+def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
+
+class ProbeRoute(ABC):
+    @abstractmethod
+    def generate(self, request):
+        raise NotImplementedError
+
+    @abstractmethod
+    def score(self, request, batch):
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ProbeRouteWitness:
+    route: ProbeRoute
+
+    def generate(self, request):
+        return self.route.generate(request)
+
+    def score(self, request, batch):
+        return self.route.score(request, batch)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "pass_through_nominal_wrapper"
+    )
+
+    assert "ProbeRouteWitness" in finding.summary
+    assert "ProbeRoute" in finding.summary
+    assert "type consumers against `ProbeRoute` directly" in (finding.scaffold or "")
+
+
+def test_detects_trivial_forwarding_wrapper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class ModeRunner:
+    @classmethod
+    def for_mode(cls, mode):
+        return cls()
+
+    def attempt_modes(self):
+        return ("fast", "safe")
+
+
+class Owner:
+    def __init__(self, mode):
+        self.mode = mode
+
+    def attempt_modes(self):
+        return ModeRunner.for_mode(self.mode).attempt_modes()
+
+
+def refinement_mode_attempt_chain(mode):
+    return ModeRunner.for_mode(mode).attempt_modes()
+""",
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "trivial_forwarding_wrapper"
+    ]
+
+    assert len(findings) == 2
+    assert any("Owner.attempt_modes" in finding.summary for finding in findings)
+    assert any(
+        "refinement_mode_attempt_chain" in finding.summary for finding in findings
+    )
+    assert all(
+        "call `ModeRunner.for_mode.attempt_modes` directly" in (finding.scaffold or "")
+        for finding in findings
+    )
+
+
+def test_detects_public_api_private_delegate_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/scoring.py",
+        """
+class _Router:
+    @classmethod
+    def for_engine(cls, engine):
+        return cls()
+
+    def score(self, kwargs):
+        return kwargs["value"]
+
+
+def route_scoring(engine, **kwargs):
+    return _Router.for_engine(engine).score(kwargs)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        """
+from pkg.scoring import route_scoring as score_route
+
+
+def run_pipeline():
+    return score_route("fast", value=1.0)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/api.py",
+        """
+import pkg.scoring as scoring
+
+
+def score_request():
+    return scoring.route_scoring("safe", value=2.0)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "public_api_private_delegate_shell"
+    )
+
+    assert "route_scoring" in finding.summary
+    assert "_Router" in finding.summary
+    assert "2 external call site(s)" in finding.summary
+    assert "public facade/ABC/policy authority" in (finding.codemod_patch or "")
+
+
+def test_detects_public_api_private_delegate_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/scoring.py",
+        """
+class _Router:
+    @classmethod
+    def for_engine(cls, engine):
+        return cls()
+
+    def score(self, payload):
+        return payload["value"]
+
+    def requires_electrostatics(self):
+        return True
+
+
+def route_scoring(engine, **payload):
+    return _Router.for_engine(engine).score(payload)
+
+
+def scoring_engine_requires_electrostatics(engine):
+    return _Router.for_engine(engine).requires_electrostatics()
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        """
+from pkg.scoring import route_scoring, scoring_engine_requires_electrostatics
+
+
+def run_pipeline():
+    if scoring_engine_requires_electrostatics("fast"):
+        return route_scoring("fast", value=1.0)
+    return 0.0
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/api.py",
+        """
+import pkg.scoring as scoring
+
+
+def score_request():
+    if scoring.scoring_engine_requires_electrostatics("safe"):
+        return scoring.route_scoring("safe", value=2.0)
+    return 0.0
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "public_api_private_delegate_family"
+    )
+
+    assert "route_scoring" in finding.summary
+    assert "scoring_engine_requires_electrostatics" in finding.summary
+    assert "_Router" in finding.summary
+    assert "public facade" in (finding.codemod_patch or "")
+
+
+def test_detects_nominal_policy_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class ProofCasePolicy:
+    @classmethod
+    def for_case(cls, proof_case):
+        return cls()
+
+    def decision(self):
+        return "certified"
+
+    def certificate_chain_error(self):
+        return None
+
+
+class CertifiedPlan:
+    def __init__(self, proof_case):
+        self.proof_case = proof_case
+
+    @property
+    def decision(self):
+        return ProofCasePolicy.for_case(self.proof_case).decision()
+
+    @property
+    def certificate_chain_error(self):
+        return ProofCasePolicy.for_case(self.proof_case).certificate_chain_error()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "nominal_policy_surface"
+    )
+
+    assert "CertifiedPlan" in finding.summary
+    assert "decision" in finding.summary
+    assert "certificate_chain_error" in finding.summary
+    assert "ProofCasePolicy.for_case" in finding.summary
+    assert "explicit policy accessor" in (finding.scaffold or "")
+
+
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2559,6 +5035,76 @@ class SpecAssignmentObservationSpec(FunctionObservationSpec):
 
     assert "Observation specs" in finding.summary
     assert "ScopeFilteredSpec" in (finding.scaffold or "")
+
+
+def test_detects_projection_style_builder_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class SearchContext:
+    def __init__(
+        self,
+        *,
+        base_coords,
+        score_fn,
+        batch_fn,
+        pruning_energy,
+        local_mask,
+        score_is_exact,
+    ):
+        self.base_coords = base_coords
+        self.score_fn = score_fn
+        self.batch_fn = batch_fn
+        self.pruning_energy = pruning_energy
+        self.local_mask = local_mask
+        self.score_is_exact = score_is_exact
+
+
+def build_from_runtime(prepared, runtime):
+    return SearchContext(
+        base_coords=prepared.base_coords,
+        score_fn=prepared.score_fn,
+        batch_fn=prepared.batch_fn,
+        pruning_energy=None if runtime is None else runtime.pruning_energy,
+        local_mask=None if runtime is None else runtime.local_mask,
+        score_is_exact=True if runtime is None else runtime.score_is_exact,
+    )
+
+
+def build_from_request(request, runtime):
+    return SearchContext(
+        base_coords=request.base_coords,
+        score_fn=request.score_fn,
+        batch_fn=request.batch_fn,
+        pruning_energy=runtime.pruning_energy,
+        local_mask=runtime.local_mask,
+        score_is_exact=runtime.score_is_exact,
+    )
+
+
+def build_sequential(prepared):
+    return SearchContext(
+        base_coords=prepared.base_coords,
+        score_fn=prepared.score_fn,
+        batch_fn=prepared.batch_fn,
+        pruning_energy=None,
+        local_mask=None,
+        score_is_exact=True,
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "projection_builder_authority"
+    )
+
+    assert "SearchContext" in finding.summary
+    assert "projection sites" in finding.summary
+    assert "SearchContextBuilder" in (finding.scaffold or "")
 
 
 def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> None:
@@ -2849,7 +5395,9 @@ class CountedDispatchMetrics(ABC):
     assert "count_value" in (finding.scaffold or "")
 
 
-def test_detects_declarative_family_boilerplate(tmp_path: Path) -> None:
+def test_detects_string_backed_reflective_nominal_lookup_via_globals(
+    tmp_path: Path,
+) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -2857,31 +5405,31 @@ def test_detects_declarative_family_boilerplate(tmp_path: Path) -> None:
 from abc import ABC
 
 
-class CollectedFamily(ABC):
+class Route:
     pass
 
 
-class RegisteredSpecCollectedFamily(CollectedFamily):
+class DirectRoute(Route):
     pass
 
 
-class ObservationFamily(CollectedFamily):
+class GuidedRoute(Route):
     pass
 
 
-class AlphaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
-    item_type = Alpha
-    spec_root = AlphaSpec
+class RoutedRequest(ABC):
+    route_type_name = None
+
+    def create_route(self):
+        return globals()[self.route_type_name]()
 
 
-class BetaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
-    item_type = Beta
-    spec_root = BetaSpec
+class DirectRequest(RoutedRequest):
+    route_type_name = "DirectRoute"
 
 
-class GammaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
-    item_type = Gamma
-    spec_root = GammaSpec
+class GuidedRequest(RoutedRequest):
+    route_type_name = "GuidedRoute"
 """,
     )
 
@@ -2889,12 +5437,130 @@ class GammaFamily(RegisteredSpecCollectedFamily, ObservationFamily):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "declarative_family_boilerplate"
+        if finding.detector_id == "string_backed_reflective_nominal_lookup"
     )
 
-    assert "AlphaFamily" in finding.summary
-    assert "item_type" in finding.summary
-    assert "spec_root" in finding.summary
+    assert "route_type_name" in finding.summary
+    assert "globals[]" in finding.summary
+
+
+def test_detects_string_backed_reflective_nominal_lookup_via_getattr(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class BackendFamily:
+    ALPHA = object()
+    BETA = object()
+
+
+class Router(ABC):
+    backend_name = None
+
+    def resolve(self):
+        return getattr(BackendFamily, self.backend_name)
+
+
+class AlphaRouter(Router):
+    backend_name = "ALPHA"
+
+
+class BetaRouter(Router):
+    backend_name = "BETA"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "string_backed_reflective_nominal_lookup"
+    )
+
+    assert "backend_name" in finding.summary
+    assert "getattr" in finding.summary
+
+
+def test_detects_string_backed_reflective_nominal_lookup_via_dict_get(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class WitnessSelector(ABC):
+    witness_field_name = None
+
+    def witness(self, state):
+        return state.__dict__.get(type(self).witness_field_name)
+
+
+class AlphaWitnessSelector(WitnessSelector):
+    witness_field_name = "alpha"
+
+
+class BetaWitnessSelector(WitnessSelector):
+    witness_field_name = "beta"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "string_backed_reflective_nominal_lookup"
+    )
+
+    assert "witness_field_name" in finding.summary
+    assert "dict.get" in finding.summary
+
+
+def test_detects_classvar_only_sibling_leaf(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+
+
+class ProjectionLeaf(ABC):
+    pass
+
+
+class AlphaProjection(ProjectionLeaf):
+    payload_cls = Alpha
+    renderer_cls = AlphaRenderer
+
+
+class BetaProjection(ProjectionLeaf):
+    payload_cls = Beta
+    renderer_cls = BetaRenderer
+
+
+class GammaProjection(ProjectionLeaf):
+    payload_cls = Gamma
+    renderer_cls = GammaRenderer
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "classvar_only_sibling_leaf"
+    )
+
+    assert "AlphaProjection" in finding.summary
+    assert "payload_cls" in finding.summary
+    assert "renderer_cls" in finding.summary
     assert "declarative family-definition table" in (finding.codemod_patch or "")
 
 
@@ -3301,3 +5967,188 @@ class RegistrationShape:
     assert "RegistrationShape" in finding.summary
     assert "from_assignment" in finding.summary
     assert "@singledispatchmethod" in (finding.scaffold or "")
+
+
+def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, cast
+
+
+class RequestContract:
+    payload: object
+    cache: object
+
+
+class PreparationBase:
+    pass
+
+
+class PayloadPreparationMixin:
+    def prepare(self):
+        request = cast(Any, self)
+        payload = request.payload
+        return ("prepared", payload, request.cache)
+
+    def prepare_typed(self):
+        request = cast(RequestContract, self)
+        return ("typed", request.payload, request.cache)
+
+
+@dataclass(frozen=True)
+class AlphaPreparation(PayloadPreparationMixin, PreparationBase):
+    payload: object
+    cache: object
+
+
+@dataclass(frozen=True)
+class BetaPreparation(PayloadPreparationMixin, PreparationBase):
+    payload: object
+    cache: object
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "implicit_self_contract_mixin"
+    )
+
+    assert "PayloadPreparationMixin" in finding.summary
+    assert "cast(..., self)" in (finding.codemod_patch or "")
+    assert "RequestContract" in finding.summary
+    assert "AlphaPreparation" in finding.summary
+
+
+def test_detects_empty_leaf_product_families(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC, abstractmethod
+
+
+class DispatchFamily(ABC):
+    @classmethod
+    @abstractmethod
+    def matches_mode(cls, request) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def run(self, request):
+        raise NotImplementedError
+
+
+class GuidedPolicy(DispatchFamily, ABC):
+    @classmethod
+    def matches_mode(cls, request) -> bool:
+        return request.mode == "guided"
+
+
+class HybridPolicy(DispatchFamily, ABC):
+    @classmethod
+    def matches_mode(cls, request) -> bool:
+        return request.mode == "hybrid"
+
+
+class LocalTemplatesMixin(ABC):
+    def templates(self, request):
+        return request.local_templates
+
+
+class RemoteTemplatesMixin(ABC):
+    def templates(self, request):
+        return request.remote_templates
+
+
+class LocalGuidedPolicy(LocalTemplatesMixin, GuidedPolicy):
+    pass
+
+
+class RemoteGuidedPolicy(RemoteTemplatesMixin, GuidedPolicy):
+    pass
+
+
+class LocalHybridPolicy(LocalTemplatesMixin, HybridPolicy):
+    pass
+
+
+class RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):
+    pass
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "empty_leaf_product_family"
+    )
+
+    assert "LocalTemplatesMixin" in finding.summary
+    assert "GuidedPolicy" in finding.summary
+    assert "Cartesian-product leaf classes" in (finding.codemod_patch or "")
+
+
+def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/authority.py",
+        """
+from abc import ABC
+from enum import Enum
+from typing import ClassVar
+
+
+class KeyedNominalFamily(ABC):
+    registry_key_attr: ClassVar[str]
+
+
+class ScoringFamily(Enum):
+    FAST = "fast"
+    ACCURATE = "accurate"
+
+
+class ScoringPolicy(KeyedNominalFamily[ScoringFamily], ABC):
+    registry_key_attr = "scoring_family"
+    scoring_family: ClassVar[ScoringFamily]
+
+
+class FastPolicy(ScoringPolicy):
+    scoring_family = ScoringFamily.FAST
+
+
+class AccuratePolicy(ScoringPolicy):
+    scoring_family = ScoringFamily.ACCURATE
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        """
+from pkg.authority import ScoringFamily
+
+
+def resolve_backend(scoring_family: ScoringFamily) -> str:
+    if scoring_family == ScoringFamily.FAST:
+        return "jit"
+    return "exact"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "residual_closed_axis_branching"
+    )
+
+    assert "resolve_backend" in finding.summary
+    assert "ScoringFamily" in finding.summary
+    assert "ScoringPolicy" in finding.summary

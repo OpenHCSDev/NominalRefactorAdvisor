@@ -57,6 +57,8 @@ class ParsedModule:
     """Parsed Python module together with its source text and path."""
 
     path: Path
+    module_name: str
+    is_package_init: bool
     module: ast.Module
     source: str
 
@@ -362,10 +364,29 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
 
 
 def parse_python_modules(root: Path) -> list[ParsedModule]:
+    def module_name_for_path(path: Path) -> tuple[str, bool]:
+        relative = path.relative_to(root)
+        module_parts = list(relative.with_suffix("").parts)
+        is_package_init = bool(module_parts and module_parts[-1] == "__init__")
+        if is_package_init:
+            module_parts = module_parts[:-1]
+        if not module_parts:
+            return ("__init__", is_package_init)
+        return (".".join(module_parts), is_package_init)
+
     modules: list[ParsedModule] = []
     for path in sorted(root.rglob("*.py")):
         source = path.read_text(encoding="utf-8")
-        modules.append(ParsedModule(path=path, module=ast.parse(source), source=source))
+        module_name, is_package_init = module_name_for_path(path)
+        modules.append(
+            ParsedModule(
+                path=path,
+                module_name=module_name,
+                is_package_init=is_package_init,
+                module=ast.parse(source),
+                source=source,
+            )
+        )
     return modules
 
 
@@ -1420,6 +1441,10 @@ def _runtime_type_generation_observation(
 ) -> RuntimeTypeGenerationObservation | None:
     generator_name = _terminal_name(node.func)
     if generator_name not in {"type", "make_dataclass", "new_class"}:
+        return None
+    # `type(obj)` is ordinary type introspection, not runtime type generation.
+    # Only the 3-argument `type(name, bases, namespace)` form constructs a type.
+    if generator_name == "type" and len(node.args) < 3:
         return None
     return RuntimeTypeGenerationObservation(
         file_path=str(parsed_module.path),
