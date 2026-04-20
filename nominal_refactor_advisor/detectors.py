@@ -525,6 +525,329 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
     return tuple(sorted(profiles, key=lambda item: (item.lineno, item.qualname)))
 
 
+_PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS = frozenset(
+    {
+        "active",
+        "base",
+        "build",
+        "builder",
+        "certified",
+        "collect",
+        "compute",
+        "context",
+        "create",
+        "data",
+        "derive",
+        "detect",
+        "exact",
+        "final",
+        "for",
+        "from",
+        "get",
+        "has",
+        "helper",
+        "inactive",
+        "iter",
+        "load",
+        "make",
+        "manager",
+        "module",
+        "prepare",
+        "refresh",
+        "resolve",
+        "result",
+        "run",
+        "selection",
+        "select",
+        "state",
+        "support",
+        "update",
+        "value",
+        "values",
+        "with",
+    }
+)
+
+
+def _private_subsystem_name_tokens(symbol_name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in _ordered_class_name_tokens(symbol_name)
+        if len(token) >= 3
+        and not token.isdigit()
+        and token not in _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS
+    )
+
+
+def _module_line_count(module: ParsedModule) -> int:
+    return module.source.count("\n") + 1
+
+
+def _top_level_private_symbol_references(
+    node: ast.AST,
+    *,
+    top_level_names: frozenset[str],
+    symbol_name: str,
+) -> tuple[str, ...]:
+    referenced: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Name(self, node: ast.Name) -> None:
+            if node.id in top_level_names and node.id != symbol_name:
+                referenced.add(node.id)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            chain = _ast_attribute_chain(node)
+            if chain is not None and chain[0] in top_level_names and chain[0] != symbol_name:
+                referenced.add(chain[0])
+            self.generic_visit(node)
+
+    Visitor().visit(node)
+    return tuple(sorted(referenced))
+
+
+def _top_level_private_symbol_profiles(
+    module: ParsedModule,
+) -> tuple[PrivateTopLevelSymbolProfile, ...]:
+    private_defs = tuple(
+        statement
+        for statement in _trim_docstring_body(module.module.body)
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and _is_private_symbol_name(statement.name)
+    )
+    top_level_names = frozenset(statement.name for statement in private_defs)
+    profiles: list[PrivateTopLevelSymbolProfile] = []
+    for statement in private_defs:
+        end_lineno = (
+            statement.end_lineno if statement.end_lineno is not None else statement.lineno
+        )
+        profiles.append(
+            PrivateTopLevelSymbolProfile(
+                file_path=str(module.path),
+                module_name=module.module_name,
+                symbol=statement.name,
+                kind="class" if isinstance(statement, ast.ClassDef) else "function",
+                line=statement.lineno,
+                line_count=end_lineno - statement.lineno + 1,
+                name_tokens=_private_subsystem_name_tokens(statement.name),
+                referenced_private_symbols=_top_level_private_symbol_references(
+                    statement,
+                    top_level_names=top_level_names,
+                    symbol_name=statement.name,
+                ),
+            )
+        )
+    return tuple(sorted(profiles, key=lambda item: (item.line, item.symbol)))
+
+
+def _suggest_private_cohort_module_name(
+    candidate: PrivateCohortShouldBeModuleCandidate,
+) -> str:
+    module_tail = candidate.module_name.rsplit(".", 1)[-1]
+    suffix_tokens = tuple(
+        token
+        for token in candidate.shared_tokens
+        if token not in set(module_tail.split("_"))
+    )
+    suffix = "_".join(suffix_tokens[:3]) or "subsystem"
+    return f"{module_tail}_{suffix}"
+
+
+def _build_private_cohort_candidate(
+    *,
+    module: ParsedModule,
+    module_line_count: int,
+    members: tuple[PrivateTopLevelSymbolProfile, ...],
+    shared_tokens: tuple[str, ...] | None,
+    reference_edges: set[tuple[str, str]],
+    lexical_edges: set[tuple[str, str]],
+    config: DetectorConfig,
+) -> PrivateCohortShouldBeModuleCandidate | None:
+    min_symbol_count = max(4, config.min_registration_sites + 2)
+    if len(members) < min_symbol_count:
+        return None
+    member_names = {member.symbol for member in members}
+    total_cohort_lines = sum(member.line_count for member in members)
+    if total_cohort_lines < max(60, config.min_orchestration_function_lines * 3):
+        return None
+    component_reference_edges = sum(
+        1
+        for left, right in reference_edges
+        if left in member_names and right in member_names
+    )
+    component_lexical_edges = sum(
+        1
+        for left, right in lexical_edges
+        if left in member_names and right in member_names
+    )
+    if component_reference_edges + component_lexical_edges < len(member_names) - 1:
+        return None
+    token_counts = Counter(token for member in members for token in member.name_tokens)
+    discovered_tokens = tuple(
+        token
+        for token, count in sorted(
+            token_counts.items(),
+            key=lambda item: (-item[1], -len(item[0]), item[0]),
+        )
+        if count >= 2
+    )
+    ordered_shared_tokens = tuple(
+        dict.fromkeys((*(shared_tokens or ()), *discovered_tokens))
+    )
+    if len(ordered_shared_tokens) < 2 and component_reference_edges < max(
+        2, len(member_names) // 2
+    ):
+        return None
+    return PrivateCohortShouldBeModuleCandidate(
+        file_path=str(module.path),
+        module_name=module.module_name,
+        module_line_count=module_line_count,
+        total_cohort_lines=total_cohort_lines,
+        shared_tokens=ordered_shared_tokens[:4],
+        reference_edge_count=component_reference_edges,
+        lexical_edge_count=component_lexical_edges,
+        symbols=members,
+    )
+
+
+def _dedupe_private_cohort_candidates(
+    candidates: Sequence[PrivateCohortShouldBeModuleCandidate],
+) -> tuple[PrivateCohortShouldBeModuleCandidate, ...]:
+    accepted: list[PrivateCohortShouldBeModuleCandidate] = []
+    accepted_symbol_sets: list[frozenset[str]] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (
+            -item.total_cohort_lines,
+            -len(item.symbols),
+            item.symbols[0].line,
+            item.file_path,
+        ),
+    ):
+        symbol_names = frozenset(symbol.symbol for symbol in candidate.symbols)
+        if any(
+            len(symbol_names & existing) / min(len(symbol_names), len(existing)) >= 0.85
+            for existing in accepted_symbol_sets
+        ):
+            continue
+        accepted.append(candidate)
+        accepted_symbol_sets.append(symbol_names)
+    return tuple(
+        sorted(
+            accepted,
+            key=lambda item: (
+                item.file_path,
+                item.symbols[0].line,
+                -item.total_cohort_lines,
+            ),
+        )
+    )
+
+
+def _private_cohort_should_be_module_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[PrivateCohortShouldBeModuleCandidate, ...]:
+    min_module_lines = max(240, config.min_orchestration_function_lines * 4)
+    module_line_count = _module_line_count(module)
+    if module_line_count < min_module_lines:
+        return ()
+    profiles = _top_level_private_symbol_profiles(module)
+    min_symbol_count = max(4, config.min_registration_sites + 2)
+    if len(profiles) < min_symbol_count:
+        return ()
+    profile_by_name = {profile.symbol: profile for profile in profiles}
+    adjacency: dict[str, set[str]] = {profile.symbol: set() for profile in profiles}
+    reference_edges: set[tuple[str, str]] = set()
+    lexical_edges: set[tuple[str, str]] = set()
+    for profile in profiles:
+        for referenced_name in profile.referenced_private_symbols:
+            if referenced_name not in profile_by_name:
+                continue
+            edge = tuple(sorted((profile.symbol, referenced_name)))
+            reference_edges.add(edge)
+            adjacency[edge[0]].add(edge[1])
+            adjacency[edge[1]].add(edge[0])
+    for left, right in combinations(profiles, 2):
+        if len(set(left.name_tokens) & set(right.name_tokens)) < 2:
+            continue
+        edge = tuple(sorted((left.symbol, right.symbol)))
+        lexical_edges.add(edge)
+        adjacency[edge[0]].add(edge[1])
+        adjacency[edge[1]].add(edge[0])
+
+    token_pair_candidates: list[PrivateCohortShouldBeModuleCandidate] = []
+    token_pair_groups: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for profile in profiles:
+        ordered_tokens = tuple(dict.fromkeys(profile.name_tokens))
+        for token_pair in combinations(ordered_tokens, 2):
+            token_pair_groups[token_pair].add(profile.symbol)
+    for token_pair, symbol_names in token_pair_groups.items():
+        if len(symbol_names) < min_symbol_count:
+            continue
+        members = tuple(
+            sorted(
+                (profile_by_name[name] for name in symbol_names),
+                key=lambda item: (item.line, item.symbol),
+            )
+        )
+        candidate = _build_private_cohort_candidate(
+            module=module,
+            module_line_count=module_line_count,
+            members=members,
+            shared_tokens=token_pair,
+            reference_edges=reference_edges,
+            lexical_edges=lexical_edges,
+            config=config,
+        )
+        if candidate is not None:
+            token_pair_candidates.append(candidate)
+    if token_pair_candidates:
+        return _dedupe_private_cohort_candidates(token_pair_candidates)
+
+    candidates: list[PrivateCohortShouldBeModuleCandidate] = []
+    seen: set[str] = set()
+    for symbol_name in sorted(adjacency):
+        if symbol_name in seen or not adjacency[symbol_name]:
+            continue
+        stack = [symbol_name]
+        component_names: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in component_names:
+                continue
+            component_names.add(current)
+            stack.extend(
+                neighbor
+                for neighbor in adjacency[current]
+                if neighbor not in component_names
+            )
+        seen.update(component_names)
+        if len(component_names) < min_symbol_count:
+            continue
+        members = tuple(
+            sorted(
+                (profile_by_name[name] for name in component_names),
+                key=lambda item: (item.line, item.symbol),
+            )
+        )
+        candidate = _build_private_cohort_candidate(
+            module=module,
+            module_line_count=module_line_count,
+            members=members,
+            shared_tokens=None,
+            reference_edges=reference_edges,
+            lexical_edges=lexical_edges,
+            config=config,
+        )
+        if candidate is None:
+            continue
+        if len(candidate.symbols) > max(24, len(profiles) // 2):
+            continue
+        candidates.append(candidate)
+    return _dedupe_private_cohort_candidates(candidates)
+
+
 def _parameter_thread_family_candidates(
     module: ParsedModule,
     config: DetectorConfig,
@@ -5687,6 +6010,38 @@ class ParameterThreadFamilyCandidate:
 
 
 @dataclass(frozen=True)
+class PrivateTopLevelSymbolProfile:
+    file_path: str
+    module_name: str
+    symbol: str
+    kind: str
+    line: int
+    line_count: int
+    name_tokens: tuple[str, ...]
+    referenced_private_symbols: tuple[str, ...]
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.symbol)
+
+
+@dataclass(frozen=True)
+class PrivateCohortShouldBeModuleCandidate:
+    file_path: str
+    module_name: str
+    module_line_count: int
+    total_cohort_lines: int
+    shared_tokens: tuple[str, ...]
+    reference_edge_count: int
+    lexical_edge_count: int
+    symbols: tuple[PrivateTopLevelSymbolProfile, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(symbol.evidence for symbol in self.symbols[:6])
+
+
+@dataclass(frozen=True)
 class EnumStrategyDispatchCandidate:
     file_path: str
     qualname: str
@@ -6655,6 +7010,70 @@ class OrchestrationHubDetector(CandidateFindingDetector):
                 call_site_count=profile.call_count,
                 parameter_count=len(profile.parameter_names),
                 callee_family_count=profile.callee_family_count,
+            ),
+        )
+
+
+class PrivateCohortShouldBeModuleDetector(CandidateFindingDetector):
+    detector_id = "private_cohort_should_be_module"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Private subsystem cohort wants its own module",
+        why=(
+            "One module is carrying a tightly-coupled private subsystem cohort as if it were a whole package. "
+            "The architecture wants a dedicated module for that bounded context, with the original file reduced to orchestration or public entry points."
+        ),
+        capability_gap="explicit module-level subsystem boundaries with extracted private cohorts",
+        relation_context="one file contains a dense private context/result/helper family that should move together",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _private_cohort_should_be_module_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        cohort = cast(PrivateCohortShouldBeModuleCandidate, candidate)
+        shared_tokens = ", ".join(cohort.shared_tokens[:3]) or "subsystem"
+        sample_symbols = ", ".join(
+            symbol.symbol
+            for symbol in sorted(
+                cohort.symbols,
+                key=lambda item: (-item.line_count, item.line, item.symbol),
+            )[:3]
+        )
+        target_module = _suggest_private_cohort_module_name(cohort)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{cohort.module_name}` carries a private {shared_tokens} cohort across "
+                f"{len(cohort.symbols)} top-level symbols / {cohort.total_cohort_lines} lines "
+                f"inside a {cohort.module_line_count}-line module; extract `{sample_symbols}` "
+                f"into a dedicated `{target_module}.py` module."
+            ),
+            cohort.evidence,
+            scaffold=(
+                f"# {target_module}.py\n"
+                "@dataclass(frozen=True)\n"
+                f"class {_camel_case('_'.join(cohort.shared_tokens[:2]) or 'subsystem')}Context:\n"
+                "    ...\n\n"
+                f"def run_{'_'.join(cohort.shared_tokens[:2]) or 'subsystem'}(...):\n"
+                "    ...\n\n"
+                "# Move the private context/result carriers and worker helpers here.\n"
+                "# Leave only public orchestration entry points in the original module."
+            ),
+            codemod_patch=(
+                f"# Extract the private {shared_tokens} cohort into `{target_module}.py`.\n"
+                "# Move the cohort's private dataclasses, helper functions, and result carriers together.\n"
+                "# Import the extracted helpers back into the original module only where public entry points still need them.\n"
+                "# Keep sequencing, public APIs, and thin phase boundaries in the original file."
             ),
         )
 

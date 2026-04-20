@@ -119,6 +119,96 @@ def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     )
 
 
+def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
+    filler = "# filler\n" * 240
+    repeated_lines = "\n".join(
+        f"    detail_{index} = selection['winner']" for index in range(60)
+    )
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        (
+            f"{filler}\n"
+            "class _ReturnedPoseSelection:\n"
+            "    def __init__(self, winner, support):\n"
+            "        self.winner = winner\n"
+            "        self.support = support\n\n"
+            "class _ReturnedPoseProofContext:\n"
+            "    def __init__(self, scores):\n"
+            "        self.scores = scores\n\n"
+            "def _returned_pose_support_indices(context):\n"
+            "    support = []\n"
+            "    for index, _score in enumerate(context.scores):\n"
+            "        if index < 2:\n"
+            "            support.append(index)\n"
+            "    return tuple(support)\n\n"
+            "def _returned_pose_selection(context):\n"
+            "    support = _returned_pose_support_indices(context)\n"
+            "    winner = support[0] if support else 0\n"
+            "    return _ReturnedPoseSelection(winner, support)\n\n"
+            "def _returned_pose_proof_plan(context):\n"
+            "    selection = _returned_pose_selection(context)\n"
+            f"{repeated_lines}\n"
+            "    return {'winner': selection.winner, 'support': selection.support}\n\n"
+            "def _returned_pose_certification(context):\n"
+            "    plan = _returned_pose_proof_plan(context)\n"
+            "    return plan['winner'], plan['support']\n\n"
+            "def run_pipeline(scores):\n"
+            "    context = _ReturnedPoseProofContext(scores)\n"
+            "    return _returned_pose_certification(context)\n"
+        ),
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_orchestration_function_lines=20,
+            min_registration_sites=2,
+        ),
+    )
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "private_cohort_should_be_module"
+    )
+
+    assert "returned, pose" in finding.summary
+    assert "_returned_pose_proof_plan" in finding.summary
+    assert "pipeline_returned_pose" in (finding.codemod_patch or "")
+
+
+def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None:
+    filler = "# filler\n" * 240
+    _write_module(
+        tmp_path,
+        "pkg/helpers.py",
+        (
+            f"{filler}\n"
+            "def _build_payload(value):\n"
+            "    return {'value': value}\n\n"
+            "def _load_registry(name):\n"
+            "    return {'name': name}\n\n"
+            "def _write_audit(event):\n"
+            "    return event\n\n"
+            "def run_helpers(value):\n"
+            "    return _write_audit(_build_payload(value))\n"
+        ),
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_orchestration_function_lines=20,
+            min_registration_sites=2,
+        ),
+    )
+
+    assert not any(
+        finding.detector_id == "private_cohort_should_be_module"
+        for finding in findings
+    )
+
+
 def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
