@@ -2950,6 +2950,16 @@ class _KeyedTableAxisSpec:
     value_shape_name: str | None
 
 
+@dataclass(frozen=True)
+class _ClassAssignedEnumAxisSpec:
+    file_path: str
+    line: int
+    class_name: str
+    key_attr_name: str
+    key_type_name: str
+    case_name: str
+
+
 def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
     for base in node.bases:
         if not isinstance(base, ast.Subscript):
@@ -3073,6 +3083,118 @@ def _module_keyed_table_axis_specs(
             )
         )
     return tuple(specs)
+
+
+def _module_class_assigned_enum_axis_specs(
+    module: ParsedModule,
+) -> tuple[_ClassAssignedEnumAxisSpec, ...]:
+    specs: list[_ClassAssignedEnumAxisSpec] = []
+    for statement in _trim_docstring_body(module.module.body):
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        assignments = _class_direct_assignments(statement)
+        for key_attr_name, value in assignments.items():
+            if value is None:
+                continue
+            case_name = ast.unparse(value)
+            key_type_name = _enum_family_name((case_name,))
+            if key_type_name is None:
+                continue
+            specs.append(
+                _ClassAssignedEnumAxisSpec(
+                    file_path=str(module.path),
+                    line=statement.lineno,
+                    class_name=statement.name,
+                    key_attr_name=key_attr_name,
+                    key_type_name=key_type_name,
+                    case_name=case_name,
+                )
+            )
+    return tuple(specs)
+
+
+def _enum_keyed_table_class_axis_shadow_candidates(
+    module: ParsedModule,
+) -> tuple["EnumKeyedTableClassAxisShadowCandidate", ...]:
+    class_axis_specs = _module_class_assigned_enum_axis_specs(module)
+    if not class_axis_specs:
+        return ()
+    axis_specs_by_key: dict[tuple[str, str], list[_ClassAssignedEnumAxisSpec]] = (
+        defaultdict(list)
+    )
+    for axis_spec in class_axis_specs:
+        axis_specs_by_key[(axis_spec.key_type_name, axis_spec.key_attr_name)].append(
+            axis_spec
+        )
+    candidates: list[EnumKeyedTableClassAxisShadowCandidate] = []
+    seen: set[tuple[str, str, str]] = set()
+    for table_name, (line, mapping) in sorted(_module_level_named_dicts(module).items()):
+        if len(mapping.keys) < 2 or any(key is None for key in mapping.keys):
+            continue
+        table_case_names = tuple(ast.unparse(key) for key in mapping.keys if key is not None)
+        key_type_name = _enum_family_name(table_case_names)
+        if key_type_name is None:
+            continue
+        if not all(isinstance(value, (ast.Name, ast.Attribute)) for value in mapping.values):
+            continue
+        value_type_names = tuple(ast.unparse(value) for value in mapping.values)
+        if not value_type_names or not all(
+            _looks_like_type_or_nominal_key(value_name)
+            for value_name in value_type_names
+        ):
+            continue
+        for (axis_key_type_name, key_attr_name), axis_specs in sorted(
+            axis_specs_by_key.items()
+        ):
+            if axis_key_type_name != key_type_name:
+                continue
+            class_sites = tuple(
+                sorted(
+                    {(axis_spec.class_name, axis_spec.line) for axis_spec in axis_specs},
+                    key=lambda item: (item[1], item[0]),
+                )
+            )
+            if len(class_sites) < 2:
+                continue
+            class_case_names = tuple(sorted({axis_spec.case_name for axis_spec in axis_specs}))
+            shared_case_names = tuple(
+                sorted(set(class_case_names) & set(table_case_names))
+            )
+            if len(shared_case_names) < 2:
+                continue
+            case_overlap_ratio = _case_overlap_ratio(
+                tuple(sorted(table_case_names)),
+                class_case_names,
+            )
+            if case_overlap_ratio < 0.8:
+                continue
+            key = (str(module.path), table_name, key_attr_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                EnumKeyedTableClassAxisShadowCandidate(
+                    file_path=str(module.path),
+                    line=line,
+                    table_name=table_name,
+                    key_type_name=key_type_name,
+                    key_attr_name=key_attr_name,
+                    class_sites=class_sites,
+                    shared_case_names=shared_case_names,
+                    value_type_names=tuple(sorted(set(value_type_names))),
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.key_type_name,
+                item.table_name,
+                item.key_attr_name,
+            ),
+        )
+    )
 
 
 def _parallel_keyed_table_and_family_candidates(
@@ -6224,6 +6346,31 @@ class ParallelKeyedTableAndFamilyCandidate:
 
 
 @dataclass(frozen=True)
+class EnumKeyedTableClassAxisShadowCandidate:
+    file_path: str
+    line: int
+    table_name: str
+    key_type_name: str
+    key_attr_name: str
+    class_sites: tuple[tuple[str, int], ...]
+    shared_case_names: tuple[str, ...]
+    value_type_names: tuple[str, ...]
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        return tuple(class_name for class_name, _ in self.class_sites)
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        evidence = [SourceLocation(self.file_path, self.line, self.table_name)]
+        evidence.extend(
+            SourceLocation(self.file_path, line, class_name)
+            for class_name, line in self.class_sites
+        )
+        return tuple(evidence[:6])
+
+
+@dataclass(frozen=True)
 class TransportShellTemplateCandidate:
     file_path: str
     line: int
@@ -7849,6 +7996,74 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCandidateDetector):
                 dispatch_site_count=len(table_candidate.shared_case_names),
                 dispatch_axis=table_candidate.key_type_name,
                 literal_cases=table_candidate.shared_case_names,
+            ),
+        )
+
+
+class EnumKeyedTableClassAxisShadowDetector(CandidateFindingDetector):
+    detector_id = "enum_keyed_table_class_axis_shadow"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Enum-keyed table should derive from class-declared axis keys",
+        why=(
+            "The docs require a single writable owner per closed semantic axis. If a module already declares "
+            "that axis through class-level enum assignments, adding a writable enum-keyed table over the same "
+            "cases creates duplicate authority and a synchronization surface."
+        ),
+        capability_gap="one authoritative closed-axis owner with derived table/view projections",
+        relation_context="module-level enum-keyed table overlaps a class family that already declares the same enum axis",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _enum_keyed_table_class_axis_shadow_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        axis_candidate = cast(EnumKeyedTableClassAxisShadowCandidate, candidate)
+        class_names = ", ".join(axis_candidate.class_names[:4])
+        shared_cases = ", ".join(axis_candidate.shared_case_names[:4])
+        value_names = ", ".join(axis_candidate.value_type_names[:4])
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{axis_candidate.table_name}` maps `{axis_candidate.key_type_name}` cases {shared_cases} "
+                f"to {value_names}, while classes {class_names} already declare the same axis via "
+                f"`{axis_candidate.key_attr_name}`."
+            ),
+            axis_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class AxisSpec:\n"
+                "    key: object\n"
+                "    request_type: type[object]\n"
+                "    route_type: type[object]\n"
+                "# Keep one authoritative owner for closed-axis keys; derive lookup views from it."
+            ),
+            codemod_patch=(
+                f"# Remove `{axis_candidate.table_name}` as a second writable authority.\n"
+                f"# Derive `{axis_candidate.key_type_name}` lookup views from class-declared `{axis_candidate.key_attr_name}` assignments instead of hardcoding a parallel table."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(axis_candidate.shared_case_names),
+                field_count=1,
+                mapping_name=axis_candidate.table_name,
+                field_names=(axis_candidate.key_attr_name,),
+                source_name=axis_candidate.key_type_name,
+                identity_field_names=(axis_candidate.key_attr_name,),
             ),
         )
 

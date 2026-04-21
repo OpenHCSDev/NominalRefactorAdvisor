@@ -1077,6 +1077,60 @@ class GammaModeRunner(ModeRunner):
     assert "AxisSpec" in (finding.scaffold or "")
 
 
+def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+from typing import ClassVar
+
+
+class RouteKind(Enum):
+    DIRECT = "direct"
+    MULTI_STAGE = "multi_stage"
+
+
+class NominalRequest:
+    route_kind: ClassVar[RouteKind | None] = None
+
+
+class DirectRequest(NominalRequest):
+    route_kind: ClassVar[RouteKind] = RouteKind.DIRECT
+
+
+class MultiStageRequest(NominalRequest):
+    route_kind: ClassVar[RouteKind] = RouteKind.MULTI_STAGE
+
+
+class DirectRoute:
+    pass
+
+
+class MultiStageRoute:
+    pass
+
+
+ROUTE_REGISTRY = {
+    RouteKind.DIRECT: DirectRoute,
+    RouteKind.MULTI_STAGE: MultiStageRoute,
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "enum_keyed_table_class_axis_shadow"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "ROUTE_REGISTRY" in finding.summary
+    assert "RouteKind" in finding.summary
+    assert "route_kind" in finding.summary
+
+
 def test_detects_manual_validated_pytree_spec(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
