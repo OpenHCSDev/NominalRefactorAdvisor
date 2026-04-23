@@ -1267,6 +1267,90 @@ class GammaSpec(ChildrenAuxDataPyTreeMixin):
     assert "ValidatedPytreeRecord" in (finding.scaffold or "")
 
 
+def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+class ChildrenAuxDataPyTreeMixin:
+    pass
+
+
+@dataclass(frozen=True)
+class DirectionalBatchInputs(ChildrenAuxDataPyTreeMixin):
+    receptor_coords: object
+    poses_coords: object
+    receptor_anchor_indices: object
+    receptor_directions: object
+    ligand_anchor_indices: object
+    ligand_local_directions: object
+    ligand_frame_coords: object
+    receptor_strengths: object
+    ligand_strengths: object
+    receptor_alignment_sign: float
+    ligand_alignment_sign: float
+    ideal_distance: float
+    distance_width: float
+
+    def _tree_children(self):
+        return (
+            self.receptor_coords,
+            self.poses_coords,
+            self.receptor_anchor_indices,
+            self.receptor_directions,
+            self.ligand_anchor_indices,
+            self.ligand_local_directions,
+            self.ligand_frame_coords,
+            self.receptor_strengths,
+            self.ligand_strengths,
+        )
+
+    def _tree_aux_data(self):
+        return (
+            self.receptor_alignment_sign,
+            self.ligand_alignment_sign,
+            self.ideal_distance,
+            self.distance_width,
+        )
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(
+            receptor_coords=children[0],
+            poses_coords=children[1],
+            receptor_anchor_indices=children[2],
+            receptor_directions=children[3],
+            ligand_anchor_indices=children[4],
+            ligand_local_directions=children[5],
+            ligand_frame_coords=children[6],
+            receptor_strengths=children[7],
+            ligand_strengths=children[8],
+            receptor_alignment_sign=aux_data[0],
+            ligand_alignment_sign=aux_data[1],
+            ideal_distance=aux_data[2],
+            distance_width=aux_data[3],
+        )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "prefixed_role_field_bundle"
+    )
+
+    assert "DirectionalBatchInputs" in finding.summary
+    assert "receptor" in finding.summary
+    assert "ligand" in finding.summary
+    assert "anchor_indices" in finding.summary
+    assert "alignment_sign" in finding.summary
+    assert "Protocol" not in (finding.scaffold or "")
+
+
 def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

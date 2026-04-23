@@ -125,6 +125,8 @@ class DetectorConfig:
     min_builder_keywords: int = 3
     min_export_keys: int = 3
     min_registration_sites: int = 2
+    min_prefixed_role_shared_fields: int = 2
+    min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
     min_hardcoded_string_sites: int = 3
     min_orchestration_function_lines: int = 150
@@ -5735,6 +5737,38 @@ class FieldFamilyCandidate:
 
 
 @dataclass(frozen=True)
+class PrefixedRoleFieldBundleCandidate:
+    file_path: str
+    class_name: str
+    line: int
+    role_names: tuple[str, ...]
+    shared_member_names: tuple[str, ...]
+    role_field_map: tuple[tuple[str, tuple[str, ...]], ...]
+    manual_transport_methods: tuple[str, ...]
+    pytree_base_names: tuple[str, ...]
+    is_dataclass_family: bool
+    observations: tuple[FieldObservation, ...]
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        return tuple(
+            field_name
+            for _, field_names in self.role_field_map
+            for field_name in field_names
+        )
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(self.file_path, self.line, self.class_name),
+            *tuple(
+                SourceLocation(item.file_path, item.lineno, item.symbol)
+                for item in self.observations[:7]
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class NominalAuthorityShape:
     file_path: str
     class_name: str
@@ -9410,6 +9444,258 @@ def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
     )
 
 
+_PYTREE_TRANSPORT_METHOD_NAMES = frozenset(
+    {
+        "_tree_children",
+        "_tree_aux_data",
+        "tree_flatten",
+        "tree_unflatten",
+    }
+)
+
+
+def _role_member_name(tokens: tuple[str, ...]) -> str:
+    return "_".join(tokens)
+
+
+def _is_numeric_role_member_name(name: str) -> bool:
+    return all(token.isdigit() for token in name.split("_"))
+
+
+def _prefixed_role_field_groups(
+    observations: tuple[FieldObservation, ...],
+    *,
+    prefix_token_count: int,
+) -> dict[str, dict[str, FieldObservation]]:
+    groups: dict[str, dict[str, FieldObservation]] = defaultdict(dict)
+    for observation in observations:
+        tokens = _ordered_class_name_tokens(observation.field_name)
+        if len(tokens) <= prefix_token_count:
+            continue
+        role_name = _role_member_name(tokens[:prefix_token_count])
+        member_name = _role_member_name(tokens[prefix_token_count:])
+        if not role_name or not member_name:
+            continue
+        groups[role_name].setdefault(member_name, observation)
+    return groups
+
+
+def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        base_name
+        for base_name in _declared_base_names(node)
+        if "pytree" in base_name.lower()
+    )
+
+
+def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(sorted(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES))
+
+
+def _connected_role_components(
+    role_to_members: dict[str, dict[str, FieldObservation]],
+    *,
+    min_shared_members: int,
+) -> tuple[tuple[str, ...], ...]:
+    roles = sorted(role_to_members)
+    adjacency: dict[str, set[str]] = {role: set() for role in roles}
+    for left_index, left_role in enumerate(roles):
+        left_members = set(role_to_members[left_role])
+        for right_role in roles[left_index + 1 :]:
+            shared_members = left_members & set(role_to_members[right_role])
+            if len(shared_members) < min_shared_members:
+                continue
+            adjacency[left_role].add(right_role)
+            adjacency[right_role].add(left_role)
+
+    components: list[tuple[str, ...]] = []
+    seen: set[str] = set()
+    for role in roles:
+        if role in seen or not adjacency[role]:
+            continue
+        stack = [role]
+        component: set[str] = set()
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(sorted(adjacency[current] - component))
+        seen.update(component)
+        components.append(tuple(sorted(component)))
+    return tuple(components)
+
+
+def _prefixed_role_bundle_candidate_for_class(
+    module: ParsedModule,
+    class_node: ast.ClassDef,
+    observations: tuple[FieldObservation, ...],
+    config: DetectorConfig,
+) -> PrefixedRoleFieldBundleCandidate | None:
+    if len(observations) < config.min_prefixed_role_shared_fields * 2:
+        return None
+    manual_transport_methods = _class_manual_transport_methods(class_node)
+    pytree_base_names = _class_pytree_base_names(class_node)
+    is_dataclass_family = any(item.is_dataclass_family for item in observations)
+    if not (is_dataclass_family or manual_transport_methods or pytree_base_names):
+        return None
+
+    candidates: list[PrefixedRoleFieldBundleCandidate] = []
+    for prefix_token_count in (1, 2):
+        role_to_members = _prefixed_role_field_groups(
+            observations,
+            prefix_token_count=prefix_token_count,
+        )
+        role_to_members = {
+            role: members
+            for role, members in role_to_members.items()
+            if len(members) >= config.min_prefixed_role_shared_fields
+        }
+        for role_names in _connected_role_components(
+            role_to_members,
+            min_shared_members=config.min_prefixed_role_shared_fields,
+        ):
+            shared_member_names = tuple(
+                sorted(
+                    member_name
+                    for member_name in {
+                        member_name
+                        for role_name in role_names
+                        for member_name in role_to_members[role_name]
+                    }
+                    if sum(
+                        member_name in role_to_members[role_name]
+                        for role_name in role_names
+                    )
+                    >= 2
+                )
+            )
+            if len(shared_member_names) < config.min_prefixed_role_shared_fields:
+                continue
+            if all(
+                _is_numeric_role_member_name(member_name)
+                for member_name in shared_member_names
+            ):
+                continue
+            if (
+                len(shared_member_names) < config.min_prefixed_role_bundle_fields
+                and not (manual_transport_methods or pytree_base_names)
+            ):
+                continue
+            role_field_map = tuple(
+                (
+                    role_name,
+                    tuple(
+                        role_to_members[role_name][member_name].field_name
+                        for member_name in shared_member_names
+                        if member_name in role_to_members[role_name]
+                    ),
+                )
+                for role_name in role_names
+            )
+            candidate_field_names = {
+                field_name
+                for _, field_names in role_field_map
+                for field_name in field_names
+            }
+            candidate_observations = tuple(
+                sorted(
+                    (
+                        observation
+                        for observation in observations
+                        if observation.field_name in candidate_field_names
+                    ),
+                    key=lambda item: (item.lineno, item.field_name),
+                )
+            )
+            candidates.append(
+                PrefixedRoleFieldBundleCandidate(
+                    file_path=str(module.path),
+                    class_name=class_node.name,
+                    line=class_node.lineno,
+                    role_names=role_names,
+                    shared_member_names=shared_member_names,
+                    role_field_map=role_field_map,
+                    manual_transport_methods=manual_transport_methods,
+                    pytree_base_names=pytree_base_names,
+                    is_dataclass_family=is_dataclass_family,
+                    observations=candidate_observations,
+                )
+            )
+
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (
+            len(item.shared_member_names),
+            len(item.role_names),
+            sum(len(field_names) for _, field_names in item.role_field_map),
+        ),
+    )
+
+
+def _prefixed_role_field_bundle_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[PrefixedRoleFieldBundleCandidate, ...]:
+    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
+        module, FieldObservationFamily, FieldObservation
+    )
+    observations_by_class: dict[str, list[FieldObservation]] = defaultdict(list)
+    for observation in observations:
+        if observation.execution_level not in {
+            StructuralExecutionLevel.CLASS_BODY,
+            StructuralExecutionLevel.INIT_BODY,
+        }:
+            continue
+        observations_by_class[observation.class_name].append(observation)
+
+    candidates: list[PrefixedRoleFieldBundleCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        class_observations = tuple(observations_by_class.get(class_node.name, ()))
+        candidate = _prefixed_role_bundle_candidate_for_class(
+            module,
+            class_node,
+            class_observations,
+            config,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.class_name),
+        )
+    )
+
+
+def _prefixed_role_bundle_scaffold(
+    candidate: PrefixedRoleFieldBundleCandidate,
+) -> str:
+    base_name = f"{candidate.class_name}Role"
+    member_block = "\n".join(
+        f"    {member_name}: object" for member_name in candidate.shared_member_names
+    )
+    role_classes = "\n\n".join(
+        f"@dataclass(frozen=True)\nclass {_public_class_name(role_name)}{base_name}({base_name}):\n    pass"
+        for role_name in candidate.role_names
+    )
+    return (
+        "from abc import ABC\n\n"
+        "@dataclass(frozen=True)\n"
+        f"class {base_name}(ABC):\n"
+        f"{member_block}\n\n"
+        f"{role_classes}\n\n"
+        f"# Replace role-prefixed fields on `{candidate.class_name}` with explicit role records."
+    )
+
+
+def _public_class_name(name: str) -> str:
+    return "".join(token.capitalize() for token in _ordered_class_name_tokens(name))
+
+
 def _longest_common_prefix(values: tuple[str, ...]) -> str:
     if not values:
         return ""
@@ -9499,6 +9785,75 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
                 field_names=field_candidate.field_names,
                 execution_level=field_candidate.execution_level,
                 dataclass_count=field_candidate.dataclass_count,
+            ),
+        )
+
+
+class PrefixedRoleFieldBundleDetector(CandidateFindingDetector):
+    detector_id = "prefixed_role_field_bundle"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Role-prefixed field bundle should become nominal subrecords",
+        why=(
+            "A record that repeats the same member family behind role prefixes is encoding nominal role identity "
+            "in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so "
+            "the schema, PyTree behavior, and type-level role identity have one authoritative boundary."
+        ),
+        capability_gap="explicit nominal role records instead of parallel role-prefixed fields",
+        relation_context="same semantic member family repeats under several leading role prefixes in one record",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _prefixed_role_field_bundle_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        bundle_candidate = cast(PrefixedRoleFieldBundleCandidate, candidate)
+        role_summary = ", ".join(bundle_candidate.role_names)
+        member_summary = ", ".join(bundle_candidate.shared_member_names)
+        transport_summary = ""
+        if bundle_candidate.manual_transport_methods:
+            transport_summary = (
+                " Manual transport methods also repeat the shape: "
+                f"{', '.join(bundle_candidate.manual_transport_methods)}."
+            )
+        elif bundle_candidate.pytree_base_names:
+            transport_summary = (
+                " The record also participates in PyTree transport via "
+                f"{', '.join(bundle_candidate.pytree_base_names)}."
+            )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{bundle_candidate.class_name}` repeats role-prefixed fields for roles "
+                f"{role_summary} over shared members {member_summary}.{transport_summary}"
+            ),
+            bundle_candidate.evidence,
+            scaffold=_prefixed_role_bundle_scaffold(bundle_candidate),
+            codemod_patch=(
+                f"# Extract role records for {bundle_candidate.role_names} from `{bundle_candidate.class_name}`.\n"
+                f"# Replace prefixed fields {bundle_candidate.field_names} with typed role subrecords and derive PyTree children from those records."
+            ),
+            metrics=FieldFamilyMetrics(
+                class_count=1,
+                field_count=len(bundle_candidate.field_names),
+                class_names=(bundle_candidate.class_name,),
+                field_names=bundle_candidate.field_names,
+                execution_level=StructuralExecutionLevel.CLASS_BODY,
+                dataclass_count=1 if bundle_candidate.is_dataclass_family else 0,
             ),
         )
 

@@ -489,6 +489,8 @@ _REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
 
 
 def _node_matches_family(node: ast.AST, family: AstNameFamily) -> bool:
+    if isinstance(node, ast.Call):
+        return _node_matches_family(node.func, family)
     return (
         _terminal_name(node) in family.names
         or _subscript_base_name(node) in family.names
