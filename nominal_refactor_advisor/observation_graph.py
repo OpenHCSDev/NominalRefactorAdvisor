@@ -77,13 +77,19 @@ class StructuralObservationCarrier(ABC):
 
 
 @dataclass(frozen=True)
-class ObservationFiber:
-    """All observations that share one observation kind, level, and fiber key."""
+class ObservationGroup:
+    """Common carrier for grouped observations under one structural axis."""
 
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
-    fiber_key: str
     observations: tuple[StructuralObservation, ...]
+
+
+@dataclass(frozen=True)
+class ObservationFiber(ObservationGroup):
+    """All observations that share one observation kind, level, and fiber key."""
+
+    fiber_key: str
 
     @property
     def observed_name(self) -> str:
@@ -95,13 +101,10 @@ class ObservationFiber:
 
 
 @dataclass(frozen=True)
-class NominalWitnessGroup:
+class NominalWitnessGroup(ObservationGroup):
     """All observations of one witness under one observation kind and level."""
 
-    observation_kind: ObservationKind
-    execution_level: StructuralExecutionLevel
     nominal_witness: str
-    observations: tuple[StructuralObservation, ...]
 
     @property
     def observed_names(self) -> tuple[str, ...]:

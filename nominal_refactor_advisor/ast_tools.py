@@ -53,6 +53,11 @@ from .observation_shapes import (
 )
 
 
+_TYPE_BUILTIN = "type"
+_SETATTR_BUILTIN = "setattr"
+_RUNTIME_TYPE_GENERATORS = frozenset({_TYPE_BUILTIN, "make_dataclass", "new_class"})
+
+
 @dataclass(frozen=True)
 class ParsedModule:
     """Parsed Python module together with its source text and path."""
@@ -291,9 +296,21 @@ class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
     ) -> object | None:
         node = observation.node
         assert isinstance(node, type(self).node_type)
+        helper = getattr(type(self), "shape_helper", None)
+        if helper is not None:
+            return helper(
+                parsed_module,
+                *self.shape_helper_args(node, observation),
+            )
         return self.build_from_context(parsed_module, node, observation)
 
-    @abstractmethod
+    def shape_helper_args(
+        self,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> tuple[object, ...]:
+        raise NotImplementedError
+
     def build_from_context(
         self,
         parsed_module: ParsedModule,
@@ -308,18 +325,12 @@ class ContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
         Callable[[ParsedModule, ast.AST, str | None, str | None], object | None]
     ]
 
-    def build_from_context(
+    def shape_helper_args(
         self,
-        parsed_module: ParsedModule,
         node: ast.AST,
         observation: ScopedAstObservation,
-    ) -> object | None:
-        return type(self).shape_helper(
-            parsed_module,
-            node,
-            observation.class_name,
-            observation.function_name,
-        )
+    ) -> tuple[object, ...]:
+        return (node, observation.class_name, observation.function_name)
 
 
 class FunctionObservationSpec(ObservationShapeSpec, ABC):
@@ -1458,7 +1469,7 @@ def _interface_generation_observation(
                 file_path=str(parsed_module.path),
                 line=node.lineno,
                 symbol=function.name,
-                generator_name="type",
+                generator_name=_TYPE_BUILTIN,
             )
     return None
 
@@ -1476,7 +1487,7 @@ def _sentinel_type_observation(
         return None
     if not isinstance(node.value.func, ast.Call):
         return None
-    if _terminal_name(node.value.func.func) != "type":
+    if _terminal_name(node.value.func.func) != _TYPE_BUILTIN:
         return None
     return SentinelTypeObservation(
         file_path=str(parsed_module.path),
@@ -1528,7 +1539,7 @@ def _dynamic_method_injection_observations(
     for node in _walk_nodes(function):
         if not isinstance(node, ast.Call):
             continue
-        if _terminal_name(node.func) != "setattr":
+        if _terminal_name(node.func) != _SETATTR_BUILTIN:
             continue
         if len(node.args) < 3:
             continue
@@ -1539,7 +1550,7 @@ def _dynamic_method_injection_observations(
                     file_path=str(parsed_module.path),
                     line=node.lineno,
                     symbol=function.name,
-                    mutator_name="setattr",
+                    mutator_name=_SETATTR_BUILTIN,
                 )
             )
     return tuple(sorted(observations, key=lambda item: item.line))
@@ -1551,11 +1562,11 @@ def _runtime_type_generation_observation(
     observation: ScopedAstObservation,
 ) -> RuntimeTypeGenerationObservation | None:
     generator_name = _terminal_name(node.func)
-    if generator_name not in {"type", "make_dataclass", "new_class"}:
+    if generator_name not in _RUNTIME_TYPE_GENERATORS:
         return None
     # `type(obj)` is ordinary type introspection, not runtime type generation.
     # Only the 3-argument `type(name, bases, namespace)` form constructs a type.
-    if generator_name == "type" and len(node.args) < 3:
+    if generator_name == _TYPE_BUILTIN and len(node.args) < 3:
         return None
     return RuntimeTypeGenerationObservation(
         file_path=str(parsed_module.path),

@@ -55,7 +55,7 @@ class ImpactDelta(SemanticRecord):
     registration_sites_removed: int = 0
     shared_algorithm_sites_centralized: int = 0
 
-    def combine(self, other: "ImpactDelta") -> "ImpactDelta":
+    def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
         return ImpactDelta(
             lower_bound_removable_loc=(
                 self.lower_bound_removable_loc + other.lower_bound_removable_loc
@@ -81,9 +81,6 @@ class ImpactDelta(SemanticRecord):
                 + other.shared_algorithm_sites_centralized
             ),
         )
-
-    def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
-        return self.combine(other)
 
     @classmethod
     def from_repeated_mapping_family(
@@ -602,24 +599,30 @@ class ParameterThreadMetrics(FindingMetrics):
         return self.shared_parameter_names
 
 
-@dataclass(frozen=True)
-class RefactorFinding(SemanticRecord):
-    """One concrete structural finding emitted by a detector."""
+@dataclass(frozen=True, kw_only=True)
+class FindingSemantics(SemanticRecord):
+    """Stable descriptive fields shared by specs and emitted findings."""
 
-    detector_id: str
     pattern_id: PatternId
     title: str
-    summary: str
     why: str
     capability_gap: str
-    confidence: ConfidenceLevel
     relation_context: str
-    evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
-    scaffold: str | None = None
-    codemod_patch: str | None = None
+    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
     certification: CertificationLevel = STRONG_HEURISTIC
     capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
     observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True)
+class RefactorFinding(FindingSemantics):
+    """One concrete structural finding emitted by a detector."""
+
+    detector_id: str
+    summary: str
+    evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
+    scaffold: str | None = None
+    codemod_patch: str | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
 
     @classmethod
@@ -663,18 +666,9 @@ class RefactorFinding(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class FindingSpec:
+class FindingSpec(FindingSemantics):
     """Reusable finding template shared by detector implementations."""
 
-    pattern_id: PatternId
-    title: str
-    why: str
-    capability_gap: str
-    relation_context: str
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
-    certification: CertificationLevel = STRONG_HEURISTIC
-    capability_tags: tuple[CapabilityTag, ...] = ()
-    observation_tags: tuple[ObservationTag, ...] = ()
     scaffold_template: str | None = None
 
     def build(

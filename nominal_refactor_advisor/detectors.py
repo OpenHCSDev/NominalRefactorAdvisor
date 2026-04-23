@@ -113,6 +113,17 @@ from .taxonomy import (
 )
 
 
+_GETATTR_BUILTIN = "getattr"
+_HASATTR_BUILTIN = "hasattr"
+_SETATTR_BUILTIN = "setattr"
+_DELATTR_BUILTIN = "delattr"
+_REFLECTIVE_SELF_BUILTINS = frozenset(
+    {_GETATTR_BUILTIN, _HASATTR_BUILTIN, _SETATTR_BUILTIN, _DELATTR_BUILTIN}
+)
+_PIPELINE_ASSIGN_STAGE = "assign"
+_PIPELINE_RETURN_STAGE = "return"
+
+
 @dataclass(frozen=True)
 class DetectorConfig:
     """Thresholds and tuning knobs shared by all detectors."""
@@ -543,6 +554,8 @@ _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS = frozenset(
         "detect",
         "exact",
         "final",
+        "families",
+        "family",
         "for",
         "from",
         "get",
@@ -550,10 +563,14 @@ _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS = frozenset(
         "helper",
         "inactive",
         "iter",
+        "keyed",
         "load",
         "make",
         "manager",
         "module",
+        "candidate",
+        "candidates",
+        "parallel",
         "prepare",
         "refresh",
         "resolve",
@@ -1152,35 +1169,43 @@ def _repeated_enum_strategy_dispatch_candidates(
 
 
 @dataclass(frozen=True)
-class _StrategySelectorSpec:
-    root_name: str
+class _LineCaseSpec(ABC):
+    line: int
+    case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _SelectorCaseSpec(_LineCaseSpec):
     selector_method_name: str
+
+
+@dataclass(frozen=True)
+class _StrategySelectorSpec(_SelectorCaseSpec):
+    root_name: str
     mapping_name: str
-    case_names: tuple[str, ...]
-    line: int
 
 
 @dataclass(frozen=True)
-class _GenericDispatchSpec:
+class _GenericDispatchSpec(_LineCaseSpec):
     function_name: str
-    case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _AxisExpressionSite(ABC):
+    axis_expression: str
     line: int
 
 
 @dataclass(frozen=True)
-class _SelectorAssignment:
+class _SelectorAssignment(_AxisExpressionSite):
     variable_name: str
     selector_spec: _StrategySelectorSpec
-    axis_expression: str
-    line: int
 
 
 @dataclass(frozen=True)
-class _NestedGenericUsage:
+class _NestedGenericUsage(_AxisExpressionSite):
     callback_name: str
     generic_spec: _GenericDispatchSpec
-    axis_expression: str
-    line: int
 
 
 @dataclass(frozen=True)
@@ -1188,6 +1213,17 @@ class _GuardedReturnCase:
     guard_expression: str | None
     return_value: ast.AST
     line: int
+
+    @classmethod
+    def from_returned(
+        cls, guard_expression: str | None, returned: tuple[ast.AST, int]
+    ) -> "_GuardedReturnCase":
+        return_value, line = returned
+        return cls(
+            guard_expression=guard_expression,
+            return_value=return_value,
+            line=line,
+        )
 
 
 @dataclass(frozen=True)
@@ -2398,13 +2434,8 @@ def _guarded_return_cases_from_if(node: ast.If) -> tuple[_GuardedReturnCase, ...
         returned = _single_return_case(current.body)
         if returned is None:
             return None
-        return_value, line = returned
         cases.append(
-            _GuardedReturnCase(
-                guard_expression=ast.unparse(current.test),
-                return_value=return_value,
-                line=line,
-            )
+            _GuardedReturnCase.from_returned(ast.unparse(current.test), returned)
         )
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
             current = current.orelse[0]
@@ -2413,14 +2444,7 @@ def _guarded_return_cases_from_if(node: ast.If) -> tuple[_GuardedReturnCase, ...
             fallback = _single_return_case(current.orelse)
             if fallback is None:
                 return None
-            fallback_value, fallback_line = fallback
-            cases.append(
-                _GuardedReturnCase(
-                    guard_expression=None,
-                    return_value=fallback_value,
-                    line=fallback_line,
-                )
-            )
+            cases.append(_GuardedReturnCase.from_returned(None, fallback))
         current = None
     return tuple(cases) if len(cases) >= 2 else None
 
@@ -2442,13 +2466,8 @@ def _guarded_return_cases(
             returned = _single_return_case(statement.body)
             if returned is None:
                 return ()
-            return_value, line = returned
             cases.append(
-                _GuardedReturnCase(
-                    guard_expression=ast.unparse(statement.test),
-                    return_value=return_value,
-                    line=line,
-                )
+                _GuardedReturnCase.from_returned(ast.unparse(statement.test), returned)
             )
             continue
         if (
@@ -2458,10 +2477,9 @@ def _guarded_return_cases(
             and cases
         ):
             cases.append(
-                _GuardedReturnCase(
-                    guard_expression=None,
-                    return_value=statement.value,
-                    line=statement.lineno,
+                _GuardedReturnCase.from_returned(
+                    None,
+                    (statement.value, statement.lineno),
                 )
             )
             return tuple(cases)
@@ -2590,7 +2608,7 @@ def _closed_constant_selector_candidates(
                 wrapper_name=concrete_shapes[0].wrapper_name,
                 family_suffix=family_suffix,
                 common_constructor_name=common_constructor_name,
-                evidence=tuple(evidence[:6]),
+                evidence_locations=tuple(evidence[:6]),
             )
         )
     return tuple(
@@ -2750,7 +2768,7 @@ def _derived_wrapper_spec_shadow_candidates(
                     primary_constant_names=primary_constant_names,
                     extra_field_names=extra_field_names,
                     builder_names=builder_names,
-                    evidence=tuple(evidence[:6]),
+                    evidence_locations=tuple(evidence[:6]),
                 )
             )
             break
@@ -2912,7 +2930,7 @@ def _module_keyed_selection_helper_candidates(
                 lookup_function_name=lookup_shapes[0].function_name,
                 rule_table_names=tuple(rule_table_names),
                 index_table_names=tuple(indexed_table_names),
-                evidence=tuple(evidence[:6]),
+                evidence_locations=tuple(evidence[:6]),
             )
         )
     return tuple(
@@ -2924,33 +2942,30 @@ def _module_keyed_selection_helper_candidates(
 
 
 @dataclass(frozen=True)
-class _KeyedFamilyAxisSpec:
+class _FileAxisCaseSpec(_LineCaseSpec):
     file_path: str
-    line: int
-    family_name: str
     key_type_name: str
+
+
+@dataclass(frozen=True)
+class _FamilyAxisSpec(_FileAxisCaseSpec):
+    family_name: str
+
+
+@dataclass(frozen=True)
+class _KeyedFamilyAxisSpec(_FamilyAxisSpec):
     family_label: str | None
     registry_key_attr_name: str
-    case_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class _ManualSelectorAxisSpec:
-    file_path: str
-    line: int
-    family_name: str
+class _ManualSelectorAxisSpec(_FamilyAxisSpec):
     selector_method_name: str
-    key_type_name: str
-    case_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class _KeyedTableAxisSpec:
-    file_path: str
-    line: int
+class _KeyedTableAxisSpec(_FileAxisCaseSpec):
     table_name: str
-    key_type_name: str
-    case_names: tuple[str, ...]
     value_shape_name: str | None
 
 
@@ -3251,11 +3266,7 @@ def _parallel_keyed_table_and_family_candidates(
                 seen.add(key)
                 candidates.append(
                     ParallelKeyedTableAndFamilyCandidate(
-                        file_path=table_spec.file_path,
-                        key_type_name=table_spec.key_type_name,
-                        table_name=table_spec.table_name,
-                        table_line=table_spec.line,
-                        value_shape_name=table_spec.value_shape_name,
+                        table=table_spec,
                         family_name=family_spec.family_name,
                         family_line=family_spec.line,
                         shared_case_names=shared_case_names,
@@ -3320,14 +3331,18 @@ def _parallel_keyed_axis_family_candidates(
             candidates.append(
                 ParallelKeyedAxisFamilyCandidate(
                     key_type_name=left_spec.key_type_name,
-                    left_family_name=left_spec.family_name,
-                    left_family_label=left_spec.family_label,
-                    left_file_path=left_spec.file_path,
-                    left_line=left_spec.line,
-                    right_family_name=right_spec.family_name,
-                    right_family_label=right_spec.family_label,
-                    right_file_path=right_spec.file_path,
-                    right_line=right_spec.line,
+                    left=KeyedAxisFamilySite(
+                        file_path=left_spec.file_path,
+                        line=left_spec.line,
+                        family_name=left_spec.family_name,
+                        family_label=left_spec.family_label,
+                    ),
+                    right=KeyedAxisFamilySite(
+                        file_path=right_spec.file_path,
+                        line=right_spec.line,
+                        family_name=right_spec.family_name,
+                        family_label=right_spec.family_label,
+                    ),
                     shared_case_names=shared_case_names,
                     case_overlap_ratio=case_overlap_ratio,
                     name_overlap_ratio=name_overlap_ratio,
@@ -3338,10 +3353,10 @@ def _parallel_keyed_axis_family_candidates(
             candidates,
             key=lambda item: (
                 item.key_type_name,
-                item.left_file_path,
-                item.left_family_name,
-                item.right_file_path,
-                item.right_family_name,
+                item.left.file_path,
+                item.left.family_name,
+                item.right.file_path,
+                item.right.family_name,
             ),
         )
     )
@@ -3398,12 +3413,16 @@ def _cross_module_axis_shadow_family_candidates(
             candidates.append(
                 CrossModuleAxisShadowFamilyCandidate(
                     key_type_name=authoritative_spec.key_type_name,
-                    authoritative_family_name=authoritative_spec.family_name,
-                    authoritative_file_path=authoritative_spec.file_path,
-                    authoritative_line=authoritative_spec.line,
-                    shadow_family_name=shadow_spec.family_name,
-                    shadow_file_path=shadow_spec.file_path,
-                    shadow_line=shadow_spec.line,
+                    authoritative=AxisFamilySite(
+                        file_path=authoritative_spec.file_path,
+                        line=authoritative_spec.line,
+                        family_name=authoritative_spec.family_name,
+                    ),
+                    shadow=AxisFamilySite(
+                        file_path=shadow_spec.file_path,
+                        line=shadow_spec.line,
+                        family_name=shadow_spec.family_name,
+                    ),
                     selector_method_name=shadow_spec.selector_method_name,
                     shared_case_names=shared_case_names,
                 )
@@ -3413,8 +3432,8 @@ def _cross_module_axis_shadow_family_candidates(
             candidates,
             key=lambda item: (
                 item.key_type_name,
-                item.authoritative_file_path,
-                item.shadow_file_path,
+                item.authoritative.file_path,
+                item.shadow.file_path,
             ),
         )
     )
@@ -4321,16 +4340,13 @@ def _repeated_concrete_type_case_analysis_candidates(
             candidates.append(
                 RepeatedConcreteTypeCaseAnalysisCandidate(
                     file_path=str(module.path),
-                    subject_role=subject_role,
                     functions=tuple(
                         sorted(
                             functions,
                             key=lambda item: (item.line, item.function_name),
                         )
                     ),
-                    concrete_class_names=concrete_class_names,
                     abstract_base_names=abstract_base_names,
-                    union_alias_names=union_alias_names,
                 )
             )
     return tuple(candidates)
@@ -5716,6 +5732,41 @@ class SemanticDataclassRecommendation:
     scaffold: str
     certification: CertificationLevel
 
+    @classmethod
+    def existing_schema(
+        cls,
+        class_name: str,
+        base_class_name: str,
+        rationale: str,
+        scaffold: str,
+    ) -> "SemanticDataclassRecommendation":
+        return cls(
+            class_name,
+            base_class_name,
+            class_name,
+            rationale,
+            scaffold,
+            CERTIFIED,
+        )
+
+    @classmethod
+    def proposed_schema(
+        cls,
+        class_name: str,
+        base_class_name: str,
+        matched_schema_name: str | None,
+        rationale: str,
+        scaffold: str,
+    ) -> "SemanticDataclassRecommendation":
+        return cls(
+            class_name,
+            base_class_name,
+            matched_schema_name,
+            rationale,
+            scaffold,
+            STRONG_HEURISTIC,
+        )
+
 
 @dataclass(frozen=True)
 class SemanticDictBagCandidate:
@@ -5737,10 +5788,62 @@ class FieldFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class PrefixedRoleFieldBundleCandidate:
+class LineWitnessCandidate(ABC):
     file_path: str
-    class_name: str
     line: int
+
+    @property
+    def witness_name(self) -> str:
+        return type(self).__name__
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.witness_name)
+
+
+@dataclass(frozen=True)
+class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
+    evidence_locations: tuple[SourceLocation, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence_locations
+
+
+@dataclass(frozen=True)
+class ClassLineWitnessCandidate(LineWitnessCandidate):
+    class_name: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+
+@dataclass(frozen=True)
+class FunctionLineWitnessCandidate(LineWitnessCandidate):
+    function_name: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.function_name
+
+
+@dataclass(frozen=True)
+class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
+    class_name: str
+    method_name: str
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.method_name}"
+
+    @property
+    def witness_name(self) -> str:
+        return self.symbol
+
+
+@dataclass(frozen=True)
+class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
     role_names: tuple[str, ...]
     shared_member_names: tuple[str, ...]
     role_field_map: tuple[tuple[str, tuple[str, ...]], ...]
@@ -5760,7 +5863,7 @@ class PrefixedRoleFieldBundleCandidate:
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(self.file_path, self.line, self.class_name),
+            super().evidence,
             *tuple(
                 SourceLocation(item.file_path, item.lineno, item.symbol)
                 for item in self.observations[:7]
@@ -5783,9 +5886,7 @@ class NominalAuthorityShape:
 
 
 @dataclass(frozen=True)
-class ManualFamilyRosterCandidate:
-    file_path: str
-    line: int
+class ManualFamilyRosterCandidate(LineWitnessCandidate):
     owner_name: str
     member_names: tuple[str, ...]
     family_base_name: str
@@ -5793,63 +5894,52 @@ class ManualFamilyRosterCandidate:
 
 
 @dataclass(frozen=True)
-class ManualConcreteSubclassRosterCandidate:
-    file_path: str
-    line: int
-    class_name: str
-    registry_name: str
+class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
+    registration_site: "_ManualSubclassRegistrationSite"
     consumer_names: tuple[str, ...]
     concrete_class_names: tuple[str, ...]
-    guard_summary: str | None
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
+    def registry_name(self) -> str:
+        return self.registration_site.registry_name
+
+    @property
+    def guard_summary(self) -> str | None:
+        return self.registration_site.guard_summary
 
 
 @dataclass(frozen=True)
-class PredicateSelectedConcreteFamilyCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
     selector_method_name: str
     predicate_method_name: str
     context_param_name: str
     concrete_class_names: tuple[str, ...]
 
+
+@dataclass(frozen=True)
+class MirroredLeafFamilySide(LineWitnessCandidate):
+    root_name: str
+    leaf_evidence: tuple[SourceLocation, ...]
+
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
+    def witness_name(self) -> str:
+        return self.root_name
 
 
 @dataclass(frozen=True)
 class ParallelMirroredLeafFamilyCandidate:
-    left_root_file_path: str
-    left_root_line: int
-    left_root_name: str
-    right_root_file_path: str
-    right_root_line: int
-    right_root_name: str
+    left: MirroredLeafFamilySide
+    right: MirroredLeafFamilySide
     contract_method_names: tuple[str, ...]
     shared_leaf_family_names: tuple[str, ...]
-    left_leaf_evidence: tuple[SourceLocation, ...]
-    right_leaf_evidence: tuple[SourceLocation, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(
-                self.left_root_file_path,
-                self.left_root_line,
-                self.left_root_name,
-            ),
-            SourceLocation(
-                self.right_root_file_path,
-                self.right_root_line,
-                self.right_root_name,
-            ),
-            *self.left_leaf_evidence[:2],
-            *self.right_leaf_evidence[:2],
+            self.left.evidence,
+            self.right.evidence,
+            *self.left.leaf_evidence[:2],
+            *self.right.leaf_evidence[:2],
         )
 
 
@@ -5864,15 +5954,13 @@ class FragmentedFamilyAuthorityCandidate:
 
 
 @dataclass(frozen=True)
-class WitnessCarrierCandidate(ABC):
-    file_path: str
-    line: int
+class WitnessCarrierCandidate(LineWitnessCandidate):
     subject_name: str
     name_family: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.subject_name)
+    def witness_name(self) -> str:
+        return self.subject_name
 
     @property
     def class_name(self) -> str:
@@ -5945,22 +6033,25 @@ class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class PropertyAliasHookGroup:
+class ClassLineNumbersGroup(ABC):
     file_path: str
-    base_name: str
-    property_name: str
-    returned_attribute: str
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
 
 @dataclass(frozen=True)
-class ConstantPropertyHookGroup:
-    file_path: str
+class PropertyHookGroup(ClassLineNumbersGroup):
     base_name: str
     property_name: str
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class PropertyAliasHookGroup(PropertyHookGroup):
+    returned_attribute: str
+
+
+@dataclass(frozen=True)
+class ConstantPropertyHookGroup(PropertyHookGroup):
     return_expressions: tuple[str, ...]
 
 
@@ -5972,10 +6063,7 @@ class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class HelperBackedObservationSpecGroup:
-    file_path: str
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
+class HelperBackedObservationSpecGroup(ClassLineNumbersGroup):
     method_names: tuple[str, ...]
     helper_names: tuple[str, ...]
     wrapper_kinds: tuple[str, ...]
@@ -5988,12 +6076,9 @@ class DeclarativeFamilyLeafCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class DeclarativeFamilyBoilerplateGroup:
-    file_path: str
+class DeclarativeFamilyBoilerplateGroup(ClassLineNumbersGroup):
     base_names: tuple[str, ...]
     assigned_names: tuple[str, ...]
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -6007,37 +6092,31 @@ class TypeIndexedDefinitionBoilerplateGroup:
 
 
 @dataclass(frozen=True)
-class DerivedExportSurfaceCandidate:
-    file_path: str
+class ExportSurfaceCandidate(LineWitnessCandidate):
     export_symbol: str
-    line: int
     exported_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DerivedExportSurfaceCandidate(ExportSurfaceCandidate):
     derivable_root_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class ManualPublicApiSurfaceCandidate:
-    file_path: str
-    export_symbol: str
-    line: int
-    exported_names: tuple[str, ...]
+class ManualPublicApiSurfaceCandidate(ExportSurfaceCandidate):
     source_name_count: int
 
 
 @dataclass(frozen=True)
-class DerivedIndexedSurfaceCandidate:
-    file_path: str
+class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
     surface_name: str
-    line: int
     key_kind: str
     value_names: tuple[str, ...]
     derivable_root_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class RegisteredUnionSurfaceCandidate:
-    file_path: str
-    line: int
+class RegisteredUnionSurfaceCandidate(LineWitnessCandidate):
     owner_name: str
     accessor_name: str
     root_names: tuple[str, ...]
@@ -6051,11 +6130,8 @@ class ExportPolicyPredicateCandidate(
 
 
 @dataclass(frozen=True)
-class RegistryTraversalGroup:
-    file_path: str
-    class_names: tuple[str, ...]
+class RegistryTraversalGroup(ClassLineNumbersGroup):
     method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     materialization_kinds: tuple[str, ...]
 
 
@@ -6070,24 +6146,23 @@ class AlternateConstructorFamilyGroup:
 
 
 @dataclass(frozen=True)
-class ReflectiveSelfAttributeCandidate(WitnessCarrierCandidate):
+class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
     method_name: str
     reflective_builtin: str
+
+
+@dataclass(frozen=True)
+class ReflectiveSelfAttributeCandidate(SelfReflectiveBuiltinCandidate):
     attribute_name: str
 
 
 @dataclass(frozen=True)
-class DynamicSelfFieldSelectionCandidate(WitnessCarrierCandidate):
-    method_name: str
-    reflective_builtin: str
+class DynamicSelfFieldSelectionCandidate(SelfReflectiveBuiltinCandidate):
     selector_expression: str
 
 
 @dataclass(frozen=True)
-class StringBackedReflectiveNominalLookupCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class StringBackedReflectiveNominalLookupCandidate(ClassLineWitnessCandidate):
     method_name: str
     selector_attr_name: str
     lookup_kind: str
@@ -6095,25 +6170,14 @@ class StringBackedReflectiveNominalLookupCandidate:
     concrete_class_names: tuple[str, ...]
     selector_values: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
-
 
 @dataclass(frozen=True)
-class ConcreteConfigFieldProbeCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
     method_name: str
     config_attr_name: str
     config_type_name: str
     missing_field_names: tuple[str, ...]
     probe_builtin_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
 
 
 @dataclass(frozen=True)
@@ -6221,10 +6285,8 @@ class RepeatedEnumStrategyDispatchCandidate:
 
 
 @dataclass(frozen=True)
-class SplitDispatchAuthorityCandidate:
-    file_path: str
+class SplitDispatchAuthorityCandidate(LineWitnessCandidate):
     qualname: str
-    line: int
     strategy_root_name: str
     selector_method_name: str
     strategy_axis_expression: str
@@ -6243,22 +6305,21 @@ class SplitDispatchAuthorityCandidate:
 
 
 @dataclass(frozen=True)
-class ClosedConstantSelectorCandidate:
-    file_path: str
+class ClosedConstantSelectorCandidate(EvidenceLocationsWitnessCandidate):
     qualname: str
-    line: int
     guard_expressions: tuple[str, ...]
     constant_names: tuple[str, ...]
     wrapper_name: str | None
     family_suffix: str | None
     common_constructor_name: str | None
-    evidence: tuple[SourceLocation, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
 
 
 @dataclass(frozen=True)
-class DerivedWrapperSpecShadowCandidate:
-    file_path: str
-    line: int
+class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
     derived_family_name: str
     derived_constructor_name: str
     primary_family_name: str | None
@@ -6267,55 +6328,56 @@ class DerivedWrapperSpecShadowCandidate:
     primary_constant_names: tuple[str, ...]
     extra_field_names: tuple[str, ...]
     builder_names: tuple[str, ...]
-    evidence: tuple[SourceLocation, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.derived_family_name
 
 
 @dataclass(frozen=True)
-class ModuleKeyedSelectionHelperCandidate:
-    file_path: str
-    line: int
+class ModuleKeyedSelectionHelperCandidate(EvidenceLocationsWitnessCandidate):
     rule_class_name: str
     selected_field_name: str
     helper_function_name: str
     lookup_function_name: str
     rule_table_names: tuple[str, ...]
     index_table_names: tuple[str, ...]
-    evidence: tuple[SourceLocation, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.rule_class_name
+
+
+@dataclass(frozen=True)
+class AxisFamilySite(LineWitnessCandidate):
+    family_name: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.family_name
+
+
+@dataclass(frozen=True)
+class KeyedAxisFamilySite(AxisFamilySite):
+    family_label: str | None
 
 
 @dataclass(frozen=True)
 class CrossModuleAxisShadowFamilyCandidate:
     key_type_name: str
-    authoritative_family_name: str
-    authoritative_file_path: str
-    authoritative_line: int
-    shadow_family_name: str
-    shadow_file_path: str
-    shadow_line: int
+    authoritative: AxisFamilySite
+    shadow: AxisFamilySite
     selector_method_name: str
     shared_case_names: tuple[str, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            SourceLocation(
-                self.authoritative_file_path,
-                self.authoritative_line,
-                self.authoritative_family_name,
-            ),
-            SourceLocation(
-                self.shadow_file_path,
-                self.shadow_line,
-                self.shadow_family_name,
-            ),
-        )
+        return (self.authoritative.evidence, self.shadow.evidence)
 
 
 @dataclass(frozen=True)
-class ResidualClosedAxisBranchingCandidate:
+class ResidualClosedAxisBranchingCandidate(LineWitnessCandidate):
     key_type_name: str
-    file_path: str
-    line: int
     qualname: str
     branch_site_count: int
     case_names: tuple[str, ...]
@@ -6334,44 +6396,43 @@ class ResidualClosedAxisBranchingCandidate:
 @dataclass(frozen=True)
 class ParallelKeyedAxisFamilyCandidate:
     key_type_name: str
-    left_family_name: str
-    left_family_label: str | None
-    left_file_path: str
-    left_line: int
-    right_family_name: str
-    right_family_label: str | None
-    right_file_path: str
-    right_line: int
+    left: KeyedAxisFamilySite
+    right: KeyedAxisFamilySite
     shared_case_names: tuple[str, ...]
     case_overlap_ratio: float
     name_overlap_ratio: float
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            SourceLocation(
-                self.left_file_path,
-                self.left_line,
-                self.left_family_name,
-            ),
-            SourceLocation(
-                self.right_file_path,
-                self.right_line,
-                self.right_family_name,
-            ),
-        )
+        return (self.left.evidence, self.right.evidence)
 
 
 @dataclass(frozen=True)
 class ParallelKeyedTableAndFamilyCandidate:
-    file_path: str
-    key_type_name: str
-    table_name: str
-    table_line: int
-    value_shape_name: str | None
+    table: _KeyedTableAxisSpec
     family_name: str
     family_line: int
     shared_case_names: tuple[str, ...]
+
+    @property
+    def file_path(self) -> str:
+        return self.table.file_path
+
+    @property
+    def key_type_name(self) -> str:
+        return self.table.key_type_name
+
+    @property
+    def table_name(self) -> str:
+        return self.table.table_name
+
+    @property
+    def table_line(self) -> int:
+        return self.table.line
+
+    @property
+    def value_shape_name(self) -> str | None:
+        return self.table.value_shape_name
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -6382,9 +6443,7 @@ class ParallelKeyedTableAndFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class EnumKeyedTableClassAxisShadowCandidate:
-    file_path: str
-    line: int
+class EnumKeyedTableClassAxisShadowCandidate(LineWitnessCandidate):
     table_name: str
     key_type_name: str
     key_attr_name: str
@@ -6407,10 +6466,7 @@ class EnumKeyedTableClassAxisShadowCandidate:
 
 
 @dataclass(frozen=True)
-class TransportShellTemplateCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class TransportShellTemplateCandidate(ClassLineWitnessCandidate):
     driver_method_name: str
     selector_attr_name: str
     selector_value_names: tuple[str, ...]
@@ -6420,10 +6476,6 @@ class TransportShellTemplateCandidate:
     kwargs_helper_name: str | None
     inner_hook_name: str
     outer_hook_name: str
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
 
 
 @dataclass(frozen=True)
@@ -6449,9 +6501,7 @@ class CrossModuleSpecAxisAuthorityCandidate:
 
 
 @dataclass(frozen=True)
-class RegisteredCatalogProjectionCandidate:
-    file_path: str
-    line: int
+class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
     qualname: str
     catalog_type_name: str
     collector_name: str
@@ -6482,20 +6532,13 @@ class RegistryLookupShape:
 
 
 @dataclass(frozen=True)
-class KeyedFamilyRootCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
     family_base_name: str
     registry_key_attr_name: str
     lookup_method_name: str
     lookup_style: str
     error_type_name: str | None
     abstract_hook_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
 
 
 @dataclass(frozen=True)
@@ -6513,20 +6556,13 @@ class ManualRecordRegistrationShape:
 
 
 @dataclass(frozen=True)
-class ManualKeyedRecordTableClassCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
     register_method_name: str
     lookup_method_name: str
     lookup_style: str
     key_field_name: str
     key_expr: str
     constructor_field_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
 
 
 @dataclass(frozen=True)
@@ -6536,16 +6572,9 @@ class ManualKeyedRecordTableGroupCandidate:
 
 
 @dataclass(frozen=True)
-class ManualValidatedPytreeSpecClassCandidate:
-    file_path: str
-    line: int
-    class_name: str
+class ManualValidatedPytreeSpecClassCandidate(ClassLineWitnessCandidate):
     mixin_base_name: str
     method_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.class_name)
 
 
 @dataclass(frozen=True)
@@ -6556,10 +6585,7 @@ class ManualValidatedPytreeSpecGroupCandidate:
 
 
 @dataclass(frozen=True)
-class ConcreteTypeCaseFunctionCandidate:
-    file_path: str
-    line: int
-    function_name: str
+class ConcreteTypeCaseFunctionCandidate(FunctionLineWitnessCandidate):
     subject_expression: str
     subject_role: str
     concrete_class_names: tuple[str, ...]
@@ -6567,19 +6593,40 @@ class ConcreteTypeCaseFunctionCandidate:
     union_alias_names: tuple[str, ...]
     case_site_count: int
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.function_name)
-
 
 @dataclass(frozen=True)
 class RepeatedConcreteTypeCaseAnalysisCandidate:
     file_path: str
-    subject_role: str
     functions: tuple[ConcreteTypeCaseFunctionCandidate, ...]
-    concrete_class_names: tuple[str, ...]
     abstract_base_names: tuple[str, ...]
-    union_alias_names: tuple[str, ...]
+
+    @property
+    def subject_role(self) -> str:
+        return self.functions[0].subject_role
+
+    @property
+    def concrete_class_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    class_name
+                    for function in self.functions
+                    for class_name in function.concrete_class_names
+                }
+            )
+        )
+
+    @property
+    def union_alias_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    alias_name
+                    for function in self.functions
+                    for alias_name in function.union_alias_names
+                }
+            )
+        )
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -6587,19 +6634,12 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
 
 
 @dataclass(frozen=True)
-class GuardValidatorFunctionCandidate:
-    file_path: str
-    line: int
-    function_name: str
+class GuardValidatorFunctionCandidate(FunctionLineWitnessCandidate):
     subject_param_name: str
     alias_source_attr: str | None
     guard_count: int
     accessed_attr_names: tuple[str, ...]
     helper_call_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.function_name)
 
 
 @dataclass(frozen=True)
@@ -6617,22 +6657,10 @@ class RepeatedGuardValidatorFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class ValidateShapeGuardMethodCandidate:
-    file_path: str
-    line: int
-    class_name: str
-    method_name: str
+class ValidateShapeGuardMethodCandidate(ClassMethodLineWitnessCandidate):
     guard_count: int
     shape_guard_count: int
     shape_guard_signatures: tuple[str, ...]
-
-    @property
-    def symbol(self) -> str:
-        return f"{self.class_name}.{self.method_name}"
-
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
 
 
 @dataclass(frozen=True)
@@ -6647,9 +6675,7 @@ class RepeatedValidateShapeGuardFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class ImplicitSelfContractMixinCandidate:
-    file_path: str
-    line: int
+class ImplicitSelfContractMixinCandidate(LineWitnessCandidate):
     mixin_name: str
     method_names: tuple[str, ...]
     method_lines: tuple[int, ...]
@@ -6714,9 +6740,7 @@ class FunctionWrapperCandidate:
 
 
 @dataclass(frozen=True)
-class TrivialForwardingWrapperCandidate:
-    file_path: str
-    line: int
+class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
     qualname: str
     delegate_symbol: str
     call_depth: int
@@ -6735,8 +6759,7 @@ class ResolvedExternalCallsite:
 
 
 @dataclass(frozen=True)
-class PublicApiPrivateDelegateShellCandidate:
-    wrapper: TrivialForwardingWrapperCandidate
+class PublicApiPrivateDelegateSurface(ABC):
     module_name: str
     delegate_root_symbol: str
     delegate_root_line: int | None
@@ -6745,6 +6768,11 @@ class PublicApiPrivateDelegateShellCandidate:
     @property
     def external_module_names(self) -> tuple[str, ...]:
         return tuple(sorted({site.module_name for site in self.external_callsites}))
+
+
+@dataclass(frozen=True)
+class PublicApiPrivateDelegateShellCandidate(PublicApiPrivateDelegateSurface):
+    wrapper: TrivialForwardingWrapperCandidate
 
     @property
     def wrapper_symbol(self) -> str:
@@ -6766,21 +6794,13 @@ class PublicApiPrivateDelegateShellCandidate:
 
 
 @dataclass(frozen=True)
-class PublicApiPrivateDelegateFamilyCandidate:
+class PublicApiPrivateDelegateFamilyCandidate(PublicApiPrivateDelegateSurface):
     file_path: str
-    module_name: str
-    delegate_root_symbol: str
-    delegate_root_line: int | None
     wrappers: tuple[TrivialForwardingWrapperCandidate, ...]
-    external_callsites: tuple[ResolvedExternalCallsite, ...]
 
     @property
     def wrapper_names(self) -> tuple[str, ...]:
         return tuple(wrapper.qualname for wrapper in self.wrappers)
-
-    @property
-    def external_module_names(self) -> tuple[str, ...]:
-        return tuple(sorted({site.module_name for site in self.external_callsites}))
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -6798,9 +6818,7 @@ class PublicApiPrivateDelegateFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class NominalPolicySurfaceMethodCandidate:
-    file_path: str
-    line: int
+class NominalPolicySurfaceMethodCandidate(LineWitnessCandidate):
     qualname: str
     owner_class_name: str
     method_name: str
@@ -6817,12 +6835,27 @@ class NominalPolicySurfaceMethodCandidate:
 
 @dataclass(frozen=True)
 class NominalPolicySurfaceFamilyCandidate:
-    file_path: str
-    owner_class_name: str
-    policy_root_symbol: str
-    selector_method_name: str
-    selector_source_exprs: tuple[str, ...]
     methods: tuple[NominalPolicySurfaceMethodCandidate, ...]
+
+    @property
+    def file_path(self) -> str:
+        return self.methods[0].file_path
+
+    @property
+    def owner_class_name(self) -> str:
+        return self.methods[0].owner_class_name
+
+    @property
+    def policy_root_symbol(self) -> str:
+        return self.methods[0].policy_root_symbol
+
+    @property
+    def selector_method_name(self) -> str:
+        return self.methods[0].selector_method_name
+
+    @property
+    def selector_source_exprs(self) -> tuple[str, ...]:
+        return self.methods[0].selector_source_exprs
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -6954,19 +6987,27 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class WitnessCarrierFamilyCandidate:
-    file_path: str
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
+class WitnessCarrierFamilyCandidate(ClassLineNumbersGroup):
     shared_role_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class WitnessMixinEnforcementCandidate:
-    file_path: str
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
+class WitnessMixinEnforcementCandidate(ClassLineNumbersGroup):
     role_field_names: tuple[tuple[str, tuple[str, ...]], ...]
+
+
+def _axis_dispatch_metrics(
+    literal_cases: tuple[str, ...],
+    dispatch_axis: str,
+    dispatch_site_count: int | None = None,
+) -> DispatchCountMetrics:
+    if dispatch_site_count is None:
+        dispatch_site_count = len(literal_cases)
+    return DispatchCountMetrics(
+        dispatch_site_count=dispatch_site_count,
+        dispatch_axis=dispatch_axis,
+        literal_cases=literal_cases,
+    )
 
 
 class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
@@ -7809,8 +7850,8 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCandidateDetector):
             self.detector_id,
             (
                 f"Axis `{shadow_candidate.key_type_name}` is already owned by "
-                f"`{shadow_candidate.authoritative_family_name}` but re-encoded by "
-                f"`{shadow_candidate.shadow_family_name}.{shadow_candidate.selector_method_name}` "
+                f"`{shadow_candidate.authoritative.family_name}` but re-encoded by "
+                f"`{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` "
                 f"across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
             ),
             shadow_candidate.evidence,
@@ -7823,13 +7864,12 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCandidateDetector):
                 "    # derive local execution from authoritative policy facts\n"
             ),
             codemod_patch=(
-                f"# Remove shadow family `{shadow_candidate.shadow_family_name}`.\n"
-                f"# Derive local behavior from authoritative family `{shadow_candidate.authoritative_family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`."
+                f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n"
+                f"# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(shadow_candidate.shared_case_names),
-                dispatch_axis=shadow_candidate.key_type_name,
-                literal_cases=shadow_candidate.shared_case_names,
+            metrics=_axis_dispatch_metrics(
+                shadow_candidate.shared_case_names,
+                shadow_candidate.key_type_name,
             ),
         )
 
@@ -7936,17 +7976,17 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCandidateDetector):
         shared_cases = ", ".join(family_candidate.shared_case_names[:4])
         label_clause = ""
         if (
-            family_candidate.left_family_label is not None
-            and family_candidate.left_family_label == family_candidate.right_family_label
+            family_candidate.left.family_label is not None
+            and family_candidate.left.family_label == family_candidate.right.family_label
         ):
             label_clause = (
-                f" Both declare family label `{family_candidate.left_family_label}`."
+                f" Both declare family label `{family_candidate.left.family_label}`."
             )
         return self.finding_spec.build(
             self.detector_id,
             (
                 f"Axis `{family_candidate.key_type_name}` is owned in parallel by "
-                f"`{family_candidate.left_family_name}` and `{family_candidate.right_family_name}` "
+                f"`{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` "
                 f"across cases {shared_cases}.{label_clause}"
             ),
             family_candidate.evidence,
@@ -7958,13 +7998,12 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCandidateDetector):
                 "# Keep one authoritative keyed family and let secondary modules derive local adapters/specs from it."
             ),
             codemod_patch=(
-                f"# Collapse `{family_candidate.left_family_name}` and `{family_candidate.right_family_name}` onto one authoritative keyed family.\n"
+                f"# Collapse `{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` onto one authoritative keyed family.\n"
                 "# Move the irreducible case-specific hooks to that family or to a single derived adapter table, not two parallel nominal roots."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(family_candidate.shared_case_names),
-                dispatch_axis=family_candidate.key_type_name,
-                literal_cases=family_candidate.shared_case_names,
+            metrics=_axis_dispatch_metrics(
+                family_candidate.shared_case_names,
+                family_candidate.key_type_name,
             ),
         )
 
@@ -8028,10 +8067,9 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCandidateDetector):
                 f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative axis-spec table.\n"
                 "# Each row should own both the per-case record data and the constructor or hook needed at runtime."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(table_candidate.shared_case_names),
-                dispatch_axis=table_candidate.key_type_name,
-                literal_cases=table_candidate.shared_case_names,
+            metrics=_axis_dispatch_metrics(
+                table_candidate.shared_case_names,
+                table_candidate.key_type_name,
             ),
         )
 
@@ -11259,15 +11297,15 @@ class ParallelMirroredLeafFamilyDetector(CrossModuleCandidateDetector):
         shared_preview = ", ".join(mirrored_candidate.shared_leaf_family_names[:4])
         contract_preview = ", ".join(mirrored_candidate.contract_method_names)
         class_names = (
-            mirrored_candidate.left_root_name,
-            mirrored_candidate.right_root_name,
-            *(item.symbol for item in mirrored_candidate.left_leaf_evidence),
-            *(item.symbol for item in mirrored_candidate.right_leaf_evidence),
+            mirrored_candidate.left.root_name,
+            mirrored_candidate.right.root_name,
+            *(item.symbol for item in mirrored_candidate.left.leaf_evidence),
+            *(item.symbol for item in mirrored_candidate.right.leaf_evidence),
         )
         return self.finding_spec.build(
             self.detector_id,
             (
-                f"`{mirrored_candidate.left_root_name}` and `{mirrored_candidate.right_root_name}` expose mirrored `{contract_preview}` leaf catalogs "
+                f"`{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` expose mirrored `{contract_preview}` leaf catalogs "
                 f"across {len(mirrored_candidate.shared_leaf_family_names)} shared role families ({shared_preview})."
             ),
             mirrored_candidate.evidence[:6],
@@ -11280,17 +11318,17 @@ class ParallelMirroredLeafFamilyDetector(CrossModuleCandidateDetector):
                 "# Declare the varying axis once, declare roles once, and derive leaf registration from the spec table."
             ),
             codemod_patch=(
-                f"# Replace mirrored roots `{mirrored_candidate.left_root_name}` and `{mirrored_candidate.right_root_name}` with one axis-declared family substrate.\n"
+                f"# Replace mirrored roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` with one axis-declared family substrate.\n"
                 "# Move shared role names into one spec table and derive concrete leaf registration from that authority."
             ),
             metrics=RegistrationMetrics(
                 registration_site_count=(
-                    len(mirrored_candidate.left_leaf_evidence)
-                    + len(mirrored_candidate.right_leaf_evidence)
+                    len(mirrored_candidate.left.leaf_evidence)
+                    + len(mirrored_candidate.right.leaf_evidence)
                 ),
                 class_count=len(class_names),
                 registry_name=(
-                    f"{mirrored_candidate.left_root_name}/{mirrored_candidate.right_root_name}"
+                    f"{mirrored_candidate.left.root_name}/{mirrored_candidate.right.root_name}"
                 ),
                 class_names=class_names,
             ),
@@ -13039,13 +13077,11 @@ def _recommend_metrics_dataclass(
             items,
             prefix="metrics=",
         )
-        return SemanticDataclassRecommendation(
-            class_name=class_name,
-            base_class_name=base_class_name,
-            matched_schema_name=class_name,
-            rationale=rationale,
-            scaffold=scaffold,
-            certification=CERTIFIED,
+        return SemanticDataclassRecommendation.existing_schema(
+            class_name,
+            base_class_name,
+            rationale,
+            scaffold,
         )
 
     closest_schema = _closest_schema_match(key_names, _METRIC_BAG_SCHEMAS)
@@ -13068,13 +13104,12 @@ def _recommend_metrics_dataclass(
         items,
         instantiation_prefix="metrics=",
     )
-    return SemanticDataclassRecommendation(
-        class_name=class_name,
-        base_class_name=base_class_name,
-        matched_schema_name=closest_schema.class_name if closest_schema else None,
-        rationale=rationale,
-        scaffold=scaffold,
-        certification=STRONG_HEURISTIC,
+    return SemanticDataclassRecommendation.proposed_schema(
+        class_name,
+        base_class_name,
+        closest_schema.class_name if closest_schema else None,
+        rationale,
+        scaffold,
     )
 
 
@@ -13089,13 +13124,11 @@ def _recommend_local_semantic_record(
         class_name = exact_schema.class_name
         rationale = f"Use `{class_name}` directly instead of a string-key impact bag."
         scaffold = _instantiation_scaffold(class_name, key_names, value_nodes)
-        return SemanticDataclassRecommendation(
-            class_name=class_name,
-            base_class_name=exact_schema.base_class_name,
-            matched_schema_name=class_name,
-            rationale=rationale,
-            scaffold=scaffold,
-            certification=CERTIFIED,
+        return SemanticDataclassRecommendation.existing_schema(
+            class_name,
+            exact_schema.base_class_name,
+            rationale,
+            scaffold,
         )
 
     closest_schema = _closest_schema_match(key_names, (_IMPACT_BAG_SCHEMA,))
@@ -13112,13 +13145,12 @@ def _recommend_local_semantic_record(
         key_names,
         value_nodes,
     )
-    return SemanticDataclassRecommendation(
-        class_name=class_name,
-        base_class_name=closest_schema.class_name,
-        matched_schema_name=closest_schema.class_name,
-        rationale=rationale,
-        scaffold=scaffold,
-        certification=STRONG_HEURISTIC,
+    return SemanticDataclassRecommendation.proposed_schema(
+        class_name,
+        closest_schema.class_name,
+        closest_schema.class_name,
+        rationale,
+        scaffold,
     )
 
 
@@ -14715,7 +14747,7 @@ def _reflective_self_attribute_candidates(
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
-                if builtin_name not in {"getattr", "hasattr", "setattr", "delattr"}:
+                if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
                     continue
                 if len(subnode.args) < 2:
                     continue
@@ -14911,7 +14943,7 @@ def _dynamic_self_field_selection_candidates(
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
-                if builtin_name not in {"getattr", "hasattr", "setattr", "delattr"}:
+                if builtin_name not in _REFLECTIVE_SELF_BUILTINS:
                     continue
                 if len(subnode.args) < 2:
                     continue
@@ -15135,13 +15167,12 @@ def _manual_concrete_subclass_roster_candidates(
                     file_path=indexed_class.file_path,
                     line=init_subclass.lineno,
                     class_name=_indexed_class_display_name(indexed_class, class_index),
-                    registry_name=site.registry_name,
+                    registration_site=site,
                     consumer_names=consumer_names,
                     concrete_class_names=_indexed_class_display_names(
                         concrete_descendants,
                         class_index,
                     ),
-                    guard_summary=site.guard_summary,
                 )
             )
     return tuple(candidates)
@@ -15423,16 +15454,20 @@ def _parallel_mirrored_leaf_family_candidates(
         )
         candidates.append(
             ParallelMirroredLeafFamilyCandidate(
-                left_root_file_path=left_root.file_path,
-                left_root_line=left_root.line,
-                left_root_name=_indexed_class_display_name(left_root, class_index),
-                right_root_file_path=right_root.file_path,
-                right_root_line=right_root.line,
-                right_root_name=_indexed_class_display_name(right_root, class_index),
+                left=MirroredLeafFamilySide(
+                    file_path=left_root.file_path,
+                    line=left_root.line,
+                    root_name=_indexed_class_display_name(left_root, class_index),
+                    leaf_evidence=left_leaf_evidence,
+                ),
+                right=MirroredLeafFamilySide(
+                    file_path=right_root.file_path,
+                    line=right_root.line,
+                    root_name=_indexed_class_display_name(right_root, class_index),
+                    leaf_evidence=right_leaf_evidence,
+                ),
                 contract_method_names=shared_contract_methods,
                 shared_leaf_family_names=shared_leaf_families,
-                left_leaf_evidence=left_leaf_evidence,
-                right_leaf_evidence=right_leaf_evidence,
             )
         )
     return tuple(candidates)
@@ -15443,10 +15478,10 @@ def _reflective_lookup_shape(
 ) -> tuple[str, str, ast.AST] | None:
     if isinstance(node, ast.Call):
         builtin_name = _ast_terminal_name(node.func)
-        if builtin_name == "getattr" and len(node.args) >= 2:
+        if builtin_name == _GETATTR_BUILTIN and len(node.args) >= 2:
             selector_node = node.args[1]
             if _constant_string(selector_node) is None:
-                return ("getattr", ast.unparse(node.args[0]), selector_node)
+                return (_GETATTR_BUILTIN, ast.unparse(node.args[0]), selector_node)
         if (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "get"
@@ -15672,7 +15707,10 @@ def _concrete_config_field_probe_candidates(
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
-                if builtin_name not in {"getattr", "hasattr"} or len(subnode.args) < 2:
+                if (
+                    builtin_name not in {_GETATTR_BUILTIN, _HASATTR_BUILTIN}
+                    or len(subnode.args) < 2
+                ):
                     continue
                 probed_field_name = _constant_string(subnode.args[1])
                 if probed_field_name is None:
@@ -17510,7 +17548,7 @@ def _test_compares_attribute(test: ast.AST, attr_name: str) -> bool:
             if attr_match and literal_match:
                 return True
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "getattr" and len(node.args) >= 2:
+            if node.func.id == _GETATTR_BUILTIN and len(node.args) >= 2:
                 arg = node.args[1]
                 if isinstance(arg, ast.Constant) and arg.value == attr_name:
                     return True
@@ -18126,11 +18164,6 @@ def _nominal_policy_surface_family_candidates(
         sorted(
             (
                 NominalPolicySurfaceFamilyCandidate(
-                    file_path=candidates[0].file_path,
-                    owner_class_name=owner_class_name,
-                    policy_root_symbol=policy_root_symbol,
-                    selector_method_name=selector_method_name,
-                    selector_source_exprs=selector_source_exprs,
                     methods=tuple(
                         sorted(candidates, key=lambda item: (item.line, item.qualname))
                     ),
@@ -18305,7 +18338,7 @@ def _pipeline_body_stages(
         if stage is None:
             return None
         stages.append(stage)
-    if not stages or stages[-1].kind != "return":
+    if not stages or stages[-1].kind != _PIPELINE_RETURN_STAGE:
         return None
     return tuple(stages)
 
@@ -18324,7 +18357,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
             keyword.arg for keyword in statement.value.keywords if keyword.arg is not None
         )
         return PipelineAssemblyStage(
-            kind="assign",
+            kind=_PIPELINE_ASSIGN_STAGE,
             callee_name=callee_name,
             output_arity=output_arity,
             arg_count=len(statement.value.args) + len(keyword_names),
@@ -18338,7 +18371,7 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
             keyword.arg for keyword in statement.value.keywords if keyword.arg is not None
         )
         return PipelineAssemblyStage(
-            kind="return",
+            kind=_PIPELINE_RETURN_STAGE,
             callee_name=callee_name,
             output_arity=0,
             arg_count=len(statement.value.args) + len(keyword_names),
@@ -18411,7 +18444,7 @@ def _repeated_result_assembly_pipeline_candidates(
             continue
         if len(shared_tail) >= len(left.stages) or len(shared_tail) >= len(right.stages):
             continue
-        if shared_tail[-1].kind != "return":
+        if shared_tail[-1].kind != _PIPELINE_RETURN_STAGE:
             continue
         distinct_stage_names = {stage.callee_name for stage in shared_tail}
         if len(distinct_stage_names) < config.min_shared_pipeline_stages - 1:
@@ -18672,7 +18705,7 @@ def _module_compares_attribute(module: ast.Module, attr_name: str) -> bool:
             ):
                 return True
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == "getattr" and len(node.args) >= 2:
+            if node.func.id == _GETATTR_BUILTIN and len(node.args) >= 2:
                 attr = node.args[1]
                 if isinstance(attr, ast.Constant) and attr.value == attr_name:
                     return True

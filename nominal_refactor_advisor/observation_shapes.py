@@ -153,6 +153,36 @@ class SymbolOwnerMixin(ABC):
         return cast(Any, self).symbol
 
 
+@dataclass(frozen=True)
+class FunctionBodyCallLikeShape(
+    FunctionBodyExecutionMixin,
+    LinenoObservationMixin,
+    SymbolOwnerMixin,
+    StructuralObservationTemplate,
+    ABC,
+):
+    """Shared function-body call projection fields for call-like observations."""
+
+    class_name: str | None
+    function_name: str | None
+    lineno: int
+    value_fingerprint: tuple[str, ...]
+    source_arity: int
+    source_name: str | None
+    identity_field_names: tuple[str, ...]
+
+    @property
+    def owner_prefix(self) -> str:
+        owner = self.function_name or "<module>"
+        if self.class_name:
+            owner = f"{self.class_name}.{owner}"
+        return owner
+
+    @property
+    def nominal_witness(self) -> str:
+        return self.class_name or self.function_name or cast(Any, self).symbol
+
+
 class FunctionNameOwnerMixin(ABC):
     function_name: str
 
@@ -617,33 +647,14 @@ class MethodShape(
 
 
 @dataclass(frozen=True)
-class BuilderCallShape(
-    FunctionBodyExecutionMixin,
-    LinenoObservationMixin,
-    SymbolOwnerMixin,
-    StructuralObservationTemplate,
-):
+class BuilderCallShape(FunctionBodyCallLikeShape):
     OBSERVATION_KIND = ObservationKind.BUILDER_CALL
-    class_name: str | None
-    function_name: str | None
-    lineno: int
     callee_name: str
     keyword_names: tuple[str, ...]
-    value_fingerprint: tuple[str, ...]
-    source_arity: int
-    source_name: str | None
-    identity_field_names: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
-        owner = self.function_name or "<module>"
-        if self.class_name:
-            owner = f"{self.class_name}.{owner}"
-        return f"{owner}:{self.callee_name}"
-
-    @property
-    def nominal_witness(self) -> str:
-        return self.class_name or self.function_name or self.symbol
+        return f"{self.owner_prefix}:{self.callee_name}"
 
     @property
     def observed_name(self) -> str:
@@ -733,32 +744,13 @@ class RegistrationShape:
 
 
 @dataclass(frozen=True)
-class ExportDictShape(
-    FunctionBodyExecutionMixin,
-    LinenoObservationMixin,
-    SymbolOwnerMixin,
-    StructuralObservationTemplate,
-):
+class ExportDictShape(FunctionBodyCallLikeShape):
     OBSERVATION_KIND = ObservationKind.EXPORT_DICT
-    class_name: str | None
-    function_name: str | None
-    lineno: int
     key_names: tuple[str, ...]
-    value_fingerprint: tuple[str, ...]
-    source_arity: int
-    source_name: str | None
-    identity_field_names: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
-        owner = self.function_name or "<module>"
-        if self.class_name:
-            owner = f"{self.class_name}.{owner}"
-        return f"{owner}:export-dict"
-
-    @property
-    def nominal_witness(self) -> str:
-        return self.class_name or self.function_name or self.symbol
+        return f"{self.owner_prefix}:export-dict"
 
     @property
     def observed_name(self) -> str:

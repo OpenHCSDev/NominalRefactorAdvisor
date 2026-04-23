@@ -422,13 +422,12 @@ class HelperBackedScopedAssignObservationSpec(ScopeFilteredAssignObservationSpec
 class ObservationContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
     shape_helper: ClassVar[Callable[..., object | None]]
 
-    def build_from_context(
+    def shape_helper_args(
         self,
-        parsed_module: ParsedModule,
         node: ast.AST,
         observation: ScopedAstObservation,
-    ) -> object | None:
-        return type(self).shape_helper(parsed_module, node, observation)
+    ) -> tuple[object, ...]:
+        return (node, observation)
 
 
 class StandardConfigDispatchObservationSpec(

@@ -209,6 +209,43 @@ def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None
     )
 
 
+def test_private_cohort_ignores_generic_analyzer_vocabulary(tmp_path: Path) -> None:
+    filler = "# filler\n" * 240
+    helper_blocks = "\n\n".join(
+        (
+            f"def _parallel_keyed_family_candidate_{name}(value):\n"
+            + "\n".join(f"    step_{index} = value" for index in range(30))
+            + "\n    return value\n"
+        )
+        for name in (
+            "alpha",
+            "bravo",
+            "charlie",
+            "delta",
+            "echo",
+            "foxtrot",
+        )
+    )
+    _write_module(
+        tmp_path,
+        "pkg/analyzer_helpers.py",
+        f"{filler}\n{helper_blocks}\n",
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_orchestration_function_lines=20,
+            min_registration_sites=2,
+        ),
+    )
+
+    assert not any(
+        finding.detector_id == "private_cohort_should_be_module"
+        for finding in findings
+    )
+
+
 def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
