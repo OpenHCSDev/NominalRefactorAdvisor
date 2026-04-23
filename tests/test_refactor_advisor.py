@@ -28,6 +28,7 @@ from nominal_refactor_advisor.ast_tools import (
     SentinelTypeObservationFamily,
     StringLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationFamily,
+    TypedLiteralObservationSpec,
     collect_family_items,
     collect_scoped_observations,
     parse_python_modules,
@@ -1224,6 +1225,118 @@ def item_for_kind(kind):
     assert "ITEM_BY_KEY" in (finding.scaffold or "")
 
 
+def test_detects_runtime_adapter_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+from enum import Enum, auto
+
+
+class StrategyId(Enum):
+    ALPHA = auto()
+
+
+class ActionId(Enum):
+    DEFAULT = auto()
+
+
+class AlphaStrategy:
+    pass
+
+
+class DefaultAction:
+    pass
+
+
+@dataclass(frozen=True)
+class BaseSpec:
+    priority: int
+    dependencies: tuple[str, ...] = ()
+    strategy_id: StrategyId | None = None
+    action_id: ActionId | None = None
+
+
+@dataclass(frozen=True)
+class RuntimeSpec:
+    priority: int = 0
+    dependencies: tuple[str, ...] = ()
+    strategy: object | None = None
+    action: object | None = None
+
+
+STRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}
+ACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}
+
+
+def runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:
+    if spec is None:
+        return RuntimeSpec()
+    return RuntimeSpec(
+        priority=spec.priority,
+        dependencies=spec.dependencies,
+        strategy=STRATEGY_BY_ID.get(spec.strategy_id)
+        if spec.strategy_id is not None
+        else None,
+        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding for finding in findings if finding.detector_id == "runtime_adapter_shell"
+    )
+
+    assert "runtime_spec_for" in finding.summary
+    assert "RuntimeSpec" in finding.summary
+    assert "STRATEGY_BY_ID" in finding.summary
+    assert "ACTION_BY_ID" in finding.summary
+    assert "resolve_strategy" in (finding.scaffold or "")
+
+
+def test_detects_keyword_bag_adapter_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class OptionSpec:
+    help: str
+    action: str | None = None
+    default: object | None = None
+    dest: str | None = None
+
+
+def option_kwargs(spec: OptionSpec) -> dict[str, object]:
+    kwargs = {"help": spec.help}
+    if spec.action is not None:
+        kwargs["action"] = spec.action
+    if spec.default is not None:
+        kwargs["default"] = spec.default
+    if spec.dest is not None:
+        kwargs["dest"] = spec.dest
+    return kwargs
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "keyword_bag_adapter_shell"
+    )
+
+    assert "option_kwargs" in finding.summary
+    assert "help" in finding.summary
+    assert "action" in finding.summary
+    assert "as_kwargs" in (finding.scaffold or "")
+
+
 def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2389,6 +2502,7 @@ class PaymentFailedHandler:
     assert "HANDLERS" in finding.summary
     assert finding.scaffold is not None
     assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
+    assert "type_for_event_type" in finding.scaffold
     assert "cls.__registry__[event_type]" in finding.scaffold
 
 
@@ -3397,6 +3511,11 @@ REGISTRY["beta"] = BetaHandler
     )
     assert any(
         finding.pattern_id == 6
+        and "__key_extractor__" in (finding.scaffold or "")
+        for finding in findings
+    )
+    assert any(
+        finding.pattern_id == 6
         and "__registry__" in (finding.codemod_patch or "")
         for finding in findings
     )
@@ -3452,7 +3571,8 @@ class DonorExtractor(Extractor):
     assert "_registered_types" in finding.summary
     assert "registered_types" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
+    assert "__key_extractor__" in (finding.scaffold or "")
+    assert "AutoRegisteredFamily.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_selector_guard(
@@ -3627,6 +3747,7 @@ class BetaRenderRule(RenderRule):
     assert "BetaRenderRule" in finding.summary
     assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "__key_extractor__" in (finding.scaffold or "")
     assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
@@ -3681,6 +3802,7 @@ class GuidedRequest(RoutedRequest):
     assert "GuidedRequest" in finding.summary
     assert "route_name" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "__registry_key__ = \"route_name\"" in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_module_level_consumer(
@@ -3813,6 +3935,7 @@ class BetaRenderRule(RenderRule):
     assert "BetaRenderRule" in finding.summary
     assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "__key_extractor__" in (finding.scaffold or "")
     assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
@@ -4012,6 +4135,27 @@ def test_spec_families_use_autoregistration() -> None:
     assert field_specs == {
         "DataclassBodyFieldObservationSpec",
         "InitAssignmentFieldObservationSpec",
+    }
+
+
+def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
+    all_typed_specs = {
+        type(spec).__name__
+        for spec in TypedLiteralObservationSpec.registered_specs_for_literal_type()
+    }
+    string_typed_specs = {
+        type(spec).__name__
+        for spec in TypedLiteralObservationSpec.registered_specs_for_literal_type(str)
+    }
+
+    assert all_typed_specs == {
+        "StringLiteralDispatchObservationSpec",
+        "NumericLiteralDispatchObservationSpec",
+        "InlineStringLiteralDispatchObservationSpec",
+    }
+    assert string_typed_specs == {
+        "StringLiteralDispatchObservationSpec",
+        "InlineStringLiteralDispatchObservationSpec",
     }
 
 
@@ -5117,7 +5261,8 @@ def default_detectors():
     assert "default_detectors" in finding.summary
     assert "IssueDetector" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
+    assert "__key_extractor__" in (finding.scaffold or "")
+    assert "RegisteredIssueDetector.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
@@ -6351,7 +6496,8 @@ def collect_everything():
     assert "registered_plugins" in finding.summary
     assert "UnifiedRegistryRoot" in (finding.scaffold or "")
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
+    assert "__key_extractor__" in (finding.scaffold or "")
+    assert "UnifiedRegistryRoot.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
@@ -6410,8 +6556,8 @@ class HandlerRegistry:
     assert "all_registered_plugins" in finding.summary
     assert "all_registered_handlers" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "walk_family" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
+    assert "materialize_family" in (finding.scaffold or "")
+    assert "root.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> None:
@@ -6472,8 +6618,8 @@ def all_metrics():
         and "all_metrics" in finding.summary
     )
 
-    assert "walk_family" in (finding.scaffold or "")
-    assert "cls.__registry__.values()" in (finding.scaffold or "")
+    assert "materialize_family" in (finding.scaffold or "")
+    assert "root.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:

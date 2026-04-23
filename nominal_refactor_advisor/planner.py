@@ -46,17 +46,6 @@ class _FindingCluster:
     evidence: tuple[SourceLocation, ...]
 
 
-@dataclass(frozen=True)
-class PatternPlanningSpec:
-    """Planning metadata attached to one pattern in the plan builder."""
-
-    priority: int = 0
-    dependencies: tuple[PatternId, ...] = ()
-    synergy_with: tuple[PatternId, ...] = ()
-    plan_step_builder: PatternPlanStepBuilder | None = None
-    action_builder: PatternActionBuilder | None = None
-
-
 class PatternPlanStepBuilder(ABC):
     @abstractmethod
     def build(
@@ -495,21 +484,41 @@ _PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = {
 }
 
 
-def _pattern_planning_spec(pattern_id: PatternId) -> PatternPlanningSpec:
+def _pattern_priority(pattern_id: PatternId) -> int:
     pattern = PATTERN_SPECS.get(pattern_id)
     if pattern is None:
-        return PatternPlanningSpec()
-    return PatternPlanningSpec(
-        priority=pattern.priority,
-        dependencies=pattern.dependencies,
-        synergy_with=pattern.synergy_with,
-        plan_step_builder=_PATTERN_PLAN_STEP_BUILDERS.get(pattern.plan_step_builder_id)
-        if pattern.plan_step_builder_id is not None
-        else None,
-        action_builder=_PATTERN_ACTION_BUILDERS.get(pattern.action_builder_id)
-        if pattern.action_builder_id is not None
-        else None,
-    )
+        return 0
+    return pattern.priority
+
+
+def _pattern_dependencies(pattern_id: PatternId) -> tuple[PatternId, ...]:
+    pattern = PATTERN_SPECS.get(pattern_id)
+    if pattern is None:
+        return ()
+    return pattern.dependencies
+
+
+def _pattern_synergy_with(pattern_id: PatternId) -> tuple[PatternId, ...]:
+    pattern = PATTERN_SPECS.get(pattern_id)
+    if pattern is None:
+        return ()
+    return pattern.synergy_with
+
+
+def _pattern_plan_step_builder(
+    pattern_id: PatternId,
+) -> PatternPlanStepBuilder | None:
+    pattern = PATTERN_SPECS.get(pattern_id)
+    if pattern is None or pattern.plan_step_builder_id is None:
+        return None
+    return _PATTERN_PLAN_STEP_BUILDERS.get(pattern.plan_step_builder_id)
+
+
+def _pattern_action_builder(pattern_id: PatternId) -> PatternActionBuilder | None:
+    pattern = PATTERN_SPECS.get(pattern_id)
+    if pattern is None or pattern.action_builder_id is None:
+        return None
+    return _PATTERN_ACTION_BUILDERS.get(pattern.action_builder_id)
 
 
 def build_refactor_plans(
@@ -593,8 +602,8 @@ def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -
 
 def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
     return (
-        right in _pattern_planning_spec(left).synergy_with
-        or left in _pattern_planning_spec(right).synergy_with
+        right in _pattern_synergy_with(left)
+        or left in _pattern_synergy_with(right)
     )
 
 
@@ -710,9 +719,7 @@ def _select_pattern_cover(
             score = (
                 sum(pattern_counts[pattern_id] for pattern_id in subset),
                 sum(certified_counts[pattern_id] for pattern_id in subset),
-                sum(
-                    _pattern_planning_spec(pattern_id).priority for pattern_id in subset
-                ),
+                sum(_pattern_priority(pattern_id) for pattern_id in subset),
                 tuple(pattern_counts[pattern_id] for pattern_id in subset),
             )
             if best_score is None or score > best_score:
@@ -731,7 +738,7 @@ def _order_patterns(
 
     pattern_set = set(pattern_ids)
     dependencies = {
-        pattern_id: set(_pattern_planning_spec(pattern_id).dependencies) & pattern_set
+        pattern_id: set(_pattern_dependencies(pattern_id)) & pattern_set
         for pattern_id in pattern_ids
     }
     pattern_counts = Counter(finding.pattern_id for finding in findings)
@@ -744,7 +751,7 @@ def _order_patterns(
     while ready:
         ready.sort(
             key=lambda pattern_id: (
-                _pattern_planning_spec(pattern_id).priority,
+                _pattern_priority(pattern_id),
                 pattern_counts[pattern_id],
                 certified_counts[pattern_id],
                 -pattern_id,
@@ -767,7 +774,7 @@ def _order_patterns(
         ]
         remaining.sort(
             key=lambda pattern_id: (
-                _pattern_planning_spec(pattern_id).priority,
+                _pattern_priority(pattern_id),
                 -pattern_id,
             ),
             reverse=True,
@@ -890,7 +897,7 @@ def _pattern_step(
 ) -> str:
     supporting = [finding for finding in findings if finding.pattern_id == pattern_id]
     builder = (
-        _pattern_planning_spec(pattern_id).plan_step_builder
+        _pattern_plan_step_builder(pattern_id)
         or _GENERIC_PATTERN_PLAN_STEP_BUILDER
     )
     return builder.build(subsystem, pattern_id, tuple(supporting))
@@ -907,7 +914,7 @@ def _build_plan_actions(
             finding for finding in findings if finding.pattern_id == pattern_id
         )
         builder = (
-            _pattern_planning_spec(pattern_id).action_builder
+            _pattern_action_builder(pattern_id)
             or _GENERIC_PATTERN_ACTION_BUILDER
         )
         actions.extend(builder.build(subsystem, pattern_id, supporting))

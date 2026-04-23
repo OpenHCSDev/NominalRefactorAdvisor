@@ -30,20 +30,26 @@ class CliArgumentSpec:
     nargs: str | int | None = None
     value_type: type[object] | None = None
 
-
-def _argument_kwargs(spec: CliArgumentSpec) -> dict[str, object]:
-    kwargs: dict[str, object] = {"help": spec.help}
-    if spec.action is not None:
-        kwargs["action"] = spec.action
-    if spec.default is not None:
-        kwargs["default"] = spec.default
-    if spec.dest is not None:
-        kwargs["dest"] = spec.dest
-    if spec.nargs is not None:
-        kwargs["nargs"] = spec.nargs
-    if spec.value_type is not None:
-        kwargs["type"] = spec.value_type
-    return kwargs
+    def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
+        if self.dest is None:
+            parser.add_argument(
+                *self.flags,
+                help=self.help,
+                action=self.action,
+                default=self.default,
+                nargs=self.nargs,
+                type=self.value_type,
+            )
+            return
+        parser.add_argument(
+            *self.flags,
+            help=self.help,
+            action=self.action,
+            default=self.default,
+            dest=self.dest,
+            nargs=self.nargs,
+            type=self.value_type,
+        )
 
 
 _CLI_ARGUMENT_SPECS = (
@@ -269,7 +275,7 @@ def main() -> int:
         description="AST-driven refactoring advisor for nominal architecture."
     )
     for spec in _CLI_ARGUMENT_SPECS:
-        parser.add_argument(*spec.flags, **_argument_kwargs(spec))
+        spec.add_to_parser(parser)
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)

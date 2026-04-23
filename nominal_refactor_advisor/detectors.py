@@ -1937,6 +1937,8 @@ def _transport_shell_template_candidates(
 _TYPE_NAME_LITERAL = "type"
 _SUBJECT_NAME_FIELD = "subject_name"
 _NAME_FAMILY_FIELD = "name_family"
+_NAME_LITERAL = "name"
+_EVAL_PARSE_MODE = "eval"
 
 
 _IDENTITY_AXIS_KEYWORDS = frozenset(
@@ -1951,7 +1953,7 @@ _IDENTITY_AXIS_KEYWORDS = frozenset(
         "kind",
         "key",
         "mode",
-        "name",
+        _NAME_LITERAL,
         "request_type",
         "role",
         "stage",
@@ -4748,7 +4750,7 @@ def _normalized_shape_guard_signature(test: ast.AST) -> str:
                 return ast.copy_location(ast.Name(id=placeholder, ctx=ast.Load()), node)
             return self.generic_visit(node)
 
-    normalized_test = ast.parse(ast.unparse(test), mode="eval").body
+    normalized_test = ast.parse(ast.unparse(test), mode=_EVAL_PARSE_MODE).body
     normalized_test = ast.copy_location(normalized_test, test)
     normalized_test = ast.fix_missing_locations(normalized_test)
     normalized = cast(ast.AST, SelfAttrNormalizer().visit(normalized_test))
@@ -5073,7 +5075,7 @@ def _string_dispatch_cases_from_body(
         current_axis, case_name = dispatch_case
         if current_axis != axis_expression:
             return ()
-        if _constant_string(ast.parse(case_name, mode="eval").body) is None:
+        if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
             return ()
         cases.append(case_name)
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
@@ -5469,7 +5471,7 @@ def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
         roles.append(_SUBJECT_NAME_FIELD)
     if field_name in {"observed_name", "method_name", "builder_name", "export_name"}:
         roles.append("observed_name")
-    if field_name == "name" or field_name == _SUBJECT_NAME_FIELD or field_name.endswith(
+    if field_name == _NAME_LITERAL or field_name == _SUBJECT_NAME_FIELD or field_name.endswith(
         "_name"
     ):
         roles.append("name_payload")
@@ -5664,13 +5666,14 @@ def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) ->
 
 def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
     return (
+        "from abc import ABC\n"
         "from metaclass_registry import AutoRegisterMeta\n\n"
         "class EventHandler(ABC, metaclass=AutoRegisterMeta):\n"
         "    __registry_key__ = \"event_type\"\n"
         "    __skip_if_no_key__ = True\n"
         "    event_type = None\n\n"
         "    @classmethod\n"
-        "    def for_event_type(cls, event_type):\n"
+        "    def type_for_event_type(cls, event_type):\n"
         "        return cls.__registry__[event_type]"
     )
 
@@ -5686,6 +5689,132 @@ def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
 _AXIS_POLICY_ROOT_NAME = "AxisPolicy"
 _AXIS_POLICY_KEY_TYPE_NAME = "AxisEnum"
 _AXIS_POLICY_KEY_ATTR_NAME = "axis_key"
+_CLASS_NAME_TOKEN_PATTERN = (
+    r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
+)
+
+
+def _string_constant_expression(expression: str) -> str | None:
+    try:
+        node = ast.parse(expression, mode=_EVAL_PARSE_MODE).body
+    except SyntaxError:
+        return None
+    return _constant_string(node)
+
+
+def _normalized_registry_key_from_class_name(
+    class_name: str,
+    *,
+    stripped_suffix: str | None = None,
+) -> str:
+    source_name = (
+        class_name.removesuffix(stripped_suffix)
+        if stripped_suffix
+        else class_name
+    )
+    tokens = _ordered_class_name_tokens(source_name)
+    if tokens:
+        return "_".join(tokens)
+    return source_name.lower()
+
+
+def _raw_class_name_tokens(name: str) -> tuple[str, ...]:
+    return tuple(re.findall(_CLASS_NAME_TOKEN_PATTERN, name.lstrip("_")))
+
+
+def _shared_registry_key_suffix(class_names: Sequence[str]) -> str | None:
+    if len(class_names) < 2:
+        return None
+    raw_token_lists = tuple(_raw_class_name_tokens(name) for name in class_names)
+    lower_token_lists = tuple(
+        tuple(token.lower() for token in token_list) for token_list in raw_token_lists
+    )
+    if not all(token_list for token_list in lower_token_lists):
+        return None
+    shared_reversed: list[str] = []
+    for shared_tokens in zip(
+        *(reversed(tokens) for tokens in lower_token_lists),
+        strict=False,
+    ):
+        if len(set(shared_tokens)) != 1:
+            break
+        shared_reversed.append(shared_tokens[0])
+    if not shared_reversed:
+        return None
+    shared_count = len(shared_reversed)
+    if len(lower_token_lists[0]) <= shared_count:
+        return None
+    return "".join(raw_token_lists[0][-shared_count:])
+
+
+def _derivable_registry_key_suffix(
+    class_names: Sequence[str],
+    explicit_key_values: Sequence[str] | None = None,
+) -> str | None:
+    if not class_names:
+        return None
+    normalized_names = tuple(class_names)
+    suffix_candidates = []
+    shared_suffix = _shared_registry_key_suffix(normalized_names)
+    if shared_suffix and all(
+        name.removesuffix(shared_suffix) for name in normalized_names
+    ):
+        suffix_candidates.append(shared_suffix)
+    suffix_candidates.append("")
+    if explicit_key_values is None:
+        return suffix_candidates[0]
+    for suffix in suffix_candidates:
+        stripped_suffix = suffix or None
+        derived_values = tuple(
+            _normalized_registry_key_from_class_name(
+                class_name,
+                stripped_suffix=stripped_suffix,
+            )
+            for class_name in normalized_names
+        )
+        if tuple(explicit_key_values) == derived_values:
+            return stripped_suffix
+    return None
+
+
+def _derived_registry_key_block(
+    class_names: Sequence[str],
+    *,
+    registry_key_attr_name: str = "registry_key",
+) -> str:
+    stripped_suffix = _derivable_registry_key_suffix(class_names)
+    source_name = _NAME_LITERAL
+    if stripped_suffix:
+        source_name = f'name.removesuffix("{stripped_suffix}")'
+    return "\n".join(
+        (
+            f"    __registry_key__ = \"{registry_key_attr_name}\"",
+            "    __skip_if_no_key__ = True",
+            "",
+            "    @staticmethod",
+            "    def _registry_key(name: str, cls):",
+            "        del cls",
+            f"        tokens = re.findall(r\"{_CLASS_NAME_TOKEN_PATTERN}\", {source_name})",
+            "        return \"_\".join(token.lower() for token in tokens)",
+            "",
+            "    __key_extractor__ = _registry_key",
+        )
+    )
+
+
+def _declared_registry_key_block(
+    key_attr_name: str,
+    *,
+    key_type_name: str | None = None,
+) -> str:
+    type_suffix = f": ClassVar[{key_type_name} | None]" if key_type_name else ""
+    return "\n".join(
+        (
+            f"    __registry_key__ = \"{key_attr_name}\"",
+            "    __skip_if_no_key__ = True",
+            f"    {key_attr_name}{type_suffix} = None",
+        )
+    )
 
 
 def _metaclass_registry_keyed_family_scaffold(
@@ -5694,20 +5823,25 @@ def _metaclass_registry_keyed_family_scaffold(
     key_type_name: str,
     key_attr_name: str,
     method_defs: tuple[str, ...],
+    returns_instance: bool = True,
 ) -> str:
+    registry_lookup = "cls.__registry__[key]()"
+    if not returns_instance:
+        registry_lookup = "cls.__registry__[key]"
     lines = [
         "from abc import ABC, abstractmethod",
         "from metaclass_registry import AutoRegisterMeta",
         "from typing import ClassVar",
         "",
         f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
-        f"    __registry_key__ = \"{key_attr_name}\"",
-        "    __skip_if_no_key__ = True",
-        f"    {key_attr_name}: ClassVar[{key_type_name} | None] = None",
+        _declared_registry_key_block(
+            key_attr_name,
+            key_type_name=key_type_name,
+        ),
         "",
         "    @classmethod",
         f"    def for_key(cls, key: {key_type_name}):",
-        "        return cls.__registry__[key]()",
+        f"        return {registry_lookup}",
     ]
     for method_def in method_defs:
         lines.extend(
@@ -6847,6 +6981,28 @@ class DerivedQueryIndexCandidate:
                 strict=True,
             )
         )
+
+
+@dataclass(frozen=True)
+class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
+    adapter_class_name: str
+    source_name: str
+    copied_field_names: tuple[str, ...]
+    resolver_field_names: tuple[str, ...]
+    resolver_table_names: tuple[str, ...]
+    selector_field_names: tuple[str, ...]
+    evidence_locations: tuple[SourceLocation, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence_locations
+
+
+@dataclass(frozen=True)
+class KeywordBagAdapterCandidate(FunctionLineWitnessCandidate):
+    source_name: str
+    key_names: tuple[str, ...]
+    source_field_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -11105,16 +11261,13 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
                 ),
             ),
             scaffold=(
+                "from abc import ABC\n"
+                "import re\n"
                 "from metaclass_registry import AutoRegisterMeta\n\n"
                 "class UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n"
-                "    __registry_key__ = \"kind\"\n"
-                "    __skip_if_no_key__ = True\n"
-                "    kind = None\n\n"
-                "    @classmethod\n"
-                f"    def {union_candidate.accessor_name}(cls):\n"
-                "        return tuple(cls.__registry__.values())\n\n"
+                f"{_derived_registry_key_block(union_candidate.root_names)}\n\n"
                 f"def {union_candidate.owner_name}(...):\n"
-                f"    return UnifiedRegistryRoot.{union_candidate.accessor_name}()"
+                "    return tuple(UnifiedRegistryRoot.__registry__.values())"
             ),
             codemod_patch=(
                 f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n"
@@ -11174,6 +11327,37 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             if not group.filter_names
             else f" with filter hooks {group.filter_names}"
         )
+        scaffold = (
+            "import re\n"
+            "from abc import ABC\n"
+            "from metaclass_registry import AutoRegisterMeta\n\n"
+            "class RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
+            f"{_derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\n"
+            "def materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
+            "    return tuple(\n"
+            "        materialize(item)\n"
+            "        for item in root.__registry__.values()\n"
+            "        if include(item)\n"
+            "    )"
+            if group.registry_attribute_names
+            else (
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "def walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
+                "    seen = set()\n"
+                "    ordered = []\n"
+                "    queue = list(root.__subclasses__())\n"
+                "    while queue:\n"
+                "        current = queue.pop(0)\n"
+                "        queue.extend(current.__subclasses__())\n"
+                "        if not include(current) or current in seen:\n"
+                "            continue\n"
+                "        seen.add(current)\n"
+                "        ordered.append(materialize(current))\n"
+                "    return tuple(ordered)\n\n"
+                "# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n"
+                "# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
+            )
+        )
         return [
             self.finding_spec.build(
                 self.detector_id,
@@ -11182,23 +11366,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
                     f"{registry_clause}{filter_clause} with materialization modes {group.materialization_kinds}."
                 ),
                 evidence,
-                scaffold=(
-                    "from metaclass_registry import AutoRegisterMeta\n\n"
-                    "def walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
-                    "    seen = set()\n"
-                    "    ordered = []\n"
-                    "    queue = list(root.__subclasses__())\n"
-                    "    while queue:\n"
-                    "        current = queue.pop(0)\n"
-                    "        queue.extend(current.__subclasses__())\n"
-                    "        if not include(current) or current in seen:\n"
-                    "            continue\n"
-                    "        seen.add(current)\n"
-                    "        ordered.append(materialize(current))\n"
-                    "    return tuple(ordered)\n\n"
-                    "# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n"
-                    "# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
-                ),
+                scaffold=scaffold,
                 codemod_patch=(
                     "# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n"
                     "# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm."
@@ -11748,6 +11916,18 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
             else ""
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])
+        config_block = (
+            _declared_registry_key_block(
+                roster_candidate.registration_site.selector_attr_name
+            )
+            if roster_candidate.registration_site.selector_attr_name is not None
+            else _derived_registry_key_block(roster_candidate.concrete_class_names)
+        )
+        scaffold_imports = (
+            "from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\n"
+            if roster_candidate.registration_site.selector_attr_name is None
+            else "from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n"
+        )
         return self.finding_spec.build(
             self.detector_id,
             (
@@ -11755,14 +11935,10 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
             ),
             tuple(evidence[:6]),
             scaffold=(
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                "class AutoRegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
-                "    __registry_key__ = \"family_key\"\n"
-                "    __skip_if_no_key__ = True\n"
-                "    family_key = None\n\n"
-                "    @classmethod\n"
-                "    def registered_types(cls) -> tuple[type[Self], ...]:\n"
-                "        return tuple(cls.__registry__.values())"
+                scaffold_imports
+                + "class AutoRegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
+                + f"{config_block}\n\n"
+                + "registered_types = tuple(AutoRegisteredFamily.__registry__.values())"
             ),
             codemod_patch=(
                 f"# Remove manual roster `{roster_candidate.registry_name}` from `{roster_candidate.class_name}`.\n"
@@ -11830,12 +12006,13 @@ class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
             ),
             tuple(evidence[:6]),
             scaffold=(
-                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "from abc import ABC\n"
+                "import re\n"
+                "from metaclass_registry import AutoRegisterMeta\n"
+                "from typing import Generic, Self, TypeVar\n\n"
                 "ContextT = TypeVar(\"ContextT\")\n\n"
                 "class PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n"
-                "    __registry_key__ = \"family_key\"\n"
-                "    __skip_if_no_key__ = True\n"
-                "    family_key = None\n\n"
+                f"{_derived_registry_key_block(family_candidate.concrete_class_names)}\n\n"
                 "    @classmethod\n"
                 "    def matches_context(cls, context: ContextT) -> bool:\n"
                 "        return True\n\n"
@@ -14891,6 +15068,295 @@ def _derived_query_index_candidates(
     )
 
 
+def _simple_attribute_accesses(node: ast.AST) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (current.value.id, current.attr)
+        for current in _walk_nodes(node)
+        if isinstance(current, ast.Attribute)
+        and isinstance(current.value, ast.Name)
+        and current.value.id not in {"self", "cls"}
+    )
+
+
+def _projection_source_name(node: ast.Call) -> str | None:
+    source_counts: Counter[str] = Counter(
+        root_name
+        for keyword in node.keywords
+        if keyword.arg is not None
+        for root_name, _ in _simple_attribute_accesses(keyword.value)
+    )
+    if not source_counts:
+        return None
+    source_name, count = source_counts.most_common(1)[0]
+    if count < 3:
+        return None
+    if sum(1 for value in source_counts.values() if value == count) > 1:
+        return None
+    return source_name
+
+
+def _direct_source_attribute_name(node: ast.AST, source_name: str) -> str | None:
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == source_name
+    ):
+        return node.attr
+    return None
+
+
+def _resolver_lookup_metadata(
+    node: ast.AST, source_name: str
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    table_names: set[str] = set()
+    selector_field_names = tuple(
+        sorted(
+            {
+                attr_name
+                for root_name, attr_name in _simple_attribute_accesses(node)
+                if root_name == source_name
+            }
+        )
+    )
+    if not selector_field_names:
+        return None
+    for current in _walk_nodes(node):
+        if (
+            isinstance(current, ast.Call)
+            and isinstance(current.func, ast.Attribute)
+            and current.func.attr == "get"
+            and isinstance(current.func.value, ast.Name)
+        ):
+            table_names.add(current.func.value.id)
+            continue
+        if isinstance(current, ast.Subscript) and isinstance(current.value, ast.Name):
+            table_names.add(current.value.id)
+    if not table_names:
+        return None
+    return (tuple(sorted(table_names)), selector_field_names)
+
+
+def _runtime_adapter_shell_candidates(
+    module: ParsedModule,
+) -> tuple[RuntimeAdapterShellCandidate, ...]:
+    class_defs_by_name = _module_class_defs_by_name(module)
+    local_dataclass_names = {
+        class_name
+        for class_name, node in class_defs_by_name.items()
+        if _is_dataclass_class(node)
+    }
+    if not local_dataclass_names:
+        return ()
+    table_lines = {
+        table_name: line
+        for table_name, (line, _) in _module_level_named_dicts(module).items()
+    }
+    candidates: list[RuntimeAdapterShellCandidate] = []
+    for qualname, function in _iter_named_functions(module):
+        for current in _walk_nodes(function):
+            if (
+                not isinstance(current, ast.Return)
+                or not isinstance(current.value, ast.Call)
+                or len(current.value.keywords) < 3
+            ):
+                continue
+            adapter_class_name = _ast_terminal_name(current.value.func)
+            if adapter_class_name not in local_dataclass_names:
+                continue
+            source_name = _projection_source_name(current.value)
+            if source_name is None:
+                continue
+            copied_field_names: list[str] = []
+            resolver_field_names: list[str] = []
+            resolver_table_names: set[str] = set()
+            selector_field_names: set[str] = set()
+            for keyword in current.value.keywords:
+                if keyword.arg is None:
+                    continue
+                if (
+                    direct_attr_name := _direct_source_attribute_name(
+                        keyword.value, source_name
+                    )
+                ) is not None:
+                    copied_field_names.append(keyword.arg)
+                    selector_field_names.add(direct_attr_name)
+                    continue
+                resolver_metadata = _resolver_lookup_metadata(keyword.value, source_name)
+                if resolver_metadata is None:
+                    continue
+                table_names, resolver_fields = resolver_metadata
+                resolver_field_names.append(keyword.arg)
+                resolver_table_names.update(table_names)
+                selector_field_names.update(resolver_fields)
+            if len(copied_field_names) < 2 or not resolver_field_names:
+                continue
+            evidence = [
+                SourceLocation(str(module.path), function.lineno, qualname),
+                SourceLocation(str(module.path), current.lineno, adapter_class_name),
+            ]
+            evidence.extend(
+                SourceLocation(
+                    str(module.path),
+                    table_lines.get(table_name, current.lineno),
+                    table_name,
+                )
+                for table_name in sorted(resolver_table_names)
+            )
+            candidates.append(
+                RuntimeAdapterShellCandidate(
+                    file_path=str(module.path),
+                    line=function.lineno,
+                    function_name=qualname,
+                    adapter_class_name=adapter_class_name,
+                    source_name=source_name,
+                    copied_field_names=tuple(sorted(copied_field_names)),
+                    resolver_field_names=tuple(sorted(resolver_field_names)),
+                    resolver_table_names=tuple(sorted(resolver_table_names)),
+                    selector_field_names=tuple(sorted(selector_field_names)),
+                    evidence_locations=tuple(evidence[:6]),
+                )
+            )
+            break
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.function_name),
+        )
+    )
+
+
+def _is_none_guard_for_source_attr(
+    node: ast.AST, source_name: str
+) -> tuple[str, str] | None:
+    if (
+        not isinstance(node, ast.Compare)
+        or len(node.ops) != 1
+        or len(node.comparators) != 1
+        or not isinstance(node.ops[0], (ast.IsNot, ast.NotEq))
+    ):
+        return None
+    attr_name = _direct_source_attribute_name(node.left, source_name)
+    comparator = node.comparators[0]
+    if attr_name is None or not (
+        isinstance(comparator, ast.Constant) and comparator.value is None
+    ):
+        return None
+    return (source_name, attr_name)
+
+
+def _keyword_bag_adapter_candidates(
+    module: ParsedModule,
+) -> tuple[KeywordBagAdapterCandidate, ...]:
+    candidates: list[KeywordBagAdapterCandidate] = []
+    for qualname, function in _iter_named_functions(module):
+        body = _trim_docstring_body(function.body)
+        if len(body) < 2:
+            continue
+        kwargs_name: str | None = None
+        source_name: str | None = None
+        key_names: list[str] = []
+        source_field_names: list[str] = []
+        invalid_shape = False
+        for index, statement in enumerate(body):
+            if index == 0:
+                target_name: str | None = None
+                value: ast.AST | None = None
+                if (
+                    isinstance(statement, ast.Assign)
+                    and len(statement.targets) == 1
+                    and isinstance(statement.targets[0], ast.Name)
+                ):
+                    target_name = statement.targets[0].id
+                    value = statement.value
+                elif isinstance(statement, ast.AnnAssign) and isinstance(
+                    statement.target, ast.Name
+                ):
+                    target_name = statement.target.id
+                    value = statement.value
+                if target_name is None or not isinstance(value, ast.Dict):
+                    invalid_shape = True
+                    break
+                kwargs_name = target_name
+                for key, value in zip(
+                    value.keys, value.values, strict=False
+                ):
+                    key_name = _constant_string(key)
+                    if key_name is None:
+                        invalid_shape = True
+                        break
+                    accesses = _simple_attribute_accesses(value)
+                    if len(accesses) != 1:
+                        invalid_shape = True
+                        break
+                    field_source_name, field_name = accesses[0]
+                    source_name = source_name or field_source_name
+                    if field_source_name != source_name:
+                        invalid_shape = True
+                        break
+                    key_names.append(key_name)
+                    source_field_names.append(field_name)
+                if invalid_shape:
+                    break
+                continue
+            if index == len(body) - 1:
+                if (
+                    not isinstance(statement, ast.Return)
+                    or not isinstance(statement.value, ast.Name)
+                    or statement.value.id != kwargs_name
+                ):
+                    invalid_shape = True
+                break
+            if (
+                not isinstance(statement, ast.If)
+                or statement.orelse
+                or source_name is None
+                or _is_none_guard_for_source_attr(statement.test, source_name) is None
+                or len(statement.body) != 1
+                or not isinstance(statement.body[0], ast.Assign)
+                or len(statement.body[0].targets) != 1
+            ):
+                invalid_shape = True
+                break
+            guard_source_name, guard_field_name = cast(
+                tuple[str, str],
+                _is_none_guard_for_source_attr(statement.test, source_name),
+            )
+            target = statement.body[0].targets[0]
+            value = statement.body[0].value
+            if (
+                not isinstance(target, ast.Subscript)
+                or not isinstance(target.value, ast.Name)
+                or target.value.id != kwargs_name
+                or (key_name := _constant_string(target.slice)) is None
+            ):
+                invalid_shape = True
+                break
+            value_attr_name = _direct_source_attribute_name(value, guard_source_name)
+            if value_attr_name != guard_field_name:
+                invalid_shape = True
+                break
+            key_names.append(key_name)
+            source_field_names.append(value_attr_name)
+        if invalid_shape or source_name is None or len(key_names) < 3:
+            continue
+        candidates.append(
+            KeywordBagAdapterCandidate(
+                file_path=str(module.path),
+                line=function.lineno,
+                function_name=qualname,
+                source_name=source_name,
+                key_names=tuple(sorted(key_names)),
+                source_field_names=tuple(sorted(source_field_names)),
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.function_name),
+        )
+    )
+
+
 def _structural_observation_property_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
@@ -17712,19 +18178,19 @@ class ManualFamilyRosterDetector(IssueDetector):
                         ),
                         tuple(evidence[:6]),
                         scaffold=(
-                            "from metaclass_registry import AutoRegisterMeta\n\n"
+                            "from abc import ABC\n"
+                            "import re\n"
+                            "from metaclass_registry import AutoRegisterMeta\n"
+                            "from typing import ClassVar\n\n"
                             f"class Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n"
-                            "    __registry_key__ = \"registration_key\"\n"
-                            "    __skip_if_no_key__ = True\n"
-                            "    registration_key = None\n"
+                            f"{_derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n"
                             "    registration_order: ClassVar[int] = 0\n\n"
-                            "    @classmethod\n"
-                            "    def registered_types(cls):\n"
-                            "        ordered = sorted(\n"
-                            "            cls.__registry__.values(),\n"
-                            "            key=lambda registered_type: registered_type.registration_order,\n"
-                            "        )\n"
-                            "        return tuple(ordered)"
+                            "ordered_types = tuple(\n"
+                            "    sorted(\n"
+                            f"        Registered{candidate.family_base_name}.__registry__.values(),\n"
+                            "        key=lambda registered_type: registered_type.registration_order,\n"
+                            "    )\n"
+                            ")"
                         ),
                         codemod_patch=(
                             f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
@@ -17858,6 +18324,137 @@ class DerivedQueryIndexSurfaceDetector(CandidateFindingDetector):
                 field_names=query_candidate.query_key_names,
                 source_name=query_candidate.source_expression,
                 identity_field_names=query_candidate.query_key_names,
+            ),
+        )
+
+
+class RuntimeAdapterShellDetector(CandidateFindingDetector):
+    detector_id = "runtime_adapter_shell"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Secondary runtime adapter shell should collapse into the authoritative spec",
+        why=(
+            "A function is rebuilding a local runtime/spec record by copying fields from one authoritative source "
+            "record and resolving strategy ids through lookup tables. The docs treat that as secondary writable "
+            "authority rather than a true abstraction boundary."
+        ),
+        capability_gap="single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell",
+        relation_context="one function copies source-record fields into a second record and resolves runtime hooks through keyed tables",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _runtime_adapter_shell_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        adapter_candidate = cast(RuntimeAdapterShellCandidate, candidate)
+        copied_fields = ", ".join(adapter_candidate.copied_field_names[:4])
+        resolved_fields = ", ".join(adapter_candidate.resolver_field_names[:4])
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{adapter_candidate.function_name}` rebuilds `{adapter_candidate.adapter_class_name}` from "
+                f"`{adapter_candidate.source_name}` by copying {copied_fields} and resolving "
+                f"{resolved_fields} through {adapter_candidate.resolver_table_names}."
+            ),
+            adapter_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class AuthoritySpec:\n"
+                "    priority: int\n"
+                "    dependencies: tuple[object, ...] = ()\n"
+                "    strategy_id: object | None = None\n\n"
+                "    def resolve_strategy(self):\n"
+                "        return STRATEGY_BY_ID.get(self.strategy_id)\n"
+            ),
+            codemod_patch=(
+                f"# Stop rehydrating `{adapter_candidate.adapter_class_name}` inside `{adapter_candidate.function_name}`.\n"
+                "# Keep one authoritative spec/record and either attach resolver methods to it or expose one materializer on that record.\n"
+                f"# Collapse copied fields {adapter_candidate.copied_field_names} and resolver selectors "
+                f"{adapter_candidate.selector_field_names} onto the source authority."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=1,
+                field_count=(
+                    len(adapter_candidate.copied_field_names)
+                    + len(adapter_candidate.resolver_field_names)
+                ),
+                mapping_name=adapter_candidate.adapter_class_name,
+                field_names=(
+                    adapter_candidate.copied_field_names
+                    + adapter_candidate.resolver_field_names
+                ),
+                source_name=adapter_candidate.source_name,
+                identity_field_names=adapter_candidate.copied_field_names,
+            ),
+        )
+
+
+class KeywordBagAdapterShellDetector(CandidateFindingDetector):
+    detector_id = "keyword_bag_adapter_shell"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Record-to-kwargs adapter shell should collapse onto the record authority",
+        why=(
+            "A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. "
+            "The docs treat that as a transport shell unless the kwargs bag is itself the real authority."
+        ),
+        capability_gap="single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
+        relation_context="one helper copies several fields from a source record into a transient kwargs dictionary",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _keyword_bag_adapter_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        adapter_candidate = cast(KeywordBagAdapterCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} "
+                f"from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}."
+            ),
+            (adapter_candidate.evidence,),
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class OptionSpec:\n"
+                "    help: str\n"
+                "    action: str | None = None\n\n"
+                "    def as_kwargs(self) -> dict[str, object]:\n"
+                "        kwargs: dict[str, object] = {\"help\": self.help}\n"
+                "        if self.action is not None:\n"
+                "            kwargs[\"action\"] = self.action\n"
+                "        return kwargs"
+            ),
+            codemod_patch=(
+                f"# Stop routing `{adapter_candidate.source_name}` through standalone helper `{adapter_candidate.function_name}`.\n"
+                "# Put the kwargs projection on the source record itself or make the downstream builder consume the record directly."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=1,
+                field_count=len(adapter_candidate.key_names),
+                mapping_name=adapter_candidate.function_name,
+                field_names=adapter_candidate.key_names,
+                source_name=adapter_candidate.source_name,
+                identity_field_names=adapter_candidate.source_field_names,
             ),
         )
 
@@ -18308,7 +18905,7 @@ _SEMANTIC_KEYWORD_NAMES = {
     "kind",
     "label",
     "mode",
-    "name",
+    _NAME_LITERAL,
     "observation_tags",
     "pattern_id",
     "registry_key",
@@ -18630,19 +19227,43 @@ def _autoregister_patch(
 ) -> str:
     target_file = registrations[0].file_path
     base_name = _shared_family_name(sorted(class_names)) or "RegisteredBase"
+    ordered_class_names = tuple(sorted(class_names))
+    key_values = tuple(
+        key_value
+        for class_name in ordered_class_names
+        if (
+            key_value := _string_constant_expression(
+                next(
+                    registration.key_expression
+                    for registration in registrations
+                    if registration.registered_class == class_name
+                )
+            )
+        )
+        is not None
+    )
+    use_extractor = len(key_values) == len(ordered_class_names) and (
+        _derivable_registry_key_suffix(ordered_class_names, key_values) is not None
+    )
+    config_block = (
+        _derived_registry_key_block(ordered_class_names)
+        if use_extractor
+        else _declared_registry_key_block("registry_key")
+    )
     return (
         "*** Begin Patch\n"
         f"*** Update File: {target_file}\n"
         "@@\n"
-        "+from metaclass_registry import AutoRegisterMeta\n"
-        "+\n"
-        f"+class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
-        "+    __registry_key__ = \"registry_key\"\n"
-        "+    __skip_if_no_key__ = True\n"
-        "+    registry_key = None\n"
-        "+\n"
-        f"+# Replace `{registry_name}` with `{base_name}.__registry__`.\n"
-        "*** End Patch"
+        + (
+            "+from metaclass_registry import AutoRegisterMeta\n"
+            + ("+import re\n" if use_extractor else "")
+            + "+\n"
+            + f"+class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
+            + "".join(f"+{line}\n" for line in config_block.splitlines())
+            + "+\n"
+            + f"+# Replace `{registry_name}` with `{base_name}.__registry__`.\n"
+            + "*** End Patch"
+        )
     )
 
 
@@ -18734,16 +19355,14 @@ def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> s
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
     base_name = _shared_family_name(sorted(class_names)) or "RegisteredBase"
     sample = sorted(class_names)[:2]
-    subclass_block = "\n".join(
-        f'class {name}({base_name}):\n    registry_key = "{name.lower()}"'
-        for name in sample
-    )
+    config_block = _derived_registry_key_block(sample)
+    subclass_block = "\n".join(f"class {name}({base_name}):\n    ..." for name in sample)
     return (
+        "from abc import ABC\n"
+        "import re\n"
         "from metaclass_registry import AutoRegisterMeta\n\n"
         f"class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
-        "    __registry_key__ = \"registry_key\"\n"
-        "    __skip_if_no_key__ = True\n"
-        "    registry_key = None\n\n"
+        f"{config_block}\n\n"
         f"{subclass_block}"
     )
 

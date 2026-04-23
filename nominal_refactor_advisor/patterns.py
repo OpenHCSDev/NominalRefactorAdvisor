@@ -208,7 +208,7 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         PatternId.AUTO_REGISTER_META,
         "Auto-Registration Metaclass",
         "Centralize repeated class-level registration logic in one authoritative metaclass algorithm, using `metaclass-registry`'s `AutoRegisterMeta` when the family really is a plugin-style registry.",
-        "`metaclass-registry` `AutoRegisterMeta` base that owns import-time registration, skipping, uniqueness, and inheritance behavior.",
+        "`metaclass-registry` `AutoRegisterMeta` base that owns import-time registration, skipping, uniqueness, inheritance behavior, and derived-key extraction when class names already imply the key.",
         (
             "Identify the repeated registration sites.",
             "Move registration into one `metaclass-registry` metaclass base.",
@@ -221,7 +221,7 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         ),
         (
             "from metaclass_registry import AutoRegisterMeta\n\nclass HandlerBase(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'handler_name'\n    __skip_if_no_key__ = True\n    handler_name = None",
-            "from metaclass_registry import AutoRegisterMeta\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'name'\n    __skip_if_no_key__ = True\n    name = None",
+            "import re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'registry_key'\n    __skip_if_no_key__ = True\n\n    @staticmethod\n    def _registry_key(name, cls):\n        del cls\n        tokens = re.findall(r\"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+\", name.removesuffix('Handler'))\n        return '_'.join(token.lower() for token in tokens)\n\n    __key_extractor__ = _registry_key",
         ),
         priority=84,
         synergy_with=(

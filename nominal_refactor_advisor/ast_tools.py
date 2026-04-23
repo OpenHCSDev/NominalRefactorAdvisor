@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import ast
 import copy
-from abc import ABC, ABCMeta, abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, ClassVar, TypeAlias, TypeVar
+from typing import Callable, ClassVar, TypeAlias, TypeVar, cast
+
+from metaclass_registry import AutoRegisterMeta
 
 from .observation_graph import (
     NominalWitnessGroup,
@@ -96,34 +98,8 @@ class ClassAstObservation:
     is_dataclass_family: bool
 
 
-class AutoRegisterMeta(ABCMeta):
-    """Metaclass that performs definition-time registration on registry roots."""
-
-    def __new__(
-        mcls,
-        name: str,
-        bases: tuple[type[object], ...],
-        namespace: dict[str, object],
-        **kwargs: object,
-    ):
-        cls = super().__new__(mcls, name, bases, namespace, **kwargs)
-        if namespace.get("_registry_root", False):
-            setattr(cls, "_registered_spec_types", [])
-            return cls
-        if namespace.get("_registry_skip", False):
-            return cls
-        if cls.__abstractmethods__:
-            return cls
-        for base in cls.__mro__[1:]:
-            registry = base.__dict__.get("_registered_spec_types")
-            if registry is None:
-                continue
-            registry.append(cls)
-            break
-        return cls
-
-
 _TRegistered = TypeVar("_TRegistered")
+_TRegisteredType = TypeVar("_TRegisteredType", bound=type[object])
 
 
 def _descendant_types(root: type[object]) -> tuple[type[object], ...]:
@@ -140,23 +116,72 @@ def _descendant_types(root: type[object]) -> tuple[type[object], ...]:
     return tuple(ordered)
 
 
-def _walk_registered_descendants(
+def _registry_member_key(registered_type: type[object]) -> tuple[str, int, str]:
+    return (
+        registered_type.__module__,
+        cast(int, registered_type.__dict__.get("__firstlineno__", 0)),
+        registered_type.__qualname__,
+    )
+
+
+def _registered_type_token(_name: str, cls: type[object]) -> str | None:
+    if cls.__dict__.get("_registry_skip", False):
+        return None
+    return f"{cls.__module__}:{cls.__qualname__}"
+
+
+def _ordered_registered_types(
+    root: type[_TRegisteredType],
+) -> tuple[type[_TRegisteredType], ...]:
+    registry = root.__registry__
+    seen: set[type[object]] = set()
+    ordered: list[type[_TRegisteredType]] = []
+    for registered_type in sorted(
+        registry.values(),
+        key=lambda candidate: _registry_member_key(cast(type[object], candidate)),
+    ):
+        registered_class = cast(type[_TRegisteredType], registered_type)
+        if registered_class in seen or not issubclass(registered_class, root):
+            continue
+        seen.add(registered_class)
+        ordered.append(registered_class)
+    return tuple(ordered)
+
+
+def _is_direct_registered_descendant(
+    candidate: type[object],
     root: type[object],
     *,
-    materialize: Callable[[type[object]], _TRegistered],
-) -> tuple[_TRegistered, ...]:
-    seen: set[type[object]] = set()
-    ordered: list[_TRegistered] = []
-    for current in _descendant_types(root):
-        registry = current.__dict__.get("_registered_spec_types")
-        if registry is None:
+    registry_base: type[object],
+) -> bool:
+    if not issubclass(candidate, root):
+        return False
+    if not root.__dict__.get("_registry_root", False):
+        return True
+    for ancestor in candidate.__mro__[1:]:
+        if ancestor is root:
+            return True
+        if not issubclass(ancestor, registry_base):
             continue
-        for registered_type in registry:
-            if registered_type in seen:
-                continue
-            seen.add(registered_type)
-            ordered.append(materialize(registered_type))
-    return tuple(ordered)
+        if ancestor.__dict__.get("_registry_root", False):
+            return False
+    return False
+
+
+def _direct_registered_types(
+    root: type[_TRegisteredType],
+    *,
+    registry_base: type[object],
+) -> tuple[type[_TRegisteredType], ...]:
+    return tuple(
+        registered_type
+        for registered_type in _ordered_registered_types(root)
+        if _is_direct_registered_descendant(
+            registered_type,
+            root,
+            registry_base=registry_base,
+        )
+    )
 
 
 class ModuleShapeSpec(ABC):
@@ -170,40 +195,53 @@ class ModuleShapeSpec(ABC):
 class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
     """Module shape spec family whose concrete subclasses self-register."""
 
+    __registry__: ClassVar[dict[str, type["AutoRegisteredModuleShapeSpec"]]] = {}
+    __registry_key__ = "__registry_token__"
+    __key_extractor__ = _registered_type_token
+    __skip_if_no_key__ = True
     _registry_root: ClassVar[bool] = False
-    _registered_spec_types: ClassVar[list[type["AutoRegisteredModuleShapeSpec"]]]
 
     @classmethod
     def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         """Return concrete specs registered directly under this root."""
-        return tuple(spec_type() for spec_type in cls._registered_spec_types)
+        return tuple(
+            spec_type()
+            for spec_type in _direct_registered_types(
+                cls,
+                registry_base=AutoRegisteredModuleShapeSpec,
+            )
+        )
 
     @classmethod
     def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         """Return all concrete specs reachable from descendant registry roots."""
-        return _walk_registered_descendants(
-            cls, materialize=lambda spec_type: spec_type()
+        return tuple(
+            spec_type() for spec_type in _ordered_registered_types(cls)
         )
 
 
 class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
     """Registered family of collected items keyed by a runtime item type."""
 
+    __registry__: ClassVar[dict[str, type["CollectedFamily"]]] = {}
+    __registry_key__ = "__registry_token__"
+    __key_extractor__ = _registered_type_token
+    __skip_if_no_key__ = True
     _registry_root: ClassVar[bool] = False
-    _registered_spec_types: ClassVar[list[type["CollectedFamily"]]]
     item_type: ClassVar[type[object]]
 
     @classmethod
     def registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
         """Return concrete families registered directly under this root."""
-        return tuple(cls._registered_spec_types)
+        return _direct_registered_types(
+            cls,
+            registry_base=CollectedFamily,
+        )
 
     @classmethod
     def all_registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
         """Return all concrete families reachable from descendant registry roots."""
-        return _walk_registered_descendants(
-            cls, materialize=lambda family_type: family_type
-        )
+        return _ordered_registered_types(cls)
 
     @classmethod
     @abstractmethod
@@ -234,6 +272,7 @@ def collect_family_items(
 class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
     """Collected family driven by an auto-registered spec root."""
 
+    _registry_skip = True
     spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
 
     @classmethod
@@ -248,6 +287,7 @@ class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
 class SingleSpecCollectedFamily(CollectedFamily, ABC):
     """Collected family driven by one explicit spec instance."""
 
+    _registry_skip = True
     spec: ClassVar[ModuleShapeSpec]
 
     @classmethod
