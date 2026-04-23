@@ -106,14 +106,33 @@ class FamilyGeneratingSpec(ABC):
     """Spec mixin that declares which collected families derive from the spec."""
 
     family_specs: ClassVar[tuple[GeneratedFamilySpec, ...]] = ()
-    _declaring_spec_types: ClassVar[list[type["FamilyGeneratingSpec"]]] = []
 
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        if cls.__dict__.get("family_specs"):
-            FamilyGeneratingSpec._declaring_spec_types.append(
-                cast(type[FamilyGeneratingSpec], cls)
-            )
+
+def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
+    seen: set[type[FamilyGeneratingSpec]] = set()
+    ordered: list[type[FamilyGeneratingSpec]] = []
+    queue = list(FamilyGeneratingSpec.__subclasses__())
+    while queue:
+        current = cast(type[FamilyGeneratingSpec], queue.pop(0))
+        queue.extend(
+            cast(type[FamilyGeneratingSpec], subclass)
+            for subclass in current.__subclasses__()
+        )
+        if current in seen:
+            continue
+        seen.add(current)
+        if current.__dict__.get("family_specs"):
+            ordered.append(current)
+    return tuple(
+        sorted(
+            ordered,
+            key=lambda spec_type: (
+                spec_type.__module__,
+                getattr(spec_type, "__firstlineno__", 0),
+                spec_type.__qualname__,
+            ),
+        )
+    )
 
 
 class ObservationFamily(CollectedFamily, ABC):
@@ -1015,7 +1034,7 @@ def _materialize_generated_family(
 
 def _materialize_declared_families() -> dict[str, type[CollectedFamily]]:
     families: dict[str, type[CollectedFamily]] = {}
-    for spec_type in FamilyGeneratingSpec._declaring_spec_types:
+    for spec_type in _declared_family_spec_types():
         for family_spec in spec_type.family_specs:
             family_type = _materialize_generated_family(spec_type, family_spec)
             families[family_type.__name__] = family_type

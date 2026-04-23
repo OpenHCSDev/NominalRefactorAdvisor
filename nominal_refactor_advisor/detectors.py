@@ -18,6 +18,8 @@ from functools import lru_cache
 from itertools import combinations
 from typing import Any, ClassVar, Sequence, TypeVar, cast
 
+from metaclass_registry import AutoRegisterMeta
+
 from .ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -185,32 +187,26 @@ class DetectorConfig:
         )
 
 
-class IssueDetector(ABC):
-    """Definition-time registered detector base class."""
+class IssueDetector(ABC, metaclass=AutoRegisterMeta):
+    """Metaclass-registered detector base class."""
 
-    detector_id: str
+    __registry_key__ = "detector_id"
+    __skip_if_no_key__ = True
+    detector_id: ClassVar[str | None] = None
     genericity: ClassVar[str] = "generic"
     detector_priority: ClassVar[int] = 0
-    _registered_detector_types: ClassVar[list[type["IssueDetector"]]] = []
-    _definition_order: ClassVar[int] = 0
-    _detector_registration_index: ClassVar[int]
-
-    def __init_subclass__(cls, **kwargs: object) -> None:
-        super().__init_subclass__(**kwargs)
-        if inspect.isabstract(cls):
-            return
-        cls._detector_registration_index = IssueDetector._definition_order
-        IssueDetector._definition_order += 1
-        IssueDetector._registered_detector_types.append(cls)
 
     @classmethod
     def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
+        detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return tuple(
             sorted(
-                cls._registered_detector_types,
+                detector_registry.values(),
                 key=lambda item: (
                     item.detector_priority,
-                    item._detector_registration_index,
+                    item.__module__,
+                    getattr(item, "__firstlineno__", 0),
+                    item.__qualname__,
                 ),
             )
         )
@@ -1938,6 +1934,11 @@ def _transport_shell_template_candidates(
     )
 
 
+_TYPE_NAME_LITERAL = "type"
+_SUBJECT_NAME_FIELD = "subject_name"
+_NAME_FAMILY_FIELD = "name_family"
+
+
 _IDENTITY_AXIS_KEYWORDS = frozenset(
     {
         "artifact",
@@ -1955,7 +1956,7 @@ _IDENTITY_AXIS_KEYWORDS = frozenset(
         "role",
         "stage",
         "strategy",
-        "type",
+        _TYPE_NAME_LITERAL,
     }
 )
 _IDENTITY_AXIS_SUFFIXES = (
@@ -5007,7 +5008,7 @@ def _string_dispatch_cases_from_body(
     return tuple(cases)
 
 
-_TAG_PARAM_NAMES = frozenset({"kind", "mode", "type", "tag", "backend"})
+_TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
 
 
 def _manual_fiber_tag_candidates(
@@ -5376,9 +5377,9 @@ def _normalize_witness_field_roles(field_name: str) -> tuple[str, ...]:
         roles.append("witness_file_path")
     if field_name in {"line", "init_line", "method_line", "mutator_line"}:
         roles.append("witness_line")
-    if field_name in {"class_name", "function_name", "registry_name", "subject_name"}:
+    if field_name in {"class_name", "function_name", "registry_name", _SUBJECT_NAME_FIELD}:
         roles.extend(("witness_subject", "witness_name_payload"))
-    if field_name == "name_family" or field_name.endswith("_names"):
+    if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
         roles.extend(("witness_name_family", "witness_name_payload"))
     return tuple(dict.fromkeys(roles))
 
@@ -5389,16 +5390,16 @@ def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
         roles.append("source_path")
     if field_name in {"line", "lineno"} or field_name.endswith("_line"):
         roles.append("source_line")
-    if field_name in {"subject_name", "class_name", "function_name"}:
-        roles.append("subject_name")
+    if field_name in {_SUBJECT_NAME_FIELD, "class_name", "function_name"}:
+        roles.append(_SUBJECT_NAME_FIELD)
     if field_name in {"observed_name", "method_name", "builder_name", "export_name"}:
         roles.append("observed_name")
-    if field_name == "name" or field_name == "subject_name" or field_name.endswith(
+    if field_name == "name" or field_name == _SUBJECT_NAME_FIELD or field_name.endswith(
         "_name"
     ):
         roles.append("name_payload")
-    if field_name == "name_family" or field_name.endswith("_names"):
-        roles.append("name_family")
+    if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
+        roles.append(_NAME_FAMILY_FIELD)
     if field_name in {"owner_symbol", "symbol"} or field_name.endswith("_symbol"):
         roles.append("owner_symbol")
     return tuple(dict.fromkeys(roles))
@@ -5481,9 +5482,12 @@ def _witness_carrier_class_candidates(
             continue
         if {"source_path", "source_line"} - set(normalized_roles):
             continue
-        if not {"name_payload", "name_family", "subject_name", "observed_name"} & set(
-            normalized_roles
-        ):
+        if not {
+            "name_payload",
+            _NAME_FAMILY_FIELD,
+            _SUBJECT_NAME_FIELD,
+            "observed_name",
+        } & set(normalized_roles):
             continue
         candidates.append(
             WitnessCarrierClassCandidate(
@@ -5604,6 +5608,11 @@ def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
     )
 
 
+_AXIS_POLICY_ROOT_NAME = "AxisPolicy"
+_AXIS_POLICY_KEY_TYPE_NAME = "AxisEnum"
+_AXIS_POLICY_KEY_ATTR_NAME = "axis_key"
+
+
 def _metaclass_registry_keyed_family_scaffold(
     *,
     root_name: str,
@@ -5634,6 +5643,15 @@ def _metaclass_registry_keyed_family_scaffold(
             )
         )
     return "\n".join(lines)
+
+
+def _axis_policy_registry_scaffold(*method_defs: str) -> str:
+    return _metaclass_registry_keyed_family_scaffold(
+        root_name=_AXIS_POLICY_ROOT_NAME,
+        key_type_name=_AXIS_POLICY_KEY_TYPE_NAME,
+        key_attr_name=_AXIS_POLICY_KEY_ATTR_NAME,
+        method_defs=method_defs,
+    )
 
 
 def _structural_confusability_scaffold(
@@ -5680,7 +5698,7 @@ def _witness_carrier_family_patch(
 
 
 _WITNESS_NAME_PAYLOAD_ROLE = "name_payload"
-_WITNESS_NAME_FAMILY_ROLE = "name_family"
+_WITNESS_NAME_FAMILY_ROLE = _NAME_FAMILY_FIELD
 _WITNESS_LINE_ROLE = "source_line"
 _WITNESS_PATH_ROLE = "source_path"
 _WITNESS_MIXIN_ROLE_NAMES = (
@@ -5713,10 +5731,10 @@ _WITNESS_MIXIN_ROLE_SPECS = {
             "class NameFamilyMixin(ABC):\n"
             "    @property\n"
             "    @abstractmethod\n"
-            "    def name_family(self) -> tuple[str, ...]: ...\n\n"
+            f"    def {_WITNESS_NAME_FAMILY_ROLE}(self) -> tuple[str, ...]: ...\n\n"
             "    @property\n"
             "    def primary_name(self) -> str | None:\n"
-            "        return self.name_family[0] if self.name_family else None"
+            f"        return self.{_WITNESS_NAME_FAMILY_ROLE}[0] if self.{_WITNESS_NAME_FAMILY_ROLE} else None"
         ),
     ),
     _WITNESS_LINE_ROLE: WitnessMixinRoleSpec(
@@ -8112,15 +8130,10 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCandidateDetector):
             ),
             shadow_candidate.evidence,
             scaffold=(
-                _metaclass_registry_keyed_family_scaffold(
-                    root_name="AxisPolicy",
-                    key_type_name="AxisEnum",
-                    key_attr_name="axis_key",
-                    method_defs=("invariant(self)",),
-                )
+                _axis_policy_registry_scaffold("invariant(self)")
                 + "\n\n"
-                "def run_with_axis(axis: AxisEnum, ...):\n"
-                "    policy = AxisPolicy.for_key(axis)\n"
+                f"def run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n"
+                f"    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n"
                 "    # derive local execution from authoritative policy facts\n"
             ),
             codemod_patch=(
@@ -8180,15 +8193,10 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCandidateDetector):
             ),
             residual_candidate.evidence,
             scaffold=(
-                _metaclass_registry_keyed_family_scaffold(
-                    root_name="AxisPolicy",
-                    key_type_name="AxisEnum",
-                    key_attr_name="axis_key",
-                    method_defs=("apply(self, context)",),
-                )
+                _axis_policy_registry_scaffold("apply(self, context)")
                 + "\n\n"
                 "def run(context):\n"
-                "    policy = AxisPolicy.for_key(context.axis)\n"
+                f"    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(context.axis)\n"
                 "    return policy.apply(context)\n"
             ),
             codemod_patch=(
@@ -8255,14 +8263,9 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCandidateDetector):
             ),
             family_candidate.evidence,
             scaffold=(
-                _metaclass_registry_keyed_family_scaffold(
-                    root_name="AxisPolicy",
-                    key_type_name="AxisEnum",
-                    key_attr_name="axis_key",
-                    method_defs=(
-                        "invariant(self)",
-                        "runtime_adapter(self, context)",
-                    ),
+                _axis_policy_registry_scaffold(
+                    "invariant(self)",
+                    "runtime_adapter(self, context)",
                 )
                 + "\n\n"
                 "# Keep one authoritative keyed family and let secondary modules derive local adapters/specs from it."
@@ -8327,22 +8330,17 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCandidateDetector):
             ),
             table_candidate.evidence,
             scaffold=(
-                _metaclass_registry_keyed_family_scaffold(
-                    root_name="AxisPolicy",
-                    key_type_name="AxisEnum",
-                    key_attr_name="axis_key",
-                    method_defs=("build(self)",),
-                )
+                _axis_policy_registry_scaffold("build(self)")
                 + "\n\n"
                 "@dataclass(frozen=True)\n"
                 "class DerivedAxisRow:\n"
-                "    key: AxisEnum\n"
-                "    policy_type: type[AxisPolicy]\n"
+                f"    key: {_AXIS_POLICY_KEY_TYPE_NAME}\n"
+                f"    policy_type: type[{_AXIS_POLICY_ROOT_NAME}]\n"
                 "    config: object\n\n"
                 "def build_axis_rows() -> tuple[DerivedAxisRow, ...]:\n"
                 "    return tuple(\n"
                 "        DerivedAxisRow(key=key, policy_type=policy_type, config=...)\n"
-                "        for key, policy_type in AxisPolicy.__registry__.items()\n"
+                f"        for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n"
                 "    )"
             ),
             codemod_patch=(
@@ -8403,16 +8401,11 @@ class EnumKeyedTableClassAxisShadowDetector(CandidateFindingDetector):
             ),
             axis_candidate.evidence,
             scaffold=(
-                _metaclass_registry_keyed_family_scaffold(
-                    root_name="AxisPolicy",
-                    key_type_name="AxisEnum",
-                    key_attr_name="axis_key",
-                    method_defs=("route_type(self)",),
-                )
+                _axis_policy_registry_scaffold("route_type(self)")
                 + "\n\n"
                 "AXIS_BY_KEY = {\n"
                 "    key: policy_type\n"
-                "    for key, policy_type in AxisPolicy.__registry__.items()\n"
+                f"    for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n"
                 "}\n"
             ),
             codemod_patch=(
@@ -13774,7 +13767,7 @@ def _selector_attribute_name(node: ast.AST) -> str | None:
         if (
             isinstance(node.value, ast.Call)
             and isinstance(node.value.func, ast.Name)
-            and node.value.func.id == "type"
+            and node.value.func.id == _TYPE_NAME_LITERAL
             and len(node.value.args) == 1
             and isinstance(node.value.args[0], ast.Name)
             and node.value.args[0].id == "self"
@@ -13823,7 +13816,7 @@ def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
         )
     if isinstance(node, ast.Subscript):
         base_name = _ast_terminal_name(node.value)
-        if base_name in {"Optional", "Required", "NotRequired", "Type", "type"}:
+        if base_name in {"Optional", "Required", "NotRequired", "Type", _TYPE_NAME_LITERAL}:
             return _annotation_type_names(node.slice)
         if base_name == "Annotated":
             if isinstance(node.slice, ast.Tuple) and node.slice.elts:
@@ -15461,7 +15454,7 @@ def _registration_append_registry_name(
         return None
     if target.attr not in registry_names:
         return None
-    if isinstance(target.value, ast.Name) and target.value.id in {"cls", "type"}:
+    if isinstance(target.value, ast.Name) and target.value.id in {"cls", _TYPE_NAME_LITERAL}:
         return target.attr
     if (
         isinstance(target.value, ast.Name)
@@ -15608,7 +15601,7 @@ def _registry_consumer_locations(
             _uses_named_registry(
                 subnode,
                 registry_name=registry_name,
-                owner_names=frozenset({"cls", "type", node.name}),
+                owner_names=frozenset({"cls", _TYPE_NAME_LITERAL, node.name}),
             )
             for subnode in _walk_nodes(method)
         ):
@@ -16790,9 +16783,9 @@ def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
         call_name = _ast_terminal_name(current.func)
         if call_name == "isinstance" and len(current.args) == 2:
             type_names = set(_type_name_set(current.args[1]))
-            if "type" in type_names:
+            if _TYPE_NAME_LITERAL in type_names:
                 roles.add("type_only")
-                type_names.discard("type")
+                type_names.discard(_TYPE_NAME_LITERAL)
             elif type_names:
                 roles.add("value_type_filter")
             if any(type_name.endswith("Enum") for type_name in type_names):
@@ -16819,7 +16812,7 @@ def _export_policy_root_type_names(node: ast.FunctionDef) -> tuple[str, ...]:
         root_type_names.update(
             type_name
             for type_name in _type_name_set(current.args[1])
-            if type_name != "type"
+            if type_name != _TYPE_NAME_LITERAL
         )
     return tuple(sorted(root_type_names))
 
@@ -16897,7 +16890,7 @@ def _registry_materialization_kind(node: ast.FunctionDef) -> str | None:
     if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
         return "instantiate"
     if isinstance(arg, ast.Name):
-        return "type"
+        return _TYPE_NAME_LITERAL
     return None
 
 
@@ -17402,6 +17395,19 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         ]
 
 
+def _keyword_mapping_metrics(
+    mapping_site_count: int,
+    field_names: tuple[str, ...],
+    mapping_name: str,
+) -> MappingMetrics:
+    return MappingMetrics(
+        mapping_site_count=mapping_site_count,
+        field_count=len(field_names),
+        mapping_name=mapping_name,
+        field_names=field_names,
+    )
+
+
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     detector_id = "projection_builder_authority"
     finding_spec = FindingSpec(
@@ -17458,11 +17464,8 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                         f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
                         "# Leave call sites responsible only for naming the source authorities, not reassigning every field."
                     ),
-                    metrics=MappingMetrics(
-                        mapping_site_count=len(builders),
-                        field_count=len(keyword_names),
-                        mapping_name=callee_name,
-                        field_names=keyword_names,
+                    metrics=_keyword_mapping_metrics(
+                        len(builders), keyword_names, callee_name
                     ),
                 )
             )
@@ -17611,11 +17614,8 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
                 f"# Introduce one projection template for `{property_name}` over roles {keyword_names}.\n"
                 "# Leave only the role-specific hooks on the concrete carriers."
             ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(grouped_candidates),
-                field_count=len(keyword_names),
-                mapping_name=constructor_name,
-                field_names=keyword_names,
+            metrics=_keyword_mapping_metrics(
+                len(grouped_candidates), keyword_names, constructor_name
             ),
         )
 
@@ -17645,7 +17645,7 @@ _SEMANTIC_KEYWORD_NAMES = {
     "relation_context",
     "status",
     "title",
-    "type",
+    _TYPE_NAME_LITERAL,
 }
 _SEMANTIC_NAME_SUFFIXES = (
     "_backend",
