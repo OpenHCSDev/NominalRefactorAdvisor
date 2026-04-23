@@ -140,11 +140,11 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
     PatternId.AUTO_REGISTER_META: PatternSpec(
         PatternId.AUTO_REGISTER_META,
         "Auto-Registration Metaclass",
-        "Centralize repeated class-level registration logic in one authoritative metaclass algorithm.",
-        "Metaclass or registry base that owns import-time registration, skipping, uniqueness, and inheritance behavior.",
+        "Centralize repeated class-level registration logic in one authoritative metaclass algorithm, using `metaclass-registry`'s `AutoRegisterMeta` when the family really is a plugin-style registry.",
+        "`metaclass-registry` `AutoRegisterMeta` base that owns import-time registration, skipping, uniqueness, and inheritance behavior.",
         (
             "Identify the repeated registration sites.",
-            "Move registration into one metaclass or class-level base.",
+            "Move registration into one `metaclass-registry` metaclass base.",
             "Expose only declarative class hooks for orthogonal differences.",
         ),
         (
@@ -153,8 +153,8 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.ENUMERATION,
         ),
         (
-            "class AutoRegisterMeta(ABCMeta): ...\nclass Handler(Base, metaclass=AutoRegisterMeta):\n    registry_key = 'name'",
-            "class AutoRegisterMeta(ABCMeta):\n    registry = {}\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    registry_key: str",
+            "from metaclass_registry import AutoRegisterMeta\n\nclass HandlerBase(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'handler_name'\n    __skip_if_no_key__ = True\n    handler_name = None",
+            "from metaclass_registry import AutoRegisterMeta\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'name'\n    __skip_if_no_key__ = True\n    name = None",
         ),
     ),
     PatternId.TYPE_LINEAGE: PatternSpec(
@@ -327,8 +327,8 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
     PatternId.NOMINAL_STRATEGY_FAMILY: PatternSpec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Nominal Strategy Family",
-        "Replace enum/member dispatch ladders with an ABC-backed strategy family whose implementations guarantee one common method.",
-        "ABC strategy root plus one implementation class per closed enum case, with one guaranteed call surface.",
+        "Replace enum/member dispatch ladders with an ABC-backed strategy family whose implementations guarantee one common method, using `metaclass-registry` when the axis is a stable class key.",
+        "`metaclass-registry`-backed ABC strategy root plus one implementation class per closed enum case, with one guaranteed call surface.",
         (
             "Identify the closed strategy axis and its concrete cases.",
             "Introduce an ABC with one required method for the shared behavior.",
@@ -340,7 +340,7 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.FAIL_LOUD_CONTRACTS,
         ),
         (
-            "class ModeRunner(ABC):\n    @abstractmethod\n    def run(self, ctx): ...\n\nclass ObservedRunner(ModeRunner): ...\nclass CertifiedRunner(ModeRunner): ...",
+            "from metaclass_registry import AutoRegisterMeta\n\nclass ModeRunner(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'mode'\n    __skip_if_no_key__ = True\n    mode = None\n\n    @classmethod\n    def for_mode(cls, mode):\n        return cls.__registry__[mode]()\n\n    @abstractmethod\n    def run(self, ctx): ...",
         ),
     ),
     PatternId.DESCRIPTOR_DERIVED_VIEW: PatternSpec(

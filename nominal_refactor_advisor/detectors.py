@@ -3918,12 +3918,65 @@ def _validation_guard_count(
     return count
 
 
-def _manual_validated_pytree_spec_group_candidates(
+def _same_type_constructor_method_names(
+    node: ast.ClassDef,
+    *,
+    include_classmethods: bool,
+    include_instance_methods: bool,
+) -> tuple[str, ...]:
+    accepted_instance_names = (node.name,)
+    accepted_class_names = ("cls", node.name)
+    names: list[str] = []
+    for method in _iter_class_methods(node):
+        if _is_classmethod(method):
+            if (
+                include_classmethods
+                and _returns_constructor_call(
+                    method, accepted_names=accepted_class_names
+                )
+            ):
+                names.append(method.name)
+            continue
+        if (
+            include_instance_methods
+            and _returns_constructor_call(method, accepted_names=accepted_instance_names)
+        ):
+            names.append(method.name)
+    return tuple(sorted(set(names)))
+
+
+def _shared_record_base_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in _declared_base_names(node)
+        if name not in _IGNORED_ANCESTOR_NAMES
+    )
+
+
+def _shared_record_mechanics_method_names(
+    candidates: Sequence["ManualStructuralRecordMechanicsClassCandidate"],
+) -> tuple[str, ...]:
+    shared_projection_method_names = set.intersection(
+        *(set(candidate.projection_method_names) for candidate in candidates)
+    )
+    shared_roundtrip_method_names = set.intersection(
+        *(set(candidate.roundtrip_method_names) for candidate in candidates)
+    )
+    return tuple(
+        sorted(
+            {"validate"}
+            | shared_projection_method_names
+            | shared_roundtrip_method_names
+        )
+    )
+
+
+def _manual_structural_record_mechanics_group_candidates(
     module: ParsedModule,
     config: DetectorConfig,
-) -> tuple[ManualValidatedPytreeSpecGroupCandidate, ...]:
+) -> tuple[ManualStructuralRecordMechanicsGroupCandidate, ...]:
     threshold = max(3, config.min_registration_sites)
-    classes: list[ManualValidatedPytreeSpecClassCandidate] = []
+    classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
     for node in (
         class_node
         for class_node in module.module.body
@@ -3931,83 +3984,70 @@ def _manual_validated_pytree_spec_group_candidates(
     ):
         if not _is_dataclass_class(node) or _is_abstract_class(node):
             continue
-        base_names = set(_declared_base_names(node))
-        mixin_base_name = next(
-            (
-                name
-                for name in ("ChildrenAuxDataPyTreeMixin", "ChildrenOnlyPyTreeMixin")
-                if name in base_names
-            ),
-            None,
-        )
-        if mixin_base_name is None:
+        base_names = _shared_record_base_names(node)
+        if not base_names:
             continue
         validate_method = _class_method_named(node, "validate")
-        tree_children_method = _class_method_named(node, "_tree_children")
-        tree_unflatten_method = _class_method_named(node, "tree_unflatten")
-        if (
-            validate_method is None
-            or tree_children_method is None
-            or tree_unflatten_method is None
-        ):
+        if validate_method is None or _validation_guard_count(validate_method) < 3:
             continue
-        if not _returns_tuple_of_self_attributes(tree_children_method):
+        projection_method_names = tuple(
+            sorted(
+                method.name
+                for method in _iter_class_methods(node)
+                if _returns_tuple_of_self_attributes(method)
+            )
+        )
+        if not projection_method_names:
             continue
-        if not _returns_constructor_call(
-            tree_unflatten_method,
-            accepted_names=("cls", node.name),
-        ):
+        roundtrip_method_names = _same_type_constructor_method_names(
+            node,
+            include_classmethods=True,
+            include_instance_methods=False,
+        )
+        if not roundtrip_method_names:
             continue
-        if _validation_guard_count(validate_method) < 3:
-            continue
-        method_names = [
-            "validate",
-            "_tree_children",
-            "tree_unflatten",
-        ]
-        tree_aux_data_method = _class_method_named(node, "_tree_aux_data")
-        if tree_aux_data_method is not None and _returns_tuple_of_self_attributes(
-            tree_aux_data_method
-        ):
-            method_names.append("_tree_aux_data")
-        receptor_subset_method = _class_method_named(node, "receptor_subset")
-        if receptor_subset_method is not None and _returns_constructor_call(
-            receptor_subset_method,
-            accepted_names=(node.name,),
-        ):
-            method_names.append("receptor_subset")
-        zeroed_method = _class_method_named(node, "zeroed")
-        if zeroed_method is not None and _returns_constructor_call(
-            zeroed_method,
-            accepted_names=(node.name,),
-        ):
-            method_names.append("zeroed")
-        if "receptor_subset" not in method_names and "zeroed" not in method_names:
+        transform_method_names = tuple(
+            method_name
+            for method_name in _same_type_constructor_method_names(
+                node,
+                include_classmethods=False,
+                include_instance_methods=True,
+            )
+            if method_name != "validate"
+        )
+        if not transform_method_names:
             continue
         classes.append(
-            ManualValidatedPytreeSpecClassCandidate(
+            ManualStructuralRecordMechanicsClassCandidate(
                 file_path=str(module.path),
                 line=node.lineno,
                 class_name=node.name,
-                mixin_base_name=mixin_base_name,
-                method_names=tuple(method_names),
+                base_names=base_names,
+                validation_method_name=validate_method.name,
+                projection_method_names=projection_method_names,
+                roundtrip_method_names=roundtrip_method_names,
+                transform_method_names=transform_method_names,
             )
         )
     if len(classes) < threshold:
         return ()
-    grouped: dict[str, list[ManualValidatedPytreeSpecClassCandidate]] = defaultdict(list)
+    grouped: dict[
+        tuple[str, ...], list[ManualStructuralRecordMechanicsClassCandidate]
+    ] = defaultdict(list)
     for candidate in classes:
-        grouped[candidate.mixin_base_name].append(candidate)
+        grouped[candidate.base_names].append(candidate)
     return tuple(
-        ManualValidatedPytreeSpecGroupCandidate(
+        ManualStructuralRecordMechanicsGroupCandidate(
             file_path=str(module.path),
-            mixin_base_name=mixin_base_name,
+            base_names=base_names,
             classes=tuple(
                 sorted(items, key=lambda item: (item.line, item.class_name))
             ),
         )
-        for mixin_base_name, items in sorted(grouped.items())
+        for base_names, items in sorted(grouped.items())
         if len(items) >= threshold
+        if set.intersection(*(set(item.projection_method_names) for item in items))
+        if set.intersection(*(set(item.roundtrip_method_names) for item in items))
     )
 
 
@@ -4851,16 +4891,34 @@ def _nominal_strategy_scaffold(candidate: EnumStrategyDispatchCandidate) -> str:
         .title()
         .replace(" ", "")
     )
+    axis_attr_name = candidate.dispatch_axis.split(".")[-1]
     root_name = f"{axis_tail}Runner"
     lines = [
-        f"class {root_name}(ABC):",
+        "from metaclass_registry import AutoRegisterMeta",
+        "",
+        f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
+        f"    __registry_key__ = \"{axis_attr_name}\"",
+        "    __skip_if_no_key__ = True",
+        f"    {axis_attr_name} = None",
+        "",
+        "    @classmethod",
+        f"    def for_{axis_attr_name}(cls, key):",
+        "        return cls.__registry__[key]()",
+        "",
         "    @abstractmethod",
         "    def run(self, ctx): ...",
         "",
     ]
     for case_name in candidate.case_names:
         case_tail = case_name.split(".")[-1].replace("_", " ").title().replace(" ", "")
-        lines.append(f"class {case_tail}{root_name}({root_name}): ...")
+        lines.extend(
+            (
+                f"class {case_tail}{root_name}({root_name}):",
+                f"    {axis_attr_name} = {case_name}",
+                "    ...",
+                "",
+            )
+        )
     return "\n".join(lines)
 
 
@@ -4871,10 +4929,11 @@ def _nominal_strategy_patch(candidate: EnumStrategyDispatchCandidate) -> str:
         .title()
         .replace(" ", "")
     )
+    axis_attr_name = candidate.dispatch_axis.split(".")[-1]
     root_name = f"{axis_tail}Runner"
     return (
-        f"# Replace `{candidate.dispatch_axis}` branching with a nominal runner family\n"
-        f"runner = {root_name}.for_mode({candidate.dispatch_axis})\n"
+        f"# Replace `{candidate.dispatch_axis}` branching with a metaclass-registry-backed nominal runner family\n"
+        f"runner = {root_name}.for_{axis_attr_name}({candidate.dispatch_axis})\n"
         f"return runner.run(ctx)"
     )
 
@@ -5324,6 +5383,70 @@ def _normalize_witness_field_roles(field_name: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(roles))
 
 
+def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
+    roles: list[str] = []
+    if field_name == "file_path" or field_name.endswith("_path"):
+        roles.append("source_path")
+    if field_name in {"line", "lineno"} or field_name.endswith("_line"):
+        roles.append("source_line")
+    if field_name in {"subject_name", "class_name", "function_name"}:
+        roles.append("subject_name")
+    if field_name in {"observed_name", "method_name", "builder_name", "export_name"}:
+        roles.append("observed_name")
+    if field_name == "name" or field_name == "subject_name" or field_name.endswith(
+        "_name"
+    ):
+        roles.append("name_payload")
+    if field_name == "name_family" or field_name.endswith("_names"):
+        roles.append("name_family")
+    if field_name in {"owner_symbol", "symbol"} or field_name.endswith("_symbol"):
+        roles.append("owner_symbol")
+    return tuple(dict.fromkeys(roles))
+
+
+def _normalized_semantic_role_fields(
+    field_names: tuple[str, ...],
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    role_to_fields: dict[str, set[str]] = defaultdict(set)
+    for field_name in field_names:
+        for role_name in _normalize_semantic_field_roles(field_name):
+            role_to_fields[role_name].add(field_name)
+    return tuple(
+        (role_name, tuple(sorted(field_names)))
+        for role_name, field_names in sorted(role_to_fields.items())
+    )
+
+
+_GENERIC_FAMILY_CLASS_TOKENS = frozenset(
+    {
+        "candidate",
+        "data",
+        "entry",
+        "group",
+        "item",
+        "profile",
+        "record",
+        "result",
+        "shape",
+        "spec",
+    }
+)
+
+
+def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
+    tokens = tuple(
+        token.lower()
+        for token in re.findall(
+            r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+            class_name,
+        )
+        if token.lower() not in _GENERIC_FAMILY_CLASS_TOKENS
+    )
+    if not tokens:
+        return ()
+    return (tokens[-1],)
+
+
 def _normalized_witness_role_fields(
     field_names: tuple[str, ...],
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
@@ -5346,18 +5469,21 @@ def _witness_carrier_class_candidates(
             continue
         if not _is_frozen_dataclass(node):
             continue
-        if not node.name.endswith("Candidate"):
+        if _is_abstract_class(node):
             continue
         field_names = _annassign_field_names(node)
-        normalized_role_fields = _normalized_witness_role_fields(field_names)
+        normalized_role_fields = _normalized_semantic_role_fields(field_names)
         normalized_roles = tuple(role_name for role_name, _ in normalized_role_fields)
+        family_tokens = _carrier_family_tokens(node.name)
+        if not family_tokens:
+            continue
         if len(normalized_roles) < 3:
             continue
-        if {
-            "witness_file_path",
-            "witness_line",
-            "witness_subject",
-        } - set(normalized_roles):
+        if {"source_path", "source_line"} - set(normalized_roles):
+            continue
+        if not {"name_payload", "name_family", "subject_name", "observed_name"} & set(
+            normalized_roles
+        ):
             continue
         candidates.append(
             WitnessCarrierClassCandidate(
@@ -5365,6 +5491,8 @@ def _witness_carrier_class_candidates(
                 line=node.lineno,
                 subject_name=node.name,
                 name_family=field_names,
+                base_names=_shared_record_base_names(node),
+                family_tokens=family_tokens,
                 normalized_roles=normalized_roles,
                 normalized_role_fields=normalized_role_fields,
             )
@@ -5378,27 +5506,43 @@ def _witness_carrier_family_candidates(
     classes = _witness_carrier_class_candidates(module)
     if len(classes) < 2:
         return ()
-    shared_role_names = cast(
-        tuple[str, ...],
-        tuple(
-            sorted(
-                set.intersection(
-                    *(set(candidate.normalized_roles) for candidate in classes)
+    grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
+    for candidate in classes:
+        for token in candidate.family_tokens:
+            grouped[token].append(candidate)
+    seen_class_names: set[tuple[str, ...]] = set()
+    findings: list[WitnessCarrierFamilyCandidate] = []
+    for token, items in sorted(grouped.items()):
+        if len(items) < 3:
+            continue
+        ordered_items = tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
+        class_names = tuple(item.class_name for item in ordered_items)
+        if class_names in seen_class_names:
+            continue
+        shared_role_names = cast(
+            tuple[str, ...],
+            tuple(
+                sorted(
+                    set.intersection(
+                        *(set(candidate.normalized_roles) for candidate in ordered_items)
+                    )
                 )
+            ),
+        )
+        if len(shared_role_names) < 3:
+            continue
+        if set.intersection(*(set(candidate.base_names) for candidate in ordered_items)):
+            continue
+        seen_class_names.add(class_names)
+        findings.append(
+            WitnessCarrierFamilyCandidate(
+                file_path=str(module.path),
+                class_names=class_names,
+                line_numbers=tuple(candidate.line for candidate in ordered_items),
+                shared_role_names=shared_role_names,
             )
-        ),
-    )
-    if len(shared_role_names) < 3:
-        return ()
-    candidate_shared_role_names: tuple[str, ...] = tuple(shared_role_names)
-    return (
-        WitnessCarrierFamilyCandidate(
-            file_path=str(module.path),
-            class_names=tuple(candidate.class_name for candidate in classes),
-            line_numbers=tuple(candidate.line for candidate in classes),
-            shared_role_names=candidate_shared_role_names,
-        ),
-    )
+        )
+    return tuple(findings)
 
 
 def _manual_fiber_tag_scaffold(candidate: ManualFiberTagCandidate) -> str:
@@ -5441,18 +5585,55 @@ def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) ->
 
 def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
     return (
-        "class EventHandler(ABC):\n"
-        f"    _registry = {{}}\n"
-        f"    def __init_subclass__(cls, registry_key=None, **kwargs): ...\n"
-        f"    @classmethod\n    def registered_types(cls): ..."
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        "class EventHandler(ABC, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = \"event_type\"\n"
+        "    __skip_if_no_key__ = True\n"
+        "    event_type = None\n\n"
+        "    @classmethod\n"
+        "    def for_event_type(cls, event_type):\n"
+        "        return cls.__registry__[event_type]"
     )
 
 
 def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
     return (
         f"# Replace decorator `{candidate.decorator_name}` and registry `{candidate.registry_name}`\n"
-        "# with `__init_subclass__` or a metaclass so class creation and registration are one event."
+        "# with `from metaclass_registry import AutoRegisterMeta`, a declarative class key, and\n"
+        "# `cls.__registry__` so class creation and registration are one event."
     )
+
+
+def _metaclass_registry_keyed_family_scaffold(
+    *,
+    root_name: str,
+    key_type_name: str,
+    key_attr_name: str,
+    method_defs: tuple[str, ...],
+) -> str:
+    lines = [
+        "from abc import ABC, abstractmethod",
+        "from metaclass_registry import AutoRegisterMeta",
+        "from typing import ClassVar",
+        "",
+        f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
+        f"    __registry_key__ = \"{key_attr_name}\"",
+        "    __skip_if_no_key__ = True",
+        f"    {key_attr_name}: ClassVar[{key_type_name} | None] = None",
+        "",
+        "    @classmethod",
+        f"    def for_key(cls, key: {key_type_name}):",
+        "        return cls.__registry__[key]()",
+    ]
+    for method_def in method_defs:
+        lines.extend(
+            (
+                "",
+                "    @abstractmethod",
+                f"    def {method_def}: ...",
+            )
+        )
+    return "\n".join(lines)
 
 
 def _structural_confusability_scaffold(
@@ -5478,13 +5659,13 @@ def _witness_carrier_family_scaffold(
 ) -> str:
     lines = [
         "@dataclass(frozen=True)",
-        "class WitnessCarrier(ABC):",
-        "    file_path: str",
-        "    line: int",
-        "    subject_name: str",
+        "class SemanticCarrier(ABC):",
+        "    source_path: str",
+        "    source_line: int",
+        "    primary_name: str | None",
         "",
         "@dataclass(frozen=True)",
-        f"class {candidate.class_names[0]}(WitnessCarrier): ...",
+        f"class {candidate.class_names[0]}(SemanticCarrier): ...",
     ]
     return "\n".join(lines)
 
@@ -5493,16 +5674,20 @@ def _witness_carrier_family_patch(
     candidate: WitnessCarrierFamilyCandidate,
 ) -> str:
     return (
-        f"# Introduce one nominal witness carrier root for {candidate.class_names}.\n"
-        f"# Move shared witness roles {candidate.shared_role_names} into the base class and keep only fiber-specific payload in each leaf candidate."
+        f"# Introduce one nominal carrier root for {candidate.class_names}.\n"
+        f"# Move shared semantic roles {candidate.shared_role_names} into the base class and keep only fiber-specific payload in each leaf carrier."
     )
 
 
-_WITNESS_NAME_PAYLOAD_ROLE = "witness_name_payload"
-_WITNESS_LINE_ROLE = "witness_line"
+_WITNESS_NAME_PAYLOAD_ROLE = "name_payload"
+_WITNESS_NAME_FAMILY_ROLE = "name_family"
+_WITNESS_LINE_ROLE = "source_line"
+_WITNESS_PATH_ROLE = "source_path"
 _WITNESS_MIXIN_ROLE_NAMES = (
     _WITNESS_NAME_PAYLOAD_ROLE,
+    _WITNESS_NAME_FAMILY_ROLE,
     _WITNESS_LINE_ROLE,
+    _WITNESS_PATH_ROLE,
 )
 
 
@@ -5514,24 +5699,42 @@ class WitnessMixinRoleSpec:
 
 _WITNESS_MIXIN_ROLE_SPECS = {
     _WITNESS_NAME_PAYLOAD_ROLE: WitnessMixinRoleSpec(
-        mixin_name="NameBearingMixin",
+        mixin_name="PrimaryNameMixin",
         scaffold=(
-            "class NameBearingMixin(ABC):\n"
+            "class PrimaryNameMixin(ABC):\n"
+            "    @property\n"
+            "    @abstractmethod\n"
+            "    def primary_name(self) -> str | None: ..."
+        ),
+    ),
+    _WITNESS_NAME_FAMILY_ROLE: WitnessMixinRoleSpec(
+        mixin_name="NameFamilyMixin",
+        scaffold=(
+            "class NameFamilyMixin(ABC):\n"
             "    @property\n"
             "    @abstractmethod\n"
             "    def name_family(self) -> tuple[str, ...]: ...\n\n"
             "    @property\n"
-            "    def subject_name(self) -> str | None:\n"
+            "    def primary_name(self) -> str | None:\n"
             "        return self.name_family[0] if self.name_family else None"
         ),
     ),
     _WITNESS_LINE_ROLE: WitnessMixinRoleSpec(
-        mixin_name="SourceLocusMixin",
+        mixin_name="SourceLineMixin",
         scaffold=(
-            "class SourceLocusMixin(ABC):\n"
+            "class SourceLineMixin(ABC):\n"
             "    @property\n"
             "    @abstractmethod\n"
-            "    def line(self) -> int: ..."
+            "    def source_line(self) -> int: ..."
+        ),
+    ),
+    _WITNESS_PATH_ROLE: WitnessMixinRoleSpec(
+        mixin_name="SourcePathMixin",
+        scaffold=(
+            "class SourcePathMixin(ABC):\n"
+            "    @property\n"
+            "    @abstractmethod\n"
+            "    def source_path(self) -> str: ..."
         ),
     ),
 }
@@ -5541,7 +5744,7 @@ def _witness_mixin_role_spec(role_name: str) -> WitnessMixinRoleSpec:
     try:
         return _WITNESS_MIXIN_ROLE_SPECS[role_name]
     except KeyError as exc:
-        raise ValueError(f"Unsupported witness mixin role: {role_name}") from exc
+        raise ValueError(f"Unsupported semantic mixin role: {role_name}") from exc
 
 
 def _witness_role_mixin_name(role_name: str) -> str:
@@ -5564,7 +5767,7 @@ def _witness_mixin_enforcement_scaffold(
         "\n".join(
             (
                 "@dataclass(frozen=True)",
-                f"class {candidate.class_names[0]}(WitnessCarrier, {mixin_names}): ...",
+                f"class {candidate.class_names[0]}(SemanticCarrier, {mixin_names}): ...",
             )
         )
     )
@@ -5580,7 +5783,7 @@ def _witness_mixin_enforcement_patch(
     )
     return (
         f"# Collapse renamed semantic role slices {role_summary} into reusable mixins.\n"
-        "# Normalize the leaf carriers onto the shared witness base plus those mixins.\n"
+        "# Normalize the leaf carriers onto the shared semantic base plus those mixins.\n"
         "# Use multiple inheritance when one carrier needs several orthogonal witness roles."
     )
 
@@ -5896,7 +6099,7 @@ class ManualFamilyRosterCandidate(LineWitnessCandidate):
 @dataclass(frozen=True)
 class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
     registration_site: "_ManualSubclassRegistrationSite"
-    consumer_names: tuple[str, ...]
+    consumer_locations: tuple[SourceLocation, ...]
     concrete_class_names: tuple[str, ...]
 
     @property
@@ -5906,6 +6109,10 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
     @property
     def guard_summary(self) -> str | None:
         return self.registration_site.guard_summary
+
+    @property
+    def consumer_names(self) -> tuple[str, ...]:
+        return tuple(location.symbol for location in self.consumer_locations)
 
 
 @dataclass(frozen=True)
@@ -6027,6 +6234,9 @@ class GuardedDelegatorCandidate(WitnessCarrierCandidate):
 
 @dataclass(frozen=True)
 class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
+    property_name: str
+    constructor_name: str
+
     @property
     def keyword_names(self) -> tuple[str, ...]:
         return self.name_family
@@ -6057,16 +6267,30 @@ class ConstantPropertyHookGroup(PropertyHookGroup):
 
 @dataclass(frozen=True)
 class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
+    base_names: tuple[str, ...]
     method_name: str
     helper_name: str
     wrapper_kind: str
+    parameter_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class HelperBackedObservationSpecGroup(ClassLineNumbersGroup):
+    base_names: tuple[str, ...]
     method_names: tuple[str, ...]
     helper_names: tuple[str, ...]
     wrapper_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GuardedWrapperSpecPair:
+    file_path: str
+    spec_name: str
+    spec_line: int
+    function_name: str
+    function_line: int
+    constructor_name: str
+    node_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -6127,12 +6351,14 @@ class ExportPolicyPredicateCandidate(
     WitnessCarrierCandidate, SubjectNameFunctionNameMixin
 ):
     role_names: tuple[str, ...]
+    root_type_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
 class RegistryTraversalGroup(ClassLineNumbersGroup):
     method_names: tuple[str, ...]
     materialization_kinds: tuple[str, ...]
+    registry_attribute_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -6572,16 +6798,44 @@ class ManualKeyedRecordTableGroupCandidate:
 
 
 @dataclass(frozen=True)
-class ManualValidatedPytreeSpecClassCandidate(ClassLineWitnessCandidate):
-    mixin_base_name: str
-    method_names: tuple[str, ...]
+class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
+    base_names: tuple[str, ...]
+    validation_method_name: str
+    projection_method_names: tuple[str, ...]
+    roundtrip_method_names: tuple[str, ...]
+    transform_method_names: tuple[str, ...]
+
+    @property
+    def method_names(self) -> tuple[str, ...]:
+        return (
+            self.validation_method_name,
+            *self.projection_method_names,
+            *self.roundtrip_method_names,
+            *self.transform_method_names,
+        )
 
 
 @dataclass(frozen=True)
-class ManualValidatedPytreeSpecGroupCandidate:
+class ManualStructuralRecordMechanicsGroupCandidate:
     file_path: str
-    mixin_base_name: str
-    classes: tuple[ManualValidatedPytreeSpecClassCandidate, ...]
+    base_names: tuple[str, ...]
+    classes: tuple[ManualStructuralRecordMechanicsClassCandidate, ...]
+
+    @property
+    def shared_method_names(self) -> tuple[str, ...]:
+        return _shared_record_mechanics_method_names(self.classes)
+
+    @property
+    def transform_method_names(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    method_name
+                    for candidate in self.classes
+                    for method_name in candidate.transform_method_names
+                }
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -6978,6 +7232,8 @@ class StructuralConfusabilityCandidate(
 
 @dataclass(frozen=True)
 class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
+    base_names: tuple[str, ...]
+    family_tokens: tuple[str, ...]
     normalized_roles: tuple[str, ...]
     normalized_role_fields: tuple[tuple[str, tuple[str, ...]], ...]
 
@@ -7856,9 +8112,13 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCandidateDetector):
             ),
             shadow_candidate.evidence,
             scaffold=(
-                "class AxisPolicy(KeyedNominalFamily[AxisEnum], ABC):\n"
-                "    axis_key: ClassVar[AxisEnum]\n"
-                "    def invariant(self): ...\n\n"
+                _metaclass_registry_keyed_family_scaffold(
+                    root_name="AxisPolicy",
+                    key_type_name="AxisEnum",
+                    key_attr_name="axis_key",
+                    method_defs=("invariant(self)",),
+                )
+                + "\n\n"
                 "def run_with_axis(axis: AxisEnum, ...):\n"
                 "    policy = AxisPolicy.for_key(axis)\n"
                 "    # derive local execution from authoritative policy facts\n"
@@ -7920,9 +8180,13 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCandidateDetector):
             ),
             residual_candidate.evidence,
             scaffold=(
-                "class AxisPolicy(KeyedNominalFamily[AxisEnum], ABC):\n"
-                "    axis_key: ClassVar[AxisEnum]\n"
-                "    def apply(self, context): ...\n\n"
+                _metaclass_registry_keyed_family_scaffold(
+                    root_name="AxisPolicy",
+                    key_type_name="AxisEnum",
+                    key_attr_name="axis_key",
+                    method_defs=("apply(self, context)",),
+                )
+                + "\n\n"
                 "def run(context):\n"
                 "    policy = AxisPolicy.for_key(context.axis)\n"
                 "    return policy.apply(context)\n"
@@ -7991,10 +8255,16 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCandidateDetector):
             ),
             family_candidate.evidence,
             scaffold=(
-                "class AxisPolicy(KeyedNominalFamily[AxisEnum], ABC):\n"
-                "    axis_key: ClassVar[AxisEnum]\n"
-                "    def invariant(self): ...\n"
-                "    def runtime_adapter(self, context): ...\n\n"
+                _metaclass_registry_keyed_family_scaffold(
+                    root_name="AxisPolicy",
+                    key_type_name="AxisEnum",
+                    key_attr_name="axis_key",
+                    method_defs=(
+                        "invariant(self)",
+                        "runtime_adapter(self, context)",
+                    ),
+                )
+                + "\n\n"
                 "# Keep one authoritative keyed family and let secondary modules derive local adapters/specs from it."
             ),
             codemod_patch=(
@@ -8012,12 +8282,13 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCandidateDetector):
     detector_id = "parallel_keyed_table_and_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Keyed table and keyed family should collapse into one axis spec",
+        title="Keyed table and keyed family should collapse into one auto-registered axis family",
         why=(
             "The docs require one authoritative owner per closed semantic axis. When a module keeps one keyed table of "
-            "per-case records and a second keyed nominal family over the same cases, the axis is split across data and behavior."
+            "per-case records and a second keyed nominal family over the same cases, the axis is split across data and behavior. "
+            "If the family already carries the runtime behavior boundary, the table should derive from that family instead of competing with it."
         ),
-        capability_gap="single authoritative keyed axis spec that owns both record data and behavior construction",
+        capability_gap="single authoritative metaclass-registry axis family with derived table/view projections",
         relation_context="same enum/key axis is encoded by both a keyed table and a keyed nominal family",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -8056,16 +8327,27 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCandidateDetector):
             ),
             table_candidate.evidence,
             scaffold=(
+                _metaclass_registry_keyed_family_scaffold(
+                    root_name="AxisPolicy",
+                    key_type_name="AxisEnum",
+                    key_attr_name="axis_key",
+                    method_defs=("build(self)",),
+                )
+                + "\n\n"
                 "@dataclass(frozen=True)\n"
-                "class AxisSpec:\n"
+                "class DerivedAxisRow:\n"
                 "    key: AxisEnum\n"
-                "    config: object\n"
-                "    builder: object\n\n"
-                "# Keep one authoritative keyed spec table and derive both data lookup and behavior construction from it."
+                "    policy_type: type[AxisPolicy]\n"
+                "    config: object\n\n"
+                "def build_axis_rows() -> tuple[DerivedAxisRow, ...]:\n"
+                "    return tuple(\n"
+                "        DerivedAxisRow(key=key, policy_type=policy_type, config=...)\n"
+                "        for key, policy_type in AxisPolicy.__registry__.items()\n"
+                "    )"
             ),
             codemod_patch=(
-                f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative axis-spec table.\n"
-                "# Each row should own both the per-case record data and the constructor or hook needed at runtime."
+                f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
+                "# Keep the runtime boundary on the auto-registered family and derive any keyed rows/views from `AxisPolicy.__registry__`."
             ),
             metrics=_axis_dispatch_metrics(
                 table_candidate.shared_case_names,
@@ -8078,13 +8360,14 @@ class EnumKeyedTableClassAxisShadowDetector(CandidateFindingDetector):
     detector_id = "enum_keyed_table_class_axis_shadow"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Enum-keyed table should derive from class-declared axis keys",
+        title="Enum-keyed table should derive from auto-registered class-declared axis keys",
         why=(
             "The docs require a single writable owner per closed semantic axis. If a module already declares "
             "that axis through class-level enum assignments, adding a writable enum-keyed table over the same "
-            "cases creates duplicate authority and a synchronization surface."
+            "cases creates duplicate authority and a synchronization surface. The class-declared axis should be the "
+            "primary owner and any enum-keyed lookup should be derived from the family registry."
         ),
-        capability_gap="one authoritative closed-axis owner with derived table/view projections",
+        capability_gap="one authoritative metaclass-registry closed-axis owner with derived table/view projections",
         relation_context="module-level enum-keyed table overlaps a class family that already declares the same enum axis",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -8120,16 +8403,21 @@ class EnumKeyedTableClassAxisShadowDetector(CandidateFindingDetector):
             ),
             axis_candidate.evidence,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class AxisSpec:\n"
-                "    key: object\n"
-                "    request_type: type[object]\n"
-                "    route_type: type[object]\n"
-                "# Keep one authoritative owner for closed-axis keys; derive lookup views from it."
+                _metaclass_registry_keyed_family_scaffold(
+                    root_name="AxisPolicy",
+                    key_type_name="AxisEnum",
+                    key_attr_name="axis_key",
+                    method_defs=("route_type(self)",),
+                )
+                + "\n\n"
+                "AXIS_BY_KEY = {\n"
+                "    key: policy_type\n"
+                "    for key, policy_type in AxisPolicy.__registry__.items()\n"
+                "}\n"
             ),
             codemod_patch=(
                 f"# Remove `{axis_candidate.table_name}` as a second writable authority.\n"
-                f"# Derive `{axis_candidate.key_type_name}` lookup views from class-declared `{axis_candidate.key_attr_name}` assignments instead of hardcoding a parallel table."
+                f"# Derive `{axis_candidate.key_type_name}` lookup views from the auto-registered family keyed by `{axis_candidate.key_attr_name}` instead of hardcoding a parallel table."
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(axis_candidate.shared_case_names),
@@ -8341,13 +8629,14 @@ class RepeatedKeyedFamilyDetector(CrossModuleCandidateDetector):
     detector_id = "repeated_keyed_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Repeated keyed family scaffolding should collapse into one typed family base",
+        title="Repeated keyed family scaffolding should collapse into one typed metaclass-registry base",
         why=(
             "The docs encourage aggressive metaprogramming when several nominal families repeat the same "
             "class-level registration and lookup shell. When many roots restate `registry_key_attr`, "
-            "`_registry`, and `for_*` lookup methods, the family algorithm should live in one typed base."
+            "`_registry`, and `for_*` lookup methods, the family algorithm should live in one typed "
+            "`metaclass-registry` base."
         ),
-        capability_gap="single typed keyed-family substrate for nominal registries",
+        capability_gap="single typed metaclass-registry substrate for keyed nominal registries",
         relation_context="same keyed family registration and lookup shell repeated across nominal family roots",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -8387,21 +8676,23 @@ class RepeatedKeyedFamilyDetector(CrossModuleCandidateDetector):
             ),
             evidence,
             scaffold=(
+                "from metaclass_registry import AutoRegisterMeta\n\n"
                 "KeyT = TypeVar(\"KeyT\")\n\n"
-                "class KeyedNominalFamily(AutoRegisterByClassVar, ABC, Generic[KeyT]):\n"
-                "    registry_key_attr: ClassVar[str]\n"
+                "class KeyedNominalFamily(ABC, Generic[KeyT], metaclass=AutoRegisterMeta):\n"
+                "    __registry_key__ = \"registry_key\"\n"
+                "    __skip_if_no_key__ = True\n"
+                "    registry_key: ClassVar[KeyT | None] = None\n"
                 "    family_label: ClassVar[str] = \"family\"\n"
-                "    _registry: ClassVar[dict[KeyT, object]]\n\n"
                 "    @classmethod\n"
                 "    def for_key(cls, key: KeyT):\n"
                 "        try:\n"
-                "            return cls._registry[key]\n"
+                "            return cls.__registry__[key]\n"
                 "        except KeyError as error:\n"
                 "            raise ValueError(f\"Unknown {cls.family_label}: {key}\") from error"
             ),
             codemod_patch=(
-                "# Extract one typed keyed-family base that owns registration lookup, duplicate handling, and error shaping.\n"
-                "# Leave only declarative key classvars and irreducible hook methods on each family root."
+                "# Extract one typed metaclass-registry base that owns registration lookup, duplicate handling, and error shaping.\n"
+                "# Leave only declarative key attributes and irreducible hook methods on each family root, and read the registered classes from `cls.__registry__`."
             ),
         )
 
@@ -8473,18 +8764,19 @@ class ManualKeyedRecordTableDetector(CandidateFindingDetector):
         )
 
 
-class ManualValidatedPytreeSpecDetector(CandidateFindingDetector):
-    detector_id = "manual_validated_pytree_spec"
+class ManualStructuralRecordMechanicsDetector(CandidateFindingDetector):
+    detector_id = "manual_structural_record_mechanics"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Validated pytree specs should derive common mechanics from field metadata",
+        title="Repeated structural record mechanics should derive from field metadata",
         why=(
-            "When several frozen dataclass specs hand-write pytree flattening, field validation, and subset or zeroing "
-            "logic, the mechanics have become a second authority beside the field declarations. The docs prefer one "
-            "metadata-driven substrate that derives those mechanics from typed field declarations."
+            "When several frozen dataclass records hand-write validation, tuple-style field projection, "
+            "round-trip reconstruction, and fieldwise transform logic, those mechanics have become a second "
+            "authority beside the field declarations. The docs prefer one metadata-driven record substrate "
+            "that derives those mechanics from typed fields."
         ),
-        capability_gap="single typed validated-pytree substrate with derived flattening, validation, and subset mechanics",
-        relation_context="same dataclass spec mechanics repeated across sibling validated pytree records",
+        capability_gap="single typed structural-record substrate with derived validation, projection, and transform mechanics",
+        relation_context="same dataclass record lifecycle mechanics repeated across sibling structural record classes",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -8503,41 +8795,36 @@ class ManualValidatedPytreeSpecDetector(CandidateFindingDetector):
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[object]:
-        return _manual_validated_pytree_spec_group_candidates(module, config)
+        return _manual_structural_record_mechanics_group_candidates(module, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group_candidate = cast(ManualValidatedPytreeSpecGroupCandidate, candidate)
+        group_candidate = cast(ManualStructuralRecordMechanicsGroupCandidate, candidate)
         class_names = ", ".join(
             item.class_name for item in group_candidate.classes[:6]
         )
-        shared_methods = ", ".join(
-            sorted(
-                set.intersection(
-                    *(
-                        set(item.method_names)
-                        for item in group_candidate.classes[:6]
-                    )
-                )
-            )
-        )
+        shared_methods = ", ".join(group_candidate.shared_method_names)
+        transform_methods = ", ".join(group_candidate.transform_method_names[:6])
+        base_names = ", ".join(group_candidate.base_names)
         evidence = tuple(item.evidence for item in group_candidate.classes[:6])
         return self.finding_spec.build(
             self.detector_id,
             (
-                f"Dataclass specs {class_names} each hand-roll `{shared_methods}` on top of `{group_candidate.mixin_base_name}`."
+                f"Dataclass records {class_names} each hand-roll `{shared_methods}` plus fieldwise transforms "
+                f"{transform_methods} on top of base family `{base_names}`."
             ),
             evidence,
             scaffold=(
-                "@dataclass_transform(field_specifiers=(field, validated_pytree_field))\n"
-                "class ValidatedPytreeRecord:\n"
-                "    def tree_flatten(self): ...\n"
+                "@dataclass_transform(field_specifiers=(field, record_field))\n"
+                "class StructuralRecordBase:\n"
                 "    def validate(self): ...\n"
-                "    def subsettable_fields(self, indices): ...\n"
-                "    def zeroable_fields(self): ...\n"
+                "    def project_fields(self): ...\n"
+                "    @classmethod\n"
+                "    def from_projected(cls, projected, metadata): ...\n"
+                "    def transformed(self, **changes): ...\n"
             ),
             codemod_patch=(
-                "# Move pytree child or aux declarations and validation constraints into typed field metadata.\n"
-                "# Derive tree flattening, tree_unflatten, subset, and zeroing from one validated-pytree base instead of re-encoding them per spec class."
+                "# Move validation constraints, projected-field partitions, and transform semantics into typed field metadata.\n"
+                "# Derive projection, round-trip reconstruction, and fieldwise transforms from one structural-record base instead of re-encoding them per class."
             ),
         )
 
@@ -9084,9 +9371,9 @@ class DeferredClassRegistrationDetector(CandidateFindingDetector):
         title="Class registration is decoupled from class existence",
         why=(
             "Manual decorator- or helper-based registration leaves a reachable state where a class exists but the registry has not been updated. "
-            "The host already provides zero-delay registration via `__init_subclass__` or a metaclass."
+            "The host already provides zero-delay registration via `metaclass-registry` or another class-time hook."
         ),
-        capability_gap="zero-delay class registration with collision checks and runtime provenance",
+        capability_gap="zero-delay metaclass-registry class registration with collision checks and runtime provenance",
         relation_context="class registration is performed as a separate auxiliary step rather than at class creation time",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -9185,13 +9472,13 @@ class SemanticWitnessFamilyDetector(CandidateFindingDetector):
     detector_id = "semantic_witness_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
-        title="Detector witness carriers should share one nominal base",
+        title="Semantic carrier family should share one nominal base",
         why=(
-            "Several frozen dataclass witness carriers repeat the same provenance and focal-subject roles under different field names. "
-            "That leaves one witness family structurally expanded instead of giving it one nominal carrier root."
+            "Several frozen dataclass carriers repeat the same location and naming roles under different field names. "
+            "That leaves one semantic family structurally expanded instead of giving it one nominal carrier root."
         ),
-        capability_gap="one authoritative witness carrier base for a detector-local witness family",
-        relation_context="same witness family repeats a renamed provenance spine across sibling carrier classes",
+        capability_gap="one authoritative nominal base for a semantic metadata carrier family",
+        relation_context="same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -9220,7 +9507,7 @@ class SemanticWitnessFamilyDetector(CandidateFindingDetector):
         return self.finding_spec.build(
             self.detector_id,
             (
-                f"Carrier classes {', '.join(witness_candidate.class_names)} repeat the same witness roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier."
+                f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier."
             ),
             evidence,
             scaffold=_witness_carrier_family_scaffold(witness_candidate),
@@ -9237,7 +9524,20 @@ class SemanticWitnessFamilyDetector(CandidateFindingDetector):
 def _witness_mixin_enforcement_candidate(
     module: ParsedModule,
 ) -> WitnessMixinEnforcementCandidate | None:
-    classes = _witness_carrier_class_candidates(module)
+    all_classes = _witness_carrier_class_candidates(module)
+    grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
+    for candidate in all_classes:
+        for token in candidate.family_tokens:
+            grouped[token].append(candidate)
+    classes = max(
+        (
+            tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
+            for items in grouped.values()
+            if len(items) >= 3
+        ),
+        key=len,
+        default=(),
+    )
     if len(classes) < 2:
         return None
     role_to_classes: dict[str, dict[str, WitnessCarrierClassCandidate]] = defaultdict(
@@ -9280,13 +9580,13 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
     detector_id = "mixin_enforcement"
     finding_spec = FindingSpec(
         pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
-        title="Renamed semantic witness slices should become mixins",
+        title="Renamed orthogonal semantic slices should become mixins",
         why=(
-            "Several carrier classes repeat the same semantic slice under renamed fields such as `class_name` vs `class_names`. "
+            "Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. "
             "One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance."
         ),
-        capability_gap="one authoritative witness spine plus reusable semantic-role mixins",
-        relation_context="same witness family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
+        capability_gap="one authoritative semantic carrier spine plus reusable semantic-role mixins",
+        relation_context="same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10098,13 +10398,13 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
     detector_id = "helper_backed_observation_spec"
     finding_spec = FindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Helper-backed observation specs should use a declarative spec substrate",
+        title="Helper-backed wrapper classes should use a declarative substrate",
         why=(
-            "Several observation-spec subclasses do nothing except forward one entrypoint to one helper. "
-            "That helper metadata should live in classvars on a shared spec substrate rather than in repeated wrapper methods."
+            "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. "
+            "That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods."
         ),
-        capability_gap="one declarative helper-backed observation-spec family with metaclass registration",
-        relation_context="same observation-spec wrapper shape repeats across helper-backed subclasses",
+        capability_gap="one declarative helper-backed wrapper family with class-level registration",
+        relation_context="same helper-backed wrapper shape repeats across sibling classes",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10135,22 +10435,22 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
             self.finding_spec.build(
                 self.detector_id,
                 (
-                    f"Observation specs {', '.join(group.class_names[:6])} are helper-backed wrappers over {', '.join(helper_names[:6])} via wrapper kinds {', '.join(wrapper_kinds)}."
+                    f"Classes {', '.join(group.class_names[:6])} under base family {group.base_names} are helper-backed wrappers over {', '.join(helper_names[:6])} via wrapper kinds {', '.join(wrapper_kinds)}."
                 ),
                 evidence[:8],
                 scaffold=(
-                    "class HelperBackedFunctionObservationSpec(FunctionObservationSpec, ABC):\n"
-                    "    shape_helper: ClassVar[Callable[..., object | None]]\n\n"
-                    "    def build_from_function(self, parsed_module, function, observation):\n"
-                    "        return type(self).shape_helper(parsed_module, function)\n\n"
+                    "class HelperBackedTemplate(ABC):\n"
+                    "    helper: ClassVar[Callable[..., object | None]]\n\n"
+                    "    def build(self, *args, **kwargs):\n"
+                    "        return type(self).helper(*args, **kwargs)\n\n"
                     "class TupleResultMixin(ABC):\n"
                     "    @staticmethod\n"
                     "    def wrap_result(value):\n"
-                    "        return tuple(value) if value is not None else None"
+                        "        return tuple(value) if value is not None else None"
                 ),
                 codemod_patch=(
-                    "# Collapse helper-backed observation-spec wrappers into declarative helper specs.\n"
-                    "# Put helper identity, node type, result wrapping, and scope policy on classvars/mixins, and let metaclass registration discover the family."
+                    "# Collapse helper-backed wrappers into declarative helper classes.\n"
+                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins, and let class creation discover the family."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.class_names),
@@ -10431,12 +10731,12 @@ class ExportPolicyPredicateDetector(IssueDetector):
     detector_id = "export_policy_predicate"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Repeated public-export policy predicates should collapse into one declarative export policy",
+        title="Repeated derived-surface policy predicates should collapse into one declarative policy",
         why=(
-            "Several modules hand-code export policy predicates for derived `__all__` surfaces instead of routing those surfaces through one declarative export-policy helper."
+            "Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper."
         ),
-        capability_gap="one declarative export-policy substrate for derived module surfaces",
-        relation_context="export-policy helper logic repeats across multiple modules with only orthogonal policy residue",
+        capability_gap="one declarative policy substrate for derived module surfaces",
+        relation_context="surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10465,27 +10765,36 @@ class ExportPolicyPredicateDetector(IssueDetector):
         all_roles = tuple(
             sorted({role for candidate in candidates for role in candidate.role_names})
         )
+        root_type_names = tuple(
+            sorted(
+                {
+                    type_name
+                    for candidate in candidates
+                    for type_name in candidate.root_type_names
+                }
+            )
+        )
         return [
             self.finding_spec.build(
                 self.detector_id,
                 (
-                    f"Export predicates {', '.join(candidate.function_name for candidate in candidates[:6])} repeat derived public-surface policy roles {all_roles}."
+                    f"Derived-surface predicates {', '.join(candidate.function_name for candidate in candidates[:6])} repeat policy roles {all_roles} over root types {root_type_names or ('<unconstrained>',)}."
                 ),
                 evidence,
                 scaffold=(
                     "@dataclass(frozen=True)\n"
-                    "class PublicExportPolicy:\n"
+                    "class DerivedSurfacePolicy:\n"
                     "    include_callables: bool = False\n"
                     "    include_types: bool = True\n"
                     "    exclude_abstract: bool = False\n"
                     "    include_enums: bool = False\n"
                     "    root_types: tuple[type[object], ...] = ()\n\n"
-                    "def derive_public_exports(namespace: dict[str, object], policy: PublicExportPolicy) -> tuple[str, ...]:\n"
-                    "    return tuple(sorted(name for name, value in namespace.items() if matches_public_export_policy(name, value, policy)))"
+                    "def derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n"
+                    "    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))"
                 ),
                 codemod_patch=(
-                    "# Replace repeated `_is_public_*_export` helpers with one declarative `PublicExportPolicy`.\n"
-                    "# Derive `__all__` from the policy instead of open-coding the predicate in each module."
+                    "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n"
+                    "# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
@@ -10561,12 +10870,12 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
     detector_id = "registered_union_surface"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Manual registered-family unions should derive from the registry root",
+        title="Manual sibling-registry unions should derive from one authoritative query",
         why=(
-            "A module manually unions registered families or specs from several roots even though the registration substrate can derive the full family set from one authoritative root traversal."
+            "A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set."
         ),
-        capability_gap="one derived registry-union query on the authoritative registration root",
-        relation_context="manual registry root union repeats information already present in class-time registration",
+        capability_gap="one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
+        relation_context="manual union of sibling registry queries repeats information already present in class-time registration",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10584,11 +10893,6 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         union_candidate = cast(RegisteredUnionSurfaceCandidate, candidate)
-        accessor_target = (
-            "CollectedFamily.all_registered_families()"
-            if union_candidate.accessor_name == "registered_families"
-            else "AutoRegisteredModuleShapeSpec.all_registered_specs()"
-        )
         return self.finding_spec.build(
             self.detector_id,
             (
@@ -10602,11 +10906,20 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
                 ),
             ),
             scaffold=(
-                f"def {union_candidate.owner_name}(...):\n    return {accessor_target}"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "class UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n"
+                "    __registry_key__ = \"kind\"\n"
+                "    __skip_if_no_key__ = True\n"
+                "    kind = None\n\n"
+                "    @classmethod\n"
+                f"    def {union_candidate.accessor_name}(cls):\n"
+                "        return tuple(cls.__registry__.values())\n\n"
+                f"def {union_candidate.owner_name}(...):\n"
+                f"    return UnifiedRegistryRoot.{union_candidate.accessor_name}()"
             ),
             codemod_patch=(
-                f"# Replace the manual union over {union_candidate.root_names} with `{accessor_target}`.\n"
-                "# Let the registration substrate derive the full family/spec set from one authoritative root traversal."
+                f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n"
+                "# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
             ),
             metrics=RegistrationMetrics(
                 registration_site_count=len(union_candidate.root_names),
@@ -10621,12 +10934,12 @@ class RegistryTraversalSubstrateDetector(PerModuleIssueDetector):
     detector_id = "registry_traversal_substrate"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Repeated registry traversal helpers should collapse into one typed traversal substrate",
+        title="Repeated descendant traversal helpers should collapse into one metaclass-registry root",
         why=(
-            "Several registry roots re-implement the same descendant traversal over class-time registration state instead of sharing one typed traversal helper."
+            "Several roots re-implement the same descendant traversal over class-time registration state instead of sharing one authoritative metaclass-registry root."
         ),
-        capability_gap="one authoritative typed traversal helper for registered descendants",
-        relation_context="same registry traversal algorithm repeats across sibling registry roots with only materialization residue differing",
+        capability_gap="one authoritative metaclass-registry root for descendant registries",
+        relation_context="same descendant traversal algorithm repeats across sibling roots with only materialization residue differing",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10656,30 +10969,22 @@ class RegistryTraversalSubstrateDetector(PerModuleIssueDetector):
             self.finding_spec.build(
                 self.detector_id,
                 (
-                    f"Registry roots {', '.join(group.class_names)} repeat descendant traversal helpers {', '.join(group.method_names)} with materialization modes {group.materialization_kinds}."
+                    f"Roots {', '.join(group.class_names)} repeat descendant traversal helpers {', '.join(group.method_names)} over registry attributes {group.registry_attribute_names} with materialization modes {group.materialization_kinds}."
                 ),
                 evidence,
                 scaffold=(
-                    "def walk_registered_descendants(root: type[object], *, materialize):\n"
-                    "    seen = set()\n"
-                    "    ordered = []\n"
-                    "    queue = list(root.__subclasses__())\n"
-                    "    while queue:\n"
-                    "        current = queue.pop(0)\n"
-                    "        queue.extend(current.__subclasses__())\n"
-                    "        registry = current.__dict__.get('_registered_spec_types')\n"
-                    "        if registry is None:\n"
-                    "            continue\n"
-                    "        for registered_type in registry:\n"
-                    "            if registered_type in seen:\n"
-                    "                continue\n"
-                    "            seen.add(registered_type)\n"
-                    "            ordered.append(materialize(registered_type))\n"
-                    "    return tuple(ordered)"
+                    "from metaclass_registry import AutoRegisterMeta\n\n"
+                    "class RegisteredRoot(ABC, metaclass=AutoRegisterMeta):\n"
+                    "    __registry_key__ = \"kind\"\n"
+                    "    __skip_if_no_key__ = True\n"
+                    "    kind = None\n\n"
+                    "    @classmethod\n"
+                    "    def registered_items(cls):\n"
+                    "        return tuple(cls.__registry__.values())"
                 ),
                 codemod_patch=(
-                    "# Replace repeated `all_registered_*` traversal helpers with one typed traversal substrate.\n"
-                    "# Keep only the materialization hook (`spec_type()` vs `family_type`) on the registry roots."
+                    "# Replace repeated descendant traversal helpers with one metaclass-registry root.\n"
+                    "# Read registered classes from `cls.__registry__` and keep only the materialization choice (`registered_type()` vs `registered_type`) at the public surface."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.method_names),
@@ -11029,13 +11334,13 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
     detector_id = "manual_class_registration"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Manual class registration should become AutoRegisterMeta",
+        title="Manual class registration should become metaclass-registry AutoRegisterMeta",
         why=(
             "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. "
-            "It should move into one authoritative metaclass or registry base so abstract-class skipping, uniqueness, "
+            "It should move into one authoritative `metaclass-registry` base so abstract-class skipping, uniqueness, "
             "and inheritance behavior are enforced in one place."
         ),
-        capability_gap="single authoritative class-registration algorithm with nominal class identity",
+        capability_gap="single authoritative metaclass-registry class-registration algorithm with nominal class identity",
         relation_context="same registry key family repeated through manual class-level registration assignments",
         confidence=MEDIUM_CONFIDENCE,
         certification=CERTIFIED,
@@ -11112,13 +11417,13 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
     detector_id = "manual_concrete_subclass_roster"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Manual concrete-subclass roster should become an auto-registration base",
+        title="Manual concrete-subclass roster should become a metaclass-registry base",
         why=(
             "The docs treat mutable subclass rosters maintained through __init_subclass__ as framework logic. "
-            "Abstract filtering, subclass discovery, and family access should live in one reusable registration base "
+            "Abstract filtering, subclass discovery, and family access should live in one reusable `metaclass-registry` base "
             "instead of being reimplemented inside each domain family."
         ),
-        capability_gap="single authoritative concrete-subclass registration hook with reusable family discovery",
+        capability_gap="single authoritative metaclass-registry concrete-subclass registration hook with reusable family discovery",
         relation_context="class family maintains a mutable subclass roster through __init_subclass__ and then queries it manually",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -11171,17 +11476,18 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
             ),
             tuple(evidence[:6]),
             scaffold=(
-                "class AutoRegisteredFamily(ABC):\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "class AutoRegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
+                "    __registry_key__ = \"family_key\"\n"
+                "    __skip_if_no_key__ = True\n"
+                "    family_key = None\n\n"
                 "    @classmethod\n"
-                "    def registered_types(cls) -> tuple[type[Self], ...]: ...\n\n"
-                "    def __init_subclass__(cls, **kwargs):\n"
-                "        super().__init_subclass__(**kwargs)\n"
-                "        if cls.should_register():\n"
-                "            FAMILY_REGISTRY.register(cls)"
+                "    def registered_types(cls) -> tuple[type[Self], ...]:\n"
+                "        return tuple(cls.__registry__.values())"
             ),
             codemod_patch=(
                 f"# Remove manual roster `{roster_candidate.registry_name}` from `{roster_candidate.class_name}`.\n"
-                "# Reuse one registration helper/base so descendant discovery and abstract filtering are not rewritten per family."
+                "# Reuse one metaclass-registry base so descendant discovery and abstract filtering are not rewritten per family."
             ),
             metrics=RegistrationMetrics(
                 registration_site_count=len(roster_candidate.concrete_class_names),
@@ -11196,13 +11502,14 @@ class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
     detector_id = "predicate_selected_concrete_family"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Predicate-selected concrete family should collapse into one selector base",
+        title="Predicate-selected concrete family should collapse into one metaclass-registry selector base",
         why=(
             "The docs treat repeated scans over `registered_types()` plus `matches_*` predicates as family-selection "
             "framework logic. When a root class manually filters registered concrete descendants, enforces exactly one "
-            "match, and then consumes the chosen subclass, the selection algorithm should live in one reusable family base."
+            "match, and then consumes the chosen subclass, the selection algorithm should live in one reusable "
+            "`metaclass-registry` family base."
         ),
-        capability_gap="single authoritative predicate-selected concrete-family substrate",
+        capability_gap="single authoritative metaclass-registry predicate-selected concrete-family substrate",
         relation_context="registered concrete subclasses are manually scanned and cardinality-checked inside a family root",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -11244,19 +11551,27 @@ class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
             ),
             tuple(evidence[:6]),
             scaffold=(
+                "from metaclass_registry import AutoRegisterMeta\n\n"
                 "ContextT = TypeVar(\"ContextT\")\n\n"
-                "class PredicateSelectedConcreteFamily(AutoRegisterConcreteTypes, ABC, Generic[ContextT]):\n"
+                "class PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n"
+                "    __registry_key__ = \"family_key\"\n"
+                "    __skip_if_no_key__ = True\n"
+                "    family_key = None\n\n"
                 "    @classmethod\n"
                 "    def matches_context(cls, context: ContextT) -> bool:\n"
                 "        return True\n\n"
                 "    @classmethod\n"
                 "    def select_matching_type(cls, context: ContextT) -> type[Self]:\n"
-                "        matches = tuple(candidate for candidate in cls.registered_types() if candidate.matches_context(context))\n"
+                "        matches = tuple(\n"
+                "            candidate\n"
+                "            for candidate in cls.__registry__.values()\n"
+                "            if candidate.matches_context(context)\n"
+                "        )\n"
                 "        ...\n"
             ),
             codemod_patch=(
                 f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
-                "# Leave only `matches_context(...)` and family-specific error shaping on the root, and stop reimplementing registered_types() scans."
+                "# Leave only `matches_context(...)` and family-specific error shaping on the root, and stop reimplementing `cls.__registry__.values()` scans."
             ),
         )
 
@@ -11898,10 +12213,11 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         title="Inline literal dispatch should be a registry",
         why=(
             "When the same observed value is split across several sibling literal branches, the docs "
-            "say the local rule family should be moved into an authoritative registry, dataclass table, "
-            "or another closed dispatch object instead of repeating inline branch logic."
+            "say the local rule family should be moved into one authoritative dispatch object instead of "
+            "repeating inline branch logic. When the cases select behavior, prefer an auto-registered class family "
+            "over a handwritten enum table."
         ),
-        capability_gap="single authoritative dispatch representation for a closed local rule family",
+        capability_gap="single authoritative dispatch representation for a closed local rule family, preferably an auto-registered behavior family when the cases are behavioral",
         relation_context="same branch role repeated inline inside a module block",
         confidence=MEDIUM_CONFIDENCE,
         certification=CERTIFIED,
@@ -11960,9 +12276,10 @@ class StringDispatchDetector(PerModuleIssueDetector):
         title="Closed-family dispatch expressed through strings",
         why=(
             "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches "
-            "suggest the code is using a weaker representation than the domain requires."
+            "suggest the code is using a weaker representation than the domain requires. If those strings select implementations, "
+            "the stronger form is an auto-registered family keyed by the stable nominal axis."
         ),
-        capability_gap="closed-family dispatch with stable nominal keys",
+        capability_gap="closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         relation_context="same dispatch role repeated through string comparisons or string-key registries",
         confidence=MEDIUM_CONFIDENCE,
         certification=CERTIFIED,
@@ -12006,6 +12323,10 @@ class StringDispatchDetector(PerModuleIssueDetector):
                     relation_context=(
                         f"same observed axis `{observation.axis_expression}` is split across literal string cases {observation.literal_cases}"
                     ),
+                    codemod_patch=(
+                        "# Promote the closed string axis to a nominal key. If the cases select behavior, define an "
+                        "auto-registered family keyed by that axis and dispatch through `cls.__registry__`."
+                    ),
                     metrics=DispatchCountMetrics.from_literal_family(
                         observation.axis_expression,
                         observation.literal_cases,
@@ -12025,6 +12346,10 @@ class StringDispatchDetector(PerModuleIssueDetector):
                     relation_context=(
                         "same closed family encoded in string-key dispatch tables rather than one nominal dispatch boundary"
                     ),
+                    codemod_patch=(
+                        "# Replace handwritten string-key dispatch tables with one authoritative nominal family. "
+                        "# Keep any string-key projection as a derived view of the auto-registered family."
+                    ),
                     metrics=DispatchCountMetrics(
                         dispatch_site_count=len(dict_evidence)
                     ),
@@ -12040,10 +12365,10 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         title="Closed-family dispatch expressed through numeric IDs",
         why=(
             "The docs treat repeated numeric pattern or mode IDs the same way as magic strings: the "
-            "domain axis is real but undeclared. Replace the literal-ID branches with an enum, nominal "
-            "registry, or polymorphic family and dispatch once."
+            "domain axis is real but undeclared. Replace the literal-ID branches with a nominal "
+            "family keyed by a stable axis; if the cases select behavior, prefer an auto-registered family over a handwritten lookup table."
         ),
-        capability_gap="closed-family dispatch with stable nominal keys",
+        capability_gap="closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         relation_context="same dispatch role repeated through numeric literal comparisons",
         confidence=MEDIUM_CONFIDENCE,
         certification=CERTIFIED,
@@ -12204,14 +12529,14 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     detector_id = "scoped_shape_wrapper"
     finding_spec = FindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Parallel scoped-shape wrappers should become a polymorphic spec family",
+        title="Parallel guarded wrappers and specs should become a polymorphic family",
         why=(
             "Parallel wrapper functions plus parallel spec declarations mean the code already has a hidden "
             "strategy family, but it is encoded as duplicated procedural glue. The docs prefer moving the shared "
             "algorithm into an ABC and letting polymorphic spec classes own the node family differences."
         ),
-        capability_gap="single authoritative polymorphic observation-spec family",
-        relation_context="same scoped-observation wrapper skeleton repeated across multiple shape builders",
+        capability_gap="single authoritative polymorphic wrapper/spec family",
+        relation_context="same node-guarded wrapper skeleton repeated across multiple wrapper/spec pairs",
         confidence=HIGH_CONFIDENCE,
         certification=CERTIFIED,
         capability_tags=(
@@ -12227,42 +12552,21 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        wrapper_function_items: tuple[ScopedShapeWrapperFunction, ...] = (
-            _collect_typed_family_items(
-                module,
-                ScopedShapeWrapperFunctionFamily,
-                ScopedShapeWrapperFunction,
-            )
-        )
-        wrapper_functions = {
-            item.function_name: item for item in wrapper_function_items
-        }
-        wrapper_spec_items: tuple[ScopedShapeWrapperSpec, ...] = (
-            _collect_typed_family_items(
-                module,
-                ScopedShapeWrapperSpecFamily,
-                ScopedShapeWrapperSpec,
-            )
-        )
-        wrapper_specs = [
-            spec
-            for spec in wrapper_spec_items
-            if spec.function_name in wrapper_functions
-            and spec.node_types == wrapper_functions[spec.function_name].node_types
-        ]
-        if len(wrapper_specs) < 2:
+        del config
+        wrapper_pairs = _guarded_wrapper_spec_pairs(module)
+        if len(wrapper_pairs) < 2:
             return []
         evidence_items = [
-            SourceLocation(str(module.path), spec.lineno, spec.spec_name)
-            for spec in wrapper_specs[:6]
+            SourceLocation(str(module.path), pair.spec_line, pair.spec_name)
+            for pair in wrapper_pairs[:6]
         ]
         evidence_items.extend(
             SourceLocation(
                 str(module.path),
-                wrapper_functions[spec.function_name].lineno,
-                wrapper_functions[spec.function_name].function_name,
+                pair.function_line,
+                pair.function_name,
             )
-            for spec in wrapper_specs[:6]
+            for pair in wrapper_pairs[:6]
         )
         evidence = tuple(
             sorted(
@@ -12270,21 +12574,27 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 key=lambda item: (item.line, item.symbol),
             )[:8]
         )
-        function_names = ", ".join(spec.function_name for spec in wrapper_specs)
-        spec_names = ", ".join(spec.spec_name for spec in wrapper_specs)
+        function_names = ", ".join(pair.function_name for pair in wrapper_pairs)
+        spec_names = ", ".join(pair.spec_name for pair in wrapper_pairs)
         node_families = ", ".join(
-            sorted({"/".join(spec.node_types) for spec in wrapper_specs})
+            sorted({"/".join(pair.node_types) for pair in wrapper_pairs})
         )
         return [
             self.finding_spec.build(
                 self.detector_id,
                 (
-                    f"{module.path} encodes scoped shape builders {function_names} and specs {spec_names} as parallel wrappers over node families {node_families}."
+                    f"{module.path} encodes guarded wrapper functions {function_names} and specs {spec_names} as parallel wrapper/spec pairs over node families {node_families}."
                 ),
                 evidence,
                 scaffold=(
-                    "Introduce one `ScopedShapeSpec` ABC with a concrete collect path and polymorphic subclasses such as\n"
-                    "`MethodShapeSpec`, `BuilderCallShapeSpec`, and `ExportDictShapeSpec`, then delete the wrapper functions."
+                    "class NodeFamilySpec(ABC):\n"
+                    "    node_types: ClassVar[tuple[type[ast.AST], ...]]\n\n"
+                    "    @classmethod\n"
+                    "    def build(cls, parsed_module, observation):\n"
+                    "        node = observation.node\n"
+                    "        if not isinstance(node, cls.node_types):\n"
+                    "            return None\n"
+                    "        return cls.build_for_node(parsed_module, node, observation)"
                 ),
             )
         ]
@@ -13564,7 +13874,7 @@ def _typed_field_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
 def _semantic_role_names_for_fields(field_names: tuple[str, ...]) -> tuple[str, ...]:
     role_names: set[str] = set()
     for field_name in field_names:
-        normalized_roles = _normalize_witness_field_roles(field_name)
+        normalized_roles = _normalize_semantic_field_roles(field_name)
         if normalized_roles:
             role_names.update(normalized_roles)
             continue
@@ -14168,8 +14478,6 @@ def _structural_observation_property_candidates(
         for statement in node.body:
             if not isinstance(statement, ast.FunctionDef):
                 continue
-            if statement.name != "structural_observation":
-                continue
             if not any(
                 _ast_terminal_name(decorator) == "property"
                 for decorator in statement.decorator_list
@@ -14179,10 +14487,10 @@ def _structural_observation_property_candidates(
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
             returned = body[0].value
-            if (
-                not isinstance(returned, ast.Call)
-                or _ast_terminal_name(returned.func) != "StructuralObservation"
-            ):
+            if not isinstance(returned, ast.Call):
+                continue
+            constructor_name = _call_name(returned.func)
+            if constructor_name is None:
                 continue
             keyword_names = tuple(
                 sorted(
@@ -14199,6 +14507,8 @@ def _structural_observation_property_candidates(
                     line=statement.lineno,
                     subject_name=node.name,
                     name_family=keyword_names,
+                    property_name=statement.name,
+                    constructor_name=constructor_name,
                 )
             )
     return tuple(candidates)
@@ -14784,12 +15094,42 @@ _HELPER_BACKED_METHOD_NAMES = frozenset(
 )
 
 
+_NON_HELPER_CALL_NAMES = frozenset(
+    {
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "frozenset",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "set",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+    }
+)
+
+
 def _is_observation_spec_wrapper_class(node: ast.ClassDef) -> bool:
     if not node.name.endswith("ObservationSpec"):
         return False
     return any(
         base_name.endswith("ObservationSpec")
         for base_name in _declared_base_names(node)
+    )
+
+
+def _looks_like_helper_call_name(helper_name: str) -> bool:
+    terminal = helper_name.rsplit(".", 1)[-1]
+    return bool(
+        terminal
+        and terminal[0].islower()
+        and terminal not in _NON_HELPER_CALL_NAMES
     )
 
 
@@ -14802,19 +15142,18 @@ def _helper_call_from_returned_value(node: ast.AST) -> tuple[str, bool] | None:
         and isinstance(node.args[0], ast.Call)
     ):
         helper_name = _call_display_name(node.args[0])
-        if helper_name is None or not helper_name.startswith("_"):
+        if helper_name is None or not _looks_like_helper_call_name(helper_name):
             return None
         return (helper_name, True)
     if isinstance(node, ast.Call):
         helper_name = _call_display_name(node)
-        if helper_name is None or not helper_name.startswith("_"):
+        if helper_name is None or not _looks_like_helper_call_name(helper_name):
             return None
         return (helper_name, False)
     return None
 
 
 def _helper_backed_wrapper_kind(
-    method_name: str,
     returned_value: ast.AST,
 ) -> str | None:
     helper_call = returned_value
@@ -14830,24 +15169,16 @@ def _helper_backed_wrapper_kind(
         tuple_wrapped = True
     if not isinstance(helper_call, ast.Call):
         return None
-    arg_names = tuple(ast.unparse(arg) for arg in helper_call.args)
-    if method_name in {"build_from_function", "build_scoped_function"}:
-        if arg_names == ("parsed_module", "function"):
-            return "tuple_function_helper" if tuple_wrapped else "function_helper"
-        if arg_names == ("parsed_module", "class_name", "function"):
-            return "class_named_function_helper"
-    if method_name in {"build_from_assign", "build_scoped_assign"} and arg_names == (
-        "parsed_module",
-        "node",
-    ):
-        return "assign_helper"
-    if method_name == "build_from_context" and arg_names == (
-        "parsed_module",
-        "node",
-        "observation",
-    ):
-        return "context_helper"
-    return None
+    arguments = [ast.unparse(arg) for arg in helper_call.args]
+    arguments.extend(
+        f"{keyword.arg}={ast.unparse(keyword.value)}"
+        for keyword in helper_call.keywords
+        if keyword.arg is not None
+    )
+    wrapper_prefix = "tuple_wrapped" if tuple_wrapped else "direct"
+    if not arguments:
+        return wrapper_prefix
+    return f"{wrapper_prefix}({', '.join(arguments)})"
 
 
 def _is_helper_wrapper_prelude(statement: ast.stmt) -> bool:
@@ -14871,15 +15202,15 @@ def _helper_backed_observation_spec_candidates(
 ) -> tuple[HelperBackedObservationSpecCandidate, ...]:
     candidates: list[HelperBackedObservationSpecCandidate] = []
     for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef) or not _is_observation_spec_wrapper_class(
-            node
-        ):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        base_names = _shared_record_base_names(node)
+        if not base_names:
             continue
         for method in node.body:
-            if (
-                not isinstance(method, ast.FunctionDef)
-                or method.name not in _HELPER_BACKED_METHOD_NAMES
-            ):
+            if not isinstance(method, ast.FunctionDef):
+                continue
+            if method.name.startswith("_"):
                 continue
             body = _trim_docstring_body(method.body)
             if not body or len(body) > 4:
@@ -14895,7 +15226,7 @@ def _helper_backed_observation_spec_candidates(
             if helper_result is None:
                 continue
             helper_name, _ = helper_result
-            wrapper_kind = _helper_backed_wrapper_kind(method.name, tail.value)
+            wrapper_kind = _helper_backed_wrapper_kind(tail.value)
             if wrapper_kind is None:
                 continue
             candidates.append(
@@ -14904,9 +15235,11 @@ def _helper_backed_observation_spec_candidates(
                     line=method.lineno,
                     subject_name=node.name,
                     name_family=(method.name, helper_name, wrapper_kind),
+                    base_names=base_names,
                     method_name=method.name,
                     helper_name=helper_name,
                     wrapper_kind=wrapper_kind,
+                    parameter_names=_parameter_names(method),
                 )
             )
     return tuple(candidates)
@@ -14916,17 +15249,143 @@ def _helper_backed_observation_spec_group(
     module: ParsedModule,
 ) -> HelperBackedObservationSpecGroup | None:
     candidates = _helper_backed_observation_spec_candidates(module)
-    if len(candidates) < 4:
+    grouped: dict[tuple[str, ...], list[HelperBackedObservationSpecCandidate]] = (
+        defaultdict(list)
+    )
+    for candidate in candidates:
+        grouped[candidate.base_names].append(candidate)
+    items = max(
+        (items for items in grouped.values() if len(items) >= 3),
+        key=len,
+        default=None,
+    )
+    if items is None:
         return None
-    ordered = tuple(sorted(candidates, key=lambda item: (item.line, item.class_name)))
+    ordered = tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
     return HelperBackedObservationSpecGroup(
         file_path=str(module.path),
+        base_names=ordered[0].base_names,
         class_names=tuple(item.class_name for item in ordered),
         line_numbers=tuple(item.line for item in ordered),
         method_names=tuple(item.method_name for item in ordered),
         helper_names=tuple(item.helper_name for item in ordered),
         wrapper_kinds=tuple(item.wrapper_kind for item in ordered),
     )
+
+
+def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
+    test = node.test
+    if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
+        return None
+    operand = test.operand
+    if (
+        not isinstance(operand, ast.Call)
+        or _ast_terminal_name(operand.func) != "isinstance"
+        or len(operand.args) != 2
+    ):
+        return None
+    type_node = operand.args[1]
+    if isinstance(type_node, ast.Tuple):
+        node_types = tuple(ast.unparse(item) for item in type_node.elts)
+    else:
+        node_types = (ast.unparse(type_node),)
+    return tuple(item for item in node_types if item)
+
+
+def _guarded_wrapper_function_candidates(
+    module: ParsedModule,
+) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
+    candidates: list[tuple[str, int, tuple[str, ...]]] = []
+    for statement in module.module.body:
+        if not isinstance(statement, ast.FunctionDef):
+            continue
+        body = _trim_docstring_body(statement.body)
+        while (
+            body
+            and isinstance(body[0], ast.Assign)
+            and len(body[0].targets) == 1
+            and isinstance(body[0].targets[0], ast.Name)
+        ):
+            body = body[1:]
+        if len(body) != 2:
+            continue
+        guard, return_stmt = body
+        if not isinstance(guard, ast.If) or not _if_returns_none_only(guard):
+            continue
+        if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
+            continue
+        node_types = _guarded_wrapper_node_types(guard)
+        if not node_types:
+            continue
+        candidates.append((statement.name, statement.lineno, node_types))
+    return tuple(candidates)
+
+
+def _guarded_wrapper_spec_pairs(
+    module: ParsedModule,
+) -> tuple[GuardedWrapperSpecPair, ...]:
+    wrapper_functions = {
+        function_name: (lineno, node_types)
+        for function_name, lineno, node_types in _guarded_wrapper_function_candidates(
+            module
+        )
+    }
+    pairs: list[GuardedWrapperSpecPair] = []
+    for statement in module.module.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            value = statement.value
+            lineno = statement.lineno
+        elif isinstance(statement, ast.AnnAssign):
+            target = statement.target
+            value = statement.value
+            lineno = statement.lineno
+        else:
+            continue
+        if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+            continue
+        constructor_name = _call_name(value.func)
+        if constructor_name is None:
+            continue
+        referenced_functions = [
+            keyword.value.id
+            for keyword in value.keywords
+            if keyword.arg is not None
+            and isinstance(keyword.value, ast.Name)
+            and keyword.value.id in wrapper_functions
+        ]
+        if len(referenced_functions) != 1:
+            continue
+        node_types_node = next(
+            (
+                keyword.value
+                for keyword in value.keywords
+                if keyword.arg == "node_types"
+            ),
+            None,
+        )
+        if node_types_node is None:
+            continue
+        if isinstance(node_types_node, ast.Tuple):
+            node_types = tuple(ast.unparse(item) for item in node_types_node.elts)
+        else:
+            node_types = (ast.unparse(node_types_node),)
+        function_name = referenced_functions[0]
+        function_line, function_node_types = wrapper_functions[function_name]
+        if tuple(node_types) != function_node_types:
+            continue
+        pairs.append(
+            GuardedWrapperSpecPair(
+                file_path=str(module.path),
+                spec_name=target.id,
+                spec_line=lineno,
+                function_name=function_name,
+                function_line=function_line,
+                constructor_name=constructor_name,
+                node_types=function_node_types,
+            )
+        )
+    return tuple(pairs)
 
 
 def _dynamic_self_field_selection_candidates(
@@ -14989,15 +15448,13 @@ def _class_list_registry_names(node: ast.ClassDef) -> tuple[str, ...]:
 
 
 def _registration_append_registry_name(
-    node: ast.AST, registry_names: tuple[str, ...]
+    node: ast.AST, registry_names: tuple[str, ...], owner_name: str
 ) -> str | None:
     if not isinstance(node, ast.Call):
         return None
     if not isinstance(node.func, ast.Attribute) or node.func.attr != "append":
         return None
-    if len(node.args) != 1 or not isinstance(node.args[0], ast.Name):
-        return None
-    if node.args[0].id != "cls":
+    if len(node.args) != 1 or not _looks_like_cls_registration_value(node.args[0]):
         return None
     target = node.func.value
     if not isinstance(target, ast.Attribute):
@@ -15006,10 +15463,48 @@ def _registration_append_registry_name(
         return None
     if isinstance(target.value, ast.Name) and target.value.id in {"cls", "type"}:
         return target.attr
+    if (
+        isinstance(target.value, ast.Name)
+        and target.value.id == owner_name
+    ):
+        return target.attr
     return None
 
 
+def _looks_like_cls_registration_value(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "cls"
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "cast"
+        and node.args
+    ):
+        return _looks_like_cls_registration_value(node.args[-1])
+    return False
+
+
+def _class_dict_get_attr_name(node: ast.AST) -> str | None:
+    if (
+        not isinstance(node, ast.Call)
+        or not isinstance(node.func, ast.Attribute)
+        or node.func.attr != "get"
+        or len(node.args) != 1
+    ):
+        return None
+    if not isinstance(node.func.value, ast.Attribute) or node.func.value.attr != "__dict__":
+        return None
+    if (
+        not isinstance(node.func.value.value, ast.Name)
+        or node.func.value.value.id != "cls"
+    ):
+        return None
+    return _constant_string(node.args[0])
+
+
 def _guarded_defined_attr_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Call):
+        return _class_dict_get_attr_name(node)
     if not isinstance(node, ast.Compare):
         return None
     if len(node.ops) != 1 or len(node.comparators) != 1:
@@ -15019,19 +15514,7 @@ def _guarded_defined_attr_name(node: ast.AST) -> str | None:
     comparator = node.comparators[0]
     if not isinstance(comparator, ast.Constant) or comparator.value is not None:
         return None
-    left = node.left
-    if (
-        not isinstance(left, ast.Call)
-        or not isinstance(left.func, ast.Attribute)
-        or left.func.attr != "get"
-        or len(left.args) != 1
-    ):
-        return None
-    if not isinstance(left.func.value, ast.Attribute) or left.func.value.attr != "__dict__":
-        return None
-    if not isinstance(left.func.value.value, ast.Name) or left.func.value.value.id != "cls":
-        return None
-    return _constant_string(left.args[0])
+    return _class_dict_get_attr_name(node.left)
 
 
 def _guard_requires_concrete_subclass(node: ast.AST) -> bool:
@@ -15051,7 +15534,10 @@ def _guard_requires_concrete_subclass(node: ast.AST) -> bool:
 
 
 def _manual_subclass_registration_sites(
-    method: ast.FunctionDef | ast.AsyncFunctionDef, registry_names: tuple[str, ...]
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    registry_names: tuple[str, ...],
+    *,
+    owner_name: str,
 ) -> tuple[_ManualSubclassRegistrationSite, ...]:
     sites: dict[str, _ManualSubclassRegistrationSite] = {}
 
@@ -15065,7 +15551,7 @@ def _manual_subclass_registration_sites(
                 continue
             for subnode in _walk_nodes(statement):
                 registry_name = _registration_append_registry_name(
-                    subnode, registry_names
+                    subnode, registry_names, owner_name
                 )
                 if registry_name is None:
                     continue
@@ -15096,19 +15582,63 @@ def _manual_subclass_registration_sites(
     return tuple(sites[name] for name in sorted(sites))
 
 
-def _registry_consumer_method_names(
-    node: ast.ClassDef, registry_name: str
-) -> tuple[str, ...]:
-    consumer_names: list[str] = []
+def _uses_named_registry(
+    node: ast.AST,
+    *,
+    registry_name: str,
+    owner_names: frozenset[str],
+) -> bool:
+    if not isinstance(node, ast.Attribute) or node.attr != registry_name:
+        return False
+    if not isinstance(node.value, ast.Name):
+        return False
+    return node.value.id in owner_names
+
+
+def _registry_consumer_locations(
+    module: ParsedModule,
+    node: ast.ClassDef,
+    registry_name: str,
+) -> tuple[SourceLocation, ...]:
+    consumer_locations: list[SourceLocation] = []
     for method in _iter_class_methods(node):
         if method.name == "__init_subclass__":
             continue
         if any(
-            isinstance(subnode, ast.Attribute) and subnode.attr == registry_name
+            _uses_named_registry(
+                subnode,
+                registry_name=registry_name,
+                owner_names=frozenset({"cls", "type", node.name}),
+            )
             for subnode in _walk_nodes(method)
         ):
-            consumer_names.append(method.name)
-    return tuple(sorted(set(consumer_names)))
+            consumer_locations.append(
+                SourceLocation(str(module.path), method.lineno, f"{node.name}.{method.name}")
+            )
+    for qualname, function in _iter_named_functions(module):
+        if "." in qualname:
+            continue
+        if any(
+            _uses_named_registry(
+                subnode,
+                registry_name=registry_name,
+                owner_names=frozenset({node.name}),
+            )
+            for subnode in _walk_nodes(function)
+        ):
+            consumer_locations.append(
+                SourceLocation(str(module.path), function.lineno, qualname)
+            )
+    unique_locations = {
+        (location.file_path, location.line, location.symbol): location
+        for location in consumer_locations
+    }
+    return tuple(
+        sorted(
+            unique_locations.values(),
+            key=lambda location: (location.line, location.symbol),
+        )
+    )
 
 
 def _registered_descendant_classes(
@@ -15135,11 +15665,15 @@ def _manual_concrete_subclass_roster_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[ManualConcreteSubclassRosterCandidate, ...]:
     class_index = build_class_family_index(modules)
+    modules_by_path = {str(module.path): module for module in modules}
     candidates: list[ManualConcreteSubclassRosterCandidate] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
         node = indexed_class.node
+        module = modules_by_path.get(indexed_class.file_path)
+        if module is None:
+            continue
         registry_names = _class_list_registry_names(node)
         if not registry_names:
             continue
@@ -15149,13 +15683,17 @@ def _manual_concrete_subclass_roster_candidates(
         descendants = _indexed_descendant_classes(class_index, indexed_class.symbol)
         if len(descendants) < config.min_registration_sites:
             continue
-        consumer_names_by_registry = {
-            registry_name: _registry_consumer_method_names(node, registry_name)
+        consumer_locations_by_registry = {
+            registry_name: _registry_consumer_locations(module, node, registry_name)
             for registry_name in registry_names
         }
-        for site in _manual_subclass_registration_sites(init_subclass, registry_names):
-            consumer_names = consumer_names_by_registry.get(site.registry_name, ())
-            if not consumer_names:
+        for site in _manual_subclass_registration_sites(
+            init_subclass, registry_names, owner_name=node.name
+        ):
+            consumer_locations = consumer_locations_by_registry.get(
+                site.registry_name, ()
+            )
+            if not consumer_locations:
                 continue
             concrete_descendants = _registered_descendant_classes(
                 descendants, site
@@ -15168,7 +15706,7 @@ def _manual_concrete_subclass_roster_candidates(
                     line=init_subclass.lineno,
                     class_name=_indexed_class_display_name(indexed_class, class_index),
                     registration_site=site,
-                    consumer_names=consumer_names,
+                    consumer_locations=consumer_locations,
                     concrete_class_names=_indexed_class_display_names(
                         concrete_descendants,
                         class_index,
@@ -15965,6 +16503,21 @@ def _type_indexed_definition_boilerplate_groups(
     )
 
 
+def _derivable_nominal_root_names(
+    shapes: Sequence[NominalAuthorityShape],
+) -> tuple[str, ...]:
+    root_counts: Counter[str] = Counter()
+    for shape in shapes:
+        root_counts.update(
+            name
+            for name in {*shape.declared_base_names, *shape.ancestor_names}
+            if name not in _IGNORED_ANCESTOR_NAMES and name != shape.class_name
+        )
+    return tuple(
+        sorted(root_name for root_name, count in root_counts.items() if count >= 3)
+    )
+
+
 def _derived_export_surface_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedExportSurfaceCandidate, ...]:
@@ -15981,23 +16534,7 @@ def _derived_export_surface_candidates(
         ]
         if len(local_shapes) < 6 or len(local_shapes) * 5 < len(exported_names) * 4:
             continue
-        root_names = tuple(
-            sorted(
-                root_name
-                for root_name in {"AutoRegisteredModuleShapeSpec", "CollectedFamily"}
-                if sum(
-                    1
-                    for shape in local_shapes
-                    if root_name
-                    in {
-                        *shape.declared_base_names,
-                        *shape.ancestor_names,
-                        shape.class_name,
-                    }
-                )
-                >= 3
-            )
-        )
+        root_names = _derivable_nominal_root_names(local_shapes)
         if not root_names:
             continue
         candidates.append(
@@ -16108,24 +16645,8 @@ def _derived_indexed_surface_candidates(
         )
         if len(value_names) != len(value.values):
             continue
-        shared_roots = tuple(
-            sorted(
-                root_name
-                for root_name in {"CollectedFamily", "AutoRegisteredModuleShapeSpec"}
-                if sum(
-                    1
-                    for value_name in value_names
-                    for shape in index.shapes_named(value_name)
-                    if root_name
-                    in {
-                        *shape.declared_base_names,
-                        *shape.ancestor_names,
-                        shape.class_name,
-                    }
-                )
-                >= len(value_names)
-            )
-        )
+        local_shapes = [index.shapes_named(value_name)[0] for value_name in value_names]
+        shared_roots = _derivable_nominal_root_names(local_shapes)
         if not shared_roots:
             continue
         candidates.append(
@@ -16165,8 +16686,6 @@ def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | No
     if len(accessor_names) != 1:
         return None
     accessor_name = next(iter(accessor_names))
-    if accessor_name not in {"registered_families", "registered_specs"}:
-        return None
     root_names = tuple(
         sorted(
             call.func.value.id
@@ -16182,6 +16701,11 @@ def _registered_union_surface_candidates(
     module: ParsedModule,
 ) -> tuple[RegisteredUnionSurfaceCandidate, ...]:
     candidates: list[RegisteredUnionSurfaceCandidate] = []
+    class_defs_by_name = {
+        node.name: node
+        for node in module.module.body
+        if isinstance(node, ast.ClassDef)
+    }
     for node in _walk_nodes(module.module):
         owner_name = "<module>"
         value: ast.AST | None = None
@@ -16208,6 +16732,18 @@ def _registered_union_surface_candidates(
         if registered_surface is None:
             continue
         accessor_name, root_names = registered_surface
+        if len(root_names) < 2:
+            continue
+        root_nodes = [class_defs_by_name.get(root_name) for root_name in root_names]
+        if any(root_node is None for root_node in root_nodes):
+            continue
+        if any(
+            (method := _class_method_named(cast(ast.ClassDef, root_node), accessor_name))
+            is None
+            or not _is_classmethod(method)
+            for root_node in root_nodes
+        ):
+            continue
         candidates.append(
             RegisteredUnionSurfaceCandidate(
                 file_path=str(module.path),
@@ -16220,6 +16756,24 @@ def _registered_union_surface_candidates(
     return tuple(candidates)
 
 
+def _type_name_set(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        return (ast.unparse(node),)
+    if isinstance(node, ast.Tuple):
+        return tuple(
+            sorted(
+                {
+                    type_name
+                    for element in node.elts
+                    for type_name in _type_name_set(element)
+                }
+            )
+        )
+    return ()
+
+
 def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
     body_text = "\n".join(ast.unparse(statement) for statement in node.body)
     roles: set[str] = set()
@@ -16230,22 +16784,44 @@ def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
         or "getattr(value, '__module__', None) == __name__" in body_text
     ):
         roles.add("module_local")
-    if "isinstance(value, type)" in body_text:
-        roles.add("type_only")
-    if "callable(value)" in body_text:
-        roles.add("callable_ok")
-    if "issubclass(value, StrEnum)" in body_text:
-        roles.add("enum_ok")
-    if "inspect.isabstract" in body_text:
-        roles.add("exclude_abstract")
-    if (
-        "issubclass(value, (CollectedFamily, AutoRegisteredModuleShapeSpec))"
-        in body_text
-    ):
-        roles.add("registered_family_or_spec")
-    if "StructuralObservationCarrier" in body_text:
-        roles.add("structural_observation_carrier")
+    for current in _walk_nodes(node):
+        if not isinstance(current, ast.Call):
+            continue
+        call_name = _ast_terminal_name(current.func)
+        if call_name == "isinstance" and len(current.args) == 2:
+            type_names = set(_type_name_set(current.args[1]))
+            if "type" in type_names:
+                roles.add("type_only")
+                type_names.discard("type")
+            elif type_names:
+                roles.add("value_type_filter")
+            if any(type_name.endswith("Enum") for type_name in type_names):
+                roles.add("enum_ok")
+        elif call_name == "callable" and len(current.args) == 1:
+            roles.add("callable_ok")
+        elif call_name == "issubclass" and len(current.args) == 2:
+            roles.add("subclass_constraint")
+            type_names = set(_type_name_set(current.args[1]))
+            if any(type_name.endswith("Enum") for type_name in type_names):
+                roles.add("enum_ok")
+        elif call_name == "isabstract":
+            roles.add("exclude_abstract")
     return tuple(sorted(roles))
+
+
+def _export_policy_root_type_names(node: ast.FunctionDef) -> tuple[str, ...]:
+    root_type_names: set[str] = set()
+    for current in _walk_nodes(node):
+        if not isinstance(current, ast.Call):
+            continue
+        if _ast_terminal_name(current.func) != "issubclass" or len(current.args) != 2:
+            continue
+        root_type_names.update(
+            type_name
+            for type_name in _type_name_set(current.args[1])
+            if type_name != "type"
+        )
+    return tuple(sorted(root_type_names))
 
 
 def _module_export_policy_predicate_candidate(
@@ -16292,12 +16868,14 @@ def _module_export_policy_predicate_candidate(
     role_names = _export_policy_role_names(predicate_node)
     if len(role_names) < 2:
         return None
+    root_type_names = _export_policy_root_type_names(predicate_node)
     return ExportPolicyPredicateCandidate(
         file_path=str(module.path),
         line=predicate_node.lineno,
         subject_name=predicate_name,
         name_family=role_names,
         role_names=role_names,
+        root_type_names=root_type_names,
     )
 
 
@@ -16323,14 +16901,34 @@ def _registry_materialization_kind(node: ast.FunctionDef) -> str | None:
     return None
 
 
+def _registry_attribute_name(node: ast.FunctionDef) -> str | None:
+    attribute_names = {
+        attribute_name
+        for current in _walk_nodes(node)
+        if isinstance(current, ast.Call)
+        and isinstance(current.func, ast.Attribute)
+        and current.func.attr == "get"
+        and isinstance(current.func.value, ast.Attribute)
+        and current.func.value.attr == "__dict__"
+        and isinstance(current.func.value.value, ast.Name)
+        and current.func.value.value.id == "current"
+        and len(current.args) == 1
+        and (attribute_name := _constant_string(current.args[0])) is not None
+    }
+    if len(attribute_names) != 1:
+        return None
+    return next(iter(attribute_names))
+
+
 def _is_registry_traversal_method(node: ast.FunctionDef) -> bool:
     if not _is_classmethod(node):
+        return False
+    if _registry_attribute_name(node) is None:
         return False
     body_text = "\n".join(ast.unparse(statement) for statement in node.body)
     required_fragments = (
         "cls.__subclasses__()",
         "current.__subclasses__()",
-        "current.__dict__.get('_registered_spec_types')",
         "seen.add",
         "ordered.append",
         "return tuple(ordered)",
@@ -16346,15 +16944,20 @@ def _registry_traversal_group(module: ParsedModule) -> RegistryTraversalGroup | 
         for statement in node.body:
             if not isinstance(statement, ast.FunctionDef):
                 continue
-            if not statement.name.startswith("all_registered_"):
-                continue
             if not _is_registry_traversal_method(statement):
                 continue
             materialization_kind = _registry_materialization_kind(statement)
-            if materialization_kind is None:
+            registry_attribute_name = _registry_attribute_name(statement)
+            if materialization_kind is None or registry_attribute_name is None:
                 continue
             methods.append(
-                (node.name, statement.name, statement.lineno, materialization_kind)
+                (
+                    node.name,
+                    statement.name,
+                    statement.lineno,
+                    materialization_kind,
+                    registry_attribute_name,
+                )
             )
     if len(methods) < 2:
         return None
@@ -16365,6 +16968,7 @@ def _registry_traversal_group(module: ParsedModule) -> RegistryTraversalGroup | 
         method_names=tuple(item[1] for item in ordered),
         line_numbers=tuple(item[2] for item in ordered),
         materialization_kinds=tuple(item[3] for item in ordered),
+        registry_attribute_names=tuple(item[4] for item in ordered),
     )
 
 
@@ -16460,12 +17064,12 @@ class ManualFamilyRosterDetector(IssueDetector):
     detector_id = "manual_family_roster"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Manual subclass roster should become auto-registration",
+        title="Manual subclass roster should become metaclass-registry auto-registration",
         why=(
             "One helper manually enumerates a class family instead of deriving membership from class existence. "
-            "The docs treat that as class-level registration logic that should live in one authoritative hook."
+            "The docs treat that as class-level registration logic that should live in one authoritative `metaclass-registry` hook."
         ),
-        capability_gap="zero-delay class-family discovery with declarative ordering",
+        capability_gap="zero-delay metaclass-registry class-family discovery with declarative ordering",
         relation_context="family membership is maintained by a manual roster function or constant",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
@@ -16502,16 +17106,23 @@ class ManualFamilyRosterDetector(IssueDetector):
                         ),
                         tuple(evidence[:6]),
                         scaffold=(
-                            f"class Registered{candidate.family_base_name}({candidate.family_base_name}):\n"
+                            "from metaclass_registry import AutoRegisterMeta\n\n"
+                            f"class Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n"
+                            "    __registry_key__ = \"registration_key\"\n"
+                            "    __skip_if_no_key__ = True\n"
+                            "    registration_key = None\n"
                             "    registration_order: ClassVar[int] = 0\n\n"
-                            "    def __init_subclass__(cls, **kwargs):\n"
-                            "        super().__init_subclass__(**kwargs)\n"
-                            "        if not inspect.isabstract(cls):\n"
-                            "            FAMILY_REGISTRY.register(cls, priority=cls.registration_order)"
+                            "    @classmethod\n"
+                            "    def registered_types(cls):\n"
+                            "        ordered = sorted(\n"
+                            "            cls.__registry__.values(),\n"
+                            "            key=lambda registered_type: registered_type.registration_order,\n"
+                            "        )\n"
+                            "        return tuple(ordered)"
                         ),
                         codemod_patch=(
-                            f"# Replace `{candidate.owner_name}` with class-time registration for the `{candidate.family_base_name}` family.\n"
-                            f"# Delete the manual {candidate.constructor_style} roster once subclasses self-register."
+                            f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
+                            f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
                         ),
                         metrics=RegistrationMetrics(
                             registration_site_count=len(candidate.member_names),
@@ -16933,13 +17544,13 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
     detector_id = "structural_observation_projection"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Repeated StructuralObservation builders should share one projection substrate",
+        title="Repeated property projection builders should share one projection substrate",
         why=(
-            "Several carriers repeat the same StructuralObservation projection schema with only role hooks varying. "
+            "Several classes repeat the same property-backed constructor projection schema with only role hooks varying. "
             "The docs prefer one authoritative projection template."
         ),
         capability_gap="single authoritative projection builder with role hooks",
-        relation_context="same StructuralObservation schema is manually rebuilt across many carriers",
+        relation_context="same property-backed constructor schema is manually rebuilt across many classes",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -16953,25 +17564,33 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[object]:
         del config
-        grouped: dict[tuple[str, ...], list[StructuralObservationPropertyCandidate]] = (
-            defaultdict(list)
-        )
+        grouped: dict[
+            tuple[str, str, tuple[str, ...]],
+            list[StructuralObservationPropertyCandidate],
+        ] = defaultdict(list)
         for candidate in _structural_observation_property_candidates(module):
-            grouped[candidate.keyword_names].append(candidate)
+            grouped[
+                (
+                    candidate.property_name,
+                    candidate.constructor_name,
+                    candidate.keyword_names,
+                )
+            ].append(candidate)
         return tuple(
-            (keyword_names, tuple(candidates))
-            for keyword_names, candidates in grouped.items()
+            (group_key, tuple(candidates))
+            for group_key, candidates in grouped.items()
             if len(candidates) >= 3
         )
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        keyword_names, grouped_candidates = cast(
+        group_key, grouped_candidates = cast(
             tuple[
-                tuple[str, ...],
+                tuple[str, str, tuple[str, ...]],
                 tuple[StructuralObservationPropertyCandidate, ...],
             ],
             candidate,
         )
+        property_name, constructor_name, keyword_names = group_key
         evidence = tuple(
             SourceLocation(item.file_path, item.line, item.class_name)
             for item in grouped_candidates[:6]
@@ -16979,25 +17598,23 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         return self.finding_spec.build(
             self.detector_id,
             (
-                f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild the same StructuralObservation schema over roles {keyword_names}."
+                f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{property_name}` with the same `{constructor_name}` schema over roles {keyword_names}."
             ),
             evidence,
             scaffold=(
-                "class StructuralObservationTemplate(StructuralObservationCarrier, ABC):\n"
-                "    observation_kind: ClassVar[ObservationKind]\n"
-                "    execution_level: ClassVar[StructuralExecutionLevel]\n\n"
+                "class ProjectionTemplate(ABC):\n"
                 "    @property\n"
-                "    def structural_observation(self) -> StructuralObservation:\n"
-                "        return StructuralObservation(...)"
+                f"    def {property_name}(self) -> {constructor_name}:\n"
+                f"        return {constructor_name}(...)"
             ),
             codemod_patch=(
-                f"# Introduce one projection template for roles {keyword_names}.\n"
-                "# Leave only owner_symbol, nominal_witness, observed_name, and fiber_key hooks on the concrete carriers."
+                f"# Introduce one projection template for `{property_name}` over roles {keyword_names}.\n"
+                "# Leave only the role-specific hooks on the concrete carriers."
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(grouped_candidates),
                 field_count=len(keyword_names),
-                mapping_name="StructuralObservation",
+                mapping_name=constructor_name,
                 field_names=keyword_names,
             ),
         )
@@ -17340,11 +17957,14 @@ def _autoregister_patch(
         "*** Begin Patch\n"
         f"*** Update File: {target_file}\n"
         "@@\n"
-        "+class AutoRegisterMeta(ABCMeta):\n"
-        f"+    registry = {registry_name}\n"
+        "+from metaclass_registry import AutoRegisterMeta\n"
         "+\n"
         f"+class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
-        "+    registry_key: str\n"
+        "+    __registry_key__ = \"registry_key\"\n"
+        "+    __skip_if_no_key__ = True\n"
+        "+    registry_key = None\n"
+        "+\n"
+        f"+# Replace `{registry_name}` with `{base_name}.__registry__`.\n"
         "*** End Patch"
     )
 
@@ -17424,14 +18044,15 @@ def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
     base_name = _shared_family_name(sorted(class_names)) or "RegisteredBase"
     sample = sorted(class_names)[:2]
     subclass_block = "\n".join(
-        f'class {name}({base_name}, metaclass=AutoRegisterMeta):\n    registry_key = "{name.lower()}"'
+        f'class {name}({base_name}):\n    registry_key = "{name.lower()}"'
         for name in sample
     )
     return (
-        f"class AutoRegisterMeta(ABCMeta):\n"
-        f"    registry = {registry_name}\n\n"
-        f"class {base_name}(ABC):\n"
-        f"    registry_key: str\n\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        f"class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = \"registry_key\"\n"
+        "    __skip_if_no_key__ = True\n"
+        "    registry_key = None\n\n"
         f"{subclass_block}"
     )
 

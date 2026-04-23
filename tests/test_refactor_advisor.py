@@ -363,7 +363,8 @@ def run_mode(mode, inputs, steps):
     )
     assert "Mode.OBSERVED" in strategy_finding.summary
     assert strategy_finding.scaffold is not None
-    assert "class ModeRunner(ABC)" in strategy_finding.scaffold
+    assert "from metaclass_registry import AutoRegisterMeta" in strategy_finding.scaffold
+    assert "class ModeRunner(ABC, metaclass=AutoRegisterMeta):" in strategy_finding.scaffold
     assert strategy_finding.codemod_patch is not None
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
 
@@ -878,6 +879,8 @@ _MODE_RUNNERS = {
     assert "ModePolicy" in finding.summary
     assert "ModeRunner.for_mode" in finding.summary
     assert "AxisPolicy" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "return cls.__registry__[key]()" in (finding.scaffold or "")
 
 
 def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
@@ -1010,6 +1013,8 @@ class GammaModeAssembly(ModeAssemblyPolicy):
     assert "ModeSpecPolicy" in finding.summary
     assert "ModeAssemblyPolicy" in finding.summary
     assert "AxisPolicy" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "return cls.__registry__[key]()" in (finding.scaffold or "")
 
 
 def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
@@ -1111,7 +1116,8 @@ class GammaModeRunner(ModeRunner):
     assert "Mode" in finding.summary
     assert "MODE_CONFIGS" in finding.summary
     assert "ModeRunner" in finding.summary
-    assert "AxisSpec" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "build_axis_rows" in (finding.scaffold or "")
 
 
 def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
@@ -1166,9 +1172,11 @@ ROUTE_REGISTRY = {
     assert "ROUTE_REGISTRY" in finding.summary
     assert "RouteKind" in finding.summary
     assert "route_kind" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "AXIS_BY_KEY" in (finding.scaffold or "")
 
 
-def test_detects_manual_validated_pytree_spec(tmp_path: Path) -> None:
+def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -1176,13 +1184,13 @@ def test_detects_manual_validated_pytree_spec(tmp_path: Path) -> None:
 from dataclasses import dataclass
 
 
-class ChildrenAuxDataPyTreeMixin:
-    def tree_flatten(self):
-        return (self._tree_children(), self._tree_aux_data())
+class StructuralRecordTransportMixin:
+    def encode(self):
+        return (self.payload_fields(), self.metadata_fields())
 
 
 @dataclass(frozen=True)
-class AlphaSpec(ChildrenAuxDataPyTreeMixin):
+class AlphaSpec(StructuralRecordTransportMixin):
     left: object
     right: object
     cutoff: float
@@ -1195,17 +1203,17 @@ class AlphaSpec(ChildrenAuxDataPyTreeMixin):
         if self.cutoff <= 0:
             raise ValueError
 
-    def _tree_children(self):
+    def payload_fields(self):
         return (self.left, self.right)
 
-    def _tree_aux_data(self):
+    def metadata_fields(self):
         return (self.cutoff,)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*children, *aux_data)
+    def from_payload(cls, metadata, payload):
+        return cls(*payload, *metadata)
 
-    def receptor_subset(self, indices):
+    def subsetted(self, indices):
         return AlphaSpec(
             left=self.left[indices],
             right=self.right,
@@ -1214,7 +1222,7 @@ class AlphaSpec(ChildrenAuxDataPyTreeMixin):
 
 
 @dataclass(frozen=True)
-class BetaSpec(ChildrenAuxDataPyTreeMixin):
+class BetaSpec(StructuralRecordTransportMixin):
     left: object
     right: object
     beta: float
@@ -1230,17 +1238,17 @@ class BetaSpec(ChildrenAuxDataPyTreeMixin):
         if self.cutoff <= 0:
             raise ValueError
 
-    def _tree_children(self):
+    def payload_fields(self):
         return (self.left, self.right)
 
-    def _tree_aux_data(self):
+    def metadata_fields(self):
         return (self.beta, self.cutoff)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*children, *aux_data)
+    def from_payload(cls, metadata, payload):
+        return cls(*payload, *metadata)
 
-    def receptor_subset(self, indices):
+    def subsetted(self, indices):
         return BetaSpec(
             left=self.left[indices],
             right=self.right,
@@ -1258,7 +1266,7 @@ class BetaSpec(ChildrenAuxDataPyTreeMixin):
 
 
 @dataclass(frozen=True)
-class GammaSpec(ChildrenAuxDataPyTreeMixin):
+class GammaSpec(StructuralRecordTransportMixin):
     left: object
     right: object
     width: float
@@ -1273,15 +1281,15 @@ class GammaSpec(ChildrenAuxDataPyTreeMixin):
         if self.width <= 0:
             raise ValueError
 
-    def _tree_children(self):
+    def payload_fields(self):
         return (self.left, self.right)
 
-    def _tree_aux_data(self):
+    def metadata_fields(self):
         return (self.width,)
 
     @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(*children, *aux_data)
+    def from_payload(cls, metadata, payload):
+        return cls(*payload, *metadata)
 
     def zeroed(self):
         return GammaSpec(
@@ -1296,12 +1304,12 @@ class GammaSpec(ChildrenAuxDataPyTreeMixin):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_validated_pytree_spec"
+        if finding.detector_id == "manual_structural_record_mechanics"
     )
 
     assert "AlphaSpec" in finding.summary
     assert "BetaSpec" in finding.summary
-    assert "ValidatedPytreeRecord" in (finding.scaffold or "")
+    assert "StructuralRecordBase" in (finding.scaffold or "")
 
 
 def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
@@ -1969,6 +1977,8 @@ class ScoringBackendFactory(AutoRegisterByClassVar, ABC):
     assert "CertificationDecisionSummaryPolicy" in finding.summary
     assert "ScoringBackendFactory" in finding.summary
     assert "KeyedNominalFamily" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__[key]" in (finding.scaffold or "")
 
 
 def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
@@ -2274,7 +2284,8 @@ class PaymentFailedHandler:
     )
     assert "HANDLERS" in finding.summary
     assert finding.scaffold is not None
-    assert "__init_subclass__" in finding.scaffold
+    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
+    assert "cls.__registry__[event_type]" in finding.scaffold
 
 
 def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) -> None:
@@ -2375,47 +2386,27 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ManualFiberTagCandidate:
-    file_path: str
-    class_name: str
-    init_line: int
-    method_name: str
-    method_line: int
-    tag_name: str
-    case_names: tuple[str, ...]
-    assigned_field_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DescriptorDerivedViewCandidate:
-    file_path: str
-    class_name: str
-    source_attr: str
-    init_line: int
-    mutator_name: str
-    mutator_line: int
-    derived_field_names: tuple[str, ...]
-    updated_field_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ManualRegistryCandidate:
-    file_path: str
-    registry_name: str
-    decorator_name: str
-    class_names: tuple[str, ...]
-    unregistered_class_names: tuple[str, ...]
-    line: int
-
-
-@dataclass(frozen=True)
-class StructuralConfusabilityCandidate:
+class FunctionTrace:
     file_path: str
     function_name: str
     line: int
-    parameter_name: str
-    observed_method_names: tuple[str, ...]
+    helper_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegistryTrace:
+    source_path: str
+    registry_name: str
+    init_line: int
     class_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportTrace:
+    artifact_path: str
+    subject_name: str
+    method_line: int
+    export_names: tuple[str, ...]
 """,
     )
 
@@ -2423,9 +2414,9 @@ class StructuralConfusabilityCandidate:
     finding = next(
         item for item in findings if item.detector_id == "semantic_witness_family"
     )
-    assert "ManualFiberTagCandidate" in finding.summary
+    assert "FunctionTrace" in finding.summary
     assert finding.scaffold is not None
-    assert "class WitnessCarrier(ABC)" in finding.scaffold
+    assert "class SemanticCarrier(ABC)" in finding.scaffold
 
 
 def test_detects_mixin_enforcement_for_renamed_semantic_roles(
@@ -2439,32 +2430,27 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
-class ManualFiberTagCandidate:
-    file_path: str
-    class_name: str
-    init_line: int
-    method_name: str
-    method_line: int
-    tag_name: str
-    case_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ManualRegistryCandidate:
-    file_path: str
-    registry_name: str
-    decorator_name: str
-    class_names: tuple[str, ...]
-    line: int
-
-
-@dataclass(frozen=True)
-class StructuralConfusabilityCandidate:
+class FunctionTrace:
     file_path: str
     function_name: str
+    method_line: int
+    helper_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegistryTrace:
+    source_path: str
+    registry_name: str
     line: int
-    observed_method_names: tuple[str, ...]
     class_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportTrace:
+    artifact_path: str
+    subject_name: str
+    init_line: int
+    export_names: tuple[str, ...]
 """,
     )
 
@@ -2473,12 +2459,12 @@ class StructuralConfusabilityCandidate:
         item
         for item in findings
         if item.detector_id == "mixin_enforcement"
-        and "class_name" in item.summary
+        and "function_name" in item.summary
         and "class_names" in item.summary
     )
     assert finding.scaffold is not None
-    assert "class NameBearingMixin(ABC)" in finding.scaffold
-    assert "(WitnessCarrier, NameBearingMixin" in finding.scaffold
+    assert "class PrimaryNameMixin(ABC)" in finding.scaffold
+    assert "(SemanticCarrier, PrimaryNameMixin" in finding.scaffold
     assert finding.codemod_patch is not None
     assert "multiple inheritance" in finding.codemod_patch
 
@@ -3253,9 +3239,16 @@ REGISTRY["beta"] = BetaHandler
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
-    assert any(finding.pattern_id == 6 and finding.scaffold for finding in findings)
     assert any(
-        finding.pattern_id == 6 and finding.codemod_patch for finding in findings
+        finding.pattern_id == 6
+        and "from metaclass_registry import AutoRegisterMeta"
+        in (finding.scaffold or "")
+        for finding in findings
+    )
+    assert any(
+        finding.pattern_id == 6
+        and "__registry__" in (finding.codemod_patch or "")
+        for finding in findings
     )
 
 
@@ -3308,6 +3301,8 @@ class DonorExtractor(Extractor):
     assert "Extractor" in finding.summary
     assert "_registered_types" in finding.summary
     assert "registered_types" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_with_selector_guard(
@@ -3353,6 +3348,69 @@ class GuidedRequest(RoutedRequest):
     assert "route_name" in finding.summary
     assert "DirectRequest" in finding.summary
     assert "GuidedRequest" in finding.summary
+    assert "metaclass-registry" in (finding.codemod_patch or "")
+
+
+def test_detects_manual_concrete_subclass_roster_with_root_qualified_append(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import inspect
+from abc import ABC, abstractmethod
+
+
+class HandlerBase(ABC):
+    _registered_handlers = []
+    _registration_index = 0
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if inspect.isabstract(cls):
+            return
+        cls._registration_index = HandlerBase._registration_index
+        HandlerBase._registration_index += 1
+        HandlerBase._registered_handlers.append(cls)
+
+    @classmethod
+    def registered_handlers(cls):
+        return tuple(
+            sorted(
+                HandlerBase._registered_handlers,
+                key=lambda item: item._registration_index,
+            )
+        )
+
+    @abstractmethod
+    def run(self):
+        raise NotImplementedError
+
+
+class AlphaHandler(HandlerBase):
+    def run(self):
+        return "alpha"
+
+
+class BetaHandler(HandlerBase):
+    def run(self):
+        return "beta"
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_concrete_subclass_roster"
+    )
+
+    assert "HandlerBase" in finding.summary
+    assert "_registered_handlers" in finding.summary
+    assert "registered_handlers" in finding.summary
+    assert "AlphaHandler" in finding.summary
+    assert "BetaHandler" in finding.summary
 
 
 def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
@@ -3418,6 +3476,8 @@ class BetaRenderRule(RenderRule):
     assert "AlphaRenderRule" in finding.summary
     assert "BetaRenderRule" in finding.summary
     assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_manual_concrete_subclass_roster_across_modules(
@@ -3470,6 +3530,60 @@ class GuidedRequest(RoutedRequest):
     assert "DirectRequest" in finding.summary
     assert "GuidedRequest" in finding.summary
     assert "route_name" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+
+
+def test_detects_manual_concrete_subclass_roster_with_module_level_consumer(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import ABC
+from typing import cast
+
+
+class FamilyGeneratingSpec(ABC):
+    family_specs = ()
+    _declaring_spec_types = []
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if cls.__dict__.get("family_specs"):
+            FamilyGeneratingSpec._declaring_spec_types.append(
+                cast(type[FamilyGeneratingSpec], cls)
+            )
+
+
+class AlphaSpec(FamilyGeneratingSpec):
+    family_specs = ("alpha",)
+
+
+class BetaSpec(FamilyGeneratingSpec):
+    family_specs = ("beta",)
+
+
+def materialize_declared_families():
+    return tuple(
+        spec_type.__name__
+        for spec_type in FamilyGeneratingSpec._declaring_spec_types
+    )
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_concrete_subclass_roster"
+    )
+
+    assert "FamilyGeneratingSpec" in finding.summary
+    assert "_declaring_spec_types" in finding.summary
+    assert "materialize_declared_families" in finding.summary
+    assert "AlphaSpec" in finding.summary
+    assert "BetaSpec" in finding.summary
 
 
 def test_detects_predicate_selected_concrete_family_across_modules(
@@ -3548,6 +3662,8 @@ class BetaRenderRule(RenderRule):
     assert "AlphaRenderRule" in finding.summary
     assert "BetaRenderRule" in finding.summary
     assert "PredicateSelectedConcreteFamily" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
@@ -3759,34 +3875,34 @@ import ast
 
 
 @dataclass(frozen=True)
-class ScopedShapeSpec:
+class NodeWrapperSpec:
     node_types: tuple[type[ast.AST], ...]
-    build_shape: object
+    builder: object
 
 
-def _build_method_shape_from_observation(parsed_module, observation):
+def _build_function_projection(parsed_module, observation):
     node = observation.node
     if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
         return None
     return (parsed_module, node, observation.class_name)
 
 
-def _build_builder_call_shape_from_observation(parsed_module, observation):
+def _build_call_projection(parsed_module, observation):
     node = observation.node
     if not isinstance(node, ast.Call):
         return None
     return (parsed_module, node, observation.function_name)
 
 
-_METHOD_SHAPE_SPEC = ScopedShapeSpec(
+_FUNCTION_PROJECTION_SPEC = NodeWrapperSpec(
     node_types=(ast.FunctionDef, ast.AsyncFunctionDef),
-    build_shape=_build_method_shape_from_observation,
+    builder=_build_function_projection,
 )
 
 
-_BUILDER_CALL_SHAPE_SPEC = ScopedShapeSpec(
+_CALL_PROJECTION_SPEC = NodeWrapperSpec(
     node_types=(ast.Call,),
-    build_shape=_build_builder_call_shape_from_observation,
+    builder=_build_call_projection,
 )
 """,
     )
@@ -3796,8 +3912,8 @@ _BUILDER_CALL_SHAPE_SPEC = ScopedShapeSpec(
         finding for finding in findings if finding.detector_id == "scoped_shape_wrapper"
     )
 
-    assert "polymorphic spec family" in finding.title
-    assert "ScopedShapeSpec" in (finding.scaffold or "")
+    assert "polymorphic family" in finding.title
+    assert "NodeFamilySpec" in (finding.scaffold or "")
 
 
 def test_detects_manual_indexed_family_expansion(tmp_path: Path) -> None:
@@ -4850,7 +4966,8 @@ def default_detectors():
 
     assert "default_detectors" in finding.summary
     assert "IssueDetector" in finding.summary
-    assert "__init_subclass__" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
@@ -5377,21 +5494,20 @@ def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> N
         tmp_path,
         "pkg/mod.py",
         """
-class StructuralObservation:
+class ProjectionRecord:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
 
 
 class MethodShape:
     @property
-    def structural_observation(self):
-        return StructuralObservation(
+    def projection_record(self):
+        return ProjectionRecord(
             file_path=self.file_path,
             owner_symbol=self.symbol,
-            nominal_witness=self.class_name,
+            primary_name=self.class_name,
             line=self.lineno,
-            observation_kind=self.observation_kind,
-            execution_level=self.execution_level,
+            category=self.observation_kind,
             observed_name=self.method_name,
             fiber_key=self.method_name,
         )
@@ -5399,14 +5515,13 @@ class MethodShape:
 
 class BuilderShape:
     @property
-    def structural_observation(self):
-        return StructuralObservation(
+    def projection_record(self):
+        return ProjectionRecord(
             file_path=self.file_path,
             owner_symbol=self.symbol,
-            nominal_witness=self.class_name,
+            primary_name=self.class_name,
             line=self.lineno,
-            observation_kind=self.observation_kind,
-            execution_level=self.execution_level,
+            category=self.observation_kind,
             observed_name=self.builder_name,
             fiber_key=self.builder_name,
         )
@@ -5414,14 +5529,13 @@ class BuilderShape:
 
 class ExportShape:
     @property
-    def structural_observation(self):
-        return StructuralObservation(
+    def projection_record(self):
+        return ProjectionRecord(
             file_path=self.file_path,
             owner_symbol=self.symbol,
-            nominal_witness=self.class_name,
+            primary_name=self.class_name,
             line=self.lineno,
-            observation_kind=self.observation_kind,
-            execution_level=self.execution_level,
+            category=self.observation_kind,
             observed_name=self.export_name,
             fiber_key=self.export_name,
         )
@@ -5435,8 +5549,9 @@ class ExportShape:
         if finding.detector_id == "structural_observation_projection"
     )
 
-    assert "StructuralObservation schema" in finding.summary
-    assert "StructuralObservationTemplate" in (finding.scaffold or "")
+    assert "ProjectionRecord" in finding.summary
+    assert "projection_record" in finding.summary
+    assert "ProjectionTemplate" in (finding.scaffold or "")
 
 
 def test_detects_repeated_property_alias_hooks_across_subclasses(
@@ -5559,65 +5674,32 @@ def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None
 from abc import ABC
 
 
-class FunctionObservationSpec(ABC):
+class TaskAdapter(ABC):
     pass
 
 
-class ScopeFilteredFunctionObservationSpec(FunctionObservationSpec, ABC):
+class HelperBackedTaskAdapter(TaskAdapter, ABC):
     pass
 
 
-class AssignObservationSpec(ABC):
-    pass
+class ClassTaskAdapter(HelperBackedTaskAdapter):
+    def build(self, parsed_module, function, observation):
+        return tuple(class_marker_events(parsed_module, function))
 
 
-class ModuleOnlyAssignObservationSpec(AssignObservationSpec, ABC):
-    pass
+class InterfaceTaskAdapter(HelperBackedTaskAdapter):
+    def build(self, parsed_module, function, observation):
+        return interface_event(parsed_module, function)
 
 
-class ClassMarkerObservationSpec(FunctionObservationSpec):
-    pass
+class DynamicTaskAdapter(HelperBackedTaskAdapter):
+    def build(self, parsed_module, function, observation):
+        return tuple(dynamic_events(parsed_module, function))
 
 
-class InterfaceGenerationObservationSpec(FunctionObservationSpec):
-    pass
-
-
-class DynamicMethodInjectionObservationSpec(FunctionObservationSpec):
-    pass
-
-
-class ProjectionHelperObservationSpec(ScopeFilteredFunctionObservationSpec):
-    pass
-
-
-class ScopedShapeWrapperObservationSpec(ModuleOnlyAssignObservationSpec):
-    pass
-
-
-class StandardClassMarkerObservationSpec(ClassMarkerObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        return tuple(_class_marker_observations(parsed_module, function))
-
-
-class StandardInterfaceGenerationObservationSpec(InterfaceGenerationObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        return _interface_generation_observation(parsed_module, function)
-
-
-class StandardDynamicMethodInjectionObservationSpec(DynamicMethodInjectionObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        return tuple(_dynamic_method_injection_observations(parsed_module, function))
-
-
-class StandardProjectionHelperObservationSpec(ProjectionHelperObservationSpec):
-    def build_scoped_function(self, parsed_module, function, observation):
-        return _projection_helper_shape_from_function(parsed_module, function)
-
-
-class ScopedShapeWrapperSpecObservationSpec(ScopedShapeWrapperObservationSpec):
-    def build_scoped_assign(self, parsed_module, node, observation):
-        return _scoped_shape_wrapper_spec_from_assign(parsed_module, node)
+class ProjectionTaskAdapter(HelperBackedTaskAdapter):
+    def build(self, parsed_module, function, observation):
+        return projection_event(parsed_module, function)
 """,
     )
 
@@ -5628,9 +5710,9 @@ class ScopedShapeWrapperSpecObservationSpec(ScopedShapeWrapperObservationSpec):
         if finding.detector_id == "helper_backed_observation_spec"
     )
 
-    assert "StandardClassMarkerObservationSpec" in finding.summary
-    assert "_class_marker_observations" in finding.summary
-    assert "HelperBackedFunctionObservationSpec" in (finding.scaffold or "")
+    assert "ClassTaskAdapter" in finding.summary
+    assert "HelperBackedTaskAdapter" in finding.summary
+    assert "HelperBackedTemplate" in (finding.scaffold or "")
 
 
 def test_detects_dynamic_self_field_selection(tmp_path: Path) -> None:
@@ -5890,45 +5972,45 @@ def test_detects_manual_derived_export_surface(tmp_path: Path) -> None:
 from abc import ABC
 
 
-class AutoRegisteredModuleShapeSpec(ABC):
+class PublicSpecRoot(ABC):
     pass
 
 
-class CollectedFamily(ABC):
+class HandlerFamilyRoot(ABC):
     pass
 
 
-class AlphaSpec(AutoRegisteredModuleShapeSpec):
+class AlphaSpec(PublicSpecRoot):
     pass
 
 
-class BetaSpec(AutoRegisteredModuleShapeSpec):
+class BetaSpec(PublicSpecRoot):
     pass
 
 
-class GammaFamily(CollectedFamily):
+class GammaSpec(PublicSpecRoot):
     pass
 
 
-class DeltaFamily(CollectedFamily):
+class DeltaHandler(HandlerFamilyRoot):
     pass
 
 
-class EpsilonSpec(AutoRegisteredModuleShapeSpec):
+class EpsilonHandler(HandlerFamilyRoot):
     pass
 
 
-class ZetaFamily(CollectedFamily):
+class ZetaHandler(HandlerFamilyRoot):
     pass
 
 
 _STATIC_EXPORT_NAMES = (
     "AlphaSpec",
     "BetaSpec",
-    "GammaFamily",
-    "DeltaFamily",
-    "EpsilonSpec",
-    "ZetaFamily",
+    "GammaSpec",
+    "DeltaHandler",
+    "EpsilonHandler",
+    "ZetaHandler",
 )
 """,
     )
@@ -5942,8 +6024,8 @@ _STATIC_EXPORT_NAMES = (
 
     assert "_STATIC_EXPORT_NAMES" in finding.summary
     assert (
-        "AutoRegisteredModuleShapeSpec" in finding.summary
-        or "CollectedFamily" in finding.summary
+        "PublicSpecRoot" in finding.summary
+        or "HandlerFamilyRoot" in finding.summary
     )
     assert "public_exports" in (finding.scaffold or "")
 
@@ -5956,26 +6038,26 @@ def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
 from abc import ABC
 
 
-class CollectedFamily(ABC):
+class CommandRoot(ABC):
     pass
 
 
-class AlphaFamily(CollectedFamily):
+class AlphaCommand(CommandRoot):
     pass
 
 
-class BetaFamily(CollectedFamily):
+class BetaCommand(CommandRoot):
     pass
 
 
-class GammaFamily(CollectedFamily):
+class GammaCommand(CommandRoot):
     pass
 
 
-FAMILY_BY_NAME = {
-    "alpha": AlphaFamily,
-    "beta": BetaFamily,
-    "gamma": GammaFamily,
+COMMAND_BY_NAME = {
+    "alpha": AlphaCommand,
+    "beta": BetaCommand,
+    "gamma": GammaCommand,
 }
 """,
     )
@@ -5987,8 +6069,8 @@ FAMILY_BY_NAME = {
         if finding.detector_id == "derived_indexed_surface"
     )
 
-    assert "FAMILY_BY_NAME" in finding.summary
-    assert "CollectedFamily" in finding.summary
+    assert "COMMAND_BY_NAME" in finding.summary
+    assert "CommandRoot" in finding.summary
     assert "derived_index" in (finding.scaffold or "")
 
 
@@ -6082,7 +6164,7 @@ __all__ = sorted(
 
     assert "_is_public_alpha_export" in finding.summary
     assert "_is_public_beta_export" in finding.summary
-    assert "PublicExportPolicy" in (finding.scaffold or "")
+    assert "DerivedSurfacePolicy" in (finding.scaffold or "")
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
@@ -6090,21 +6172,21 @@ def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
         tmp_path,
         "pkg/mod.py",
         """
-class ShapeFamily:
+class PluginRegistry:
     @classmethod
-    def registered_families(cls):
+    def registered_plugins(cls):
         return ()
 
 
-class ObservationFamily:
+class HandlerRegistry:
     @classmethod
-    def registered_families(cls):
+    def registered_plugins(cls):
         return ()
 
 
 def collect_everything():
-    for family in ShapeFamily.registered_families() + ObservationFamily.registered_families():
-        yield family
+    for item in PluginRegistry.registered_plugins() + HandlerRegistry.registered_plugins():
+        yield item
 """,
     )
 
@@ -6116,8 +6198,10 @@ def collect_everything():
     )
 
     assert "collect_everything" in finding.summary
-    assert "registered_families" in finding.summary
-    assert "all_registered_families" in (finding.scaffold or "")
+    assert "registered_plugins" in finding.summary
+    assert "UnifiedRegistryRoot" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
@@ -6125,43 +6209,43 @@ def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
         tmp_path,
         "pkg/mod.py",
         """
-class AutoRegisteredModuleShapeSpec:
+class PluginRegistry:
     @classmethod
-    def all_registered_specs(cls):
+    def all_registered_plugins(cls):
         seen = set()
         ordered = []
         queue = list(cls.__subclasses__())
         while queue:
             current = queue.pop(0)
             queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_spec_types")
+            registry = current.__dict__.get("_registered_plugin_types")
             if registry is None:
                 continue
-            for spec_type in registry:
-                if spec_type in seen:
+            for plugin_type in registry:
+                if plugin_type in seen:
                     continue
-                seen.add(spec_type)
-                ordered.append(spec_type())
+                seen.add(plugin_type)
+                ordered.append(plugin_type())
         return tuple(ordered)
 
 
-class CollectedFamily:
+class HandlerRegistry:
     @classmethod
-    def all_registered_families(cls):
+    def all_registered_handlers(cls):
         seen = set()
         ordered = []
         queue = list(cls.__subclasses__())
         while queue:
             current = queue.pop(0)
             queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_spec_types")
+            registry = current.__dict__.get("_registered_handler_types")
             if registry is None:
                 continue
-            for family_type in registry:
-                if family_type in seen:
+            for handler_type in registry:
+                if handler_type in seen:
                     continue
-                seen.add(family_type)
-                ordered.append(family_type)
+                seen.add(handler_type)
+                ordered.append(handler_type)
         return tuple(ordered)
 """,
     )
@@ -6173,9 +6257,10 @@ class CollectedFamily:
         if finding.detector_id == "registry_traversal_substrate"
     )
 
-    assert "all_registered_specs" in finding.summary
-    assert "all_registered_families" in finding.summary
-    assert "walk_registered_descendants" in (finding.scaffold or "")
+    assert "all_registered_plugins" in finding.summary
+    assert "all_registered_handlers" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "registered_items" in (finding.scaffold or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
@@ -6417,3 +6502,5 @@ def resolve_backend(scoring_family: ScoringFamily) -> str:
     assert "resolve_backend" in finding.summary
     assert "ScoringFamily" in finding.summary
     assert "ScoringPolicy" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "return cls.__registry__[key]()" in (finding.scaffold or "")

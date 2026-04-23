@@ -9,6 +9,9 @@ description = "AST-driven advisor for canonical nominal refactoring patterns"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "OpenHCSDev" }]
+dependencies = [
+    "metaclass-registry>=0.1.4",
+]
 
 [project.scripts]
 nominal-refactor-advisor = "nominal_refactor_advisor.cli:main"
