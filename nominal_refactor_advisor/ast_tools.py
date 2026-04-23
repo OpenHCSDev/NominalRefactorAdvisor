@@ -12,6 +12,7 @@ import ast
 import copy
 from abc import ABC, ABCMeta, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Callable, ClassVar, TypeAlias, TypeVar
 
@@ -194,16 +195,24 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
+@lru_cache(maxsize=None)
+def _collect_family_items_cached(
+    parsed_module: ParsedModule,
+    family: type[CollectedFamily],
+) -> tuple[object, ...]:
+    return tuple(
+        item
+        for item in _flatten_collected_items(family.collect(parsed_module))
+        if isinstance(item, family.item_type)
+    )
+
+
 def collect_family_items(
     parsed_module: ParsedModule,
     family: type[CollectedFamily],
 ) -> list[object]:
     """Collect and flatten items from one registered family."""
-    return [
-        item
-        for item in _flatten_collected_items(family.collect(parsed_module))
-        if isinstance(item, family.item_type)
-    ]
+    return list(_collect_family_items_cached(parsed_module, family))
 
 
 class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
@@ -390,57 +399,66 @@ def parse_python_modules(root: Path) -> list[ParsedModule]:
     return modules
 
 
-class _ShapeNormalizer(ast.NodeTransformer):
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        return ast.copy_location(ast.Name(id="VAR", ctx=node.ctx), node)
+def _normalized_constant(value: object) -> object:
+    if isinstance(value, str):
+        return "STR"
+    if isinstance(value, (int, float, complex)):
+        return 0
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return True
+    return "CONST"
 
-    def visit_arg(self, node: ast.arg) -> ast.AST:
-        node = ast.arg(arg="ARG", annotation=None, type_comment=None)
-        return ast.copy_location(node, node)
 
-    def visit_Constant(self, node: ast.Constant) -> ast.AST:
-        if isinstance(node.value, str):
-            return ast.copy_location(ast.Constant(value="STR"), node)
-        if isinstance(node.value, (int, float, complex)):
-            return ast.copy_location(ast.Constant(value=0), node)
-        if node.value is None:
-            return ast.copy_location(ast.Constant(value=None), node)
-        if isinstance(node.value, bool):
-            return ast.copy_location(ast.Constant(value=True), node)
-        return ast.copy_location(ast.Constant(value="CONST"), node)
-
-    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
-        value = self.visit(node.value)
-        new_node = ast.Attribute(value=value, attr="ATTR", ctx=node.ctx)
-        return ast.copy_location(new_node, node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
-        node = ast.FunctionDef(
-            name="FUNC",
-            args=self.visit(node.args),
-            body=[self.visit(stmt) for stmt in node.body],
-            decorator_list=[self.visit(dec) for dec in node.decorator_list],
-            returns=None,
-            type_comment=None,
+def _normalized_ast_key(node: object) -> object:
+    if isinstance(node, ast.FunctionDef):
+        return (
+            "FunctionDef",
+            "FUNC",
+            _normalized_ast_key(node.args),
+            tuple(_normalized_ast_key(stmt) for stmt in node.body),
+            tuple(_normalized_ast_key(dec) for dec in node.decorator_list),
         )
-        return ast.copy_location(node, node)
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
-        node = ast.AsyncFunctionDef(
-            name="FUNC",
-            args=self.visit(node.args),
-            body=[self.visit(stmt) for stmt in node.body],
-            decorator_list=[self.visit(dec) for dec in node.decorator_list],
-            returns=None,
-            type_comment=None,
+    if isinstance(node, ast.AsyncFunctionDef):
+        return (
+            "AsyncFunctionDef",
+            "FUNC",
+            _normalized_ast_key(node.args),
+            tuple(_normalized_ast_key(stmt) for stmt in node.body),
+            tuple(_normalized_ast_key(dec) for dec in node.decorator_list),
         )
-        return ast.copy_location(node, node)
+    if isinstance(node, ast.arg):
+        return ("arg", "ARG")
+    if isinstance(node, ast.Name):
+        return ("Name", "VAR", node.ctx.__class__.__name__)
+    if isinstance(node, ast.Constant):
+        return ("Constant", _normalized_constant(node.value))
+    if isinstance(node, ast.Attribute):
+        return (
+            "Attribute",
+            _normalized_ast_key(node.value),
+            "ATTR",
+            node.ctx.__class__.__name__,
+        )
+    if isinstance(node, ast.AST):
+        return (
+            node.__class__.__name__,
+            tuple(
+                (field_name, _normalized_ast_key(value))
+                for field_name, value in ast.iter_fields(node)
+            ),
+        )
+    if isinstance(node, list):
+        return tuple(_normalized_ast_key(item) for item in node)
+    if isinstance(node, tuple):
+        return tuple(_normalized_ast_key(item) for item in node)
+    return node
 
 
+@lru_cache(maxsize=None)
 def fingerprint_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    normalized = _ShapeNormalizer().visit(copy.deepcopy(node))
-    ast.fix_missing_locations(normalized)
-    return ast.dump(normalized, include_attributes=False)
+    return repr(_normalized_ast_key(node))
 
 
 def _terminal_name(node: ast.AST) -> str | None:
@@ -488,11 +506,16 @@ def _name_family(names: set[str] | frozenset[str]) -> AstNameFamily:
     return AstNameFamily(frozenset(names))
 
 
+@lru_cache(maxsize=32768)
+def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
+    return tuple(ast.walk(node))
+
+
 def _iter_attribute_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[AstCallObservation, ...]:
     observations: list[AstCallObservation] = []
-    for node in ast.walk(parsed_module.module):
+    for node in _walk_nodes(parsed_module.module):
         if not isinstance(node, ast.Call):
             continue
         matched_name = _attribute_call_family_name(node, family)
@@ -512,7 +535,7 @@ def _iter_class_decorator_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
     observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
-    for node in ast.walk(parsed_module.module):
+    for node in _walk_nodes(parsed_module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for decorator in node.decorator_list:
@@ -529,9 +552,9 @@ def _node_display_name(node: ast.AST) -> str:
     return _terminal_name(node) or node.__class__.__name__
 
 
-def collect_scoped_observations(
+@lru_cache(maxsize=None)
+def _collect_all_scoped_observations(
     parsed_module: ParsedModule,
-    node_types: tuple[type[ast.AST], ...],
 ) -> tuple[ScopedAstObservation, ...]:
     observations: list[ScopedAstObservation] = []
 
@@ -541,8 +564,6 @@ def collect_scoped_observations(
             self.function_stack: list[str] = []
 
         def _record(self, node: ast.AST) -> None:
-            if not isinstance(node, node_types):
-                return
             observations.append(
                 ScopedAstObservation(
                     node=node,
@@ -580,6 +601,18 @@ def collect_scoped_observations(
 
     Visitor().visit(parsed_module.module)
     return tuple(observations)
+
+
+@lru_cache(maxsize=None)
+def collect_scoped_observations(
+    parsed_module: ParsedModule,
+    node_types: tuple[type[ast.AST], ...],
+) -> tuple[ScopedAstObservation, ...]:
+    return tuple(
+        observation
+        for observation in _collect_all_scoped_observations(parsed_module)
+        if isinstance(observation.node, node_types)
+    )
 
 
 def collect_scoped_shapes(
@@ -762,7 +795,7 @@ def _init_field_observations(
 def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
     return {
         child: parent
-        for parent in ast.walk(module)
+        for parent in _walk_nodes(module)
         for child in ast.iter_child_nodes(parent)
     }
 
@@ -850,7 +883,7 @@ def _iter_statement_blocks(
     module: ast.Module,
 ) -> tuple[tuple[str | None, list[ast.stmt]], ...]:
     blocks: list[tuple[str | None, list[ast.stmt]]] = [(None, module.body)]
-    for node in ast.walk(module):
+    for node in _walk_nodes(module):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             blocks.append((node.name, node.body))
     return tuple(blocks)
@@ -896,6 +929,82 @@ def _inline_literal_dispatch_groups(
             )
         )
     return tuple(sorted(observations, key=lambda item: item.line))
+
+
+_LITERAL_DISPATCH_KINDS: tuple[tuple[type[object], LiteralKind], ...] = (
+    (str, LiteralKind.STRING),
+    (int, LiteralKind.NUMERIC),
+)
+
+
+@lru_cache(maxsize=None)
+def _literal_dispatch_observations(
+    parsed_module: ParsedModule,
+) -> tuple[LiteralDispatchObservation, ...]:
+    parent_map = _parent_map(parsed_module.module)
+    observations: list[LiteralDispatchObservation] = []
+    for node in _walk_nodes(parsed_module.module):
+        if not isinstance(node, ast.If):
+            continue
+        parent = parent_map.get(node)
+        if (
+            isinstance(parent, ast.If)
+            and len(parent.orelse) == 1
+            and parent.orelse[0] is node
+        ):
+            continue
+        for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
+            observation = _literal_dispatch_observation_from_if(
+                parsed_module,
+                node,
+                literal_type,
+                literal_kind,
+                parent_map,
+            )
+            if observation is not None:
+                observations.append(observation)
+    return tuple(sorted(observations, key=lambda item: (item.line, item.literal_kind)))
+
+
+def _literal_dispatch_observations_for_kind(
+    parsed_module: ParsedModule,
+    literal_kind: LiteralKind,
+) -> tuple[LiteralDispatchObservation, ...]:
+    return tuple(
+        item
+        for item in _literal_dispatch_observations(parsed_module)
+        if item.literal_kind is literal_kind
+    )
+
+
+@lru_cache(maxsize=None)
+def _inline_literal_dispatch_observations(
+    parsed_module: ParsedModule,
+) -> tuple[LiteralDispatchObservation, ...]:
+    observations: list[LiteralDispatchObservation] = []
+    for owner_name, block in _iter_statement_blocks(parsed_module.module):
+        for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
+            observations.extend(
+                _inline_literal_dispatch_groups(
+                    parsed_module,
+                    owner_name,
+                    block,
+                    literal_type,
+                    literal_kind,
+                )
+            )
+    return tuple(sorted(observations, key=lambda item: (item.line, item.literal_kind)))
+
+
+def _inline_literal_dispatch_observations_for_kind(
+    parsed_module: ParsedModule,
+    literal_kind: LiteralKind,
+) -> tuple[LiteralDispatchObservation, ...]:
+    return tuple(
+        item
+        for item in _inline_literal_dispatch_observations(parsed_module)
+        if item.literal_kind is literal_kind
+    )
 
 
 def _is_docstring_expr(node: ast.stmt) -> bool:
@@ -1206,7 +1315,7 @@ def _config_dispatch_observations(
 ) -> tuple[ConfigDispatchObservation, ...]:
     seen: set[tuple[int, str]] = set()
     observations: list[ConfigDispatchObservation] = []
-    for node in ast.walk(function):
+    for node in _walk_nodes(function):
         if isinstance(node, ast.If):
             for attr_name in _config_dispatch_attributes(node.test):
                 key = (node.lineno, attr_name)
@@ -1242,7 +1351,7 @@ def _config_dispatch_observations(
 
 def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
     attrs: set[str] = set()
-    for node in ast.walk(test):
+    for node in _walk_nodes(test):
         if isinstance(node, ast.Call) and _terminal_name_in_family(
             node.func, _HASATTR_CALL_FAMILY
         ):
@@ -1288,7 +1397,7 @@ def _class_marker_observations(
 ) -> tuple[ClassMarkerObservation, ...]:
     seen: set[tuple[int, str]] = set()
     observations: list[ClassMarkerObservation] = []
-    for node in ast.walk(function):
+    for node in _walk_nodes(function):
         if isinstance(node, ast.Call) and _terminal_name_in_family(
             node.func, _HASATTR_CALL_FAMILY
         ):
@@ -1329,7 +1438,7 @@ def _interface_generation_observation(
     parsed_module: ParsedModule,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> InterfaceGenerationObservation | None:
-    for node in ast.walk(function):
+    for node in _walk_nodes(function):
         if not isinstance(node, ast.Call):
             continue
         if _terminal_name(node.func) != "type":
@@ -1380,17 +1489,17 @@ def _sentinel_type_usage_observations(
 ) -> tuple[SentinelTypeObservation, ...]:
     sentinel_names = {
         item.sentinel_name
-        for node in ast.walk(parsed_module.module)
+        for node in _walk_nodes(parsed_module.module)
         if isinstance(node, ast.Assign)
         if (item := _sentinel_type_observation(parsed_module, node)) is not None
     }
     observations: list[SentinelTypeObservation] = []
     seen: set[tuple[int, str]] = set()
-    for node in ast.walk(parsed_module.module):
+    for node in _walk_nodes(parsed_module.module):
         if isinstance(node, (ast.Compare, ast.Subscript)):
             names = {
                 subnode.id
-                for subnode in ast.walk(node)
+                for subnode in _walk_nodes(node)
                 if isinstance(subnode, ast.Name)
             }
             for name in sorted(names & sentinel_names):
@@ -1414,7 +1523,7 @@ def _dynamic_method_injection_observations(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[DynamicMethodInjectionObservation, ...]:
     observations: list[DynamicMethodInjectionObservation] = []
-    for node in ast.walk(function):
+    for node in _walk_nodes(function):
         if not isinstance(node, ast.Call):
             continue
         if _terminal_name(node.func) != "setattr":
@@ -1479,7 +1588,7 @@ def _dual_axis_resolution_observation(
     parsed_module: ParsedModule,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> DualAxisResolutionObservation | None:
-    for node in ast.walk(function):
+    for node in _walk_nodes(function):
         if not isinstance(node, ast.For):
             continue
         inner_loops = [child for child in node.body if isinstance(child, ast.For)]

@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -31,6 +32,15 @@ class LiteralKind(StrEnum):
 
     STRING = "string"
     NUMERIC = "numeric"
+
+
+@lru_cache(maxsize=None)
+def _method_statement_texts(
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> tuple[str, ...]:
+    if function_node is None:
+        return ()
+    return tuple(ast.unparse(statement) for statement in function_node.body)
 
 
 class FieldOriginKind(StrEnum):
@@ -569,8 +579,11 @@ class MethodShape(
     is_private: bool
     param_count: int
     decorators: tuple[str, ...]
-    fingerprint: str
-    statement_texts: tuple[str, ...]
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(
+        default=None,
+        compare=False,
+        repr=False,
+    )
 
     @property
     def symbol(self) -> str:
@@ -589,6 +602,18 @@ class MethodShape(
     @property
     def fiber_key(self) -> str:
         return f"{self.is_private}:{self.param_count}:{self.fingerprint}"
+
+    @property
+    def fingerprint(self) -> str:
+        if self.function_node is None:
+            return ""
+        from .ast_tools import fingerprint_function
+
+        return fingerprint_function(self.function_node)
+
+    @property
+    def statement_texts(self) -> tuple[str, ...]:
+        return _method_statement_texts(self.function_node)
 
 
 @dataclass(frozen=True)

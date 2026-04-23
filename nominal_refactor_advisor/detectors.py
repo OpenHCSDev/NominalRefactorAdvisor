@@ -14,6 +14,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import combinations
 from typing import Any, ClassVar, Sequence, TypeVar, cast
 
@@ -61,6 +62,7 @@ from .ast_tools import (
     NumericLiteralDispatchObservationFamily,
     InlineStringLiteralDispatchObservationFamily,
     collect_family_items,
+    _walk_nodes,
 )
 from .class_index import (
     ClassFamilyIndex,
@@ -472,6 +474,7 @@ def _callee_name(node: ast.Call) -> str | None:
     return None
 
 
+@lru_cache(maxsize=None)
 def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
     profiles: list[FunctionProfile] = []
 
@@ -492,30 +495,27 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
 
         def _record(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
             end_lineno = node.end_lineno if node.end_lineno is not None else node.lineno
-            callee_names = tuple(
-                sorted(
-                    {
-                        name
-                        for subnode in ast.walk(node)
-                        if isinstance(subnode, ast.Call)
-                        for name in (_callee_name(subnode),)
-                        if name is not None
-                    }
-                )
-            )
+            callee_name_set: set[str] = set()
+            branch_count = 0
+            call_count = 0
+            for subnode in _walk_nodes(node):
+                if isinstance(subnode, ast.If):
+                    branch_count += 1
+                if not isinstance(subnode, ast.Call):
+                    continue
+                call_count += 1
+                callee_name = _callee_name(subnode)
+                if callee_name is not None:
+                    callee_name_set.add(callee_name)
             profiles.append(
                 FunctionProfile(
                     file_path=str(module.path),
                     qualname=".".join((*self.class_stack, node.name)),
                     lineno=node.lineno,
                     line_count=end_lineno - node.lineno + 1,
-                    branch_count=sum(
-                        isinstance(subnode, ast.If) for subnode in ast.walk(node)
-                    ),
-                    call_count=sum(
-                        isinstance(subnode, ast.Call) for subnode in ast.walk(node)
-                    ),
-                    callee_names=callee_names,
+                    branch_count=branch_count,
+                    call_count=call_count,
+                    callee_names=tuple(sorted(callee_name_set)),
                     parameter_names=_parameter_names(node),
                 )
             )
@@ -606,6 +606,7 @@ def _top_level_private_symbol_references(
     return tuple(sorted(referenced))
 
 
+@lru_cache(maxsize=None)
 def _top_level_private_symbol_profiles(
     module: ParsedModule,
 ) -> tuple[PrivateTopLevelSymbolProfile, ...]:
@@ -939,6 +940,7 @@ def _parameter_thread_family_candidates(
     )
 
 
+@lru_cache(maxsize=None)
 def _iter_named_functions(
     module: ParsedModule,
 ) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
@@ -1063,7 +1065,7 @@ def _enum_strategy_dispatch_candidates(
                 existing = candidate_map.get(key)
                 if existing is None or len(candidate.case_names) > len(existing.case_names):
                     candidate_map[key] = candidate
-        for subnode in ast.walk(function):
+        for subnode in _walk_nodes(function):
             dispatch_family: tuple[str, tuple[str, ...]] | None = None
             if isinstance(subnode, ast.If):
                 dispatch_family = _enum_dispatch_from_if(subnode)
@@ -1245,7 +1247,7 @@ def _mapping_selector_shape(
     parameter_names = set(_parameter_names(method))
     if not parameter_names:
         return None
-    for subnode in ast.walk(method):
+    for subnode in _walk_nodes(method):
         if not isinstance(subnode, ast.Subscript):
             continue
         if not isinstance(subnode.value, ast.Name):
@@ -1270,7 +1272,7 @@ def _strategy_selector_specs(
         if len(_dict_case_names(node)) >= 2
     )
     specs: list[_StrategySelectorSpec] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for method in _iter_class_methods(node):
@@ -1445,7 +1447,7 @@ def _nested_generic_usages_for_function(
     for statement in function.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        for subnode in ast.walk(statement):
+        for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call) or not isinstance(subnode.func, ast.Name):
                 continue
             generic_spec = generics_by_name.get(subnode.func.id)
@@ -1618,7 +1620,7 @@ def _empty_leaf_product_family_candidates(
 ) -> tuple[EmptyLeafProductFamilyCandidate, ...]:
     class_defs_by_name = _module_class_defs_by_name(module)
     leaves: list[tuple[str, int, tuple[str, str]]] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if (
             not isinstance(node, ast.ClassDef)
             or _is_abstract_class(node)
@@ -2603,7 +2605,7 @@ def _call_uses_iteration_variable(
 ) -> bool:
     return any(
         isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name
-        for subnode in ast.walk(node)
+        for subnode in _walk_nodes(node)
     )
 
 
@@ -2612,7 +2614,7 @@ def _comprehension_builder_names(
     family_name: str,
 ) -> tuple[str, ...]:
     builder_names: set[str] = set()
-    for subnode in ast.walk(module.module):
+    for subnode in _walk_nodes(module.module):
         if not isinstance(
             subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
         ):
@@ -2633,7 +2635,7 @@ def _comprehension_builder_names(
         for candidate_node in candidate_nodes:
             if candidate_node is None:
                 continue
-            for nested in ast.walk(candidate_node):
+            for nested in _walk_nodes(candidate_node):
                 if isinstance(nested, ast.Call) and _call_uses_iteration_variable(
                     nested, iteration_variable_name
                 ):
@@ -3422,7 +3424,7 @@ def _enum_member_refs_for_known_key_types(
     key_type_names: frozenset[str],
 ) -> dict[str, tuple[str, ...]]:
     refs: dict[str, set[str]] = defaultdict(set)
-    for subnode in ast.walk(node):
+    for subnode in _walk_nodes(node):
         parts = _ast_attribute_chain(subnode)
         if parts is None or len(parts) < 2:
             continue
@@ -3884,7 +3886,7 @@ def _validation_guard_count(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int:
     count = 0
-    for node in ast.walk(method):
+    for node in _walk_nodes(method):
         if isinstance(node, ast.Attribute) and node.attr in {"ndim", "shape"}:
             count += 1
         if isinstance(node, ast.Compare) and any(
@@ -4199,7 +4201,7 @@ def _concrete_type_case_function_candidates(
         grouped_checks: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = (
             defaultdict(list)
         )
-        for subnode in ast.walk(function):
+        for subnode in _walk_nodes(function):
             if not (
                 isinstance(subnode, ast.Call)
                 and len(subnode.args) == 2
@@ -4353,7 +4355,7 @@ def _self_cast_alias_names(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     aliases: set[str] = set()
     cast_type_names: set[str] = set()
-    for statement in ast.walk(method):
+    for statement in _walk_nodes(method):
         if (
             not isinstance(statement, ast.Assign)
             or len(statement.targets) != 1
@@ -4439,7 +4441,7 @@ def _returns_false_only(statements: Sequence[ast.stmt]) -> bool:
 
 
 def _contains_nonfalse_return(node: ast.AST) -> bool:
-    for subnode in ast.walk(node):
+    for subnode in _walk_nodes(node):
         if not isinstance(subnode, ast.Return) or subnode.value is None:
             continue
         if isinstance(subnode.value, ast.Constant) and subnode.value.value is False:
@@ -4457,7 +4459,7 @@ def _attribute_names_for_roots(
         sorted(
             {
                 subnode.attr
-                for subnode in ast.walk(node)
+                for subnode in _walk_nodes(node)
                 if isinstance(subnode, ast.Attribute)
                 and isinstance(subnode.value, ast.Name)
                 and subnode.value.id in root_names
@@ -4510,7 +4512,7 @@ def _guard_validator_function_candidate(
         sorted(
             {
                 call_name
-                for subnode in ast.walk(function)
+                for subnode in _walk_nodes(function)
                 if isinstance(subnode, ast.Call)
                 for call_name in (_call_name(subnode.func),)
                 if call_name is not None
@@ -4694,7 +4696,7 @@ def _validate_shape_guard_method_candidates(
     return tuple(
         candidate
         for module in modules
-        for class_node in ast.walk(module.module)
+        for class_node in _walk_nodes(module.module)
         if isinstance(class_node, ast.ClassDef)
         for statement in class_node.body
         if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -4870,7 +4872,7 @@ def _assigned_self_attrs(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ...]:
     assigned: list[str] = []
-    for subnode in ast.walk(node):
+    for subnode in _walk_nodes(node):
         if isinstance(subnode, ast.Assign):
             for target in subnode.targets:
                 attr_name = _self_attr_name(target)
@@ -4890,7 +4892,7 @@ def _assigned_self_attr_from_param(
         item.arg for item in tuple(node.args.posonlyargs) + tuple(node.args.args)
     }
     assigned: dict[str, str] = {}
-    for subnode in ast.walk(node):
+    for subnode in _walk_nodes(node):
         if not isinstance(subnode, ast.Assign):
             continue
         if len(subnode.targets) != 1:
@@ -4985,7 +4987,7 @@ def _manual_fiber_tag_candidates(
 
 
 def _expr_mentions_self_attr(expr: ast.AST, attr_name: str) -> bool:
-    for subnode in ast.walk(expr):
+    for subnode in _walk_nodes(expr):
         if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name):
             if subnode.value.id == "self" and subnode.attr == attr_name:
                 return True
@@ -5012,7 +5014,7 @@ def _descriptor_derived_view_candidates(
         source_assignments = _assigned_self_attr_from_param(init_method)
         for source_attr in source_assignments:
             derived_field_names = []
-            for subnode in ast.walk(init_method):
+            for subnode in _walk_nodes(init_method):
                 if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
                     continue
                 target_name = _self_attr_name(subnode.targets[0])
@@ -5031,7 +5033,7 @@ def _descriptor_derived_view_candidates(
                     continue
                 updated_field_names = []
                 rewrites_source = False
-                for subnode in ast.walk(method):
+                for subnode in _walk_nodes(method):
                     if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
                         continue
                     target_name = _self_attr_name(subnode.targets[0])
@@ -5121,7 +5123,7 @@ def _manual_registry_candidates(
             if not isinstance(subnode, ast.FunctionDef):
                 continue
             registry_name: str | None = None
-            for inner_node in ast.walk(subnode):
+            for inner_node in _walk_nodes(subnode):
                 if isinstance(inner_node, ast.Assign):
                     for target in inner_node.targets:
                         if isinstance(target, ast.Subscript) and isinstance(
@@ -5222,7 +5224,7 @@ def _structural_confusability_candidates(
                 sorted(
                     {
                         subnode.func.attr
-                        for subnode in ast.walk(function)
+                        for subnode in _walk_nodes(function)
                         if isinstance(subnode, ast.Call)
                         and isinstance(subnode.func, ast.Attribute)
                         and isinstance(subnode.func.value, ast.Name)
@@ -13222,7 +13224,7 @@ def _nominal_authority_shapes(
 ) -> tuple[NominalAuthorityShape, ...]:
     shapes_without_ancestors: list[NominalAuthorityShape] = []
     for module in modules:
-        for node in ast.walk(module.module):
+        for node in _walk_nodes(module.module):
             if not isinstance(node, ast.ClassDef):
                 continue
             field_type_map = _typed_field_map(node)
@@ -13536,7 +13538,7 @@ def _is_detectorish_class(node: ast.ClassDef) -> bool:
 def _finding_build_call(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ast.Call | None:
-    for node in ast.walk(method):
+    for node in _walk_nodes(method):
         if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Attribute) or node.func.attr != "build":
@@ -13596,7 +13598,7 @@ def _finding_assembly_pipeline_candidates(
     module: ParsedModule,
 ) -> tuple[FindingAssemblyPipelineCandidate, ...]:
     candidates: list[FindingAssemblyPipelineCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef) or not _is_detectorish_class(node):
             continue
         method = next(
@@ -13720,7 +13722,7 @@ def _guarded_delegator_candidates(
     module: ParsedModule,
 ) -> tuple[GuardedDelegatorCandidate, ...]:
     candidates: list[GuardedDelegatorCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if (
             not isinstance(node, ast.ClassDef)
             or not _is_observation_spec_class(node)
@@ -13773,7 +13775,7 @@ def _structural_observation_property_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
     candidates: list[StructuralObservationPropertyCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for statement in node.body:
@@ -13954,7 +13956,7 @@ def _pass_through_nominal_wrapper_candidates(
     index = NominalAuthorityIndex(modules)
     candidates: list[PassThroughNominalWrapperCandidate] = []
     for module in modules:
-        for node in ast.walk(module.module):
+        for node in _walk_nodes(module.module):
             if not isinstance(node, ast.ClassDef) or _is_abstract_class(node):
                 continue
             typed_fields = _typed_field_map(node)
@@ -14135,7 +14137,7 @@ def _mirrored_registry_candidates(
     module: ParsedModule,
 ) -> tuple[tuple[str, str, tuple[tuple[int, str], ...]], ...]:
     candidates: list[tuple[str, str, tuple[tuple[int, str], ...]]] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         dict_attrs = _collect_dict_attrs(node)
@@ -14150,7 +14152,7 @@ def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -14212,7 +14214,7 @@ def _is_constant_hook_expression(node: ast.AST) -> bool:
 def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
     return {
         node.name: node
-        for node in ast.walk(module.module)
+        for node in _walk_nodes(module.module)
         if isinstance(node, ast.ClassDef)
     }
 
@@ -14291,7 +14293,7 @@ def _constant_property_hook_groups(
 ) -> tuple[ConstantPropertyHookGroup, ...]:
     grouped: dict[tuple[str, str], list[tuple[str, int, str]]] = defaultdict(list)
     class_defs_by_name = _module_class_defs_by_name(module)
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -14348,13 +14350,13 @@ def _reflective_self_attribute_candidates(
     module: ParsedModule,
 ) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
     candidates: list[ReflectiveSelfAttributeCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for statement in node.body:
             if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for subnode in ast.walk(statement):
+            for subnode in _walk_nodes(statement):
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
@@ -14481,7 +14483,7 @@ def _helper_backed_observation_spec_candidates(
     module: ParsedModule,
 ) -> tuple[HelperBackedObservationSpecCandidate, ...]:
     candidates: list[HelperBackedObservationSpecCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef) or not _is_observation_spec_wrapper_class(
             node
         ):
@@ -14544,13 +14546,13 @@ def _dynamic_self_field_selection_candidates(
     module: ParsedModule,
 ) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
     candidates: list[DynamicSelfFieldSelectionCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for statement in node.body:
             if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for subnode in ast.walk(statement):
+            for subnode in _walk_nodes(statement):
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
@@ -14674,7 +14676,7 @@ def _manual_subclass_registration_sites(
                 walk_statements(statement.body, (*guard_stack, statement.test))
                 walk_statements(statement.orelse, guard_stack)
                 continue
-            for subnode in ast.walk(statement):
+            for subnode in _walk_nodes(statement):
                 registry_name = _registration_append_registry_name(
                     subnode, registry_names
                 )
@@ -14716,7 +14718,7 @@ def _registry_consumer_method_names(
             continue
         if any(
             isinstance(subnode, ast.Attribute) and subnode.attr == registry_name
-            for subnode in ast.walk(method)
+            for subnode in _walk_nodes(method)
         ):
             consumer_names.append(method.name)
     return tuple(sorted(set(consumer_names)))
@@ -14933,7 +14935,7 @@ def _predicate_selected_concrete_family_candidates(
                 continue
             if not any(
                 _is_selected_match_subscript(subnode, match_var_name)
-                for subnode in ast.walk(method)
+                for subnode in _walk_nodes(method)
             ):
                 continue
             candidates.append(
@@ -15129,7 +15131,7 @@ def _string_backed_reflective_nominal_lookup_candidates(
         if len(descendants) < config.min_reflective_selector_values:
             continue
         for method in _iter_class_methods(node):
-            for subnode in ast.walk(method):
+            for subnode in _walk_nodes(method):
                 lookup_shape = _reflective_lookup_shape(subnode)
                 if lookup_shape is None:
                     continue
@@ -15224,7 +15226,7 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     }
     parameter_names = set(parameter_type_names)
     attr_type_names: dict[str, str] = {}
-    for subnode in ast.walk(init_method):
+    for subnode in _walk_nodes(init_method):
         target: ast.AST | None = None
         value: ast.AST | None = None
         if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
@@ -15253,7 +15255,7 @@ def _method_aliases_to_self_attrs(
     changed = True
     while changed:
         changed = False
-        for subnode in ast.walk(method):
+        for subnode in _walk_nodes(method):
             target: ast.AST | None = None
             value: ast.AST | None = None
             if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
@@ -15311,7 +15313,7 @@ def _concrete_config_field_probe_candidates(
                 tuple[str, str], set[str]
             ] = defaultdict(set)
             grouped_lines: dict[tuple[str, str], int] = {}
-            for subnode in ast.walk(method):
+            for subnode in _walk_nodes(method):
                 if not isinstance(subnode, ast.Call):
                     continue
                 builtin_name = _ast_terminal_name(subnode.func)
@@ -15461,7 +15463,7 @@ def _classvar_only_sibling_leaf_candidates(
     module: ParsedModule,
 ) -> tuple[DeclarativeFamilyLeafCandidate, ...]:
     candidates: list[DeclarativeFamilyLeafCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         base_names = tuple(
@@ -15521,7 +15523,7 @@ def _type_indexed_definition_boilerplate_groups(
         tuple[tuple[str, ...], tuple[str, ...]],
         list[tuple[str, str, int]],
     ] = defaultdict(list)
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef) or not node.name.endswith("Definition"):
             continue
         base_names = tuple(
@@ -15787,7 +15789,7 @@ def _registered_union_surface_candidates(
     module: ParsedModule,
 ) -> tuple[RegisteredUnionSurfaceCandidate, ...]:
     candidates: list[RegisteredUnionSurfaceCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         owner_name = "<module>"
         value: ast.AST | None = None
         line = getattr(node, "lineno", 1)
@@ -15910,7 +15912,7 @@ def _registry_materialization_kind(node: ast.FunctionDef) -> str | None:
     body = _trim_docstring_body(node.body)
     append_calls = [
         call
-        for call in ast.walk(node)
+        for call in _walk_nodes(node)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Attribute)
         and call.func.attr == "append"
@@ -15945,7 +15947,7 @@ def _is_registry_traversal_method(node: ast.FunctionDef) -> bool:
 
 def _registry_traversal_group(module: ParsedModule) -> RegistryTraversalGroup | None:
     methods: list[tuple[str, str, int, str]] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         for statement in node.body:
@@ -16004,7 +16006,7 @@ def _alternate_constructor_family_groups(
     module: ParsedModule,
 ) -> tuple[AlternateConstructorFamilyGroup, ...]:
     groups: list[AlternateConstructorFamilyGroup] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
         constructor_methods: list[tuple[ast.FunctionDef, ast.Call, str]] = []
@@ -16787,7 +16789,7 @@ def _is_docstring_expr(node: ast.stmt) -> bool:
 
 def _collect_dict_attrs(node: ast.ClassDef) -> set[str]:
     dict_attrs: set[str] = set()
-    for child in ast.walk(node):
+    for child in _walk_nodes(node):
         if not isinstance(child, ast.Assign):
             continue
         if not isinstance(child.value, ast.Dict):
@@ -16804,7 +16806,7 @@ def _collect_dict_attrs(node: ast.ClassDef) -> set[str]:
 
 def _collect_mirrored_assignments(node: ast.ClassDef) -> list[tuple[int, str]]:
     mirrored: list[tuple[int, str]] = []
-    for child in ast.walk(node):
+    for child in _walk_nodes(node):
         if not isinstance(child, ast.Assign):
             continue
         for target in child.targets:
@@ -17051,6 +17053,7 @@ def _shared_family_name(class_names: list[str]) -> str | None:
     return prefix or None
 
 
+@lru_cache(maxsize=None)
 def _dispatch_dict_locations(
     module: ParsedModule, min_string_cases: int
 ) -> list[SourceLocation]:
@@ -17116,11 +17119,12 @@ def _looks_like_dispatch_dict(node: ast.Dict, min_string_cases: int) -> bool:
     )
 
 
+@lru_cache(maxsize=None)
 def _attribute_branch_evidence(
     module: ParsedModule, attr_name: str
 ) -> list[SourceLocation]:
     evidence: list[SourceLocation] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if isinstance(node, ast.If):
             if _test_compares_attribute(node.test, attr_name):
                 evidence.append(
@@ -17136,7 +17140,7 @@ def _attribute_branch_evidence(
 
 
 def _test_compares_attribute(test: ast.AST, attr_name: str) -> bool:
-    for node in ast.walk(test):
+    for node in _walk_nodes(test):
         if isinstance(node, ast.Compare):
             values = [node.left] + list(node.comparators)
             attr_match = any(
@@ -17161,7 +17165,7 @@ def _test_compares_attribute(test: ast.AST, attr_name: str) -> bool:
 def _iter_functions(module: ast.Module) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
     return [
         node
-        for node in ast.walk(module)
+        for node in _walk_nodes(module)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
 
@@ -17349,6 +17353,7 @@ def _is_public_module_api_qualname(qualname: str) -> bool:
     return "." not in qualname and not qualname.startswith("_")
 
 
+@lru_cache(maxsize=None)
 def _top_level_symbol_lines(module: ParsedModule) -> dict[str, int]:
     lines: dict[str, int] = {}
     for statement in _trim_docstring_body(module.module.body):
@@ -17376,6 +17381,13 @@ def _resolved_import_call_target_symbols(
 
 def _external_callsites_by_target(
     modules: Sequence[ParsedModule],
+) -> dict[str, tuple[ResolvedExternalCallsite, ...]]:
+    return _external_callsites_by_target_cached(tuple(modules))
+
+
+@lru_cache(maxsize=None)
+def _external_callsites_by_target_cached(
+    modules: tuple[ParsedModule, ...],
 ) -> dict[str, tuple[ResolvedExternalCallsite, ...]]:
     callsites_by_target: dict[str, set[ResolvedExternalCallsite]] = defaultdict(set)
     for module in modules:
@@ -17498,7 +17510,7 @@ def _trivial_forwarding_wrapper_candidate(
             {
                 node.id
                 for value in values
-                for node in ast.walk(value)
+                for node in _walk_nodes(value)
                 if isinstance(node, ast.Name) and node.id in parameter_names
             }
         )
@@ -17517,6 +17529,7 @@ def _trivial_forwarding_wrapper_candidate(
     )
 
 
+@lru_cache(maxsize=None)
 def _trivial_forwarding_wrapper_candidates(
     module: ParsedModule,
 ) -> tuple[TrivialForwardingWrapperCandidate, ...]:
@@ -18202,7 +18215,7 @@ def _indexed_family_wrapper_candidates(
     module: ParsedModule,
 ) -> tuple[IndexedFamilyWrapperCandidate, ...]:
     candidates: list[IndexedFamilyWrapperCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.FunctionDef):
             continue
         if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
@@ -18275,7 +18288,7 @@ def _collect_class_sentinel_attrs(
     module: ast.Module,
 ) -> dict[str, list[SourceLocation]]:
     grouped: dict[str, list[SourceLocation]] = defaultdict(list)
-    for node in ast.walk(module):
+    for node in _walk_nodes(module):
         if not isinstance(node, ast.ClassDef):
             continue
         for stmt in node.body:
@@ -18295,7 +18308,7 @@ def _collect_class_sentinel_attrs(
 
 
 def _module_compares_attribute(module: ast.Module, attr_name: str) -> bool:
-    for node in ast.walk(module):
+    for node in _walk_nodes(module):
         if isinstance(node, ast.Compare):
             values = [node.left] + list(node.comparators)
             if any(
@@ -18334,7 +18347,7 @@ def _predicate_factory_chain_branch_count(
 
 
 def _test_has_call(node: ast.AST) -> bool:
-    return any(isinstance(child, ast.Call) for child in ast.walk(node))
+    return any(isinstance(child, ast.Call) for child in _walk_nodes(node))
 
 
 def _call_name(node: ast.AST) -> str | None:

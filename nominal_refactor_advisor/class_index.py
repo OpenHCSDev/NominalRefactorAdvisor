@@ -11,6 +11,7 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 
 from .ast_tools import ParsedModule
 
@@ -98,6 +99,7 @@ def _resolve_relative_module(
     return ".".join(package_parts)
 
 
+@lru_cache(maxsize=None)
 def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for statement in parsed_module.module.body:
@@ -149,6 +151,13 @@ def _resolve_base_symbol(
 
 
 def build_class_family_index(modules: list[ParsedModule]) -> ClassFamilyIndex:
+    return _build_class_family_index_cached(tuple(modules))
+
+
+@lru_cache(maxsize=None)
+def _build_class_family_index_cached(
+    modules: tuple[ParsedModule, ...],
+) -> ClassFamilyIndex:
     raw_classes: list[tuple[ParsedModule, str, ast.ClassDef]] = []
     for parsed_module in modules:
         for qualname, node in _iter_class_defs(list(parsed_module.module.body)):

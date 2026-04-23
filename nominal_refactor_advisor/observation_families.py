@@ -71,17 +71,15 @@ from .ast_tools import (
     _export_dict_shape,
     _fingerprint_builder_value,
     _init_field_observations,
-    _inline_literal_dispatch_groups,
+    _inline_literal_dispatch_observations_for_kind,
     _interface_generation_observation,
     _iter_attribute_family_calls,
     _iter_class_decorator_family_calls,
-    _iter_statement_blocks,
     _known_class_family,
     _lineage_mapping_observation,
-    _literal_dispatch_observation_from_if,
+    _literal_dispatch_observations_for_kind,
     _node_display_name,
     _node_matches_family,
-    _parent_map,
     _projection_helper_shape_from_function,
     _registration_key_fingerprint,
     _runtime_type_generation_observation,
@@ -92,7 +90,6 @@ from .ast_tools import (
     _subscript_base_name,
     _terminal_name,
     _terminal_name_in_family,
-    fingerprint_function,
 )
 
 
@@ -141,6 +138,13 @@ class TypedLiteralObservationFamily(ObservationFamily, ABC):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[object]:
+        if issubclass(cls.spec_root, TypedLiteralObservationSpec):
+            return [
+                item
+                for item in cls.spec_root().collect(parsed_module)
+                if isinstance(item, LiteralDispatchObservation)
+                if item.literal_kind == cls.literal_kind
+            ]
         return [
             item
             for item in _collect_items_from_spec_root(
@@ -174,8 +178,7 @@ class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
             decorators=tuple(
                 _node_display_name(dec) for dec in function.decorator_list
             ),
-            fingerprint=fingerprint_function(function),
-            statement_texts=tuple(ast.unparse(stmt) for stmt in function.body),
+            function_node=function,
         )
 
 
@@ -663,28 +666,12 @@ class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[object]:
-        parent_map = _parent_map(parsed_module.module)
-        observations: list[object] = []
-        for node in ast.walk(parsed_module.module):
-            if not isinstance(node, ast.If):
-                continue
-            parent = parent_map.get(node)
-            if (
-                isinstance(parent, ast.If)
-                and len(parent.orelse) == 1
-                and parent.orelse[0] is node
-            ):
-                continue
-            observation = _literal_dispatch_observation_from_if(
+        return list(
+            _literal_dispatch_observations_for_kind(
                 parsed_module,
-                node,
-                type(self).literal_type,
                 type(self).literal_kind,
-                parent_map,
             )
-            if observation is not None:
-                observations.append(observation)
-        return observations
+        )
 
 
 class StringLiteralDispatchObservationSpec(
@@ -712,18 +699,12 @@ class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[object]:
-        observations: list[object] = []
-        for owner_name, block in _iter_statement_blocks(parsed_module.module):
-            observations.extend(
-                _inline_literal_dispatch_groups(
-                    parsed_module,
-                    owner_name,
-                    block,
-                    type(self).literal_type,
-                    type(self).literal_kind,
-                )
+        return list(
+            _inline_literal_dispatch_observations_for_kind(
+                parsed_module,
+                type(self).literal_kind,
             )
-        return observations
+        )
 
 
 class InlineStringLiteralDispatchObservationSpec(
