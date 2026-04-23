@@ -3286,6 +3286,81 @@ def _parallel_keyed_table_and_family_candidates(
     )
 
 
+def _parallel_keyed_table_axis_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
+    specs = tuple(
+        sorted(
+            (
+                table_spec
+                for module in modules
+                for table_spec in _module_keyed_table_axis_specs(module)
+            ),
+            key=lambda item: (item.file_path, item.line, item.table_name),
+        )
+    )
+    candidates: list[ParallelKeyedTableAxisCandidate] = []
+    seen: set[tuple[str, str, str]] = set()
+    for index, left_spec in enumerate(specs):
+        for right_spec in specs[index + 1 :]:
+            if left_spec.file_path == right_spec.file_path:
+                continue
+            if left_spec.key_type_name != right_spec.key_type_name:
+                continue
+            shared_case_names = tuple(
+                sorted(set(left_spec.case_names) & set(right_spec.case_names))
+            )
+            if len(shared_case_names) < 2:
+                continue
+            case_overlap_ratio = _case_overlap_ratio(
+                left_spec.case_names,
+                right_spec.case_names,
+            )
+            if case_overlap_ratio < 0.8:
+                continue
+            table_overlap = _identifier_name_overlap(
+                left_spec.table_name,
+                right_spec.table_name,
+            )
+            value_overlap = 0.0
+            if left_spec.value_shape_name is not None and right_spec.value_shape_name is not None:
+                value_overlap = _identifier_name_overlap(
+                    left_spec.value_shape_name,
+                    right_spec.value_shape_name,
+                )
+            name_overlap_ratio = max(table_overlap, value_overlap)
+            if name_overlap_ratio < 0.5:
+                continue
+            key = tuple(
+                sorted((left_spec.table_name, right_spec.table_name))
+            ) + (left_spec.key_type_name,)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                ParallelKeyedTableAxisCandidate(
+                    key_type_name=left_spec.key_type_name,
+                    left=left_spec,
+                    right=right_spec,
+                    shared_case_names=shared_case_names,
+                    case_overlap_ratio=case_overlap_ratio,
+                    name_overlap_ratio=name_overlap_ratio,
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.key_type_name,
+                item.left.file_path,
+                item.left.table_name,
+                item.right.file_path,
+                item.right.table_name,
+            ),
+        )
+    )
+
+
 def _parallel_keyed_axis_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
@@ -6380,6 +6455,32 @@ class RegistryTraversalGroup(ClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
+class SubclassTraversalSite:
+    file_path: str
+    line: int
+    symbol: str
+    root_expression: str
+    materialization_kind: str
+    registry_attribute_names: tuple[str, ...]
+    filter_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.symbol)
+
+
+@dataclass(frozen=True)
+class SubclassTraversalGroup:
+    symbols: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    root_expressions: tuple[str, ...]
+    materialization_kinds: tuple[str, ...]
+    registry_attribute_names: tuple[str, ...]
+    filter_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AlternateConstructorFamilyGroup:
     file_path: str
     class_name: str
@@ -6687,6 +6788,23 @@ class ParallelKeyedTableAndFamilyCandidate:
 
 
 @dataclass(frozen=True)
+class ParallelKeyedTableAxisCandidate:
+    key_type_name: str
+    left: _KeyedTableAxisSpec
+    right: _KeyedTableAxisSpec
+    shared_case_names: tuple[str, ...]
+    case_overlap_ratio: float
+    name_overlap_ratio: float
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(self.left.file_path, self.left.line, self.left.table_name),
+            SourceLocation(self.right.file_path, self.right.line, self.right.table_name),
+        )
+
+
+@dataclass(frozen=True)
 class EnumKeyedTableClassAxisShadowCandidate(LineWitnessCandidate):
     table_name: str
     key_type_name: str
@@ -6707,6 +6825,28 @@ class EnumKeyedTableClassAxisShadowCandidate(LineWitnessCandidate):
             for class_name, line in self.class_sites
         )
         return tuple(evidence[:6])
+
+
+@dataclass(frozen=True)
+class DerivedQueryIndexCandidate:
+    file_path: str
+    line_numbers: tuple[int, ...]
+    function_names: tuple[str, ...]
+    source_expression: str
+    query_key_names: tuple[str, ...]
+    return_expressions: tuple[str, ...]
+    exception_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for function_name, line in zip(
+                self.function_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -8277,6 +8417,72 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCandidateDetector):
             metrics=_axis_dispatch_metrics(
                 family_candidate.shared_case_names,
                 family_candidate.key_type_name,
+            ),
+        )
+
+
+class ParallelKeyedTableAxisDetector(CrossModuleCandidateDetector):
+    detector_id = "parallel_keyed_table_axis"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Parallel enum-keyed tables across modules should collapse into one axis record",
+        why=(
+            "The docs require one authoritative writable owner per closed semantic axis. "
+            "When multiple modules maintain separate enum-keyed tables over the same cases, the axis is split across parallel metadata maps."
+        ),
+        capability_gap="single authoritative enum-keyed row family with derived module-local projections",
+        relation_context="same closed enum/key axis is encoded by multiple keyed tables across modules",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.BUILDER_CALL,
+        ),
+    )
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _parallel_keyed_table_axis_candidates(modules)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        table_candidate = cast(ParallelKeyedTableAxisCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and "
+                f"`{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}."
+            ),
+            table_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class AxisRow:\n"
+                "    key: AxisEnum\n"
+                "    primary: object\n"
+                "    secondary: object | None = None\n\n"
+                "AXIS_ROWS = (\n"
+                "    AxisRow(key=AxisEnum.ALPHA, primary=..., secondary=...),\n"
+                ")\n"
+                "AXIS_ROW_BY_KEY = {row.key: row for row in AXIS_ROWS}\n"
+            ),
+            codemod_patch=(
+                f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one authoritative row family.\n"
+                "# Keep one writable axis table and derive any module-local indexes or views from it."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=2,
+                field_count=max(len(table_candidate.shared_case_names), 1),
+                mapping_name=table_candidate.left.table_name,
+                field_names=table_candidate.shared_case_names,
+                source_name=table_candidate.key_type_name,
+                identity_field_names=("key",),
             ),
         )
 
@@ -10923,16 +11129,16 @@ class RegisteredUnionSurfaceDetector(CandidateFindingDetector):
         )
 
 
-class RegistryTraversalSubstrateDetector(PerModuleIssueDetector):
+class RegistryTraversalSubstrateDetector(IssueDetector):
     detector_id = "registry_traversal_substrate"
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Repeated descendant traversal helpers should collapse into one metaclass-registry root",
+        title="Repeated subclass-family traversal should collapse into one discovery substrate",
         why=(
-            "Several roots re-implement the same descendant traversal over class-time registration state instead of sharing one authoritative metaclass-registry root."
+            "Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate."
         ),
-        capability_gap="one authoritative metaclass-registry root for descendant registries",
-        relation_context="same descendant traversal algorithm repeats across sibling roots with only materialization residue differing",
+        capability_gap="one authoritative subclass-family discovery substrate with declarative materialization hooks",
+        relation_context="same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
@@ -10942,55 +11148,66 @@ class RegistryTraversalSubstrateDetector(PerModuleIssueDetector):
         ),
     )
 
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        group = _registry_traversal_group(module)
+        group = _registry_traversal_group(modules)
         if group is None:
             return []
         evidence = tuple(
-            SourceLocation(group.file_path, line, f"{class_name}.{method_name}")
-            for class_name, method_name, line in zip(
-                group.class_names,
-                group.method_names,
+            SourceLocation(file_path, line, symbol)
+            for file_path, line, symbol in zip(
+                group.file_paths,
                 group.line_numbers,
+                group.symbols,
                 strict=True,
             )
+        )
+        registry_clause = (
+            ""
+            if not group.registry_attribute_names
+            else f" over registry attributes {group.registry_attribute_names}"
+        )
+        filter_clause = (
+            ""
+            if not group.filter_names
+            else f" with filter hooks {group.filter_names}"
         )
         return [
             self.finding_spec.build(
                 self.detector_id,
                 (
-                    f"Roots {', '.join(group.class_names)} repeat descendant traversal helpers {', '.join(group.method_names)} over registry attributes {group.registry_attribute_names} with materialization modes {group.materialization_kinds}."
+                    f"Helpers {', '.join(group.symbols[:6])} repeat subclass-family traversal from roots {group.root_expressions[:6]}"
+                    f"{registry_clause}{filter_clause} with materialization modes {group.materialization_kinds}."
                 ),
                 evidence,
                 scaffold=(
                     "from metaclass_registry import AutoRegisterMeta\n\n"
-                    "class RegisteredRoot(ABC, metaclass=AutoRegisterMeta):\n"
-                    "    __registry_key__ = \"kind\"\n"
-                    "    __skip_if_no_key__ = True\n"
-                    "    kind = None\n\n"
-                    "    @classmethod\n"
-                    "    def registered_items(cls):\n"
-                    "        return tuple(cls.__registry__.values())"
+                    "def walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
+                    "    seen = set()\n"
+                    "    ordered = []\n"
+                    "    queue = list(root.__subclasses__())\n"
+                    "    while queue:\n"
+                    "        current = queue.pop(0)\n"
+                    "        queue.extend(current.__subclasses__())\n"
+                    "        if not include(current) or current in seen:\n"
+                    "            continue\n"
+                    "        seen.add(current)\n"
+                    "        ordered.append(materialize(current))\n"
+                    "    return tuple(ordered)\n\n"
+                    "# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n"
+                    "# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
                 ),
                 codemod_patch=(
-                    "# Replace repeated descendant traversal helpers with one metaclass-registry root.\n"
-                    "# Read registered classes from `cls.__registry__` and keep only the materialization choice (`registered_type()` vs `registered_type`) at the public surface."
+                    "# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n"
+                    "# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
-                    duplicate_site_count=len(group.method_names),
+                    duplicate_site_count=len(group.symbols),
                     statement_count=6,
-                    class_count=len(group.class_names),
-                    method_symbols=tuple(
-                        f"{class_name}.{method_name}"
-                        for class_name, method_name in zip(
-                            group.class_names,
-                            group.method_names,
-                            strict=True,
-                        )
-                    ),
+                    class_count=len(group.symbols),
+                    method_symbols=group.symbols,
                 ),
             )
         ]
@@ -11164,9 +11381,8 @@ class StringBackedReflectiveNominalLookupDetector(CandidateFindingDetector):
         )
 
 
-class RepeatedBuilderCallDetector(FiberCollectedShapeIssueDetector):
+class RepeatedBuilderCallDetector(IssueDetector):
     detector_id = "repeated_builder_calls"
-    observation_kind = ObservationKind.BUILDER_CALL
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated field assignment should become an authoritative builder",
@@ -11190,62 +11406,132 @@ class RepeatedBuilderCallDetector(FiberCollectedShapeIssueDetector):
         ),
     )
 
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(
-            _collect_typed_family_items(
-                module, BuilderCallShapeFamily, BuilderCallShape
-            )
-        )
-
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
-        builder = _as_builder_shape(shape)
-        return len(builder.keyword_names) >= config.min_builder_keywords
-
-    def _group_key(self, shape: object) -> object:
-        builder = _as_builder_shape(shape)
-        return (builder.callee_name, builder.keyword_names, builder.value_fingerprint)
-
-    def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
-    ) -> RefactorFinding | None:
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
         builders = tuple(
             sorted(
-                (_as_builder_shape(shape) for shape in shapes),
-                key=lambda item: (item.file_path, item.lineno),
+                (
+                    builder
+                    for module in modules
+                    for builder in _collect_typed_family_items(
+                        module, BuilderCallShapeFamily, BuilderCallShape
+                    )
+                ),
+                key=lambda item: (item.file_path, item.lineno, item.symbol),
             )
         )
-        if len(builders) < 2:
-            return None
-        owner_symbols = {builder.symbol for builder in builders}
-        if len(owner_symbols) < 2:
-            return None
-        evidence = tuple(
-            SourceLocation(builder.file_path, builder.lineno, builder.symbol)
-            for builder in builders[:6]
-        )
-        same_source = all(builder.source_arity == 1 for builder in builders)
-        return self.finding_spec.build(
-            self.detector_id,
-            (
-                f"Call `{builders[0].callee_name}` repeats the same keyword-mapping shape across {len(builders)} sites."
-            ),
-            evidence,
-            capability_gap=(
-                "single authoritative data-to-record mapping"
-                if same_source
-                else self.finding_spec.capability_gap
-            ),
-            scaffold=_builder_scaffold(builders),
-            codemod_patch=_builder_patch(builders),
-            metrics=MappingMetrics(
-                mapping_site_count=len(builders),
-                field_count=len(builders[0].keyword_names),
-                mapping_name=builders[0].callee_name,
-                field_names=builders[0].keyword_names,
-                source_name=builders[0].source_name,
-                identity_field_names=builders[0].identity_field_names,
-            ),
-        )
+        findings: list[RefactorFinding] = []
+        findings.extend(self._exact_mapping_findings(builders, config))
+        findings.extend(self._single_owner_family_findings(builders, config))
+        return findings
+
+    def _exact_mapping_findings(
+        self,
+        builders: tuple[BuilderCallShape, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        grouped: dict[
+            tuple[str, tuple[str, ...], tuple[str, ...]],
+            list[BuilderCallShape],
+        ] = defaultdict(list)
+        for builder in builders:
+            if len(builder.keyword_names) < config.min_builder_keywords:
+                continue
+            grouped[
+                (builder.callee_name, builder.keyword_names, builder.value_fingerprint)
+            ].append(builder)
+        findings: list[RefactorFinding] = []
+        for group in grouped.values():
+            ordered = tuple(sorted(group, key=lambda item: (item.file_path, item.lineno)))
+            if len(ordered) < 2 or len({builder.symbol for builder in ordered}) < 2:
+                continue
+            evidence = tuple(
+                SourceLocation(builder.file_path, builder.lineno, builder.symbol)
+                for builder in ordered[:6]
+            )
+            same_source = all(builder.source_arity == 1 for builder in ordered)
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"Call `{ordered[0].callee_name}` repeats the same keyword-mapping shape across {len(ordered)} sites."
+                    ),
+                    evidence,
+                    capability_gap=(
+                        "single authoritative data-to-record mapping"
+                        if same_source
+                        else self.finding_spec.capability_gap
+                    ),
+                    scaffold=_builder_scaffold(ordered),
+                    codemod_patch=_builder_patch(ordered),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(ordered),
+                        field_count=len(ordered[0].keyword_names),
+                        mapping_name=ordered[0].callee_name,
+                        field_names=ordered[0].keyword_names,
+                        source_name=ordered[0].source_name,
+                        identity_field_names=ordered[0].identity_field_names,
+                    ),
+                )
+            )
+        return findings
+
+    def _single_owner_family_findings(
+        self,
+        builders: tuple[BuilderCallShape, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        grouped: dict[tuple[str, str], list[BuilderCallShape]] = defaultdict(list)
+        for builder in builders:
+            if not builder.keyword_names:
+                continue
+            grouped[(builder.owner_prefix, builder.callee_name)].append(builder)
+        findings: list[RefactorFinding] = []
+        minimum_sites = max(config.min_builder_keywords, 4)
+        for owner_key, group in grouped.items():
+            ordered = tuple(sorted(group, key=lambda item: (item.file_path, item.lineno)))
+            if len(ordered) < minimum_sites:
+                continue
+            distinct_keyword_names = tuple(
+                sorted({name for builder in ordered for name in builder.keyword_names})
+            )
+            if len(distinct_keyword_names) < config.min_builder_keywords:
+                continue
+            if len({builder.keyword_names for builder in ordered}) < 2:
+                continue
+            owner_symbols = {builder.symbol for builder in ordered}
+            if len(owner_symbols) != 1:
+                continue
+            owner_symbol, callee_name = owner_key
+            evidence = tuple(
+                SourceLocation(builder.file_path, builder.lineno, builder.symbol)
+                for builder in ordered[:6]
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"`{owner_symbol}` repeats builder `{callee_name}` across {len(ordered)} declarative sites "
+                        f"with keyword family {distinct_keyword_names}."
+                    ),
+                    evidence,
+                    capability_gap="single authoritative declarative builder table for one owner surface",
+                    relation_context="one owner repeats a builder call family with varying declarative payload",
+                    scaffold=_single_owner_builder_family_scaffold(callee_name),
+                    codemod_patch=_single_owner_builder_family_patch(
+                        owner_symbol, callee_name
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(ordered),
+                        field_count=len(distinct_keyword_names),
+                        mapping_name=callee_name,
+                        field_names=distinct_keyword_names,
+                        source_name=owner_symbol,
+                    ),
+                )
+            )
+        return findings
 
 
 class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
@@ -14461,6 +14747,150 @@ def _guarded_delegator_candidates(
     return tuple(candidates)
 
 
+def _name_mentions(node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(current, ast.Name) and current.id == name for current in _walk_nodes(node)
+    )
+
+
+def _raised_exception_name(
+    statement: ast.stmt,
+) -> tuple[str, tuple[str, ...]] | None:
+    if not isinstance(statement, ast.Raise) or statement.exc is None:
+        return None
+    exc = statement.exc
+    if isinstance(exc, ast.Call):
+        exc_name = _ast_terminal_name(exc.func)
+        referenced_names = tuple(
+            sorted(
+                {
+                    current.id
+                    for current in _walk_nodes(exc)
+                    if isinstance(current, ast.Name)
+                }
+            )
+        )
+        if exc_name is not None:
+            return exc_name, referenced_names
+    exc_name = _ast_terminal_name(exc)
+    if exc_name is not None:
+        return exc_name, ()
+    return None
+
+
+def _linear_query_signature(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, tuple[str, ...], str, str] | None:
+    body = _trim_docstring_body(node.body)
+    if len(body) < 2:
+        return None
+    loop = next((statement for statement in body if isinstance(statement, ast.For)), None)
+    if loop is None or not isinstance(loop.target, ast.Name):
+        return None
+    result_name = loop.target.id
+    return_exprs = [
+        current.value
+        for current in _walk_nodes(loop)
+        if isinstance(current, ast.Return) and current.value is not None
+    ]
+    if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
+        return None
+    raised = next(
+        (
+            _raised_exception_name(statement)
+            for statement in body
+            if _raised_exception_name(statement) is not None
+        ),
+        None,
+    )
+    if raised is None:
+        return None
+    exception_name, exception_names = raised
+    if exception_name not in {"KeyError", "LookupError", "ValueError"}:
+        return None
+    parameter_names = tuple(
+        arg.arg
+        for arg in (
+            tuple(node.args.posonlyargs)
+            + tuple(node.args.args)
+            + tuple(node.args.kwonlyargs)
+        )
+        if arg.arg not in {"self", "cls"}
+    )
+    query_key_names = tuple(
+        sorted(
+            name
+            for name in parameter_names
+            if any(_name_mentions(current, name) for current in return_exprs)
+            or name in exception_names
+            or any(
+                isinstance(current, ast.If) and _name_mentions(current.test, name)
+                for current in _walk_nodes(loop)
+            )
+        )
+    )
+    if not query_key_names:
+        return None
+    return (
+        ast.unparse(loop.iter),
+        query_key_names,
+        ast.unparse(return_exprs[0]),
+        exception_name,
+    )
+
+
+def _derived_query_index_candidates(
+    module: ParsedModule,
+) -> tuple[DerivedQueryIndexCandidate, ...]:
+    grouped: dict[
+        tuple[str, str, str],
+        list[tuple[str, int, tuple[str, ...]]],
+    ] = defaultdict(list)
+    for qualname, function in _iter_named_functions(module):
+        signature = _linear_query_signature(function)
+        if signature is None:
+            continue
+        source_expression, query_key_names, return_expression, exception_name = signature
+        grouped[(source_expression, return_expression, exception_name)].append(
+            (qualname, function.lineno, query_key_names)
+        )
+    candidates: list[DerivedQueryIndexCandidate] = []
+    for (source_expression, return_expression, exception_name), entries in grouped.items():
+        if len(entries) < 2:
+            continue
+        ordered = tuple(sorted(entries, key=lambda item: (item[1], item[0])))
+        query_key_names = tuple(
+            sorted(
+                {
+                    key_name
+                    for _, _, entry_query_key_names in ordered
+                    for key_name in entry_query_key_names
+                }
+            )
+        )
+        candidates.append(
+            DerivedQueryIndexCandidate(
+                file_path=str(module.path),
+                line_numbers=tuple(item[1] for item in ordered),
+                function_names=tuple(item[0] for item in ordered),
+                source_expression=source_expression,
+                query_key_names=query_key_names,
+                return_expressions=tuple(return_expression for _ in ordered),
+                exception_names=(exception_name,),
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.source_expression,
+                item.function_names,
+            ),
+        )
+    )
+
+
 def _structural_observation_property_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
@@ -16872,96 +17302,279 @@ def _module_export_policy_predicate_candidate(
     )
 
 
-def _registry_materialization_kind(node: ast.FunctionDef) -> str | None:
-    body = _trim_docstring_body(node.body)
-    append_calls = [
-        call
-        for call in _walk_nodes(node)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "append"
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "ordered"
-        and len(call.args) == 1
-    ]
-    if len(append_calls) != 1:
-        return None
-    arg = append_calls[0].args[0]
-    if isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name):
-        return "instantiate"
-    if isinstance(arg, ast.Name):
-        return _TYPE_NAME_LITERAL
+def _returned_sequence_name(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    for current in _walk_nodes(node):
+        if not isinstance(current, ast.Return) or current.value is None:
+            continue
+        value = current.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "tuple"
+            and len(value.args) == 1
+        ):
+            inner = value.args[0]
+            if isinstance(inner, ast.Name):
+                return inner.id
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Name)
+                and inner.func.id == "sorted"
+                and inner.args
+                and isinstance(inner.args[0], ast.Name)
+            ):
+                return inner.args[0].id
     return None
 
 
-def _registry_attribute_name(node: ast.FunctionDef) -> str | None:
-    attribute_names = {
-        attribute_name
+def _subclasses_root_expression(node: ast.AST) -> str | None:
+    subclasses_call: ast.Call | None = None
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "list"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Call)
+    ):
+        subclasses_call = node.args[0]
+    elif isinstance(node, ast.Call):
+        subclasses_call = node
+    if subclasses_call is None:
+        return None
+    if (
+        not isinstance(subclasses_call.func, ast.Attribute)
+        or subclasses_call.func.attr != "__subclasses__"
+        or subclasses_call.args
+    ):
+        return None
+    return ast.unparse(subclasses_call.func.value)
+
+
+def _subclass_traversal_seed(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str] | None:
+    for statement in _trim_docstring_body(node.body):
+        if (
+            not isinstance(statement, ast.Assign)
+            or len(statement.targets) != 1
+            or not isinstance(statement.targets[0], ast.Name)
+        ):
+            continue
+        if (root_expression := _subclasses_root_expression(statement.value)) is None:
+            continue
+        return statement.targets[0].id, root_expression
+    return None
+
+
+def _queue_pop_target_name(statement: ast.stmt, queue_name: str) -> str | None:
+    if (
+        not isinstance(statement, ast.Assign)
+        or len(statement.targets) != 1
+        or not isinstance(statement.targets[0], ast.Name)
+        or not isinstance(statement.value, ast.Call)
+        or not isinstance(statement.value.func, ast.Attribute)
+        or statement.value.func.attr != "pop"
+        or not isinstance(statement.value.func.value, ast.Name)
+        or statement.value.func.value.id != queue_name
+        or len(statement.value.args) != 1
+    ):
+        return None
+    pop_index = statement.value.args[0]
+    if not (isinstance(pop_index, ast.Constant) and pop_index.value == 0):
+        return None
+    return statement.targets[0].id
+
+
+def _extends_subclasses_queue(
+    statement: ast.stmt, queue_name: str, current_name: str
+) -> bool:
+    if (
+        not isinstance(statement, ast.Expr)
+        or not isinstance(statement.value, ast.Call)
+        or not isinstance(statement.value.func, ast.Attribute)
+        or statement.value.func.attr != "extend"
+        or not isinstance(statement.value.func.value, ast.Name)
+        or statement.value.func.value.id != queue_name
+        or len(statement.value.args) != 1
+    ):
+        return False
+    return _subclasses_root_expression(statement.value.args[0]) == current_name
+
+
+def _result_append_args(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
+) -> tuple[ast.AST, ...]:
+    return tuple(
+        current.args[0]
         for current in _walk_nodes(node)
         if isinstance(current, ast.Call)
         and isinstance(current.func, ast.Attribute)
-        and current.func.attr == "get"
-        and isinstance(current.func.value, ast.Attribute)
-        and current.func.value.attr == "__dict__"
-        and isinstance(current.func.value.value, ast.Name)
-        and current.func.value.value.id == "current"
+        and current.func.attr == "append"
+        and isinstance(current.func.value, ast.Name)
+        and current.func.value.id == result_name
         and len(current.args) == 1
-        and (attribute_name := _constant_string(current.args[0])) is not None
-    }
-    if len(attribute_names) != 1:
-        return None
-    return next(iter(attribute_names))
-
-
-def _is_registry_traversal_method(node: ast.FunctionDef) -> bool:
-    if not _is_classmethod(node):
-        return False
-    if _registry_attribute_name(node) is None:
-        return False
-    body_text = "\n".join(ast.unparse(statement) for statement in node.body)
-    required_fragments = (
-        "cls.__subclasses__()",
-        "current.__subclasses__()",
-        "seen.add",
-        "ordered.append",
-        "return tuple(ordered)",
     )
-    return all(fragment in body_text for fragment in required_fragments)
 
 
-def _registry_traversal_group(module: ParsedModule) -> RegistryTraversalGroup | None:
-    methods: list[tuple[str, str, int, str]] = []
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for statement in node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            if not _is_registry_traversal_method(statement):
-                continue
-            materialization_kind = _registry_materialization_kind(statement)
-            registry_attribute_name = _registry_attribute_name(statement)
-            if materialization_kind is None or registry_attribute_name is None:
-                continue
-            methods.append(
-                (
-                    node.name,
-                    statement.name,
-                    statement.lineno,
-                    materialization_kind,
-                    registry_attribute_name,
-                )
-            )
-    if len(methods) < 2:
+def _registry_materialization_kind(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
+) -> str | None:
+    append_args = _result_append_args(node, result_name)
+    if len(append_args) != 1:
         return None
-    ordered = tuple(sorted(methods, key=lambda item: (item[2], item[0], item[1])))
-    return RegistryTraversalGroup(
+    arg = append_args[0]
+    if isinstance(arg, ast.Call):
+        return "instantiate"
+    if isinstance(arg, ast.Name):
+        return _TYPE_NAME_LITERAL
+    return "projection"
+
+
+def _registry_attribute_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                attribute_name
+                for current in _walk_nodes(node)
+                if isinstance(current, ast.Call)
+                and isinstance(current.func, ast.Attribute)
+                and current.func.attr == "get"
+                and isinstance(current.func.value, ast.Attribute)
+                and current.func.value.attr == "__dict__"
+                and isinstance(current.func.value.value, ast.Name)
+                and len(current.args) == 1
+                and (attribute_name := _constant_string(current.args[0])) is not None
+            }
+        )
+    )
+
+
+def _subclass_traversal_filter_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    current_name: str,
+) -> tuple[str, ...]:
+    filter_names: set[str] = set()
+    for current in _walk_nodes(node):
+        if not isinstance(current, ast.Call):
+            continue
+        if (
+            isinstance(current.func, ast.Name)
+            and any(
+                isinstance(subnode, ast.Name) and subnode.id == current_name
+                for subnode in current.args
+            )
+        ):
+            filter_names.add(current.func.id)
+            continue
+        if (
+            isinstance(current.func, ast.Attribute)
+            and current.func.attr == "get"
+            and isinstance(current.func.value, ast.Attribute)
+            and current.func.value.attr == "__dict__"
+            and isinstance(current.func.value.value, ast.Name)
+            and current.func.value.value.id == current_name
+            and len(current.args) == 1
+            and (attribute_name := _constant_string(current.args[0])) is not None
+        ):
+            filter_names.add(attribute_name)
+    return tuple(sorted(filter_names))
+
+
+def _subclass_traversal_site(
+    module: ParsedModule,
+    qualname: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> SubclassTraversalSite | None:
+    seed = _subclass_traversal_seed(node)
+    if seed is None:
+        return None
+    queue_name, root_expression = seed
+    result_name = _returned_sequence_name(node)
+    if result_name is None:
+        return None
+    current_name: str | None = None
+    extends_queue = False
+    for statement in _walk_nodes(node):
+        if not isinstance(statement, ast.While):
+            continue
+        for body_statement in statement.body:
+            current_name = current_name or _queue_pop_target_name(
+                body_statement, queue_name
+            )
+            if current_name is not None and _extends_subclasses_queue(
+                body_statement, queue_name, current_name
+            ):
+                extends_queue = True
+    if current_name is None or not extends_queue:
+        return None
+    materialization_kind = _registry_materialization_kind(node, result_name)
+    if materialization_kind is None:
+        return None
+    append_args = _result_append_args(node, result_name)
+    if not append_args:
+        return None
+    return SubclassTraversalSite(
         file_path=str(module.path),
-        class_names=tuple(item[0] for item in ordered),
-        method_names=tuple(item[1] for item in ordered),
-        line_numbers=tuple(item[2] for item in ordered),
-        materialization_kinds=tuple(item[3] for item in ordered),
-        registry_attribute_names=tuple(item[4] for item in ordered),
+        line=node.lineno,
+        symbol=qualname,
+        root_expression=root_expression,
+        materialization_kind=materialization_kind,
+        registry_attribute_names=_registry_attribute_names(node),
+        filter_names=_subclass_traversal_filter_names(node, current_name),
+    )
+
+
+def _registry_traversal_group(
+    modules: Sequence[ParsedModule],
+) -> SubclassTraversalGroup | None:
+    sites = tuple(
+        sorted(
+            (
+                site
+                for module in modules
+                for qualname, function in _iter_named_functions(module)
+                if (
+                    site := _subclass_traversal_site(
+                        module,
+                        qualname,
+                        cast(ast.FunctionDef | ast.AsyncFunctionDef, function),
+                    )
+                )
+                is not None
+            ),
+            key=lambda item: (item.file_path, item.line, item.symbol),
+        )
+    )
+    if len(sites) < 2:
+        return None
+    return SubclassTraversalGroup(
+        symbols=tuple(site.symbol for site in sites),
+        file_paths=tuple(site.file_path for site in sites),
+        line_numbers=tuple(site.line for site in sites),
+        root_expressions=tuple(site.root_expression for site in sites),
+        materialization_kinds=tuple(site.materialization_kind for site in sites),
+        registry_attribute_names=tuple(
+            sorted(
+                {
+                    attribute_name
+                    for site in sites
+                    for attribute_name in site.registry_attribute_names
+                }
+            )
+        ),
+        filter_names=tuple(
+            sorted(
+                {
+                    filter_name
+                    for site in sites
+                    for filter_name in site.filter_names
+                }
+            )
+        ),
     )
 
 
@@ -17188,6 +17801,63 @@ class FragmentedFamilyAuthorityDetector(CandidateFindingDetector):
                 field_count=len(authority_candidate.shared_keys),
                 mapping_name=f"{authority_candidate.key_family_name} spec",
                 field_names=authority_candidate.shared_keys,
+            ),
+        )
+
+
+class DerivedQueryIndexSurfaceDetector(CandidateFindingDetector):
+    detector_id = "derived_query_index_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated linear query helpers should derive keyed indexes from the immutable authority",
+        why=(
+            "Several lookup helpers linearly rescan the same immutable authority to answer different key queries. "
+            "The docs treat those repeated scans as a derived-index surface that should be materialized once."
+        ),
+        capability_gap="one authoritative immutable family plus derived keyed indexes",
+        relation_context="same immutable authority is rescanned by multiple query helpers with different key selectors",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _derived_query_index_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        query_candidate = cast(DerivedQueryIndexCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan "
+                f"`{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
+            ),
+            query_candidate.evidence,
+            scaffold=(
+                "ITEMS = authoritative_items()\n"
+                "ITEM_BY_KEY = {item.key: item for item in ITEMS}\n"
+                "ITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in ITEMS if hasattr(item, \"secondary_key\")}\n\n"
+                "def item_for_key(key):\n"
+                "    return ITEM_BY_KEY[key]"
+            ),
+            codemod_patch=(
+                f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n"
+                "# Derive keyed indexes once and route the query helpers through those indexes instead of rescanning the family."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(query_candidate.function_names),
+                field_count=max(len(query_candidate.query_key_names), 1),
+                mapping_name=query_candidate.function_names[0],
+                field_names=query_candidate.query_key_names,
+                source_name=query_candidate.source_expression,
+                identity_field_names=query_candidate.query_key_names,
             ),
         )
 
@@ -17930,6 +18600,13 @@ def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
     )
 
 
+def _single_owner_builder_family_patch(owner_symbol: str, callee_name: str) -> str:
+    return (
+        f"# Replace the repeated `{callee_name}` calls inside `{owner_symbol}` with one declarative invocation table.\n"
+        "# Keep the builder authority in one row family and materialize the calls in one loop."
+    )
+
+
 def _projection_schema_patch(export_shapes: tuple[ExportDictShape, ...]) -> str:
     target_file = export_shapes[0].file_path
     return (
@@ -18023,6 +18700,20 @@ def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
         f"    @classmethod\n"
         f"    def from_source(cls, source):\n"
         f"        return cls(\n{args_block}\n        )"
+    )
+
+
+def _single_owner_builder_family_scaffold(callee_name: str) -> str:
+    return (
+        "@dataclass(frozen=True)\n"
+        "class InvocationSpec:\n"
+        "    args: tuple[object, ...]\n"
+        "    kwargs: dict[str, object]\n\n"
+        "INVOCATION_SPECS = (\n"
+        "    InvocationSpec(args=(...), kwargs={\"flag\": True}),\n"
+        ")\n\n"
+        f"for spec in INVOCATION_SPECS:\n"
+        f"    owner.{callee_name}(*spec.args, **spec.kwargs)"
     )
 
 

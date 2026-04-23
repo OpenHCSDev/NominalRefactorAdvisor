@@ -1120,6 +1120,110 @@ class GammaModeRunner(ModeRunner):
     assert "build_axis_rows" in (finding.scaffold or "")
 
 
+def test_detects_parallel_keyed_table_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/specs.py",
+        """
+from dataclasses import dataclass
+from enum import Enum, auto
+
+
+class Mode(Enum):
+    ALPHA = auto()
+    BETA = auto()
+    GAMMA = auto()
+
+
+@dataclass(frozen=True)
+class ModeSpec:
+    mode: Mode
+    label: str
+
+
+MODE_SPECS = {
+    Mode.ALPHA: ModeSpec(Mode.ALPHA, "alpha"),
+    Mode.BETA: ModeSpec(Mode.BETA, "beta"),
+    Mode.GAMMA: ModeSpec(Mode.GAMMA, "gamma"),
+}
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/plans.py",
+        """
+from dataclasses import dataclass
+
+from pkg.specs import Mode
+
+
+@dataclass(frozen=True)
+class ModePlan:
+    mode: Mode
+    priority: int
+
+
+MODE_PLANNING_SPECS = {
+    Mode.ALPHA: ModePlan(Mode.ALPHA, 1),
+    Mode.BETA: ModePlan(Mode.BETA, 2),
+    Mode.GAMMA: ModePlan(Mode.GAMMA, 3),
+}
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "parallel_keyed_table_axis"
+    )
+
+    assert "Mode" in finding.summary
+    assert "MODE_SPECS" in finding.summary
+    assert "MODE_PLANNING_SPECS" in finding.summary
+    assert "AxisRow" in (finding.scaffold or "")
+
+
+def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+ITEMS = ()
+
+
+def _registered_items():
+    return ITEMS
+
+
+def item_for_type(item_type):
+    for item in _registered_items():
+        if item.item_type is item_type:
+            return item
+    raise KeyError(item_type)
+
+
+def item_for_kind(kind):
+    for item in _registered_items():
+        if item.kind is kind:
+            return item
+    raise KeyError(kind)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "derived_query_index_surface"
+    )
+
+    assert "item_for_type" in finding.summary
+    assert "item_for_kind" in finding.summary
+    assert "_registered_items()" in finding.summary
+    assert "ITEM_BY_KEY" in (finding.scaffold or "")
+
+
 def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3214,6 +3318,52 @@ class Beta:
     assert any(
         finding.pattern_id == 14 and finding.codemod_patch for finding in findings
     )
+
+
+def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import argparse
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--json", action="store_true", help="Emit JSON output")
+    parser.add_argument(
+        "--include-plans",
+        action="store_true",
+        help="Include planning details",
+    )
+    parser.add_argument(
+        "--min-builder-keywords",
+        type=int,
+        default=3,
+        help="Minimum builder keywords",
+    )
+    parser.add_argument(
+        "--exclude-pattern",
+        action="append",
+        dest="excluded_pattern_ids",
+        default=[],
+        help="Exclude one pattern id",
+    )
+    return parser
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_builder_calls"
+        and "main" in finding.summary
+        and "add_argument" in finding.summary
+    )
+
+    assert "InvocationSpec" in (finding.scaffold or "")
+    assert "declarative invocation table" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
@@ -6260,7 +6410,70 @@ class HandlerRegistry:
     assert "all_registered_plugins" in finding.summary
     assert "all_registered_handlers" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
-    assert "registered_items" in (finding.scaffold or "")
+    assert "walk_family" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
+
+
+def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/plugins.py",
+        """
+class PluginBase:
+    pass
+
+
+def all_plugins():
+    seen = set()
+    ordered = []
+    queue = list(PluginBase.__subclasses__())
+    while queue:
+        current = queue.pop(0)
+        queue.extend(current.__subclasses__())
+        if not current.__dict__.get("plugin_name"):
+            continue
+        if current in seen:
+            continue
+        seen.add(current)
+        ordered.append(current)
+    return tuple(sorted(ordered, key=lambda item: item.__name__))
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/metrics.py",
+        """
+from dataclasses import is_dataclass
+
+
+class MetricBase:
+    pass
+
+
+def all_metrics():
+    discovered = []
+    queue = list(MetricBase.__subclasses__())
+    while queue:
+        current = queue.pop(0)
+        queue.extend(current.__subclasses__())
+        if not is_dataclass(current):
+            continue
+        discovered.append(current)
+    return tuple(sorted(discovered, key=lambda item: item.__name__))
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "registry_traversal_substrate"
+        and "all_plugins" in finding.summary
+        and "all_metrics" in finding.summary
+    )
+
+    assert "walk_family" in (finding.scaffold or "")
+    assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:

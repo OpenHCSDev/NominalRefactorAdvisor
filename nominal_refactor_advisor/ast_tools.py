@@ -1691,7 +1691,7 @@ def _builder_call_shape(
     if function_name is None:
         return None
     keyword_pairs = [(kw.arg, kw.value) for kw in node.keywords if kw.arg is not None]
-    if len(keyword_pairs) < 3:
+    if not keyword_pairs:
         return None
     callee_name = _terminal_name(node.func)
     if callee_name is None:
