@@ -7,7 +7,7 @@ first refactor moves that findings and plans reference in CLI output and docs.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 
 from .taxonomy import CapabilityTag
 
@@ -37,6 +37,22 @@ class PatternId(IntEnum):
     NOMINAL_WITNESS_CARRIER = 20
 
 
+class PlanStepBuilderId(Enum):
+    TEMPLATE_METHOD = "template_method"
+    AUTO_REGISTER = "auto_register"
+    AUTHORITATIVE_MAPPING = "authoritative_mapping"
+    CLOSED_FAMILY_DISPATCH = "closed_family_dispatch"
+    BIDIRECTIONAL_REGISTRY = "bidirectional_registry"
+
+
+class ActionBuilderId(Enum):
+    ABC_FAMILY = "abc_family"
+    AUTO_REGISTER = "auto_register"
+    BIDIRECTIONAL_LOOKUP = "bidirectional_lookup"
+    CLOSED_FAMILY_DISPATCH = "closed_family_dispatch"
+    AUTHORITATIVE_SCHEMA = "authoritative_schema"
+
+
 @dataclass(frozen=True)
 class PatternSpec:
     """Documentation payload for one canonical refactoring pattern."""
@@ -48,6 +64,11 @@ class PatternSpec:
     first_moves: tuple[str, ...]
     witness_capabilities: tuple[CapabilityTag, ...] = ()
     example_skeletons: tuple[str, ...] = ()
+    priority: int = 0
+    dependencies: tuple[PatternId, ...] = ()
+    synergy_with: tuple[PatternId, ...] = ()
+    plan_step_builder_id: PlanStepBuilderId | None = None
+    action_builder_id: ActionBuilderId | None = None
 
 
 PATTERN_SPECS: dict[PatternId, PatternSpec] = {
@@ -65,6 +86,12 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.ENUMERATION,
             CapabilityTag.PROVENANCE,
+        ),
+        priority=95,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.ABC_TEMPLATE_METHOD,
         ),
     ),
     PatternId.DISCRIMINATED_UNION: PatternSpec(
@@ -85,6 +112,11 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         (
             "class VariantBase(ABC): ...\nclass OptionalVariant(VariantBase): ...\nclass DirectVariant(VariantBase): ...",
         ),
+        priority=92,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+        ),
     ),
     PatternId.CLOSED_FAMILY_DISPATCH: PatternSpec(
         PatternId.CLOSED_FAMILY_DISPATCH,
@@ -100,6 +132,22 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
         ),
+        priority=58,
+        dependencies=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+        ),
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder_id=PlanStepBuilderId.CLOSED_FAMILY_DISPATCH,
+        action_builder_id=ActionBuilderId.CLOSED_FAMILY_DISPATCH,
     ),
     PatternId.CONFIG_CONTRACTS: PatternSpec(
         PatternId.CONFIG_CONTRACTS,
@@ -115,6 +163,14 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
             CapabilityTag.PROVENANCE,
+        ),
+        priority=90,
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.AUTHORITATIVE_SCHEMA,
         ),
     ),
     PatternId.ABC_TEMPLATE_METHOD: PatternSpec(
@@ -136,6 +192,17 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             "class Base(ABC):\n    def run(self, request): ...\n    @abstractmethod\n    def hook(self, request): ...",
             "class CandidateBase(ABC):\n    def run(self, request):\n        normalized = self._normalize(request)\n        return self._execute(normalized)\n\n    @abstractmethod\n    def _execute(self, normalized): ...",
         ),
+        priority=88,
+        dependencies=(PatternId.NOMINAL_BOUNDARY, PatternId.CONFIG_CONTRACTS),
+        synergy_with=(
+            PatternId.NOMINAL_BOUNDARY,
+            PatternId.DISCRIMINATED_UNION,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder_id=PlanStepBuilderId.TEMPLATE_METHOD,
+        action_builder_id=ActionBuilderId.ABC_FAMILY,
     ),
     PatternId.AUTO_REGISTER_META: PatternSpec(
         PatternId.AUTO_REGISTER_META,
@@ -156,6 +223,15 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             "from metaclass_registry import AutoRegisterMeta\n\nclass HandlerBase(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'handler_name'\n    __skip_if_no_key__ = True\n    handler_name = None",
             "from metaclass_registry import AutoRegisterMeta\n\nclass BaseHandler(metaclass=AutoRegisterMeta):\n    __registry_key__ = 'name'\n    __skip_if_no_key__ = True\n    name = None",
         ),
+        priority=84,
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder_id=PlanStepBuilderId.AUTO_REGISTER,
+        action_builder_id=ActionBuilderId.AUTO_REGISTER,
     ),
     PatternId.TYPE_LINEAGE: PatternSpec(
         PatternId.TYPE_LINEAGE,
@@ -171,6 +247,12 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.TYPE_LINEAGE,
             CapabilityTag.PROVENANCE,
             CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
+        ),
+        priority=80,
+        synergy_with=(
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+            PatternId.AUTHORITATIVE_SCHEMA,
         ),
     ),
     PatternId.DUAL_AXIS_RESOLUTION: PatternSpec(
@@ -188,6 +270,17 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.PROVENANCE,
             CapabilityTag.MRO_ORDERING,
         ),
+        priority=62,
+        dependencies=(
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        synergy_with=(
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
     ),
     PatternId.VIRTUAL_MEMBERSHIP: PatternSpec(
         PatternId.VIRTUAL_MEMBERSHIP,
@@ -202,6 +295,13 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         (
             CapabilityTag.VIRTUAL_MEMBERSHIP,
             CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        priority=74,
+        dependencies=(PatternId.DYNAMIC_INTERFACE,),
+        synergy_with=(
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.SENTINEL_TYPE_MARKER,
+            PatternId.TYPE_NAMESPACE_INJECTION,
         ),
     ),
     PatternId.DYNAMIC_INTERFACE: PatternSpec(
@@ -219,6 +319,12 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.VIRTUAL_MEMBERSHIP,
             CapabilityTag.NOMINAL_IDENTITY,
         ),
+        priority=76,
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.SENTINEL_TYPE_MARKER,
+            PatternId.TYPE_NAMESPACE_INJECTION,
+        ),
     ),
     PatternId.SENTINEL_TYPE_MARKER: PatternSpec(
         PatternId.SENTINEL_TYPE_MARKER,
@@ -234,6 +340,12 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.CAPABILITY_MARKER_IDENTITY,
             CapabilityTag.NOMINAL_IDENTITY,
         ),
+        priority=72,
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.TYPE_NAMESPACE_INJECTION,
+        ),
     ),
     PatternId.TYPE_NAMESPACE_INJECTION: PatternSpec(
         PatternId.TYPE_NAMESPACE_INJECTION,
@@ -248,6 +360,13 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         (
             CapabilityTag.SHARED_TYPE_NAMESPACE,
             CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        priority=70,
+        dependencies=(PatternId.DYNAMIC_INTERFACE,),
+        synergy_with=(
+            PatternId.VIRTUAL_MEMBERSHIP,
+            PatternId.DYNAMIC_INTERFACE,
+            PatternId.SENTINEL_TYPE_MARKER,
         ),
     ),
     PatternId.BIDIRECTIONAL_LOOKUP: PatternSpec(
@@ -265,6 +384,16 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             CapabilityTag.PROVENANCE,
             CapabilityTag.EXACT_LOOKUP,
         ),
+        priority=66,
+        dependencies=(PatternId.TYPE_LINEAGE,),
+        synergy_with=(
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.DUAL_AXIS_RESOLUTION,
+            PatternId.AUTHORITATIVE_SCHEMA,
+        ),
+        plan_step_builder_id=PlanStepBuilderId.BIDIRECTIONAL_REGISTRY,
+        action_builder_id=ActionBuilderId.BIDIRECTIONAL_LOOKUP,
     ),
     PatternId.AUTHORITATIVE_SCHEMA: PatternSpec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -285,6 +414,23 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
             "@dataclass(frozen=True)\nclass Row: ...\n@classmethod\ndef from_source(cls, source): ...",
             "@dataclass(frozen=True)\nclass ProjectionRow:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(...)\n",
         ),
+        priority=40,
+        dependencies=(
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        synergy_with=(
+            PatternId.CLOSED_FAMILY_DISPATCH,
+            PatternId.CONFIG_CONTRACTS,
+            PatternId.ABC_TEMPLATE_METHOD,
+            PatternId.AUTO_REGISTER_META,
+            PatternId.TYPE_LINEAGE,
+            PatternId.BIDIRECTIONAL_LOOKUP,
+        ),
+        plan_step_builder_id=PlanStepBuilderId.AUTHORITATIVE_MAPPING,
+        action_builder_id=ActionBuilderId.AUTHORITATIVE_SCHEMA,
     ),
     PatternId.STAGED_ORCHESTRATION: PatternSpec(
         PatternId.STAGED_ORCHESTRATION,

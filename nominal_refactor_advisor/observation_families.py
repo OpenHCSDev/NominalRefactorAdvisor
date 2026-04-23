@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Callable, ClassVar, cast
 
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -65,6 +66,7 @@ from .ast_tools import (
     _class_observations,
     _collect_items_from_spec_root,
     _config_dispatch_observations,
+    _descendant_types,
     _dual_axis_resolution_observation,
     _dynamic_method_injection_observations,
     _execution_level_for_scope,
@@ -109,20 +111,11 @@ class FamilyGeneratingSpec(ABC):
 
 
 def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
-    seen: set[type[FamilyGeneratingSpec]] = set()
-    ordered: list[type[FamilyGeneratingSpec]] = []
-    queue = list(FamilyGeneratingSpec.__subclasses__())
-    while queue:
-        current = cast(type[FamilyGeneratingSpec], queue.pop(0))
-        queue.extend(
-            cast(type[FamilyGeneratingSpec], subclass)
-            for subclass in current.__subclasses__()
-        )
-        if current in seen:
-            continue
-        seen.add(current)
-        if current.__dict__.get("family_specs"):
-            ordered.append(current)
+    ordered = [
+        cast(type[FamilyGeneratingSpec], current)
+        for current in _descendant_types(FamilyGeneratingSpec)
+        if current.__dict__.get("family_specs")
+    ]
     return tuple(
         sorted(
             ordered,
@@ -982,23 +975,28 @@ def _registered_family_types() -> tuple[type[CollectedFamily], ...]:
     return CollectedFamily.all_registered_families()
 
 
+@lru_cache(maxsize=1)
+def _family_types_by_item_type() -> dict[type[object], type[CollectedFamily]]:
+    return {family.item_type: family for family in _registered_family_types()}
+
+
+@lru_cache(maxsize=1)
+def _literal_family_types_by_kind() -> dict[LiteralKind, type[CollectedFamily]]:
+    return {
+        family.literal_kind: family
+        for family in _registered_family_types()
+        if issubclass(family, TypedLiteralObservationFamily)
+    }
+
+
 def family_for_item_type(item_type: type[object]) -> type[CollectedFamily]:
     """Return the generated family that owns one collected item type."""
-    for family in _registered_family_types():
-        if family.item_type is item_type:
-            return family
-    raise KeyError(item_type)
+    return _family_types_by_item_type()[item_type]
 
 
 def family_for_literal_kind(literal_kind: LiteralKind) -> type[CollectedFamily]:
     """Return the generated family that owns one literal-dispatch kind."""
-    for family in _registered_family_types():
-        if (
-            issubclass(family, TypedLiteralObservationFamily)
-            and family.literal_kind is literal_kind
-        ):
-            return family
-    raise KeyError(literal_kind)
+    return _literal_family_types_by_kind()[literal_kind]
 
 
 def _materialize_generated_family(

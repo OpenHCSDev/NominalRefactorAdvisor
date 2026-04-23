@@ -126,6 +126,20 @@ class AutoRegisterMeta(ABCMeta):
 _TRegistered = TypeVar("_TRegistered")
 
 
+def _descendant_types(root: type[object]) -> tuple[type[object], ...]:
+    seen: set[type[object]] = set()
+    ordered: list[type[object]] = []
+    queue = list(root.__subclasses__())
+    while queue:
+        current = queue.pop(0)
+        queue.extend(current.__subclasses__())
+        if current in seen:
+            continue
+        seen.add(current)
+        ordered.append(current)
+    return tuple(ordered)
+
+
 def _walk_registered_descendants(
     root: type[object],
     *,
@@ -133,10 +147,7 @@ def _walk_registered_descendants(
 ) -> tuple[_TRegistered, ...]:
     seen: set[type[object]] = set()
     ordered: list[_TRegistered] = []
-    queue = list(root.__subclasses__())
-    while queue:
-        current = queue.pop(0)
-        queue.extend(current.__subclasses__())
+    for current in _descendant_types(root):
         registry = current.__dict__.get("_registered_spec_types")
         if registry is None:
             continue

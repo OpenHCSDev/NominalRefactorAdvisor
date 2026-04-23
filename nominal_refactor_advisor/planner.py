@@ -23,7 +23,12 @@ from .models import (
     RefactorPlan,
     SourceLocation,
 )
-from .patterns import PATTERN_SPECS, PatternId
+from .patterns import (
+    PATTERN_SPECS,
+    ActionBuilderId,
+    PatternId,
+    PlanStepBuilderId,
+)
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
@@ -226,6 +231,49 @@ class ActionContext:
     statement_count: int
 
 
+_ABC_FIELD_ACTION_TEMPLATES = (
+    ActionTemplate(
+        kind="create_abc_base",
+        description="Create `{base_name}` in `{subsystem}` to own shared fields {field_list}.",
+        confidence=HIGH_CONFIDENCE,
+        create_symbol="{base_name}",
+    ),
+    ActionTemplate(
+        kind="extract_shared_fields",
+        description="Move the shared field declarations/assignments for {field_list} from {class_list} into `{base_name}` at {field_execution_level}.",
+        confidence=HIGH_CONFIDENCE,
+        statement_operation="move",
+    ),
+    ActionTemplate(
+        kind="leave_subclass_fields",
+        description="Leave only subclass-specific fields outside `{base_name}`.",
+        confidence=MEDIUM_CONFIDENCE,
+    ),
+)
+
+
+_ABC_BEHAVIOR_ACTION_TEMPLATES = (
+    ActionTemplate(
+        kind="create_abc_base",
+        description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
+        confidence=HIGH_CONFIDENCE,
+        create_symbol="{base_name}",
+    ),
+    ActionTemplate(
+        kind="extract_template_method",
+        description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
+        confidence=HIGH_CONFIDENCE,
+        create_symbol="{base_name}.{template_method_name}",
+        statement_operation="move",
+    ),
+    ActionTemplate(
+        kind="leave_residual_hooks",
+        description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
+        confidence=MEDIUM_CONFIDENCE,
+    ),
+)
+
+
 class GenericPatternActionBuilder(PatternActionBuilder):
     def build(
         self,
@@ -264,53 +312,15 @@ class AbcFamilyActionBuilder(PatternActionBuilder):
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
         context = _build_action_context(subsystem, findings)
-        if context.field_execution_level != "unknown_level":
-            return _actions_from_templates(
-                subsystem,
-                findings,
-                (
-                    ActionTemplate(
-                        kind="create_abc_base",
-                        description="Create `{base_name}` in `{subsystem}` to own shared fields {field_list}.",
-                        confidence=HIGH_CONFIDENCE,
-                        create_symbol="{base_name}",
-                    ),
-                    ActionTemplate(
-                        kind="extract_shared_fields",
-                        description="Move the shared field declarations/assignments for {field_list} from {class_list} into `{base_name}` at {field_execution_level}.",
-                        confidence=HIGH_CONFIDENCE,
-                        statement_operation="move",
-                    ),
-                    ActionTemplate(
-                        kind="leave_subclass_fields",
-                        description="Leave only subclass-specific fields outside `{base_name}`.",
-                        confidence=MEDIUM_CONFIDENCE,
-                    ),
-                ),
-            )
+        templates = (
+            _ABC_FIELD_ACTION_TEMPLATES
+            if context.field_execution_level != "unknown_level"
+            else _ABC_BEHAVIOR_ACTION_TEMPLATES
+        )
         return _actions_from_templates(
             subsystem,
             findings,
-            (
-                ActionTemplate(
-                    kind="create_abc_base",
-                    description="Create `{base_name}` in `{subsystem}` to own the shared behavior now spread across {class_list}.",
-                    confidence=HIGH_CONFIDENCE,
-                    create_symbol="{base_name}",
-                ),
-                ActionTemplate(
-                    kind="extract_template_method",
-                    description="Move the shared statement sequence `{statement_sequence}` from the repeated methods into `{base_name}.{template_method_name}`.",
-                    confidence=HIGH_CONFIDENCE,
-                    create_symbol="{base_name}.{template_method_name}",
-                    statement_operation="move",
-                ),
-                ActionTemplate(
-                    kind="leave_residual_hooks",
-                    description="Leave only irreducible per-class residue behind abstract hooks or mixin-provided concerns on `{base_name}`.",
-                    confidence=MEDIUM_CONFIDENCE,
-                ),
-            ),
+            templates,
         )
 
 
@@ -468,165 +478,38 @@ _AUTHORITATIVE_SCHEMA_ACTION_BUILDER = TemplatedPatternActionBuilder(
     )
 )
 
-_PATTERN_PLANNING_SPECS: dict[PatternId, PatternPlanningSpec] = {
-    PatternId.NOMINAL_BOUNDARY: PatternPlanningSpec(
-        priority=95,
-        synergy_with=(
-            PatternId.CLOSED_FAMILY_DISPATCH,
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.ABC_TEMPLATE_METHOD,
-        ),
-    ),
-    PatternId.DISCRIMINATED_UNION: PatternPlanningSpec(
-        priority=92,
-        synergy_with=(
-            PatternId.CLOSED_FAMILY_DISPATCH,
-            PatternId.ABC_TEMPLATE_METHOD,
-        ),
-    ),
-    PatternId.CONFIG_CONTRACTS: PatternPlanningSpec(
-        priority=90,
-        synergy_with=(
-            PatternId.NOMINAL_BOUNDARY,
-            PatternId.CLOSED_FAMILY_DISPATCH,
-            PatternId.ABC_TEMPLATE_METHOD,
-            PatternId.DUAL_AXIS_RESOLUTION,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-    ),
-    PatternId.ABC_TEMPLATE_METHOD: PatternPlanningSpec(
-        priority=88,
-        dependencies=(PatternId.NOMINAL_BOUNDARY, PatternId.CONFIG_CONTRACTS),
-        synergy_with=(
-            PatternId.NOMINAL_BOUNDARY,
-            PatternId.DISCRIMINATED_UNION,
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.AUTO_REGISTER_META,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-        plan_step_builder=TemplateMethodPlanStepBuilder(),
-        action_builder=AbcFamilyActionBuilder(),
-    ),
-    PatternId.AUTO_REGISTER_META: PatternPlanningSpec(
-        priority=84,
-        synergy_with=(
-            PatternId.CLOSED_FAMILY_DISPATCH,
-            PatternId.ABC_TEMPLATE_METHOD,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-        plan_step_builder=AutoRegisterPlanStepBuilder(),
-        action_builder=_AUTO_REGISTER_ACTION_BUILDER,
-    ),
-    PatternId.TYPE_LINEAGE: PatternPlanningSpec(
-        priority=80,
-        synergy_with=(
-            PatternId.DUAL_AXIS_RESOLUTION,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-    ),
-    PatternId.DYNAMIC_INTERFACE: PatternPlanningSpec(
-        priority=76,
-        synergy_with=(
-            PatternId.VIRTUAL_MEMBERSHIP,
-            PatternId.SENTINEL_TYPE_MARKER,
-            PatternId.TYPE_NAMESPACE_INJECTION,
-        ),
-    ),
-    PatternId.VIRTUAL_MEMBERSHIP: PatternPlanningSpec(
-        priority=74,
-        dependencies=(PatternId.DYNAMIC_INTERFACE,),
-        synergy_with=(
-            PatternId.DYNAMIC_INTERFACE,
-            PatternId.SENTINEL_TYPE_MARKER,
-            PatternId.TYPE_NAMESPACE_INJECTION,
-        ),
-    ),
-    PatternId.SENTINEL_TYPE_MARKER: PatternPlanningSpec(
-        priority=72,
-        synergy_with=(
-            PatternId.VIRTUAL_MEMBERSHIP,
-            PatternId.DYNAMIC_INTERFACE,
-            PatternId.TYPE_NAMESPACE_INJECTION,
-        ),
-    ),
-    PatternId.TYPE_NAMESPACE_INJECTION: PatternPlanningSpec(
-        priority=70,
-        dependencies=(PatternId.DYNAMIC_INTERFACE,),
-        synergy_with=(
-            PatternId.VIRTUAL_MEMBERSHIP,
-            PatternId.DYNAMIC_INTERFACE,
-            PatternId.SENTINEL_TYPE_MARKER,
-        ),
-    ),
-    PatternId.BIDIRECTIONAL_LOOKUP: PatternPlanningSpec(
-        priority=66,
-        dependencies=(PatternId.TYPE_LINEAGE,),
-        synergy_with=(
-            PatternId.AUTO_REGISTER_META,
-            PatternId.TYPE_LINEAGE,
-            PatternId.DUAL_AXIS_RESOLUTION,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-        plan_step_builder=BidirectionalRegistryPlanStepBuilder(),
-        action_builder=_BIDIRECTIONAL_LOOKUP_ACTION_BUILDER,
-    ),
-    PatternId.DUAL_AXIS_RESOLUTION: PatternPlanningSpec(
-        priority=62,
-        dependencies=(
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.TYPE_LINEAGE,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-        ),
-        synergy_with=(
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.TYPE_LINEAGE,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-        ),
-    ),
-    PatternId.CLOSED_FAMILY_DISPATCH: PatternPlanningSpec(
-        priority=58,
-        dependencies=(
-            PatternId.NOMINAL_BOUNDARY,
-            PatternId.DISCRIMINATED_UNION,
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.AUTO_REGISTER_META,
-        ),
-        synergy_with=(
-            PatternId.NOMINAL_BOUNDARY,
-            PatternId.DISCRIMINATED_UNION,
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.AUTO_REGISTER_META,
-            PatternId.AUTHORITATIVE_SCHEMA,
-        ),
-        plan_step_builder=ClosedFamilyDispatchPlanStepBuilder(),
-        action_builder=_CLOSED_FAMILY_DISPATCH_ACTION_BUILDER,
-    ),
-    PatternId.AUTHORITATIVE_SCHEMA: PatternPlanningSpec(
-        priority=40,
-        dependencies=(
-            PatternId.ABC_TEMPLATE_METHOD,
-            PatternId.AUTO_REGISTER_META,
-            PatternId.TYPE_LINEAGE,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-        ),
-        synergy_with=(
-            PatternId.CLOSED_FAMILY_DISPATCH,
-            PatternId.CONFIG_CONTRACTS,
-            PatternId.ABC_TEMPLATE_METHOD,
-            PatternId.AUTO_REGISTER_META,
-            PatternId.TYPE_LINEAGE,
-            PatternId.BIDIRECTIONAL_LOOKUP,
-        ),
-        plan_step_builder=AuthoritativeMappingPlanStepBuilder(),
-        action_builder=_AUTHORITATIVE_SCHEMA_ACTION_BUILDER,
-    ),
+_PATTERN_PLAN_STEP_BUILDERS: dict[PlanStepBuilderId, PatternPlanStepBuilder] = {
+    PlanStepBuilderId.TEMPLATE_METHOD: TemplateMethodPlanStepBuilder(),
+    PlanStepBuilderId.AUTO_REGISTER: AutoRegisterPlanStepBuilder(),
+    PlanStepBuilderId.AUTHORITATIVE_MAPPING: AuthoritativeMappingPlanStepBuilder(),
+    PlanStepBuilderId.CLOSED_FAMILY_DISPATCH: ClosedFamilyDispatchPlanStepBuilder(),
+    PlanStepBuilderId.BIDIRECTIONAL_REGISTRY: BidirectionalRegistryPlanStepBuilder(),
+}
+
+_PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = {
+    ActionBuilderId.ABC_FAMILY: AbcFamilyActionBuilder(),
+    ActionBuilderId.AUTO_REGISTER: _AUTO_REGISTER_ACTION_BUILDER,
+    ActionBuilderId.BIDIRECTIONAL_LOOKUP: _BIDIRECTIONAL_LOOKUP_ACTION_BUILDER,
+    ActionBuilderId.CLOSED_FAMILY_DISPATCH: _CLOSED_FAMILY_DISPATCH_ACTION_BUILDER,
+    ActionBuilderId.AUTHORITATIVE_SCHEMA: _AUTHORITATIVE_SCHEMA_ACTION_BUILDER,
 }
 
 
 def _pattern_planning_spec(pattern_id: PatternId) -> PatternPlanningSpec:
-    return _PATTERN_PLANNING_SPECS.get(pattern_id, PatternPlanningSpec())
+    pattern = PATTERN_SPECS.get(pattern_id)
+    if pattern is None:
+        return PatternPlanningSpec()
+    return PatternPlanningSpec(
+        priority=pattern.priority,
+        dependencies=pattern.dependencies,
+        synergy_with=pattern.synergy_with,
+        plan_step_builder=_PATTERN_PLAN_STEP_BUILDERS.get(pattern.plan_step_builder_id)
+        if pattern.plan_step_builder_id is not None
+        else None,
+        action_builder=_PATTERN_ACTION_BUILDERS.get(pattern.action_builder_id)
+        if pattern.action_builder_id is not None
+        else None,
+    )
 
 
 def build_refactor_plans(

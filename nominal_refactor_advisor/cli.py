@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .ast_tools import parse_python_modules
@@ -18,6 +18,107 @@ from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
+
+
+@dataclass(frozen=True)
+class CliArgumentSpec:
+    flags: tuple[str, ...]
+    help: str
+    action: str | None = None
+    default: object | None = None
+    dest: str | None = None
+    nargs: str | int | None = None
+    value_type: type[object] | None = None
+
+
+def _argument_kwargs(spec: CliArgumentSpec) -> dict[str, object]:
+    kwargs: dict[str, object] = {"help": spec.help}
+    if spec.action is not None:
+        kwargs["action"] = spec.action
+    if spec.default is not None:
+        kwargs["default"] = spec.default
+    if spec.dest is not None:
+        kwargs["dest"] = spec.dest
+    if spec.nargs is not None:
+        kwargs["nargs"] = spec.nargs
+    if spec.value_type is not None:
+        kwargs["type"] = spec.value_type
+    return kwargs
+
+
+_CLI_ARGUMENT_SPECS = (
+    CliArgumentSpec(
+        flags=("path",),
+        nargs="?",
+        default="nominal_refactor_advisor",
+        help="Root path to analyze (defaults to nominal_refactor_advisor).",
+    ),
+    CliArgumentSpec(
+        flags=("--json",),
+        action="store_true",
+        help="Emit JSON instead of Markdown.",
+    ),
+    CliArgumentSpec(
+        flags=("--include-plans",),
+        action="store_true",
+        help="Also synthesize subsystem-level composed refactor plans.",
+    ),
+    CliArgumentSpec(
+        flags=("--plans-only",),
+        action="store_true",
+        help="Emit only subsystem-level composed refactor plans.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-duplicate-statements",),
+        value_type=int,
+        default=3,
+        help="Minimum statement count for repeated-method detection.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-string-cases",),
+        value_type=int,
+        default=3,
+        help="Minimum string cases for closed-family dispatch detection.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-attribute-probes",),
+        value_type=int,
+        default=2,
+        help="Minimum attribute probes before surfacing a finding.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-builder-keywords",),
+        value_type=int,
+        default=3,
+        help="Minimum keyword count for repeated record-builder detection.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-export-keys",),
+        value_type=int,
+        default=3,
+        help="Minimum key count for repeated export-dict detection.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-registration-sites",),
+        value_type=int,
+        default=2,
+        help="Minimum manual registration sites before surfacing a class-registration finding.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-hardcoded-string-sites",),
+        value_type=int,
+        default=3,
+        help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
+    ),
+    CliArgumentSpec(
+        flags=("--exclude-pattern",),
+        action="append",
+        dest="excluded_pattern_ids",
+        value_type=int,
+        default=[],
+        help="Pattern ID to exclude from findings (can be specified multiple times).",
+    ),
+)
 
 
 def analyze_modules(
@@ -167,75 +268,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="AST-driven refactoring advisor for nominal architecture."
     )
-    parser.add_argument(
-        "path",
-        nargs="?",
-        default="nominal_refactor_advisor",
-        help="Root path to analyze (defaults to nominal_refactor_advisor).",
-    )
-    parser.add_argument(
-        "--json", action="store_true", help="Emit JSON instead of Markdown."
-    )
-    parser.add_argument(
-        "--include-plans",
-        action="store_true",
-        help="Also synthesize subsystem-level composed refactor plans.",
-    )
-    parser.add_argument(
-        "--plans-only",
-        action="store_true",
-        help="Emit only subsystem-level composed refactor plans.",
-    )
-    parser.add_argument(
-        "--min-duplicate-statements",
-        type=int,
-        default=3,
-        help="Minimum statement count for repeated-method detection.",
-    )
-    parser.add_argument(
-        "--min-string-cases",
-        type=int,
-        default=3,
-        help="Minimum string cases for closed-family dispatch detection.",
-    )
-    parser.add_argument(
-        "--min-attribute-probes",
-        type=int,
-        default=2,
-        help="Minimum attribute probes before surfacing a finding.",
-    )
-    parser.add_argument(
-        "--min-builder-keywords",
-        type=int,
-        default=3,
-        help="Minimum keyword count for repeated record-builder detection.",
-    )
-    parser.add_argument(
-        "--min-export-keys",
-        type=int,
-        default=3,
-        help="Minimum key count for repeated export-dict detection.",
-    )
-    parser.add_argument(
-        "--min-registration-sites",
-        type=int,
-        default=2,
-        help="Minimum manual registration sites before surfacing a class-registration finding.",
-    )
-    parser.add_argument(
-        "--min-hardcoded-string-sites",
-        type=int,
-        default=3,
-        help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
-    )
-    parser.add_argument(
-        "--exclude-pattern",
-        action="append",
-        dest="excluded_pattern_ids",
-        type=int,
-        default=[],
-        help="Pattern ID to exclude from findings (can be specified multiple times).",
-    )
+    for spec in _CLI_ARGUMENT_SPECS:
+        parser.add_argument(*spec.flags, **_argument_kwargs(spec))
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)

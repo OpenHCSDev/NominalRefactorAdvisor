@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from .patterns import PatternId
 
@@ -786,12 +786,11 @@ def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
 
 
 def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
-    discovered: list[type[FindingMetrics]] = []
-    queue = list(FindingMetrics.__subclasses__())
-    while queue:
-        current = queue.pop(0)
-        queue.extend(current.__subclasses__())
-        if not is_dataclass(current):
-            continue
-        discovered.append(current)
+    from .ast_tools import _descendant_types
+
+    discovered = tuple(
+        cast(type[FindingMetrics], metric_type)
+        for metric_type in _descendant_types(FindingMetrics)
+        if is_dataclass(metric_type)
+    )
     return tuple(sorted(discovered, key=lambda metric_type: metric_type.__name__))
