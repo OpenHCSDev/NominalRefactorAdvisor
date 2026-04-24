@@ -1,6 +1,10 @@
 __pycache__/
 .pytest_cache/
+.coverage
 *.pyc
+*.egg-info/
+build/
+dist/
 docs/_build/
 docs/source/api/_generated/
 docs/source/api/detector_reference/

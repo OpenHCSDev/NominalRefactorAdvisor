@@ -1,0 +1,91 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  python-boundary-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13"]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run test suite with coverage
+        run: |
+          python -m pytest tests/ \
+            --cov=nominal_refactor_advisor \
+            --cov-report=term-missing \
+            --tb=short
+
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-python-${{ matrix.python-version }}-${{ matrix.os }}
+          path: .coverage
+          if-no-files-found: ignore
+          retention-days: 1
+
+  docs-and-wheel-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Build docs
+        run: python -m sphinx -E -b html docs/source docs/_build/html
+
+      - name: Build distribution artifacts
+        run: python -m build
+
+      - name: Smoke-test wheel install
+        run: |
+          python -m venv .venv-wheel
+          . .venv-wheel/bin/activate
+          python -m pip install --upgrade pip
+          wheel_path="$(pwd)/dist/"*.whl
+          tmpdir="$(mktemp -d)"
+          cd "$tmpdir"
+          pip install --force-reinstall "$wheel_path"
+          python -m nominal_refactor_advisor --help
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from nominal_refactor_advisor.cli import analyze_path
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          findings = analyze_path(workspace / "nominal_refactor_advisor")
+          assert isinstance(findings, list)
+          print(f"wheel_smoke_findings={len(findings)}")
+          PY
