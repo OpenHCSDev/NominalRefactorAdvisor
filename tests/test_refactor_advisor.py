@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import ast
 from pathlib import Path
 from typing import cast
@@ -33,6 +34,7 @@ from nominal_refactor_advisor.ast_tools import (
     collect_scoped_observations,
     parse_python_modules,
 )
+from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import analyze_path
@@ -3478,6 +3480,27 @@ def main():
 
     assert "InvocationSpec" in (finding.scaffold or "")
     assert "declarative invocation table" in (finding.codemod_patch or "")
+
+
+def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
+    parser = argparse.ArgumentParser()
+    for spec in _CLI_ARGUMENT_SPECS:
+        spec.add_to_parser(parser)
+
+    args = parser.parse_args(
+        [
+            "--json",
+            "--include-plans",
+            "--exclude-pattern",
+            "14",
+            "nominal_refactor_advisor",
+        ]
+    )
+
+    assert args.json is True
+    assert args.include_plans is True
+    assert args.excluded_pattern_ids == [14]
+    assert args.path == "nominal_refactor_advisor"
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:

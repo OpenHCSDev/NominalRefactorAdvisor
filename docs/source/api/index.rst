@@ -9,6 +9,8 @@ and maintainable over the long term.
 
    public_api
    theory_and_results
+   pattern_catalog
    detection_substrate
    detector_catalog
+   detector_reference
    observation_substrate

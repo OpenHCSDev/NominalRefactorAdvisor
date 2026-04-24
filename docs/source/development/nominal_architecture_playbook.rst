@@ -234,7 +234,7 @@ Decision Procedure
 ------------------
 
 Step 1: Identify the Semantic Role
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 State explicitly what the object is, not just what methods it has.
 

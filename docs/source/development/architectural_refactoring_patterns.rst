@@ -1,7 +1,11 @@
 Architectural Refactoring Patterns
 ===================================
 
-Six fundamental architectural principles for OpenHCS development.
+Imported OpenHCS background note. Use this page as historical pattern language
+and example material, not as the canonical shipped pattern taxonomy for the
+advisor.
+
+For the advisor's current pattern surface, see :doc:`../api/pattern_catalog`.
 
 Six Fundamental Principles
 --------------------------
@@ -201,7 +205,7 @@ Pattern 5: Fail-Loud Error Handling
        return process(image)
 
 Pattern 6: Consistent Interface Design
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Before**: Inconsistent interfaces across subsystems
 

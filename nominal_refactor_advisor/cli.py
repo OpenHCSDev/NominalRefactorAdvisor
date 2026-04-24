@@ -19,6 +19,10 @@ from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
 
+_VALUELESS_ARGUMENT_ACTIONS = frozenset(
+    {"store_true", "store_false", "store_const", "append_const", "count", "help", "version"}
+)
+
 
 @dataclass(frozen=True)
 class CliArgumentSpec:
@@ -31,25 +35,19 @@ class CliArgumentSpec:
     value_type: type[object] | None = None
 
     def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
-        if self.dest is None:
-            parser.add_argument(
-                *self.flags,
-                help=self.help,
-                action=self.action,
-                default=self.default,
-                nargs=self.nargs,
-                type=self.value_type,
-            )
-            return
-        parser.add_argument(
-            *self.flags,
-            help=self.help,
-            action=self.action,
-            default=self.default,
-            dest=self.dest,
-            nargs=self.nargs,
-            type=self.value_type,
-        )
+        kwargs: dict[str, object] = {"help": self.help}
+        if self.action is not None:
+            kwargs["action"] = self.action
+        if self.default is not None:
+            kwargs["default"] = self.default
+        if self.dest is not None:
+            kwargs["dest"] = self.dest
+        if self.action not in _VALUELESS_ARGUMENT_ACTIONS:
+            if self.nargs is not None:
+                kwargs["nargs"] = self.nargs
+            if self.value_type is not None:
+                kwargs["type"] = self.value_type
+        parser.add_argument(*self.flags, **kwargs)
 
 
 _CLI_ARGUMENT_SPECS = (

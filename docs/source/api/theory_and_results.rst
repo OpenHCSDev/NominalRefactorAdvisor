@@ -8,11 +8,14 @@ Result Records
    :members: AnalysisReport, RefactorPlan, RefactorAction, RefactorFinding, FindingSpec, SourceLocation, ImpactDelta, OutcomeEstimate, SemanticBagDescriptor, metric_semantic_bag_descriptors, impact_delta_semantic_bag_descriptor
 
 
-Pattern Catalog
----------------
+Pattern Metadata
+----------------
+
+See :doc:`pattern_catalog` for the generated catalog derived from
+``PATTERN_SPECS``.
 
 .. automodule:: nominal_refactor_advisor.patterns
-   :members: PatternId, PatternSpec, PATTERN_SPECS
+   :members: PatternId, PatternSpec
 
 
 Taxonomy

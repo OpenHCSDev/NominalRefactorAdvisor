@@ -2,3 +2,5 @@ __pycache__/
 .pytest_cache/
 *.pyc
 docs/_build/
+docs/source/api/_generated/
+docs/source/api/detector_reference/

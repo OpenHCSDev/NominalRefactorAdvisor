@@ -128,7 +128,7 @@ The Seven Laws
 --------------
 
 Law 1: Structural Typing Is a Partial View, Not an Identity Contract
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Paper 1's information-barrier result applies directly to code architecture: equal visible shape does not imply equal semantic identity.
 
@@ -352,7 +352,7 @@ Required refactor:
 
 
 Manual synchronization between representations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Symptom:
 
@@ -426,7 +426,7 @@ Required refactor:
 
 
 Repeated manual field assignment following the same pattern
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Symptom:
 
@@ -449,7 +449,7 @@ Agent Procedure
 ---------------
 
 Step 1: Establish the Semantic Identity and the Current Partial View
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Before editing code, answer these questions:
 

@@ -3,8 +3,8 @@ Python Object Reference Documentation Methodology
 
 **Perpetual documentation accuracy through Python object references and implementation-priming prose.**
 
-*Status: CANONICAL*
-*Applies to: All OpenHCS documentation with code examples*
+*Status: Imported background guidance*
+*Scope: Generic doc-maintenance methodology with OpenHCS-flavored examples*
 
 Overview
 --------
@@ -61,7 +61,7 @@ Architectural Accuracy Over Syntactic Accuracy
 - Build failures force documentation updates during refactoring
 
 Logical Method Decomposition with Implementation Context
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Principle**: Large methods that serve multiple conceptual purposes should be documented with clear prose explaining each logical phase, using Python object references for validation.
 
@@ -154,7 +154,7 @@ Phase 2: Python Object Validation
    # --keep-going shows all invalid references at once
 
 Phase 3: Systematic Replacement with Implementation Context
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Objective**: Replace code examples with Python object references and implementation-priming prose.
 
@@ -244,7 +244,7 @@ Mathematical Simplification Applied to Documentation
    (Referenced consistently across config.rst, lazy_config.rst, and context.rst)
 
 Architectural Coherence with Implementation Context
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Principle**: Document architectural patterns and design decisions with clear prose that explains implementation approach.
 
@@ -314,7 +314,7 @@ Phantom Method Resolution
    field resolution behavior but uses an updated global reference for context resolution.
 
 Logical Method Decomposition with Implementation Context
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 **Problem**: Large architectural methods serve multiple conceptual purposes but cannot be split for architectural reasons.
 

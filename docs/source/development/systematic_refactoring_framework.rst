@@ -1,7 +1,9 @@
 Systematic Refactoring Framework
 =================================
 
-Authoritative guide for OpenHCS architectural decisions and refactoring approaches.
+Imported OpenHCS background note. This page captures broad refactoring heuristics
+and example tradeoffs, but it is not the canonical reference for the advisor's
+current shipped API, detector set, or pattern taxonomy.
 
 Core Architectural Philosophy
 -----------------------------
@@ -299,7 +301,7 @@ When to Refactor
 - Refactoring adds complexity without clear benefit
 
 Architectural Decision Process
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. **Identify the domain** - Configuration, I/O, processing, or UI?
 2. **Choose paradigm** - OOP for contracts/state, FP for transformations

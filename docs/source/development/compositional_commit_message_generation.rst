@@ -1,5 +1,5 @@
 Compositional Git Commit Message Generation
-==========================================
+===========================================
 
 Systematic methodology for generating comprehensive, technically accurate git commit messages using semantic file grouping and compositional reasoning.
 
@@ -7,7 +7,7 @@ Core Methodology
 ----------------
 
 Semantic File Grouping
-~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~
 
 Group modified files by **functional purpose** within the system:
 
@@ -19,7 +19,7 @@ Group modified files by **functional purpose** within the system:
 - **Documentation**: README files, API docs, architecture docs
 
 Change Analysis Per Group
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For each semantic group:
 
@@ -61,7 +61,7 @@ Example Application
 -------------------
 
 Step 1: Identify Modified Files
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: text
 
@@ -73,21 +73,21 @@ Step 1: Identify Modified Files
    openhcs/core/steps/function_step.py
 
 Step 2: Semantic Grouping
-~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Processor Backends**: cupy_processor.py, numpy_processor.py, jax_processor.py, pyclesperanto_processor.py
 - **Memory Management**: stack_utils.py
 - **Core Pipeline**: function_step.py
 
 Step 3: Analyze Changes
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Processor Backends**: Fixed create_composite function signatures from List[Array] to single Array
 - **Memory Management**: Added comprehensive logging for memory type conversions
 - **Core Pipeline**: Added debugging logs for function execution and memory type validation
 
 Step 4: Generate Components
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 - **Processor Backends**: Fix create_composite signature mismatch across all backends
 - **Memory Management**: Add detailed logging for stack/unstack operations and type conversions

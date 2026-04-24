@@ -1,10 +1,10 @@
 Respecting Codebase Architecture
 =================================
 
-**Eliminating defensive programming patterns that disrespect well-designed systems.**
+**Imported background note on fail-loud design and architectural contract respect.**
 
-*Status: CANONICAL*
-*Applies to: All OpenHCS development*
+*Status: Imported background guidance*
+*Scope: Historical OpenHCS examples; useful heuristics for advisor maintenance*
 
 Overview
 --------

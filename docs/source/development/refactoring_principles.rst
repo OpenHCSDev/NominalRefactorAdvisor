@@ -1,11 +1,12 @@
 OpenHCS Refactoring Principles: Mathematical Simplification Approach
 =====================================================================
 
-**Status**: CANONICAL  
-**Version**: 1.0  
-**Last Updated**: 2025-01-31
+**Status**: Imported background guidance
+**Origin**: OpenHCS development docs
 
-This document codifies the mathematical simplification approach used to refactor OpenHCS codebase, treating code duplication like algebraic expressions that can be factored and simplified.
+This page captures local simplification heuristics and example transformations.
+Use it as background material, not as the canonical statement of the advisor's
+current detector or pattern surface.
 
 Core First Principles
 ---------------------
