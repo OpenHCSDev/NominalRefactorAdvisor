@@ -1652,6 +1652,141 @@ class AccessorWrapperDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class FlattenedProjectionPropertyCandidate:
+    file_path: str
+    class_name: str
+    property_name: str
+    nested_owner: str
+    nested_member: str
+    line: int
+
+    @property
+    def nested_access(self) -> str:
+        return f"{self.nested_owner}.{self.nested_member}"
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.property_name}"
+
+
+def _flattened_projection_properties(
+    module: ParsedModule,
+) -> tuple[tuple[FlattenedProjectionPropertyCandidate, ...], ...]:
+    grouped: dict[str, list[FlattenedProjectionPropertyCandidate]] = defaultdict(list)
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            if not any(
+                _ast_terminal_name(decorator) == "property"
+                for decorator in statement.decorator_list
+            ):
+                continue
+            if len(statement.args.args) != 1:
+                continue
+            body = _trim_docstring_body(statement.body)
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            returned = body[0].value
+            if not (
+                isinstance(returned, ast.Attribute)
+                and isinstance(returned.value, ast.Attribute)
+                and isinstance(returned.value.value, ast.Name)
+                and returned.value.value.id == "self"
+            ):
+                continue
+            nested_owner = returned.value.attr
+            nested_member = returned.attr
+            expected_alias = f"{nested_owner}_{nested_member}"
+            if statement.name != expected_alias:
+                continue
+            grouped[class_node.name].append(
+                FlattenedProjectionPropertyCandidate(
+                    file_path=str(module.path),
+                    class_name=class_node.name,
+                    property_name=statement.name,
+                    nested_owner=nested_owner,
+                    nested_member=nested_member,
+                    line=statement.lineno,
+                )
+            )
+    return tuple(
+        tuple(sorted(items, key=lambda item: (item.line, item.property_name)))
+        for _, items in sorted(grouped.items())
+        if len(items) >= 2
+    )
+
+
+class FlattenedProjectionPropertyDetector(CandidateFindingDetector):
+    detector_id = "flattened_projection_property"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Flattened compatibility projection properties should be deleted",
+        why=(
+            "After a role-prefixed field bundle is moved into nominal nested records, adding properties such as "
+            "`ligand_coords -> ligand.coords` preserves the old flattened schema as a shadow API. That is a local "
+            "minimum: callers should move to the nested role record directly so the new schema is the only authority."
+        ),
+        capability_gap="direct nested record access instead of flattened compatibility aliases",
+        relation_context="class exposes old role-prefixed fields as properties over nested role records",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.ACCESSOR_WRAPPER,
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _flattened_projection_properties(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        ordered = cast(tuple[FlattenedProjectionPropertyCandidate, ...], candidate)
+        class_name = ordered[0].class_name
+        evidence = tuple(
+            SourceLocation(item.file_path, item.line, item.symbol)
+            for item in ordered[:8]
+        )
+        aliases = ", ".join(item.property_name for item in ordered)
+        examples = "\n".join(
+            f"- replace `obj.{item.property_name}` with `obj.{item.nested_access}`"
+            for item in ordered[:5]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{class_name}` keeps flattened compatibility properties {aliases} over nested role records."
+            ),
+            evidence,
+            scaffold=(
+                "Delete the compatibility properties and update callers to use the nested nominal record directly.\n\n"
+                f"{examples}"
+            ),
+            codemod_patch=(
+                f"# Remove flattened projection properties from `{class_name}`.\n"
+                "# Rewrite call sites to the nested role-record path shown in the scaffold."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(ordered),
+                field_count=len({item.nested_access for item in ordered}),
+                mapping_name=f"{class_name} flattened projection properties",
+                field_names=tuple(item.property_name for item in ordered),
+            ),
+        )
+
+
 class WrapperChainDetector(CandidateFindingDetector):
     detector_id = "wrapper_chain"
     finding_spec = FindingSpec(

@@ -4997,6 +4997,58 @@ class Sample:
     assert "an `@property` exposing `tuple(self._labels)`" in (finding.scaffold or "")
 
 
+def test_detects_flattened_projection_property_local_minimum(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AtomSet:
+    coords: object
+    radii: object
+    elements: object
+
+
+@dataclass(frozen=True)
+class PreparedComplex:
+    ligand: AtomSet
+    pocket: AtomSet
+
+    @property
+    def ligand_coords(self):
+        return self.ligand.coords
+
+    @property
+    def ligand_radii(self):
+        return self.ligand.radii
+
+    @property
+    def pocket_coords(self):
+        return self.pocket.coords
+
+    @property
+    def pocket_elements(self):
+        return self.pocket.elements
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "flattened_projection_property"
+    )
+
+    assert "PreparedComplex" in finding.summary
+    assert "ligand_coords" in finding.summary
+    assert "pocket_elements" in finding.summary
+    assert "obj.ligand.coords" in (finding.scaffold or "")
+    assert "obj.pocket.elements" in (finding.scaffold or "")
+
+
 def test_detects_transport_wrapper_chain(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
