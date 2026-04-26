@@ -334,6 +334,46 @@ def certify_pose(
     )
 
 
+def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Compiler:
+    @staticmethod
+    def declare_for_context(context, steps, runner):
+        names = [step.name for step in steps]
+        return declare(context, steps, runner, names)
+
+    @staticmethod
+    def declare_for_session(session):
+        return declare(session.context, session.steps, session.runner, session.names)
+
+    @staticmethod
+    def validate_for_context(context, steps, runner):
+        names = [step.name for step in steps]
+        return validate(context, steps, runner, names)
+
+    @staticmethod
+    def validate_for_session(session):
+        return validate(session.context, session.steps, session.runner, session.names)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "suffix_axis_compatibility_surface"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
+    assert "context / session" in finding.summary
+    assert "declare" in finding.summary
+    assert "validate" in finding.summary
+    assert "OperationContext" in (finding.scaffold or "")
+
+
 def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -370,6 +410,52 @@ def run_mode(mode, inputs, steps):
     assert "class ModeRunner(ABC, metaclass=AutoRegisterMeta):" in strategy_finding.scaffold
     assert strategy_finding.codemod_patch is not None
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
+
+
+def test_detects_residual_closed_axis_indirection(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+from types import MappingProxyType
+
+
+class Direction(Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+DIRECTION_READERS = MappingProxyType(
+    {
+        Direction.INPUT: lambda plan: plan.input_dir,
+        Direction.OUTPUT: lambda plan: plan.output_dir,
+    }
+)
+
+
+def resolve_dir(plan, direction, fallback):
+    existing = DIRECTION_READERS[direction](plan)
+    if existing is not None:
+        return existing
+    if direction is Direction.INPUT:
+        return plan.initial_input
+    return fallback
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "residual_closed_axis_indirection"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "DIRECTION_READERS" in finding.summary
+    assert "Direction" in finding.summary
+    assert "INPUT" in finding.summary
+    assert "AxisRule" in (finding.scaffold or "")
 
 
 def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:

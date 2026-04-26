@@ -957,6 +957,283 @@ def _parameter_thread_family_candidates(
     )
 
 
+_SUFFIX_AXIS_METHOD_RE = re.compile(r"^(?P<operation>.+)_for_(?P<axis>[A-Za-z][A-Za-z0-9_]*)$")
+
+
+def _suffix_axis_surface_methods(
+    module: ParsedModule,
+) -> tuple[SuffixAxisSurfaceMethod, ...]:
+    methods: list[SuffixAxisSurfaceMethod] = []
+    for qualname, function in _iter_named_functions(module):
+        method_name = qualname.rsplit(".", 1)[-1]
+        match = _SUFFIX_AXIS_METHOD_RE.match(method_name)
+        if match is None:
+            continue
+        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
+        methods.append(
+            SuffixAxisSurfaceMethod(
+                file_path=str(module.path),
+                qualname=qualname,
+                line=function.lineno,
+                owner_name=owner_name,
+                operation_name=match.group("operation"),
+                axis_name=match.group("axis"),
+                parameter_names=_parameter_names(function),
+                statement_count=len(_trim_docstring_body(function.body)),
+            )
+        )
+    return tuple(sorted(methods, key=lambda item: (item.file_path, item.line, item.qualname)))
+
+
+def _suffix_axis_surface_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[SuffixAxisSurfaceCandidate, ...]:
+    min_operation_count = max(2, config.min_registration_sites)
+    grouped_by_operation: dict[
+        tuple[str, str], list[SuffixAxisSurfaceMethod]
+    ] = defaultdict(list)
+    for method in _suffix_axis_surface_methods(module):
+        grouped_by_operation[(method.owner_name, method.operation_name)].append(method)
+
+    grouped_by_axis_set: dict[
+        tuple[str, tuple[str, ...]], list[tuple[str, tuple[SuffixAxisSurfaceMethod, ...]]]
+    ] = defaultdict(list)
+    for (owner_name, operation_name), operation_methods in grouped_by_operation.items():
+        axis_names = tuple(sorted({method.axis_name for method in operation_methods}))
+        if len(axis_names) < 2:
+            continue
+        methods_by_axis = {
+            method.axis_name: method
+            for method in sorted(operation_methods, key=lambda item: item.line)
+        }
+        paired_methods = tuple(methods_by_axis[axis_name] for axis_name in axis_names)
+        grouped_by_axis_set[(owner_name, axis_names)].append(
+            (operation_name, paired_methods)
+        )
+
+    candidates: list[SuffixAxisSurfaceCandidate] = []
+    for (owner_name, axis_names), operation_groups in grouped_by_axis_set.items():
+        if len(operation_groups) < min_operation_count:
+            continue
+        ordered_groups = tuple(sorted(operation_groups, key=lambda item: item[0]))
+        methods = tuple(method for _, group_methods in ordered_groups for method in group_methods)
+        candidates.append(
+            SuffixAxisSurfaceCandidate(
+                file_path=str(module.path),
+                owner_name=owner_name,
+                axis_names=axis_names,
+                operation_names=tuple(operation_name for operation_name, _ in ordered_groups),
+                methods=methods,
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.owner_name,
+                item.axis_names,
+                item.operation_names,
+            ),
+        )
+    )
+
+
+def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
+    enum_members: dict[str, tuple[str, ...]] = {}
+    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not (set(_declared_base_names(node)) & enum_base_names):
+            continue
+        members: list[str] = []
+        for statement in node.body:
+            target: ast.AST | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+            elif isinstance(statement, ast.AnnAssign):
+                target = statement.target
+            if not isinstance(target, ast.Name) or target.id.startswith("_"):
+                continue
+            members.append(target.id)
+        if len(members) >= 2:
+            enum_members[node.name] = tuple(members)
+    return enum_members
+
+
+def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
+    if isinstance(value, ast.Dict):
+        return value
+    if (
+        isinstance(value, ast.Call)
+        and _call_name(value.func) in {"MappingProxyType", "dict"}
+        and len(value.args) == 1
+        and isinstance(value.args[0], ast.Dict)
+    ):
+        return value.args[0]
+    return None
+
+
+def _enum_projection_table_value_summary(value: ast.AST) -> str | None:
+    if isinstance(value, ast.Lambda):
+        if isinstance(value.body, ast.Attribute):
+            return f"lambda ...: .{value.body.attr}"
+        if isinstance(value.body, ast.Subscript):
+            return "lambda ...: [...]"
+        if isinstance(value.body, ast.Name):
+            return f"lambda ...: {value.body.id}"
+    if isinstance(value, ast.Attribute):
+        return f".{value.attr}"
+    if isinstance(value, ast.Name):
+        return value.id
+    return None
+
+
+def _enum_projection_tables(
+    module: ParsedModule,
+) -> tuple[EnumProjectionTableCandidate, ...]:
+    enum_members = _enum_member_names_by_class(module)
+    tables: list[EnumProjectionTableCandidate] = []
+    for statement in _trim_docstring_body(module.module.body):
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                target_name = target.id
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is None:
+            continue
+        dict_value = _dict_expr_from_table_value(value)
+        if dict_value is None or len(dict_value.keys) < 2:
+            continue
+        key_pairs: list[tuple[str, str]] = []
+        value_summaries: list[str] = []
+        for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
+            if key is None or item_value is None:
+                break
+            key_chain = _ast_attribute_chain(key)
+            if key_chain is None or len(key_chain) != 2:
+                break
+            summary = _enum_projection_table_value_summary(item_value)
+            if summary is None:
+                break
+            key_pairs.append((key_chain[0], key_chain[1]))
+            value_summaries.append(summary)
+        else:
+            enum_names = {enum_name for enum_name, _ in key_pairs}
+            if len(enum_names) != 1:
+                continue
+            enum_name = next(iter(enum_names))
+            if enum_name not in enum_members:
+                continue
+            case_names = tuple(member_name for _, member_name in key_pairs)
+            if len(set(case_names)) < 2:
+                continue
+            tables.append(
+                EnumProjectionTableCandidate(
+                    file_path=str(module.path),
+                    table_name=target_name,
+                    line=statement.lineno,
+                    enum_name=enum_name,
+                    case_names=case_names,
+                    value_summaries=tuple(value_summaries),
+                )
+            )
+    return tuple(sorted(tables, key=lambda item: (item.file_path, item.line, item.table_name)))
+
+
+def _subscript_axis_expr_for_table(node: ast.AST, table_name: str) -> str | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    if not isinstance(node.value, ast.Name) or node.value.id != table_name:
+        return None
+    return ast.unparse(node.slice)
+
+
+def _residual_enum_branch_cases(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    enum_name: str,
+    axis_expression: str,
+) -> tuple[str, ...]:
+    case_names: set[str] = set()
+    for node in _walk_nodes(function):
+        if not isinstance(node, ast.Compare):
+            continue
+        left_expr = ast.unparse(node.left)
+        comparators = tuple(ast.unparse(comparator) for comparator in node.comparators)
+        operands = (left_expr, *comparators)
+        if axis_expression not in operands:
+            continue
+        for operand in operands:
+            if operand.startswith(f"{enum_name}."):
+                case_names.add(operand.split(".", 1)[1])
+    return tuple(sorted(case_names))
+
+
+def _residual_closed_axis_indirection_candidates(
+    module: ParsedModule,
+) -> tuple[ResidualClosedAxisIndirectionCandidate, ...]:
+    tables = _enum_projection_tables(module)
+    if not tables:
+        return ()
+    table_by_name = {table.table_name: table for table in tables}
+    candidates: list[ResidualClosedAxisIndirectionCandidate] = []
+    for qualname, function in _iter_named_functions(module):
+        axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
+        for node in _walk_nodes(function):
+            for table_name in table_by_name:
+                axis_expression = _subscript_axis_expr_for_table(node, table_name)
+                if axis_expression is not None:
+                    axis_expressions_by_table[table_name].add(axis_expression)
+        for table_name, axis_expressions in axis_expressions_by_table.items():
+            table = table_by_name[table_name]
+            for axis_expression in sorted(axis_expressions):
+                residual_cases = _residual_enum_branch_cases(
+                    function,
+                    enum_name=table.enum_name,
+                    axis_expression=axis_expression,
+                )
+                shared_cases = tuple(
+                    case_name
+                    for case_name in table.case_names
+                    if case_name in set(residual_cases)
+                )
+                if not shared_cases:
+                    continue
+                candidates.append(
+                    ResidualClosedAxisIndirectionCandidate(
+                        file_path=str(module.path),
+                        qualname=qualname,
+                        line=function.lineno,
+                        table_name=table.table_name,
+                        table_line=table.line,
+                        enum_name=table.enum_name,
+                        axis_expression=axis_expression,
+                        table_case_names=table.case_names,
+                        residual_case_names=shared_cases,
+                        table_value_summaries=table.value_summaries,
+                    )
+                )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.qualname,
+                item.table_name,
+            ),
+        )
+    )
+
+
 @lru_cache(maxsize=None)
 def _iter_named_functions(
     module: ParsedModule,
@@ -6710,6 +6987,70 @@ class FunctionProfile:
 class ParameterThreadFamilyCandidate:
     shared_parameter_names: tuple[str, ...]
     functions: tuple[FunctionProfile, ...]
+
+
+@dataclass(frozen=True)
+class SuffixAxisSurfaceMethod:
+    file_path: str
+    qualname: str
+    line: int
+    owner_name: str
+    operation_name: str
+    axis_name: str
+    parameter_names: tuple[str, ...]
+    statement_count: int
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.qualname)
+
+
+@dataclass(frozen=True)
+class SuffixAxisSurfaceCandidate:
+    file_path: str
+    owner_name: str
+    axis_names: tuple[str, ...]
+    operation_names: tuple[str, ...]
+    methods: tuple[SuffixAxisSurfaceMethod, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(method.evidence for method in self.methods[:8])
+
+
+@dataclass(frozen=True)
+class EnumProjectionTableCandidate:
+    file_path: str
+    table_name: str
+    line: int
+    enum_name: str
+    case_names: tuple[str, ...]
+    value_summaries: tuple[str, ...]
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.table_name)
+
+
+@dataclass(frozen=True)
+class ResidualClosedAxisIndirectionCandidate:
+    file_path: str
+    qualname: str
+    line: int
+    table_name: str
+    table_line: int
+    enum_name: str
+    axis_expression: str
+    table_case_names: tuple[str, ...]
+    residual_case_names: tuple[str, ...]
+    table_value_summaries: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(self.file_path, self.table_line, self.table_name),
+            SourceLocation(self.file_path, self.line, self.qualname),
+        )
 
 
 @dataclass(frozen=True)

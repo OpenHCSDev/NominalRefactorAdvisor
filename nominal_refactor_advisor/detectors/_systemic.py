@@ -345,6 +345,69 @@ class ParameterThreadFamilyDetector(CandidateFindingDetector):
         )
 
 
+class SuffixAxisCompatibilitySurfaceDetector(CandidateFindingDetector):
+    detector_id = "suffix_axis_compatibility_surface"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
+        title="Mirrored suffix-axis APIs should collapse to one authoritative context",
+        why=(
+            "Several operations are exposed once per suffix-named axis, such as `*_for_context` and "
+            "`*_for_session`. When the same axis split repeats across an owner, the code is usually "
+            "maintaining adapter surfaces instead of choosing one authoritative request/context record "
+            "and deriving any compatibility projection at the boundary."
+        ),
+        capability_gap="single authoritative context/request record instead of repeated suffix-axis adapter surfaces",
+        relation_context="same owner repeats an operation family across the same suffix-named axes",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _suffix_axis_surface_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        surface_candidate = cast(SuffixAxisSurfaceCandidate, candidate)
+        axis_summary = " / ".join(surface_candidate.axis_names)
+        operation_summary = ", ".join(surface_candidate.operation_names[:5])
+        method_names = tuple(method.qualname for method in surface_candidate.methods)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{surface_candidate.owner_name}` repeats suffix-axis APIs for axes {axis_summary} "
+                f"across operations {operation_summary}."
+            ),
+            surface_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class OperationContext:\n"
+                "    ...\n\n"
+                "# Route operations through one authoritative context/session/request record.\n"
+                "# Keep at most one boundary adapter that constructs the authority, not one adapter per operation."
+            ),
+            codemod_patch=(
+                f"# Collapse suffix-axis method family {method_names[:8]} onto one authoritative record.\n"
+                "# Prefer one conversion point from the secondary axis into the primary axis, then delete per-operation mirrored wrappers."
+            ),
+            metrics=ParameterThreadMetrics(
+                function_count=len(surface_candidate.operation_names),
+                shared_parameter_count=len(surface_candidate.axis_names),
+                shared_parameter_names=surface_candidate.axis_names,
+            ),
+        )
+
+
 class EnumStrategyDispatchDetector(CandidateFindingDetector):
     detector_id = "enum_strategy_dispatch"
     finding_spec = FindingSpec(
@@ -385,6 +448,77 @@ class EnumStrategyDispatchDetector(CandidateFindingDetector):
                 dispatch_site_count=len(dispatch_candidate.case_names),
                 dispatch_axis=dispatch_candidate.dispatch_axis,
                 literal_cases=dispatch_candidate.case_names,
+            ),
+        )
+
+
+class ResidualClosedAxisIndirectionDetector(CandidateFindingDetector):
+    detector_id = "residual_closed_axis_indirection"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Enum-keyed projection table still leaves residual axis branching",
+        why=(
+            "A small enum-keyed table should either be the authoritative closed-axis record or not exist. "
+            "When a function indexes the table and still branches on the same enum axis, the table is a "
+            "degenerate symmetry layer rather than a real authority. Collapse the behavior into one row "
+            "family or inline the asymmetric logic directly."
+        ),
+        capability_gap="single authoritative closed-axis row family without residual branch recovery",
+        relation_context="same function uses an enum-keyed projection table and branches on the table axis",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_DICT,
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.CLOSED_FAMILY_CASES,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _residual_closed_axis_indirection_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        axis_candidate = cast(ResidualClosedAxisIndirectionCandidate, candidate)
+        residual_cases = ", ".join(axis_candidate.residual_case_names)
+        table_cases = ", ".join(axis_candidate.table_case_names)
+        value_summary = ", ".join(axis_candidate.table_value_summaries[:4])
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{axis_candidate.qualname}` indexes `{axis_candidate.table_name}` by "
+                f"`{axis_candidate.axis_expression}` for `{axis_candidate.enum_name}` cases {table_cases}, "
+                f"but still branches on residual cases {residual_cases}."
+            ),
+            axis_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class AxisRule:\n"
+                "    key: AxisEnum\n"
+                "    projection: object\n"
+                "    behavior: object\n\n"
+                "# Either move the residual branch behavior into the authoritative row family,\n"
+                "# or delete the table if the cases are intentionally asymmetric."
+            ),
+            codemod_patch=(
+                f"# `{axis_candidate.table_name}` currently stores projections ({value_summary}) but does not own "
+                f"the `{axis_candidate.enum_name}` axis.\n"
+                "# Collapse the residual branch into the table's row records, or remove the table and spell the asymmetric logic directly."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(axis_candidate.table_case_names),
+                field_count=max(len(axis_candidate.residual_case_names), 1),
+                mapping_name=axis_candidate.table_name,
+                field_names=axis_candidate.residual_case_names,
+                source_name=axis_candidate.enum_name,
+                identity_field_names=("key",),
             ),
         )
 
