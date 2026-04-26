@@ -1040,6 +1040,164 @@ def _suffix_axis_surface_candidates(
     )
 
 
+_SIBLING_ROLE_HELPER_STOPWORDS = frozenset(
+    {
+        "and",
+        "as",
+        "by",
+        "do",
+        "for",
+        "from",
+        "get",
+        "has",
+        "is",
+        "of",
+        "or",
+        "set",
+        "the",
+        "to",
+        "with",
+    }
+)
+
+
+def _sibling_role_name_key_options(
+    method_name: str,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    tokens = _ordered_class_name_tokens(method_name)
+    if len(tokens) < 3:
+        return ()
+    options: list[tuple[str, tuple[str, ...]]] = []
+    for index, role_token in enumerate(tokens):
+        shared_tokens = (*tokens[:index], *tokens[index + 1 :])
+        if len(shared_tokens) < 2:
+            continue
+        if len(role_token) < 3 or role_token in _SIBLING_ROLE_HELPER_STOPWORDS:
+            continue
+        options.append((role_token, shared_tokens))
+    return tuple(options)
+
+
+def _top_level_control_shape(statement: ast.stmt) -> str:
+    if isinstance(statement, ast.If):
+        body = _trim_docstring_body(statement.body)
+        branch_terminal = (
+            "return" if any(isinstance(item, ast.Return) for item in body) else "block"
+        )
+        else_terminal = "else" if statement.orelse else "noelse"
+        return f"if:{branch_terminal}:{else_terminal}"
+    if isinstance(statement, ast.Return):
+        return "return"
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+        return "assign"
+    if isinstance(statement, ast.Expr):
+        return "expr"
+    if isinstance(statement, (ast.For, ast.AsyncFor)):
+        return "for"
+    if isinstance(statement, ast.While):
+        return "while"
+    if isinstance(statement, ast.Try):
+        return "try"
+    return type(statement).__name__.lower()
+
+
+def _role_helper_control_shape(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    body = _trim_docstring_body(function.body)
+    if_count = sum(1 for node in _walk_nodes(function) if isinstance(node, ast.If))
+    return_count = sum(
+        1 for node in _walk_nodes(function) if isinstance(node, ast.Return)
+    )
+    if if_count < 2 or return_count < 2:
+        return ()
+    return tuple(_top_level_control_shape(statement) for statement in body)
+
+
+def _sibling_role_parameters_align(
+    methods: tuple[SiblingRoleHelperMethod, ...],
+) -> bool:
+    if len(methods) < 2:
+        return False
+    parameter_sets = tuple(set(method.parameter_names) for method in methods)
+    common_parameters = set.intersection(*parameter_sets)
+    if len(common_parameters) >= 2:
+        return True
+    first_parameters = methods[0].parameter_names
+    return bool(common_parameters) and all(
+        method.parameter_names == first_parameters for method in methods[1:]
+    )
+
+
+def _sibling_role_helper_symmetry_candidates(
+    module: ParsedModule,
+) -> tuple[SiblingRoleHelperSymmetryCandidate, ...]:
+    grouped: dict[
+        tuple[str, tuple[str, ...], tuple[str, ...]],
+        dict[str, SiblingRoleHelperMethod],
+    ] = defaultdict(dict)
+    for qualname, function in _iter_named_functions(module):
+        method_name = qualname.rsplit(".", 1)[-1]
+        if not method_name.startswith("_") or method_name.startswith("__"):
+            continue
+        line_end = (
+            function.end_lineno
+            if function.end_lineno is not None
+            else function.lineno
+        )
+        line_count = line_end - function.lineno + 1
+        if line_count > 40:
+            continue
+        control_shape = _role_helper_control_shape(function)
+        if not control_shape:
+            continue
+        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
+        parameter_names = _parameter_names(function)
+        for role_token, shared_tokens in _sibling_role_name_key_options(method_name):
+            key = (owner_name, shared_tokens, control_shape)
+            grouped[key][qualname] = SiblingRoleHelperMethod(
+                file_path=str(module.path),
+                line=function.lineno,
+                qualname=qualname,
+                owner_name=owner_name,
+                method_name=method_name,
+                role_token=role_token,
+                shared_tokens=shared_tokens,
+                parameter_names=parameter_names,
+                control_shape=control_shape,
+                line_count=line_count,
+            )
+
+    candidates: list[SiblingRoleHelperSymmetryCandidate] = []
+    for (owner_name, shared_tokens, _), methods_by_qualname in grouped.items():
+        methods = tuple(
+            sorted(
+                methods_by_qualname.values(),
+                key=lambda item: (item.file_path, item.line, item.qualname),
+            )
+        )
+        role_tokens = {method.role_token for method in methods}
+        if len(methods) < 2 or len(role_tokens) < 2:
+            continue
+        if not _sibling_role_parameters_align(methods):
+            continue
+        candidates.append(
+            SiblingRoleHelperSymmetryCandidate(
+                file_path=str(module.path),
+                owner_name=owner_name,
+                shared_tokens=shared_tokens,
+                methods=methods,
+            )
+        )
+
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.owner_name, item.shared_tokens),
+        )
+    )
+
+
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
     enum_members: dict[str, tuple[str, ...]] = {}
     enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
@@ -6984,23 +7142,27 @@ class FunctionProfile:
 
 
 @dataclass(frozen=True)
+class QualnameLineWitnessCandidate(LineWitnessCandidate):
+    qualname: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
+
+
+@dataclass(frozen=True)
 class ParameterThreadFamilyCandidate:
     shared_parameter_names: tuple[str, ...]
     functions: tuple[FunctionProfile, ...]
 
 
 @dataclass(frozen=True)
-class SuffixAxisSurfaceMethod(LineWitnessCandidate):
-    qualname: str
+class SuffixAxisSurfaceMethod(QualnameLineWitnessCandidate):
     owner_name: str
     operation_name: str
     axis_name: str
     parameter_names: tuple[str, ...]
     statement_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
 
 
 @dataclass(frozen=True)
@@ -7014,6 +7176,37 @@ class SuffixAxisSurfaceCandidate:
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(method.evidence for method in self.methods[:8])
+
+
+@dataclass(frozen=True)
+class SiblingRoleHelperMethod(QualnameLineWitnessCandidate):
+    owner_name: str
+    method_name: str
+    role_token: str
+    shared_tokens: tuple[str, ...]
+    parameter_names: tuple[str, ...]
+    control_shape: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SiblingRoleHelperSymmetryCandidate:
+    file_path: str
+    owner_name: str
+    shared_tokens: tuple[str, ...]
+    methods: tuple[SiblingRoleHelperMethod, ...]
+
+    @property
+    def role_tokens(self) -> tuple[str, ...]:
+        return tuple(method.role_token for method in self.methods)
+
+    @property
+    def method_names(self) -> tuple[str, ...]:
+        return tuple(method.method_name for method in self.methods)
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(method.evidence for method in self.methods[:6])
 
 
 @dataclass(frozen=True)

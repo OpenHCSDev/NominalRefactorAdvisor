@@ -408,6 +408,69 @@ class SuffixAxisCompatibilitySurfaceDetector(CandidateFindingDetector):
         )
 
 
+class SiblingRoleHelperSymmetryDetector(CandidateFindingDetector):
+    detector_id = "sibling_role_helper_symmetry"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
+        title="Sibling role helpers should collapse to one local authority",
+        why=(
+            "One owner has private helpers whose names differ by a role token but whose control skeletons "
+            "and parameters are parallel. That is usually one local computation split into symmetrical "
+            "role-specific helpers, which makes future changes require duplicated edits."
+        ),
+        capability_gap="one authoritative local computation instead of parallel role-specific helpers",
+        relation_context="same owner has role-token sibling helpers with matching control skeletons",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _sibling_role_helper_symmetry_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        helper_candidate = cast(SiblingRoleHelperSymmetryCandidate, candidate)
+        helper_summary = ", ".join(helper_candidate.method_names)
+        role_summary = " / ".join(helper_candidate.role_tokens)
+        shared_summary = "_".join(helper_candidate.shared_tokens)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{helper_candidate.owner_name}` splits `{shared_summary}` across role helpers "
+                f"{helper_summary} for roles {role_summary}."
+            ),
+            helper_candidate.evidence,
+            scaffold=(
+                f"def resolve_{shared_summary}(...):\n"
+                "    # Compute the role-specific values together while the branch facts are live.\n"
+                "    ...\n"
+                "    return left_value, right_value\n\n"
+                "# Use a small record only if this result crosses a boundary; keep local-only pairs as values."
+            ),
+            codemod_patch=(
+                f"# Collapse sibling helpers {helper_candidate.method_names} into one local authority.\n"
+                "# Preserve role names at the assignment site instead of maintaining parallel helper bodies."
+            ),
+            metrics=ParameterThreadMetrics(
+                function_count=len(helper_candidate.methods),
+                shared_parameter_count=len(helper_candidate.shared_tokens),
+                shared_parameter_names=helper_candidate.shared_tokens,
+            ),
+        )
+
+
 class EnumStrategyDispatchDetector(CandidateFindingDetector):
     detector_id = "enum_strategy_dispatch"
     finding_spec = FindingSpec(

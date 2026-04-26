@@ -35,6 +35,7 @@ class PatternId(IntEnum):
     DESCRIPTOR_DERIVED_VIEW = 18
     NOMINAL_INTERFACE_WITNESS = 19
     NOMINAL_WITNESS_CARRIER = 20
+    LOCAL_VALUE_AUTHORITY = 21
 
 
 class PlanStepBuilderId(Enum):
@@ -546,5 +547,26 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
         (
             "@dataclass(frozen=True)\nclass WitnessCandidate(ABC):\n    file_path: str\n    line: int\n    subject_name: str\n\nclass NameBearingMixin(ABC):\n    @property\n    @abstractmethod\n    def name_family(self) -> tuple[str, ...]: ...\n\n@dataclass(frozen=True)\nclass ManualFiberTagCandidate(WitnessCandidate, NameBearingMixin): ...",
         ),
+    ),
+    PatternId.LOCAL_VALUE_AUTHORITY: PatternSpec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Local Value Authority Collapse",
+        "Collapse sibling role-specific helpers into one local computation that names every returned value at the call site.",
+        "One local helper or inline computation owns the shared branch facts; role names remain at assignment/use sites.",
+        (
+            "Find sibling helpers that differ only by role while sharing control structure.",
+            "Move shared branch facts into one local computation.",
+            "Return or assign role values together; introduce a record only when the result crosses a boundary.",
+        ),
+        (
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            "left_value, right_value = resolve_values(request)\n",
+            "if condition:\n    left_value = ...\n    right_value = ...\n",
+        ),
+        priority=45,
     ),
 }

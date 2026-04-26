@@ -84,6 +84,45 @@ class Beta:
     )
 
 
+def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from pathlib import Path
+
+
+class PathPlanner:
+    def _input_dir_for_step(self, snapshot, step_index):
+        if step_index in self.plans and self.plans[step_index].input_dir is not None:
+            return Path(self.plans[step_index].input_dir)
+        if step_index == 0 or snapshot.input_source == "pipeline_start":
+            return self.initial_input
+        return Path(self.plans[step_index - 1].output_dir)
+
+    def _output_dir_for_step(self, snapshot, step_index, work_in_place_dir):
+        if step_index in self.plans and self.plans[step_index].output_dir is not None:
+            return Path(self.plans[step_index].output_dir)
+        if step_index == 0 or snapshot.input_source == "pipeline_start":
+            return self._build_output_path()
+        return work_in_place_dir
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "sibling_role_helper_symmetry"
+    )
+
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "_input_dir_for_step" in finding.summary
+    assert "_output_dir_for_step" in finding.summary
+    assert "one local authority" in finding.title
+    assert "record only if this result crosses a boundary" in (finding.scaffold or "")
+
+
 def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     branch_body = "\n".join(
         f"""
