@@ -1497,6 +1497,83 @@ def _enum_dispatch_from_match(node: ast.Match) -> tuple[str, tuple[str, ...]] | 
     return (ast.unparse(node.subject), tuple(cases))
 
 
+def _enum_member_ref(node: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(node, ast.Attribute):
+        return None
+    enum_expression = ast.unparse(node.value)
+    if not enum_expression:
+        return None
+    enum_name = enum_expression.rsplit(".", 1)[-1]
+    if not enum_name[:1].isupper():
+        return None
+    return (enum_expression, node.attr)
+
+
+def _enum_subset_guard_from_compare(
+    node: ast.Compare,
+) -> tuple[str, str, tuple[str, ...], str] | None:
+    if len(node.ops) != 1 or len(node.comparators) != 1:
+        return None
+    operator = node.ops[0]
+    if not isinstance(operator, (ast.In, ast.NotIn)):
+        return None
+    comparator = node.comparators[0]
+    if not isinstance(comparator, (ast.Set, ast.Tuple, ast.List)):
+        return None
+    refs = tuple(
+        ref
+        for element in comparator.elts
+        if (ref := _enum_member_ref(element)) is not None
+    )
+    if len(refs) != len(comparator.elts) or len(refs) < 2:
+        return None
+    enum_names = {enum_name for enum_name, _ in refs}
+    if len(enum_names) != 1:
+        return None
+    return (
+        ast.unparse(node.left),
+        next(iter(enum_names)),
+        tuple(member_name for _, member_name in refs),
+        "not in" if isinstance(operator, ast.NotIn) else "in",
+    )
+
+
+def _inline_enum_subset_guard_candidates(
+    module: ParsedModule,
+) -> tuple[InlineEnumSubsetGuardCandidate, ...]:
+    candidates: list[InlineEnumSubsetGuardCandidate] = []
+    seen: set[tuple[str, int, str, tuple[str, ...]]] = set()
+    for qualname, function in _iter_named_functions(module):
+        for node in _walk_nodes(function):
+            if not isinstance(node, ast.Compare):
+                continue
+            guard = _enum_subset_guard_from_compare(node)
+            if guard is None:
+                continue
+            axis_expression, enum_name, case_names, operator = guard
+            key = (qualname, node.lineno, enum_name, case_names)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(
+                InlineEnumSubsetGuardCandidate(
+                    file_path=str(module.path),
+                    line=node.lineno,
+                    function_name=qualname,
+                    axis_expression=axis_expression,
+                    enum_name=enum_name,
+                    case_names=case_names,
+                    operator=operator,
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.function_name),
+        )
+    )
+
+
 def _enum_strategy_dispatch_candidates(
     module: ParsedModule,
 ) -> tuple[EnumStrategyDispatchCandidate, ...]:
@@ -7291,6 +7368,14 @@ class RepeatedEnumStrategyDispatchCandidate:
     enum_family: str
     shared_case_names: tuple[str, ...]
     functions: tuple[EnumStrategyDispatchCandidate, ...]
+
+
+@dataclass(frozen=True)
+class InlineEnumSubsetGuardCandidate(FunctionLineWitnessCandidate):
+    axis_expression: str
+    enum_name: str
+    case_names: tuple[str, ...]
+    operator: str
 
 
 @dataclass(frozen=True)

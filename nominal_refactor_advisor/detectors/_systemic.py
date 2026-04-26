@@ -645,6 +645,76 @@ class RepeatedEnumStrategyDispatchDetector(CandidateFindingDetector):
         )
 
 
+class InlineEnumSubsetGuardDetector(CandidateFindingDetector):
+    detector_id = "inline_enum_subset_guard"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Inline enum subset guard should derive from enum-owned policy",
+        why=(
+            "A branch that hardcodes an enum-member subset is a closed-axis policy table in disguise. "
+            "The policy should be owned by the enum member or a typed row family, with any lookup derived "
+            "exhaustively from that type-safe source."
+        ),
+        capability_gap="type-safe enum-owned policy instead of inline enum subset literals",
+        relation_context="function branches on a hand-enumerated subset of one closed enum axis",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.PROJECTION_DICT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _inline_enum_subset_guard_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        guard_candidate = cast(InlineEnumSubsetGuardCandidate, candidate)
+        cases = ", ".join(
+            f"{guard_candidate.enum_name}.{case_name}"
+            for case_name in guard_candidate.case_names
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{guard_candidate.function_name}` checks `{guard_candidate.axis_expression} "
+                f"{guard_candidate.operator} {{{cases}}}`; move that subset into enum-owned typed policy."
+            ),
+            (guard_candidate.evidence,),
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class PolicyRow:\n"
+                f"    key: {guard_candidate.enum_name}\n"
+                "    requires_policy: bool\n\n"
+                "def exhaustive_enum_lookup(enum_type, rows):\n"
+                "    by_key = {row.key: row for row in rows}\n"
+                "    if set(by_key) != set(enum_type):\n"
+                "        raise TypeError('incomplete enum policy')\n"
+                "    return by_key\n\n"
+                "POLICY_BY_KEY = exhaustive_enum_lookup(...)\n"
+                f"if POLICY_BY_KEY[{guard_candidate.axis_expression}].requires_policy:\n"
+                "    ..."
+            ),
+            codemod_patch=(
+                f"# Replace inline subset {{{cases}}} with a policy owned by `{guard_candidate.enum_name}`.\n"
+                "# Derive any enum-keyed dict from enum members or typed policy rows, and fail if coverage is incomplete."
+            ),
+            metrics=DispatchCountMetrics(
+                dispatch_site_count=len(guard_candidate.case_names),
+                dispatch_axis=guard_candidate.enum_name,
+                literal_cases=guard_candidate.case_names,
+            ),
+        )
+
+
 class SplitDispatchAuthorityDetector(CandidateFindingDetector):
     detector_id = "split_dispatch_authority"
     finding_spec = FindingSpec(

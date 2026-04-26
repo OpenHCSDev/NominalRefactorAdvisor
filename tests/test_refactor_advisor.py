@@ -56,6 +56,22 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Sample:
+    pass
+""",
+    )
+
+    modules = parse_python_modules(tmp_path / "pkg/mod.py")
+
+    assert len(modules) == 1
+    assert modules[0].module_name == "mod"
+
+
 def test_detects_repeated_private_method_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -449,6 +465,47 @@ def run_mode(mode, inputs, steps):
     assert "class ModeRunner(ABC, metaclass=AutoRegisterMeta):" in strategy_finding.scaffold
     assert strategy_finding.codemod_patch is not None
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
+
+
+def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from enum import Enum
+
+
+class MeasurementScope(Enum):
+    ARTIFACT = "artifact"
+    IMAGE = "image"
+    OBJECT = "object"
+    RELATIONSHIP = "relationship"
+    EXPERIMENT = "experiment"
+
+
+def validate_subject(scope, subject_name):
+    if scope in {
+        MeasurementScope.IMAGE,
+        MeasurementScope.OBJECT,
+        MeasurementScope.RELATIONSHIP,
+    } and subject_name is None:
+        raise ValueError("name required")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "inline_enum_subset_guard"
+    )
+
+    assert "MeasurementScope.IMAGE" in finding.summary
+    assert "MeasurementScope.OBJECT" in finding.summary
+    assert "enum-owned typed policy" in finding.summary
+    assert finding.scaffold is not None
+    assert "requires_policy" in finding.scaffold
+    assert "exhaustive_enum_lookup" in finding.scaffold
 
 
 def test_detects_residual_closed_axis_indirection(tmp_path: Path) -> None:

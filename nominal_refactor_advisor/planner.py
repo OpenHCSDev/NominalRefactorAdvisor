@@ -1196,6 +1196,8 @@ def _evidence_paths(finding: RefactorFinding) -> tuple[Path, ...]:
 
 
 def _safe_relative(path: Path, root: Path) -> Path:
+    if root.is_file():
+        root = root.parent
     try:
         return path.relative_to(root)
     except ValueError:

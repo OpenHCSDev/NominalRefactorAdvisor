@@ -435,8 +435,10 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
 
 
 def parse_python_modules(root: Path) -> list[ParsedModule]:
+    analysis_root = root.parent if root.is_file() else root
+
     def module_name_for_path(path: Path) -> tuple[str, bool]:
-        relative = path.relative_to(root)
+        relative = path.relative_to(analysis_root)
         module_parts = list(relative.with_suffix("").parts)
         is_package_init = bool(module_parts and module_parts[-1] == "__init__")
         if is_package_init:
@@ -446,7 +448,8 @@ def parse_python_modules(root: Path) -> list[ParsedModule]:
         return (".".join(module_parts), is_package_init)
 
     modules: list[ParsedModule] = []
-    for path in sorted(root.rglob("*.py")):
+    paths = [root] if root.is_file() and root.suffix == ".py" else sorted(root.rglob("*.py"))
+    for path in paths:
         source = path.read_text(encoding="utf-8")
         module_name, is_package_init = module_name_for_path(path)
         modules.append(
