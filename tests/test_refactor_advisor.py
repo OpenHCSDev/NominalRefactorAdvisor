@@ -451,11 +451,14 @@ def resolve_dir(plan, direction, fallback):
         if finding.detector_id == "residual_closed_axis_indirection"
     )
 
-    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
     assert "DIRECTION_READERS" in finding.summary
     assert "Direction" in finding.summary
     assert "INPUT" in finding.summary
-    assert "AxisRule" in (finding.scaffold or "")
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "class AxisPolicy(ABC, metaclass=AutoRegisterMeta)" in (
+        finding.scaffold or ""
+    )
 
 
 def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:

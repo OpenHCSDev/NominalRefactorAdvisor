@@ -6990,10 +6990,8 @@ class ParameterThreadFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class SuffixAxisSurfaceMethod:
-    file_path: str
+class SuffixAxisSurfaceMethod(LineWitnessCandidate):
     qualname: str
-    line: int
     owner_name: str
     operation_name: str
     axis_name: str
@@ -7001,8 +6999,8 @@ class SuffixAxisSurfaceMethod:
     statement_count: int
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    def witness_name(self) -> str:
+        return self.qualname
 
 
 @dataclass(frozen=True)
@@ -7019,24 +7017,20 @@ class SuffixAxisSurfaceCandidate:
 
 
 @dataclass(frozen=True)
-class EnumProjectionTableCandidate:
-    file_path: str
+class EnumProjectionTableCandidate(LineWitnessCandidate):
     table_name: str
-    line: int
     enum_name: str
     case_names: tuple[str, ...]
     value_summaries: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.table_name)
+    def witness_name(self) -> str:
+        return self.table_name
 
 
 @dataclass(frozen=True)
-class ResidualClosedAxisIndirectionCandidate:
-    file_path: str
+class ResidualClosedAxisIndirectionCandidate(LineWitnessCandidate):
     qualname: str
-    line: int
     table_name: str
     table_line: int
     enum_name: str

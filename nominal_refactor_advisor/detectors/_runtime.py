@@ -1653,13 +1653,11 @@ class AccessorWrapperDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class FlattenedProjectionPropertyCandidate:
-    file_path: str
+class FlattenedProjectionPropertyCandidate(LineWitnessCandidate):
     class_name: str
     property_name: str
     nested_owner: str
     nested_member: str
-    line: int
 
     @property
     def nested_access(self) -> str:
@@ -1668,6 +1666,10 @@ class FlattenedProjectionPropertyCandidate:
     @property
     def symbol(self) -> str:
         return f"{self.class_name}.{self.property_name}"
+
+    @property
+    def witness_name(self) -> str:
+        return self.symbol
 
 
 def _flattened_projection_properties(
@@ -1755,10 +1757,7 @@ class FlattenedProjectionPropertyDetector(CandidateFindingDetector):
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         ordered = cast(tuple[FlattenedProjectionPropertyCandidate, ...], candidate)
         class_name = ordered[0].class_name
-        evidence = tuple(
-            SourceLocation(item.file_path, item.line, item.symbol)
-            for item in ordered[:8]
-        )
+        evidence = tuple(item.evidence for item in ordered[:8])
         aliases = ", ".join(item.property_name for item in ordered)
         examples = "\n".join(
             f"- replace `obj.{item.property_name}` with `obj.{item.nested_access}`"

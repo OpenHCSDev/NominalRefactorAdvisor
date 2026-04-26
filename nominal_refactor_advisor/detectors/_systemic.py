@@ -455,22 +455,22 @@ class EnumStrategyDispatchDetector(CandidateFindingDetector):
 class ResidualClosedAxisIndirectionDetector(CandidateFindingDetector):
     detector_id = "residual_closed_axis_indirection"
     finding_spec = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Enum-keyed projection table still leaves residual axis branching",
+        pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
+        title="Enum-keyed table with residual branching should become a nominal strategy family",
         why=(
-            "A small enum-keyed table should either be the authoritative closed-axis record or not exist. "
-            "When a function indexes the table and still branches on the same enum axis, the table is a "
-            "degenerate symmetry layer rather than a real authority. Collapse the behavior into one row "
-            "family or inline the asymmetric logic directly."
+            "A function that indexes an enum-keyed table and still branches on the same enum axis is not using "
+            "the table as an authority. The table is a degenerate projection over behavior that still lives in "
+            "branches. The stronger normal form is an ABC-backed strategy family keyed by the enum, with "
+            "`AutoRegisterMeta` owning import-time registration and any table-like views derived from the family."
         ),
-        capability_gap="single authoritative closed-axis row family without residual branch recovery",
-        relation_context="same function uses an enum-keyed projection table and branches on the table axis",
+        capability_gap="metaclass-registry-backed nominal strategy family instead of enum table plus residual branching",
+        relation_context="same function indexes an enum-keyed table and branches on that enum axis",
         confidence=HIGH_CONFIDENCE,
         certification=STRONG_HEURISTIC,
         capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
         ),
         observation_tags=(
             ObservationTag.PROJECTION_DICT,
@@ -499,26 +499,32 @@ class ResidualClosedAxisIndirectionDetector(CandidateFindingDetector):
             ),
             axis_candidate.evidence,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class AxisRule:\n"
-                "    key: AxisEnum\n"
-                "    projection: object\n"
-                "    behavior: object\n\n"
-                "# Either move the residual branch behavior into the authoritative row family,\n"
-                "# or delete the table if the cases are intentionally asymmetric."
+                "from abc import ABC, abstractmethod\n"
+                "from typing import ClassVar\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "class AxisPolicy(ABC, metaclass=AutoRegisterMeta):\n"
+                "    __registry_key__ = \"axis_key\"\n"
+                "    __skip_if_no_key__ = True\n"
+                f"    axis_key: ClassVar[{axis_candidate.enum_name}]\n\n"
+                "    @classmethod\n"
+                f"    def for_key(cls, key: {axis_candidate.enum_name}):\n"
+                "        return cls.__registry__[key]()\n\n"
+                "    @abstractmethod\n"
+                "    def project(self, source): ...\n\n"
+                "    @abstractmethod\n"
+                "    def run(self, ctx): ...\n\n"
+                "# Move the table projection and residual branch behavior into enum-keyed policy subclasses.\n"
+                "# Derive table-like views from AxisPolicy.__registry__ only if callers still need them."
             ),
             codemod_patch=(
-                f"# `{axis_candidate.table_name}` currently stores projections ({value_summary}) but does not own "
-                f"the `{axis_candidate.enum_name}` axis.\n"
-                "# Collapse the residual branch into the table's row records, or remove the table and spell the asymmetric logic directly."
+                f"# Replace `{axis_candidate.table_name}[{axis_candidate.axis_expression}]` plus residual "
+                f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.axis_expression})`.\n"
+                f"# Move projections ({value_summary}) and per-case behavior into registered `AxisPolicy` subclasses."
             ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(axis_candidate.table_case_names),
-                field_count=max(len(axis_candidate.residual_case_names), 1),
-                mapping_name=axis_candidate.table_name,
-                field_names=axis_candidate.residual_case_names,
-                source_name=axis_candidate.enum_name,
-                identity_field_names=("key",),
+            metrics=DispatchCountMetrics(
+                dispatch_site_count=len(axis_candidate.table_case_names),
+                dispatch_axis=axis_candidate.enum_name,
+                literal_cases=axis_candidate.table_case_names,
             ),
         )
 
