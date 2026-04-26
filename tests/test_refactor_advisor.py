@@ -139,6 +139,35 @@ class PathPlanner:
     assert "record only if this result crosses a boundary" in (finding.scaffold or "")
 
 
+def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class ColumnarRows(Protocol):
+    @property
+    def columns(self):
+        ...
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "typing_protocol_contract"
+    )
+
+    assert finding.pattern_id == PatternId.ABC_TEMPLATE_METHOD
+    assert "ColumnarRows" in finding.summary
+    assert "ABC" in finding.title
+    assert "ContractName.register" in (finding.scaffold or "")
+
+
 def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     branch_body = "\n".join(
         f"""
