@@ -65,55 +65,47 @@ Step 1: Identify Modified Files
 
 .. code-block:: text
 
-   openhcs/processing/backends/processors/cupy_processor.py
-   openhcs/processing/backends/processors/numpy_processor.py
-   openhcs/processing/backends/processors/jax_processor.py
-   openhcs/processing/backends/processors/pyclesperanto_processor.py
-   openhcs/core/memory/stack_utils.py
-   openhcs/core/steps/function_step.py
+   nominal_refactor_advisor/detectors/_base.py
+   nominal_refactor_advisor/detectors/_helpers.py
+   nominal_refactor_advisor/detectors/_runtime.py
+   nominal_refactor_advisor/patterns.py
+   nominal_refactor_advisor/planner.py
+   tests/test_refactor_advisor.py
 
 Step 2: Semantic Grouping
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Processor Backends**: cupy_processor.py, numpy_processor.py, jax_processor.py, pyclesperanto_processor.py
-- **Memory Management**: stack_utils.py
-- **Core Pipeline**: function_step.py
+- **Detector Substrate**: _base.py, _helpers.py, _runtime.py
+- **Pattern/Planner Surface**: patterns.py, planner.py
+- **Regression Coverage**: test_refactor_advisor.py
 
 Step 3: Analyze Changes
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Processor Backends**: Fixed create_composite function signatures from List[Array] to single Array
-- **Memory Management**: Added comprehensive logging for memory type conversions
-- **Core Pipeline**: Added debugging logs for function execution and memory type validation
+- **Detector Substrate**: Collapsed shared helper logic and widened generic detector support
+- **Pattern/Planner Surface**: Updated authoritative metadata or planner composition behavior
+- **Regression Coverage**: Added tests that lock in the new detection or refactor surface
 
 Step 4: Generate Components
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-- **Processor Backends**: Fix create_composite signature mismatch across all backends
-- **Memory Management**: Add detailed logging for stack/unstack operations and type conversions
-- **Core Pipeline**: Add memory type validation and debugging logs for function execution
+- **Detector Substrate**: Refactor shared detector machinery and keep generic detection coherent
+- **Pattern/Planner Surface**: Update canonical pattern or planning authority
+- **Regression Coverage**: Add regression tests for the new structural behavior
 
 Step 5: Synthesize Final Message
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: text
 
-   fix: Resolve create_composite function signature mismatch causing cupy processor errors
-
-   Fixed inconsistent function signatures across processor backends where create_composite
-   expected different input formats, causing "images must be a list of CuPy arrays" errors.
+   refactor: unify detector substrate and planner authority
 
    Changes by functional area:
 
-   * Processor Backends: Standardize create_composite signature to accept single 3D array
-     instead of list of arrays across cupy, numpy, jax, and pyclesperanto processors
-   * Memory Management: Add comprehensive logging for stack_slices and unstack_slices
-     operations to track memory type conversions between pipeline steps  
-   * Core Pipeline: Add memory type validation and debugging logs in function execution
-     to help diagnose type conversion issues
-
-   All processors now consistently expect stack: Array of shape (N, Y, X) and return
-   composite result of shape (1, Y, X) using weighted averaging across slices.
+   * Detector Substrate: collapse repeated helper logic and keep detector registration
+     and genericity machinery in one authoritative layer
+   * Pattern/Planner Surface: align plan composition with the canonical pattern metadata
+   * Regression Coverage: add tests that lock in the new structural contracts
 
 Benefits
 --------

@@ -4,13 +4,13 @@ Nominal Refactor Advisor
 The nominal refactor advisor is an AST-driven maintenance tool for detecting and
 prescribing theory-grounded nominal refactorings in Python codebases.
 
-This documentation is split into two layers:
+If you are new to the project, start with :doc:`api/getting_started`.
 
-- a compact guide for using the tool and understanding its authoritative surfaces
-- curated API pages for the stable public roots that downstream tooling and future
-  maintainers should rely on
-- development notes that capture the architectural theory, self-audit history,
-  and detector design roadmap
+The documentation is organized into three layers:
+
+- a guide for running the tool and understanding the stable entrypoints
+- reference pages for the shipped API, generated catalogs, and internal substrates
+- development notes for architectural rationale, maintenance workflow, and self-hosting policy
 
 .. toctree::
    :maxdepth: 2

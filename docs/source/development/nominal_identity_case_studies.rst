@@ -1,9 +1,10 @@
 Nominal Identity Case Studies
 =============================
 
-Concrete guidance for agents and maintainers on when nominal identity is required, why duck typing
-cannot recover the same capabilities, and how the mathematical models from the two papers apply to
-real OpenHCS patterns.
+Concrete guidance for agents and maintainers on when nominal identity is
+required, why duck typing cannot recover the same capabilities, and how the
+mathematical models from the two papers apply to real Python architecture
+patterns.
 
 Read ``nominal_architecture_playbook.rst`` first for the unified model, then use this document for
 worked examples.
@@ -99,7 +100,8 @@ inheritance, not in composition wrappers that erase precedence and nominal parti
 Case Study 2: Discriminated Unions via ``__subclasses__()``
 -----------------------------------------------------------
 
-OpenHCS parameter UIs need exhaustive widget creation dispatch based on parameter type structure.
+Parameter-driven UIs often need exhaustive widget creation dispatch based on
+parameter type structure.
 
 .. code-block:: python
 
@@ -537,7 +539,8 @@ pattern as duck typing. It is operating on nominal class objects.
 Case Study 13: Bidirectional Type Lookup
 ----------------------------------------
 
-OpenHCS maintains lazy-to-base and base-to-lazy registries using type identity as the key on both sides.
+Some systems maintain lazy-to-base and base-to-lazy registries using type
+identity as the key on both sides.
 
 .. code-block:: python
 

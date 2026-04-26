@@ -523,7 +523,7 @@ Example audit script:
    from pathlib import Path
    from itertools import combinations
 
-   root = Path("dq_dock_engine")
+   root = Path("target_package")
    files = list(root.rglob("*.py"))
 
    def fn_params(fn: ast.FunctionDef) -> list[str]:
@@ -569,9 +569,9 @@ Also run targeted searches for architectural disrespect:
 
 .. code-block:: bash
 
-   rg "hasattr\(|getattr\(|except AttributeError|if .* is None|if .* is not None" dq_dock_engine
-   rg "if .*mode|if .*strategy|if .*backend|if .*type|elif .*" dq_dock_engine
-   rg "Protocol|typing\.Protocol|typing_extensions\.Protocol" dq_dock_engine
+   rg "hasattr\(|getattr\(|except AttributeError|if .* is None|if .* is not None" target_package
+   rg "if .*mode|if .*strategy|if .*backend|if .*type|elif .*" target_package
+   rg "Protocol|typing\.Protocol|typing_extensions\.Protocol" target_package
 
 
 Step 5: Classify the Failure Mode Using the Paper Models

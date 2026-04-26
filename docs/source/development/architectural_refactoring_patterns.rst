@@ -1,295 +1,115 @@
 Architectural Refactoring Patterns
-===================================
+==================================
 
-Imported OpenHCS background note. Use this page as historical pattern language
-and example material, not as the canonical shipped pattern taxonomy for the
-advisor.
+Reusable high-level patterns the advisor is designed to recommend.
 
-For the advisor's current pattern surface, see :doc:`../api/pattern_catalog`.
+These are not the generated shipped pattern records from
+:doc:`../api/pattern_catalog`. They are the broader architectural moves that
+show up repeatedly across Python codebases.
 
-Six Fundamental Principles
---------------------------
+Pattern 1: Nominal Family Over Structural Probing
+-------------------------------------------------
 
-1. ABC Contract Enforcement
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use an ``ABC`` plus concrete subclasses when behavior depends on semantic role.
 
-Use ABCs to enforce explicit contracts and enable polymorphism.
+Typical trigger:
 
-**Examples**: ``StorageBackend``, ``FilenameParser``, ``MetadataHandler``, ``LibraryRegistryBase``
+- repeated ``hasattr`` or ``isinstance`` recovery
+- strings or enums selecting classes indirectly
+- parallel method families across sibling implementations
 
-2. Explicit Dependency Injection
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Preferred collapse:
 
-Dependencies are explicitly provided, never implicitly created.
+- one nominal root
+- concrete subclasses for semantic cases
+- shared orchestration in the base class
+- orthogonal residue in mixins when ordering matters
 
-**Examples**: ``create_microscope_handler(filemanager=filemanager)``, factory functions require all dependencies
+Pattern 2: Authoritative Record Plus Derived Views
+--------------------------------------------------
 
-3. Indirection Minimization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use one frozen record type or one authoritative row family when several surfaces
+repeat the same facts.
 
-Eliminate unnecessary layers; prefer direct method calls.
+Typical trigger:
 
-**Examples**: ``getattr(self, method_name)`` instead of dispatch tables, direct enum usage
+- multiple dicts keyed by the same axis
+- helper functions rebuilding the same keyword bags
+- repeated projection helpers
+- export lists or indexes maintained by hand
 
-4. Genericism Enforcement
-~~~~~~~~~~~~~~~~~~~~~~~~~
+Preferred collapse:
 
-Create truly generic systems that work with any valid configuration.
+- one authoritative dataclass row or tuple of rows
+- derived indexes, exports, summaries, and builders
 
-**Examples**: ``ComponentConfiguration[T]``, ``DynamicParserMeta`` generates methods from any enum
+Pattern 3: Class-Time Registration Instead Of Manual Rosters
+------------------------------------------------------------
 
-5. Fail-Loud Error Handling
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Use class-time registration when the code needs enumeration of a behavioral
+family.
 
-Specific exceptions with context; no silent failures or defensive programming.
+Typical trigger:
 
-**Examples**: ``MemoryConversionError``, ``StorageResolutionError``, ``allow_cpu_roundtrip=False`` by default
+- handwritten subclass tuples
+- registry mutation in several files
+- repeated discovery helpers or union builders
 
-6. Consistent Interface Design
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Preferred collapse:
 
-Uniform patterns across all subsystems.
+- one registry-backed root
+- declarative key extraction
+- derived lookup and traversal surfaces
 
-**Examples**: ABC + Factory pattern, consistent method naming, enum-driven behavior
+Pattern 4: Staged Orchestration Instead Of Hub Functions
+--------------------------------------------------------
 
-Refactoring Patterns
---------------------
+Split oversized orchestrators into explicit phases when one function owns too
+many transitions at once.
 
-Pattern 1: ABC Contract Enforcement
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Typical trigger:
 
-**Before**: Inconsistent interfaces across similar classes
+- long branch-heavy execution functions
+- repeated result assembly pipelines
+- mixed discovery, validation, execution, and formatting in one body
 
-.. code-block:: python
+Preferred collapse:
 
-   class ImageXpressParser:
-       def parse_well(self, filename): pass
+- one orchestration surface
+- named stage boundaries
+- helper layers only where they remove true duplication
 
-   class OperaPhenixParser:
-       def extract_well(self, filename): pass  # Different method name
+Pattern 5: Derived Surface, Not Shadow Authority
+------------------------------------------------
 
-**After**: ABC enforces consistent contracts
+Whenever a second surface exists only so another subsystem can consume it, make
+that surface derived.
 
-.. code-block:: python
+Typical trigger:
 
-   class FilenameParser(ABC):
-       @abstractmethod
-       def parse_well(self, filename): pass
+- manual ``__all__`` lists beside a canonical family
+- registry views maintained in parallel with the registry
+- wrapper specs that restate metadata already declared elsewhere
 
-   class ImageXpressParser(FilenameParser):
-       def parse_well(self, filename): pass  # Contract enforced
+Preferred collapse:
 
-   class OperaPhenixParser(FilenameParser):
-       def parse_well(self, filename): pass  # Must match ABC
+- one authority
+- one materializer for every secondary surface
 
-Pattern 2: Explicit Dependency Injection
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Pattern 6: Fail-Loud Contracts
+------------------------------
 
-**Before**: Hidden dependencies and global state
+Do not preserve invalid states with defensive fallbacks when the architecture
+already guarantees the contract.
 
-.. code-block:: python
+Typical trigger:
 
-   class MicroscopeHandler:
-       def __init__(self, microscope_type: str):
-           self.filemanager = get_global_filemanager()  # Hidden dependency
-           self.parser = create_parser(microscope_type)  # Hidden creation
+- ``getattr(..., default)`` on guaranteed fields
+- ``hasattr`` around abstract methods
+- defaulting away missing provenance or role identity
 
-**After**: Explicit dependency injection
+Preferred collapse:
 
-.. code-block:: python
-
-   class MicroscopeHandler:
-       def __init__(self, parser: FilenameParser, filemanager: FileManager):
-           self.parser = parser
-           self.filemanager = filemanager
-
-   # Factory function with explicit dependencies
-   def create_microscope_handler(microscope_type: str, 
-                               filemanager: FileManager) -> MicroscopeHandler:
-       parser = create_parser(microscope_type)
-       return MicroscopeHandler(parser, filemanager)
-
-Pattern 3: Indirection Minimization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Before**: Unnecessary dispatch tables and routing layers
-
-.. code-block:: python
-
-   class ComponentProcessor:
-       def __init__(self):
-           self.dispatch_table = {
-               'DAPI': self._process_dapi,
-               'GFP': self._process_gfp,
-               'RFP': self._process_rfp
-           }
-       
-       def process(self, component: str, data):
-           handler = self.dispatch_table.get(component)
-           if handler:
-               return handler(data)
-
-**After**: Direct method calls with enum-driven behavior
-
-.. code-block:: python
-
-   class ComponentProcessor:
-       def process(self, component: Component, data):
-           method_name = f"_process_{component.value.lower()}"
-           method = getattr(self, method_name)
-           return method(data)
-
-Pattern 4: Genericism Enforcement
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Before**: Pseudo-generic code with hardcoded assumptions
-
-.. code-block:: python
-
-   class ConfigValidator:
-       def validate_pipeline_config(self, config):
-           # Hardcoded for PipelineConfig only
-           if not config.steps:
-               return False
-           return True
-       
-       def validate_zarr_config(self, config):
-           # Separate method for each config type
-           if not config.compression:
-               return False
-           return True
-
-**After**: Truly generic validation using metaprogramming
-
-.. code-block:: python
-
-   class ConfigValidator(Generic[T]):
-       def validate(self, config: T) -> ValidationResult:
-           errors = []
-           for field in fields(config):
-               if field.metadata.get('required') and getattr(config, field.name) is None:
-                   errors.append(f"Required field {field.name} is None")
-           return ValidationResult(errors)
-
-Pattern 5: Fail-Loud Error Handling
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Before**: Defensive programming with silent failures
-
-.. code-block:: python
-
-   def process_image(image_path: str):
-       try:
-           image = load_image(image_path)
-           if image is not None:
-               return process(image)
-       except Exception:
-           pass  # Silent failure
-       return default_image()  # Fallback masks problems
-
-**After**: Explicit error handling with specific exceptions
-
-.. code-block:: python
-
-   def process_image(image_path: str) -> ProcessedImage:
-       try:
-           image = load_image(image_path)
-       except FileNotFoundError as e:
-           raise ImageLoadError(f"Image not found: {image_path}") from e
-       except PermissionError as e:
-           raise ImageLoadError(f"Permission denied: {image_path}") from e
-       
-       if image.ndim != 3:
-           raise ImageValidationError(f"Expected 3D image, got {image.ndim}D")
-       
-       return process(image)
-
-Pattern 6: Consistent Interface Design
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-**Before**: Inconsistent interfaces across subsystems
-
-.. code-block:: python
-
-   class StorageBackend:
-       def load_file(self, path): pass  # Different method name
-       def write_file(self, data, path): pass
-
-   class MicroscopeHandler:
-       def get_data(self, path): pass  # Different method name
-       def put_data(self, data, path): pass
-
-**After**: Consistent interface pattern
-
-.. code-block:: python
-
-   class StorageBackend(ABC):
-       @abstractmethod
-       def load(self, path): pass  # Consistent naming
-
-       @abstractmethod
-       def save(self, data, path): pass
-
-   class MicroscopeHandler(ABC):
-       @abstractmethod
-       def load(self, path): pass  # Same interface pattern
-
-       @abstractmethod
-       def save(self, data, path): pass
-
-   # Factory pattern used consistently
-   def create_storage_backend(backend_type: str) -> StorageBackend: pass
-   def create_microscope_handler(microscope_type: str) -> MicroscopeHandler: pass
-
-Refactoring Methodology
------------------------
-
-Step 1: Identify Violations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- **ABC violations**: Similar classes with inconsistent interfaces
-- **Dependency violations**: Hidden object creation or global state access
-- **Indirection excess**: Unnecessary dispatch tables or routing layers
-- **Pseudo-genericism**: Hardcoded assumptions in "generic" code
-- **Defensive programming**: hasattr checks, silent fallbacks
-- **Interface inconsistency**: Different method names for similar operations
-
-Step 2: Apply Patterns
-~~~~~~~~~~~~~~~~~~~~~~
-
-1. **Create ABCs** for similar functionality
-2. **Extract dependencies** to constructor parameters
-3. **Remove dispatch layers** in favor of direct method calls
-4. **Use Generic[T]** and metaprogramming for true genericism
-5. **Replace defensive code** with explicit error handling
-6. **Standardize interfaces** across subsystems
-
-Step 3: Validate Consistency
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-- All subsystems follow ABC + Factory pattern
-- Dependencies are explicitly injected
-- Error handling is fail-loud with specific exceptions
-- Systems work with any valid configuration
-- Interfaces are consistent across similar functionality
-
-Evidence from OpenHCS
----------------------
-
-**Stable Systems** (Storage, Microscope): Established foundational patterns
-**Refactored Systems** (Memory, Component): Applied same principles to new domains
-**Cross-System Integration**: All systems work together due to consistent architecture
-
-Summary
--------
-
-OpenHCS refactoring follows six fundamental principles that create architectural consistency:
-
-1. **ABC Contract Enforcement** - Explicit interfaces enable polymorphism
-2. **Explicit Dependency Injection** - No hidden dependencies or object creation
-3. **Indirection Minimization** - Direct method calls, fewer layers
-4. **Genericism Enforcement** - True genericism via metaprogramming
-5. **Fail-Loud Error Handling** - Specific exceptions, no silent failures
-6. **Consistent Interface Design** - Uniform patterns across all subsystems
-
-These principles appear consistently across both stable legacy code and newly refactored systems, creating a coherent architectural methodology.
+- direct access
+- explicit validation at the real boundary
+- immediate failure for broken contracts

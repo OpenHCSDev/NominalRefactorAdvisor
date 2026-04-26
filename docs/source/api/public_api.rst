@@ -1,6 +1,9 @@
 Public API
 ==========
 
+This page documents the import surface that downstream tooling should prefer.
+It does not restate every internal helper module.
+
 Package Surface
 ---------------
 
@@ -18,4 +21,12 @@ CLI Entry Points
 Planning Surface
 ----------------
 
-See :doc:`detection_substrate` for the planning metadata and plan builder API.
+.. automodule:: nominal_refactor_advisor.planner
+   :members: build_refactor_plans
+
+
+Result Records And Taxonomy
+---------------------------
+
+See :doc:`theory_and_results` for the frozen result dataclasses, taxonomy values,
+and pattern metadata referenced by the public entrypoints.

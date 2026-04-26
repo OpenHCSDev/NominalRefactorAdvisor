@@ -1,8 +1,8 @@
 Nominal Architecture Playbook
 =============================
 
-Canonical guide for agents and maintainers who need to reason about OpenHCS architecture before touching
-the codebase.
+Canonical guide for agents and maintainers who need to reason about nominal
+architecture before touching a structurally significant part of the codebase.
 
 This document consolidates the main architectural lessons that follow from the two paper models and from
 the existing development guides. It is meant to answer one question clearly:

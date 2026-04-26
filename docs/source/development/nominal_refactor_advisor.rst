@@ -2,13 +2,8 @@ Nominal Refactor Advisor
 ========================
 
 This document explains the advisor's repository-specific architecture and
-maintenance rules. It does not restate the generated runtime catalogs.
-
-For the current shipped surfaces, use:
-
-- :doc:`../api/pattern_catalog` for the canonical pattern taxonomy
-- :doc:`../api/detector_catalog` for the registered detector set
-- :doc:`../api/public_api` for stable entrypoints and result surfaces
+maintenance rules. Read it when you are modifying the advisor itself rather than
+simply using its CLI or result records.
 
 Purpose
 -------

@@ -1,312 +1,112 @@
 Systematic Refactoring Framework
-=================================
+================================
 
-Imported OpenHCS background note. This page captures broad refactoring heuristics
-and example tradeoffs, but it is not the canonical reference for the advisor's
-current shipped API, detector set, or pattern taxonomy.
+Background framework for large structural refactors in the advisor and in other
+Python codebases the tool analyzes.
 
-Core Architectural Philosophy
------------------------------
+This page is intentionally generic. It does not define the advisor's shipped
+pattern taxonomy; it records the maintenance procedure that keeps structural
+refactors disciplined.
 
-Pragmatic OOP/FP Balance
+Core Goal
+---------
+
+The goal of refactoring is not to make the code merely shorter. The goal is to
+reduce writable authority:
+
+- one semantic axis should have one authoritative owner
+- duplicated orchestration should collapse into one reusable form
+- derived surfaces should be generated from their source rather than maintained
+  by hand
+- error signaling should become clearer, not more defensive
+
+Operating Principles
+--------------------
+
+Declare Before You Derive
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-**Use OOP for:**
-
-- Contracts and interfaces (ABCs)
-- Stateful systems (configuration, I/O, UI)
-- Polymorphism (multiple implementations)
-- Encapsulation (complex state management)
-
-**Use FP for:**
-
-- Data transformation (image processing, math operations)
-- Configuration resolution (lazy evaluation, hierarchical chains)
-- Validation logic (stateless functions)
-- Utility functions (pure functions, no side effects)
-
-Code Quality Principles
-~~~~~~~~~~~~~~~~~~~~~~~
-
-**Declarative, terse, elegant:**
-
-.. code-block:: python
-
-   # Good: Declarative enum-driven configuration
-   class ProcessingContract(Enum):
-       PURE_3D = "_execute_pure_3d"
-       PURE_2D = "_execute_pure_2d"
-       
-       def execute(self, registry, func, image, *args, **kwargs):
-           method = getattr(registry, self.value)
-           return method(func, image, *args, **kwargs)
-
-   # Bad: Imperative conditional logic
-   def execute_contract(contract_type, registry, func, image, *args, **kwargs):
-       if contract_type == "pure_3d":
-           return registry._execute_pure_3d(func, image, *args, **kwargs)
-       elif contract_type == "pure_2d":
-           return registry._execute_pure_2d(func, image, *args, **kwargs)
-
-**Strict separation of concerns:**
-
-- Business logic: Domain operations isolated from framework
-- I/O operations: All file operations through FileManager
-- Configuration: Declarative dataclass-based, separate from logic
-- UI logic: Framework-agnostic service layer with UI adapters
-
-Fundamental Refactoring Principles
-----------------------------------
-
-Fail-Loud Philosophy
-~~~~~~~~~~~~~~~~~~~~
-
-Eliminate defensive programming. Let Python's exceptions bubble up:
-
-.. code-block:: python
-
-   # Forbidden: Defensive programming with silent failures
-   if hasattr(obj, 'method'):
-       result = obj.method()
-   else:
-       result = default_value  # Masks bugs
-
-   # Forbidden: getattr with fallbacks
-   result = getattr(obj, 'attribute', default_value)  # Masks missing attributes
-
-   # Required: Let Python fail naturally
-   def process_data(data: Array) -> Array:
-       if data.ndim != 3:
-           raise ValueError(f"Expected 3D array, got {data.ndim}D")
-       return transform(data)
-
-   # Required: Error handling ONLY where errors are expected
-   try:
-       result = gpu_operation(data)
-   except CudaError as e:
-       raise MemoryConversionError(
-           source_type="cupy", target_type="torch",
-           method="GPU_conversion", reason=str(e)
-       ) from e
-
-Stateless Architecture
-~~~~~~~~~~~~~~~~~~~~~~
-
-Prefer pure functions over stateful classes:
-
-.. code-block:: python
-
-   # Good: Pure function with explicit dependencies
-   def validate_pipeline_config(config: PipelineConfig, 
-                               available_functions: Set[str]) -> ValidationResult:
-       errors = []
-       for step in config.steps:
-           if step.function_name not in available_functions:
-               errors.append(f"Unknown function: {step.function_name}")
-       return ValidationResult(errors)
-
-   # Bad: Stateful validator with hidden dependencies
-   class PipelineValidator:
-       def __init__(self):
-           self.function_registry = get_global_registry()  # Hidden dependency
-       
-       def validate(self, config):
-           # Stateful validation logic
-
-Dataclass Patterns
-~~~~~~~~~~~~~~~~~~
-
-Use dataclasses for declarative configuration:
-
-.. code-block:: python
-
-   @dataclass(frozen=True)
-   class StepConfig:
-       function_name: str
-       parameters: Dict[str, Any]
-       memory_type: MemoryType = MemoryType.NUMPY
-       
-       def validate(self) -> List[str]:
-           errors = []
-           if not self.function_name:
-               errors.append("function_name required")
-           return errors
-
-ABC Contract Enforcement
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-Use ABCs to enforce explicit contracts:
-
-.. code-block:: python
-
-   class StorageBackend(ABC):
-       @abstractmethod
-       def load(self, path: str) -> bytes: pass
-       
-       @abstractmethod
-       def save(self, data: bytes, path: str) -> None: pass
-
-   class FileSystemBackend(StorageBackend):
-       def load(self, path: str) -> bytes:
-           with open(path, 'rb') as f:
-               return f.read()
-       
-       def save(self, data: bytes, path: str) -> None:
-           with open(path, 'wb') as f:
-               f.write(data)
-
-Enum-Driven Configuration
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Replace magic strings with enums:
-
-.. code-block:: python
-
-   # Good: Enum-driven behavior
-   class MemoryType(Enum):
-       NUMPY = "numpy"
-       TORCH = "torch"
-       CUPY = "cupy"
-       
-       def convert_array(self, array, target_type: 'MemoryType'):
-           converter = getattr(self, f"_to_{target_type.value}")
-           return converter(array)
-
-   # Bad: Magic strings
-   def convert_array(array, source_type: str, target_type: str):
-       if source_type == "numpy" and target_type == "torch":
-           return torch.from_numpy(array)
-       elif source_type == "torch" and target_type == "numpy":
-           return array.numpy()
-
-OpenHCS-Specific Patterns
--------------------------
-
-Lazy Configuration Resolution
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Hierarchical resolution: step → pipeline → global:
-
-.. code-block:: python
-
-   def resolve_field_value(field_name: str, 
-                          step_config: Optional[StepConfig],
-                          pipeline_config: Optional[PipelineConfig],
-                          global_config: GlobalConfig) -> Any:
-       # Breadth-first resolution
-       for config in [step_config, pipeline_config, global_config]:
-           if config and hasattr(config, field_name):
-               value = getattr(config, field_name)
-               if value is not None:
-                   return value
-       return None
-
-FileManager I/O Abstraction
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-All I/O operations must go through FileManager:
-
-.. code-block:: python
-
-   # Good: FileManager abstraction
-   def save_results(results: List[Array], 
-                   output_paths: List[str], 
-                   filemanager: FileManager) -> None:
-       for result, path in zip(results, output_paths):
-           filemanager.save_array(result, path)
-
-   # Bad: Direct file system access
-   def save_results(results: List[Array], output_paths: List[str]) -> None:
-       for result, path in zip(results, output_paths):
-           np.save(path, result)  # Bypasses backend system
-
-3D→3D Function Contracts
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-All OpenHCS functions maintain 3D→3D contracts:
-
-.. code-block:: python
-
-   @register_function("denoise_3d")
-   def denoise_volume(volume: Array3D) -> Array3D:
-       """Denoise 3D volume. Input and output must be 3D."""
-       if volume.ndim != 3:
-           raise ValueError(f"Expected 3D volume, got {volume.ndim}D")
-       
-       denoised = apply_denoising(volume)
-       
-       if denoised.ndim != 3:
-           raise ValueError(f"Function violated 3D→3D contract")
-       return denoised
-
-Systematic Refactoring Process
-------------------------------
-
-Step 1: Identify Violations
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Code smells to look for:
-
-- ``hasattr()`` checks with fallback logic
-- ``getattr()`` calls with default values
-- ``try/except`` blocks where errors aren't expected
-- Magic strings instead of enums
-- Direct file system access bypassing FileManager
-- Defensive programming patterns
-- Hardcoded lists that should use enums
-- Stateful classes that could be pure functions
-
-Step 2: Apply Patterns
-~~~~~~~~~~~~~~~~~~~~~~
-
-1. **Create ABCs** for similar functionality
-2. **Extract dependencies** to constructor parameters
-3. **Remove dispatch layers** in favor of direct method calls
-4. **Use Generic[T]** and metaprogramming for true genericism
-5. **Replace defensive code** with explicit error handling
-6. **Standardize interfaces** across subsystems
-
-Step 3: Validate Changes
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-Refactoring validation checklist:
-
-- [ ] All I/O operations go through FileManager
-- [ ] No defensive programming patterns remain
-- [ ] Error handling only where errors are expected
-- [ ] Enums used instead of magic strings
-- [ ] ABCs define clear contracts
-- [ ] Functions maintain 3D→3D contracts where applicable
-- [ ] Breadth-first traversal used for recursive operations
-- [ ] Lazy resolution follows step → pipeline → global hierarchy
-
-Decision Framework
-------------------
-
-When to Refactor
-~~~~~~~~~~~~~~~~
-
-**Refactor when:**
-
-- Code violates OpenHCS architectural principles
-- Defensive programming patterns are present
-- Magic strings are used instead of enums
-- Similar functionality lacks consistent interfaces
-- Direct file system access bypasses FileManager
-
-**Don't refactor when:**
-
-- Code already follows OpenHCS patterns
-- Changes would break existing contracts
-- Refactoring adds complexity without clear benefit
-
-Architectural Decision Process
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-1. **Identify the domain** - Configuration, I/O, processing, or UI?
-2. **Choose paradigm** - OOP for contracts/state, FP for transformations
-3. **Apply patterns** - Use established OpenHCS patterns for the domain
-4. **Validate design** - Ensure fail-loud behavior and clear contracts
-5. **Test integration** - Verify compatibility with existing systems
-
-This framework ensures consistent, maintainable, and robust code across the OpenHCS codebase.
+If a subsystem has a real semantic family, declare it explicitly with the right
+nominal tool:
+
+- ``ABC`` and subclasses for behavioral families
+- enums for closed lightweight axes
+- frozen dataclasses for authoritative fact rows
+- registries for class-level discovery when enumeration is required
+
+Do not try to recover architecture later from strings, sentinel fields, or
+ad hoc branching if the semantic family is already present.
+
+Prefer Directness Over Transport Layers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Unnecessary routing code is a smell:
+
+- wrappers that only forward a single call
+- adapter records that only restate existing fields
+- secondary tables keyed by the same closed axis
+- guard code that probes for attributes the architecture already guarantees
+
+When a layer exists only to transport information without changing authority, it
+should usually be collapsed.
+
+Preserve Nominal Identity Where Capabilities Depend On It
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If the code needs enumeration, provenance, ordering, or exact dispatch, use a
+nominal boundary rather than a structural approximation.
+
+Typical examples:
+
+- use an ``ABC`` family instead of repeated ``hasattr`` checks
+- use type registration instead of handwritten subclass rosters
+- use a dataclass row authority instead of parallel dicts keyed by the same enum
+
+Refactoring Loop
+----------------
+
+1. Identify the semantic axis or duplicated authority.
+2. Decide which representation should become authoritative.
+3. Detect the current drift mechanically where possible.
+4. Collapse the duplicated or parallel surfaces into one authority.
+5. Rebuild derived views from that authority.
+6. Verify that the system is simpler in both structure and explanation.
+
+What To Look For
+----------------
+
+Common structural smells:
+
+- repeated ``if/elif`` dispatch over strings, enums, or classes
+- manual registries, rosters, and export lists
+- sibling dataclasses with repeated lifecycle helpers
+- parallel dicts keyed by one enum or type family
+- repeated builder calls or projection helpers
+- defensive attribute probes around architecturally-guaranteed fields
+- runtime shells that merely copy fields into a second record
+
+Decision Table
+--------------
+
+When choosing a collapse target:
+
+- behavior varies, identity matters, dispatch is primary:
+  use a nominal class family
+- immutable facts vary, behavior is minimal:
+  use one frozen dataclass row type plus authoritative instances
+- both data and behavior vary:
+  choose the true source of authority, then derive the other surface
+
+Validation Checklist
+--------------------
+
+After refactoring, confirm:
+
+- one authoritative surface owns the fact family
+- secondary forms are derivable instead of writable
+- control flow became more explicit rather than more abstract
+- provenance is easier to explain
+- tests and documentation describe the new shape directly
+
+The framework is doing its job when the final explanation becomes shorter than
+the original implementation.

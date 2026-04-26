@@ -1,6 +1,10 @@
 Observation Substrate
 =====================
 
+This page documents the internal observation and registration machinery that the
+advisor uses to build structural evidence. Most users do not need this surface
+to run the tool or consume emitted findings.
+
 AST And Registration Substrate
 ------------------------------
 

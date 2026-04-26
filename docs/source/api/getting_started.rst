@@ -5,14 +5,6 @@ The advisor is an AST-driven tool for finding structural refactors that collapse
 duplicate authority, replace duck-typed branching with nominal boundaries, and
 derive repeated surfaces from one canonical source.
 
-The documentation model intentionally keeps authority in code:
-
-- pattern docs are generated from ``PATTERN_SPECS``
-- detector docs are generated from the registered ``IssueDetector`` family
-- public API pages document only stable roots, not internal helper sprawl
-- development pages hold theory, case studies, and design notes that are useful
-  but not themselves authoritative runtime metadata
-
 Quickstart
 ----------
 
@@ -34,20 +26,26 @@ Include composed subsystem plans:
 
    nominal-refactor-advisor path/to/python/package --include-plans
 
-Programmatic Surface
---------------------
+What Stays Stable
+-----------------
 
-The stable package roots are:
+For downstream use, treat these as the main supported surfaces:
 
 - ``analyze_path`` for finding generation
 - ``plan_path`` and ``build_refactor_plans`` for composed plan synthesis
 - ``AnalysisReport``, ``RefactorFinding``, and ``RefactorPlan`` for results
 - ``PATTERN_SPECS`` for canonical pattern metadata
 
+How To Read The Rest Of The Docs
+--------------------------------
+
+- Use :doc:`public_api` for importable entrypoints.
+- Use :doc:`theory_and_results` for result dataclasses, taxonomy, and pattern metadata.
+- Use :doc:`pattern_catalog` and :doc:`detector_catalog` for the current shipped behavior.
+- Use :doc:`../development/index` for rationale, case studies, and maintenance workflow.
+
 Architecture Map
 ----------------
-
-The main authorities are:
 
 - ``nominal_refactor_advisor.cli``: CLI entrypoints and output formatting
 - ``nominal_refactor_advisor.detectors``: registered detector family and finding synthesis
