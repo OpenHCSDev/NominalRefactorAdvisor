@@ -2499,6 +2499,61 @@ class ComponentCompatibilityRule:
     assert "KeyedRecordTable" in (finding.scaffold or "")
 
 
+def test_detects_external_concrete_type_identity_table(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+from types import MappingProxyType
+
+
+@dataclass(frozen=True)
+class TypeIdentity:
+    module: str
+    qualname: str
+
+
+@dataclass(frozen=True)
+class ExternalTypeRule:
+    identity: TypeIdentity
+    register: object
+
+
+def register_array_type(payload_type):
+    return payload_type
+
+
+def register_table_type(payload_type):
+    return payload_type
+
+
+EXTERNAL_TYPES_BY_IDENTITY = MappingProxyType({
+    rule.identity: rule
+    for rule in (
+        ExternalTypeRule(TypeIdentity("numpy", "ndarray"), register_array_type),
+        ExternalTypeRule(TypeIdentity("cupy._core.core", "ndarray"), register_array_type),
+        ExternalTypeRule(TypeIdentity("torch", "Tensor"), register_array_type),
+        ExternalTypeRule(TypeIdentity("pandas.core.frame", "DataFrame"), register_table_type),
+    )
+})
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "external_concrete_type_identity_table"
+    )
+
+    assert finding.pattern_id == PatternId.VIRTUAL_MEMBERSHIP
+    assert "EXTERNAL_TYPES_BY_IDENTITY" in finding.summary
+    assert "numpy.ndarray" in finding.summary
+    assert "pandas.core.frame.DataFrame" in finding.summary
+    assert "RuntimeCapability" in (finding.scaffold or "")
+
+
 def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

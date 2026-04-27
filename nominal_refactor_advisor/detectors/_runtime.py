@@ -938,6 +938,237 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
         return f"{module.path} performs {len(evidence)} class-level marker checks on instances."
 
 
+@dataclass(frozen=True, slots=True)
+class _ExternalConcreteTypeIdentityTableCandidate:
+    file_path: str
+    line: int
+    symbol: str
+    row_pairs: tuple[tuple[str, str, int], ...]
+
+
+class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
+    detector_id = "external_concrete_type_identity_table"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.VIRTUAL_MEMBERSHIP,
+        title="External concrete type identity table should become capability registration",
+        why=(
+            "A table of hardcoded external module/type string identities is recovering runtime membership "
+            "from concrete implementation names. The nominal boundary should be an explicit capability "
+            "registration surface owned by the integration layer, not a core table of third-party class names."
+        ),
+        capability_gap="extension-owned virtual membership registration boundary",
+        relation_context="same registry table maps external concrete type identities to capability registration",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.VIRTUAL_MEMBERSHIP,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.REGISTRY_POPULATION,
+            ObservationTag.RUNTIME_MEMBERSHIP,
+            ObservationTag.SEMANTIC_STRING_LITERAL,
+        ),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for candidate in _external_concrete_type_identity_table_candidates(
+            module,
+            config,
+        ):
+            evidence = tuple(
+                SourceLocation(
+                    candidate.file_path,
+                    line,
+                    f"{candidate.symbol}:{module_name}.{type_name}",
+                )
+                for module_name, type_name, line in candidate.row_pairs[:6]
+            )
+            row_names = tuple(
+                f"{module_name}.{type_name}"
+                for module_name, type_name, _line in candidate.row_pairs
+            )
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"`{candidate.symbol}` hardcodes {len(candidate.row_pairs)} "
+                        f"external concrete type identities: {', '.join(row_names[:5])}."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "class RuntimeCapability(ABC, metaclass=AutoRegisterMeta):\n"
+                        "    __registry_key__ = 'capability_key'\n"
+                        "    __skip_if_no_key__ = True\n"
+                        "    capability_key = None\n\n"
+                        "# Integration modules register concrete external classes with the capability boundary.\n"
+                        "# Core runtime code queries the nominal capability, not module/type strings."
+                    ),
+                    codemod_patch=(
+                        f"# Replace `{candidate.symbol}` with explicit capability registration in the "
+                        "owning integration modules; keep core validation against the nominal ABC."
+                    ),
+                    metrics=RegistrationMetrics(
+                        registration_site_count=len(candidate.row_pairs),
+                        registry_name=candidate.symbol,
+                        class_key_pairs=row_names,
+                    ),
+                )
+            )
+        return findings
+
+
+def _external_concrete_type_identity_table_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[_ExternalConcreteTypeIdentityTableCandidate, ...]:
+    candidates: list[_ExternalConcreteTypeIdentityTableCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Assign(self, node: ast.Assign) -> None:
+            symbol = _assignment_symbol(node.targets)
+            if symbol is not None:
+                self._visit_table_value(node.value, symbol, node.lineno)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            symbol = _assignment_symbol((node.target,))
+            if symbol is not None and node.value is not None:
+                self._visit_table_value(node.value, symbol, node.lineno)
+            self.generic_visit(node)
+
+        def _visit_table_value(
+            self,
+            node: ast.AST,
+            symbol: str,
+            line: int,
+        ) -> None:
+            if not _table_context_has_type_identity_signal(symbol, node):
+                return
+            row_pairs = _external_type_identity_rows(node)
+            if len(row_pairs) < config.min_string_cases:
+                return
+            candidates.append(
+                _ExternalConcreteTypeIdentityTableCandidate(
+                    file_path=str(module.path),
+                    line=line,
+                    symbol=symbol,
+                    row_pairs=row_pairs,
+                )
+            )
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+def _assignment_symbol(targets: Sequence[ast.AST]) -> str | None:
+    names = tuple(_assignment_target_name(target) for target in targets)
+    names = tuple(name for name in names if name is not None)
+    if len(names) != 1:
+        return None
+    return names[0]
+
+
+def _assignment_target_name(target: ast.AST) -> str | None:
+    if isinstance(target, ast.Name):
+        return target.id
+    if isinstance(target, ast.Attribute):
+        parent = _assignment_target_name(target.value)
+        if parent is None:
+            return target.attr
+        return f"{parent}.{target.attr}"
+    return None
+
+
+def _table_context_has_type_identity_signal(symbol: str, node: ast.AST) -> bool:
+    names = [symbol]
+    names.extend(
+        call_name
+        for subnode in ast.walk(node)
+        if isinstance(subnode, ast.Call)
+        and (call_name := _call_name(subnode.func)) is not None
+    )
+    normalized_names = tuple(name.lower() for name in names)
+    return any(
+        ("identity" in name or "type" in name or "class" in name)
+        for name in normalized_names
+    )
+
+
+def _external_type_identity_rows(
+    node: ast.AST,
+) -> tuple[tuple[str, str, int], ...]:
+    row_pairs: list[tuple[str, str, int]] = []
+    seen_pairs: set[tuple[str, str, int]] = set()
+
+    for table_node in ast.walk(node):
+        row_nodes: Sequence[ast.AST]
+        if isinstance(table_node, (ast.Tuple, ast.List, ast.Set)):
+            row_nodes = table_node.elts
+        elif isinstance(table_node, ast.Dict):
+            row_nodes = tuple(
+                key for key in table_node.keys if key is not None
+            )
+        else:
+            continue
+
+        local_rows: list[tuple[str, str, int]] = []
+        for row_node in row_nodes:
+            row_pair = _external_type_identity_pair(row_node)
+            if row_pair is None:
+                continue
+            local_rows.append(row_pair)
+
+        if len(local_rows) < 3:
+            continue
+        for row_pair in local_rows:
+            if row_pair in seen_pairs:
+                continue
+            seen_pairs.add(row_pair)
+            row_pairs.append(row_pair)
+
+    return tuple(row_pairs)
+
+
+def _external_type_identity_pair(
+    row_node: ast.AST,
+) -> tuple[str, str, int] | None:
+    for subnode in ast.walk(row_node):
+        if not isinstance(subnode, ast.Call):
+            continue
+        if len(subnode.args) < 2:
+            continue
+        module_name = _constant_string(subnode.args[0])
+        type_name = _constant_string(subnode.args[1])
+        if module_name is None or type_name is None:
+            continue
+        if _looks_like_external_concrete_type_identity(module_name, type_name):
+            return (module_name, type_name, subnode.lineno)
+    return None
+
+
+def _looks_like_external_concrete_type_identity(
+    module_name: str,
+    type_name: str,
+) -> bool:
+    if module_name == type_name:
+        return False
+    if not _IDENTIFIER_PATH_RE.fullmatch(module_name):
+        return False
+    if not _IDENTIFIER_PATH_RE.fullmatch(type_name):
+        return False
+    if "." not in module_name and module_name.lower() != module_name:
+        return False
+    return True
+
+
+_IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
+
+
 class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     detector_id = "dynamic_interface_generation"
     finding_spec = FindingSpec(
