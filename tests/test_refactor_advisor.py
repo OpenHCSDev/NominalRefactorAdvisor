@@ -50,6 +50,21 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
 
 
+ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
+DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
+MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
+PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
+REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
+REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
+    "repeated_validate_shape_guard_family"
+)
+STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
+    "string_backed_reflective_nominal_lookup"
+)
+STRING_DISPATCH_DETECTOR_ID = "string_dispatch"
+UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID = "unreferenced_private_function"
+
+
 def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,7 +271,7 @@ def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "private_cohort_should_be_module"
+        if finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
     )
 
     assert "returned, pose" in finding.summary
@@ -291,7 +306,7 @@ def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None
     )
 
     assert not any(
-        finding.detector_id == "private_cohort_should_be_module"
+        finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
         for finding in findings
     )
 
@@ -328,7 +343,7 @@ def test_private_cohort_ignores_generic_analyzer_vocabulary(tmp_path: Path) -> N
     )
 
     assert not any(
-        finding.detector_id == "private_cohort_should_be_module"
+        finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
         for finding in findings
     )
 
@@ -1950,7 +1965,7 @@ class IndexedArray:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "repeated_validate_shape_guard_family"
+        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
     )
 
     assert "AnchoredArray.validate" in finding.summary
@@ -2008,7 +2023,7 @@ class ReceptorGrid:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "repeated_validate_shape_guard_family"
+        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
         and "AnchoredArray.validate" in finding.summary
         and "ReceptorGrid.validate" in finding.summary
     )
@@ -2076,7 +2091,7 @@ class ReceptorGrid:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "repeated_validate_shape_guard_family"
+        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
         and "AnchoredArray.validate" in finding.summary
         and "IndexedArray.validate" in finding.summary
         and "ReceptorGrid.validate" in finding.summary
@@ -3627,7 +3642,7 @@ def convert(kind, value):
 
     findings = analyze_path(tmp_path)
     finding = next(
-        finding for finding in findings if finding.detector_id == "string_dispatch"
+        finding for finding in findings if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
     )
     assert finding.pattern_id == 3
     assert "`kind`" in finding.summary
@@ -3856,7 +3871,7 @@ class DonorExtractor(Extractor):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_concrete_subclass_roster"
+        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
     )
 
     assert "Extractor" in finding.summary
@@ -3904,7 +3919,7 @@ class GuidedRequest(RoutedRequest):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_concrete_subclass_roster"
+        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
     )
 
     assert "route_name" in finding.summary
@@ -3965,7 +3980,7 @@ class BetaHandler(HandlerBase):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_concrete_subclass_roster"
+        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
     )
 
     assert "HandlerBase" in finding.summary
@@ -4087,7 +4102,7 @@ class GuidedRequest(RoutedRequest):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_concrete_subclass_roster"
+        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
     )
 
     assert "DirectRequest" in finding.summary
@@ -4140,7 +4155,7 @@ def materialize_declared_families():
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "manual_concrete_subclass_roster"
+        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
     )
 
     assert "FamilyGeneratingSpec" in finding.summary
@@ -4662,14 +4677,14 @@ class Beta:
     )
 
     findings = analyze_path(tmp_path)
-    assert any(finding.detector_id == "repeated_export_dicts" for finding in findings)
+    assert any(finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID for finding in findings)
     assert any("projection dict" in finding.title.lower() for finding in findings)
     assert any(
-        finding.detector_id == "repeated_export_dicts" and finding.scaffold
+        finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.scaffold
         for finding in findings
     )
     assert any(
-        finding.detector_id == "repeated_export_dicts" and finding.codemod_patch
+        finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.codemod_patch
         for finding in findings
     )
 
@@ -5066,7 +5081,7 @@ LOOKUP = {
     )
 
     findings = analyze_path(tmp_path)
-    assert not any(finding.detector_id == "string_dispatch" for finding in findings)
+    assert not any(finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
 
 
 def test_detects_module_level_dispatch_dict_with_callable_targets(
@@ -5097,7 +5112,7 @@ DISPATCH = {
     )
 
     findings = analyze_path(tmp_path)
-    assert any(finding.detector_id == "string_dispatch" for finding in findings)
+    assert any(finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
 
 
 def test_ignores_non_branch_config_reads(tmp_path: Path) -> None:
@@ -5207,7 +5222,7 @@ class Publisher:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "dead_embedded_static_payload"
+        if finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
     )
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
@@ -5254,7 +5269,7 @@ class Publisher:
     )
 
     assert not any(
-        finding.detector_id == "dead_embedded_static_payload"
+        finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
         for finding in findings
     )
 
@@ -5289,7 +5304,7 @@ class Cleanup:
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "unreferenced_private_function"
+        if finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
     )
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
@@ -5324,7 +5339,7 @@ class Cleanup:
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "unreferenced_private_function"
+        finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
         for finding in findings
     )
 
@@ -5874,7 +5889,7 @@ class Facade(WorkerMixin):
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "unreferenced_private_function"
+        finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
         and "WorkerMixin._derived_artifact" in finding.summary
         for finding in findings
     )
@@ -5913,7 +5928,7 @@ class Facade(ArtifactMixin):
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "dead_embedded_static_payload"
+        finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
         and "ArtifactMixin._write_payload" in finding.summary
         for finding in findings
     )
@@ -6096,7 +6111,7 @@ class Sample:
 
     findings = analyze_path(tmp_path)
     finding = next(
-        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
     )
 
     assert "structural accessor wrapper" in finding.title
@@ -6121,7 +6136,7 @@ class Sample:
 
     findings = analyze_path(tmp_path)
     finding = next(
-        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
     )
 
     assert "structural accessor wrapper" in finding.summary
@@ -6142,7 +6157,7 @@ class Sample:
 
     findings = analyze_path(tmp_path)
     finding = next(
-        finding for finding in findings if finding.detector_id == "accessor_wrapper"
+        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
     )
 
     assert "computed tuple" in finding.relation_context
@@ -7306,7 +7321,7 @@ class GuidedRequest(RoutedRequest):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "string_backed_reflective_nominal_lookup"
+        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
     )
 
     assert "route_type_name" in finding.summary
@@ -7348,7 +7363,7 @@ class BetaRouter(Router):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "string_backed_reflective_nominal_lookup"
+        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
     )
 
     assert "backend_name" in finding.summary
@@ -7385,7 +7400,7 @@ class BetaWitnessSelector(WitnessSelector):
     finding = next(
         finding
         for finding in findings
-        if finding.detector_id == "string_backed_reflective_nominal_lookup"
+        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
     )
 
     assert "witness_field_name" in finding.summary
