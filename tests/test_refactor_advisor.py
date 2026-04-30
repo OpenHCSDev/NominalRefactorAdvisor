@@ -5165,6 +5165,498 @@ def second():
     )
 
 
+def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Publisher:
+    def publish(self, dest):
+        return self._write_manifest(dest)
+
+    def _write_manifest(self, dest):
+        (dest / "manifest.json").write_text("{}", encoding="utf-8")
+
+    def _write_static_shell(self, dest):
+        payload = \"\"\"\\
+<section class="report">
+  <header>
+    <h1>Release</h1>
+  </header>
+  <main>
+    <article data-kind="summary">
+      <p>Generated view</p>
+    </article>
+    <aside>
+      <span>Status</span>
+    </aside>
+  </main>
+</section>
+\"\"\"
+        (dest / "index.html").write_text(payload, encoding="utf-8")
+""",
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_static_payload_function_lines=10,
+            min_static_payload_literal_lines=8,
+        ),
+    )
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "dead_embedded_static_payload"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "Publisher._write_static_shell" in finding.summary
+    assert "no in-module references" in finding.summary
+    assert "template/resource" in (finding.scaffold or "")
+
+
+def test_keeps_referenced_embedded_static_payload_emitters(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Publisher:
+    def publish(self, dest):
+        return self._write_static_shell(dest)
+
+    def _write_static_shell(self, dest):
+        payload = \"\"\"\\
+<section class="report">
+  <header>
+    <h1>Release</h1>
+  </header>
+  <main>
+    <article data-kind="summary">
+      <p>Generated view</p>
+    </article>
+    <aside>
+      <span>Status</span>
+    </aside>
+  </main>
+</section>
+\"\"\"
+        (dest / "index.html").write_text(payload, encoding="utf-8")
+""",
+    )
+
+    findings = analyze_path(
+        tmp_path,
+        DetectorConfig(
+            min_static_payload_function_lines=10,
+            min_static_payload_literal_lines=8,
+        ),
+    )
+
+    assert not any(
+        finding.detector_id == "dead_embedded_static_payload"
+        for finding in findings
+    )
+
+
+def test_detects_unreferenced_private_function(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Cleanup:
+    def run(self, item):
+        return self._live(item)
+
+    def _live(self, item):
+        return item
+
+    def _stale_export(self, rows):
+        normalized = []
+        for row in rows:
+            normalized.append(str(row).strip())
+        if not normalized:
+            return []
+        return [
+            value.upper()
+            for value in normalized
+            if value
+        ]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "unreferenced_private_function"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "Cleanup._stale_export" in finding.summary
+    assert "no in-module references" in finding.summary
+    assert "registry, callback table, or public facade" in (finding.scaffold or "")
+
+
+def test_keeps_referenced_private_function(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Cleanup:
+    def run(self, rows):
+        return self._stale_export(rows)
+
+    def _stale_export(self, rows):
+        normalized = []
+        for row in rows:
+            normalized.append(str(row).strip())
+        if not normalized:
+            return []
+        return [
+            value.upper()
+            for value in normalized
+            if value
+        ]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "unreferenced_private_function"
+        for finding in findings
+    )
+
+
+def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import shutil
+
+
+class Packager:
+    def _copy_pdf(self, pdf_file, package_dir):
+        pdf_dest = package_dir / pdf_file.name
+        shutil.copy2(pdf_file, pdf_dest)
+        print(f"PDF: {pdf_file.name}")
+
+    def _copy_markdown(self, markdown_file, package_dir):
+        markdown_dest = package_dir / markdown_file.name
+        shutil.copy2(markdown_file, markdown_dest)
+        print(f"Markdown: {markdown_file.name}")
+
+    def _copy_metadata(self, metadata_file, package_dir):
+        metadata_dest = package_dir / metadata_file.name
+        shutil.copy2(metadata_file, metadata_dest)
+        print(f"Metadata: {metadata_file.name}")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "sibling_small_method_template"
+    )
+
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "_copy_pdf" in finding.summary
+    assert "_copy_markdown" in finding.summary
+    assert "parameterized local helper" in (finding.scaffold or "")
+
+
+def test_ignores_unrelated_small_private_methods(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Packager:
+    def _alpha(self, value):
+        result = normalize(value)
+        emit(result)
+        return result
+
+    def _beta(self, value):
+        result = normalize(value)
+        emit(result)
+        return result
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "sibling_small_method_template"
+        for finding in findings
+    )
+
+
+def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+try:
+    from .constants import ALPHA, BETA
+    from .models import Request
+except ImportError:
+    from constants import ALPHA, BETA
+    from models import Request
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "mirrored_import_fallback"
+    )
+
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "constants" in finding.summary
+    assert "models" in finding.summary
+    assert "canonical relative imports" in (finding.scaffold or "")
+
+
+def test_ignores_nonmirrored_import_fallback(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+try:
+    from .constants import ALPHA, BETA
+except ImportError:
+    from constants import ALPHA
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "mirrored_import_fallback"
+        for finding in findings
+    )
+
+
+def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+ACTION_RUN = "run"
+ACTION_CHECK = "check"
+ACTION_EXPORT = "export"
+ACTION_AUDIT = "audit"
+
+ACTION_CHOICES = (ACTION_RUN, ACTION_CHECK, ACTION_EXPORT, ACTION_AUDIT)
+
+
+class Driver:
+    def run_one(self, action):
+        if action == ACTION_RUN:
+            return self.run()
+        if action in (ACTION_CHECK, ACTION_EXPORT):
+            return self.project(action)
+        if action == ACTION_AUDIT:
+            return self.audit()
+
+    def run_all(self, action):
+        if action in (ACTION_RUN, ACTION_CHECK):
+            return self.batch(action)
+        if action == ACTION_EXPORT:
+            return self.export()
+        if action == ACTION_AUDIT:
+            return self.audit()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "constant_backed_dispatch_axis"
+    )
+
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "ACTION_*" in finding.summary
+    assert "run_one" in finding.summary
+    assert "run_all" in finding.summary
+    assert "typed action table" in (finding.codemod_patch or "")
+
+
+def test_ignores_single_site_constant_backed_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+ACTION_RUN = "run"
+ACTION_CHECK = "check"
+ACTION_EXPORT = "export"
+ACTION_AUDIT = "audit"
+
+
+class Driver:
+    def run_one(self, action):
+        if action == ACTION_RUN:
+            return self.run()
+        if action in (ACTION_CHECK, ACTION_EXPORT):
+            return self.project(action)
+        if action == ACTION_AUDIT:
+            return self.audit()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "constant_backed_dispatch_axis"
+        for finding in findings
+    )
+
+
+def test_detects_manual_process_step_ladders(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def runner(cmd):
+    return cmd
+
+
+def warn(label):
+    return label
+
+
+def build_pdf():
+    steps = [
+        (("tool", "a"), "first pass"),
+        (("tool", "b"), "second pass"),
+    ]
+    for cmd, label in steps:
+        result = runner(cmd).run()
+        if result.returncode:
+            warn(label)
+
+
+def build_submission():
+    submission_steps = [
+        (("tool", "c"), "submission pass"),
+        (("tool", "d"), "final pass"),
+    ]
+    for index, (cmd, label) in enumerate(submission_steps):
+        result = runner(cmd).run()
+        if result.returncode:
+            warn(label)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "manual_process_step_ladder"
+    )
+
+    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
+    assert "steps" in finding.summary
+    assert "submission_steps" in finding.summary
+    assert "build_pdf" in finding.summary
+    assert "build_submission" in finding.summary
+    assert "ProcessStagePlan" in (finding.scaffold or "")
+    assert "typed stage plan" in (finding.codemod_patch or "")
+
+
+def test_ignores_single_manual_process_step_ladder(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def runner(cmd):
+    return cmd
+
+
+def build_pdf():
+    steps = [
+        (("tool", "a"), "first pass"),
+        (("tool", "b"), "second pass"),
+    ]
+    for cmd, label in steps:
+        runner(cmd).run()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "manual_process_step_ladder"
+        for finding in findings
+    )
+
+
+def test_detects_mirrored_file_rewrite_loops(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def rewrite_package(root_dir, content_dir):
+    replacements = [("old", "new"), ("legacy", "modern")]
+    for path in root_dir.glob("*.txt"):
+        content = path.read_text(encoding="utf-8")
+        updated = content
+        for old, new in replacements:
+            updated = updated.replace(old, new)
+        if updated != content:
+            path.write_text(updated, encoding="utf-8")
+
+    for path in content_dir.glob("*.txt"):
+        content = path.read_text(encoding="utf-8")
+        updated = content
+        for old, new in replacements:
+            updated = updated.replace(old, new)
+        if updated != content:
+            path.write_text(updated, encoding="utf-8")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "mirrored_file_rewrite_loop"
+    )
+
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "rewrite_package" in finding.summary
+    assert "TextRewritePlan" in (finding.scaffold or "")
+    assert "typed rewrite plan" in (finding.codemod_patch or "")
+
+
+def test_ignores_single_file_rewrite_loop(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def rewrite_package(root_dir):
+    replacements = [("old", "new")]
+    for path in root_dir.glob("*.txt"):
+        content = path.read_text(encoding="utf-8")
+        updated = content.replace("old", "new")
+        if updated != content:
+            path.write_text(updated, encoding="utf-8")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "mirrored_file_rewrite_loop"
+        for finding in findings
+    )
+
+
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

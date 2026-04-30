@@ -115,6 +115,24 @@ _CLI_ARGUMENT_SPECS = (
         help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
     ),
     CliArgumentSpec(
+        flags=("--min-static-payload-function-lines",),
+        value_type=int,
+        default=60,
+        help="Minimum function length for unreferenced embedded static-payload emitter detection.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-static-payload-literal-lines",),
+        value_type=int,
+        default=20,
+        help="Minimum embedded static-payload literal lines before surfacing an emitter finding.",
+    ),
+    CliArgumentSpec(
+        flags=("--min-unreferenced-private-function-lines",),
+        value_type=int,
+        default=8,
+        help="Minimum private function length before surfacing an unreferenced-code finding.",
+    ),
+    CliArgumentSpec(
         flags=("--exclude-pattern",),
         action="append",
         dest="excluded_pattern_ids",

@@ -144,6 +144,9 @@ class DetectorConfig:
     min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
     min_hardcoded_string_sites: int = 3
+    min_static_payload_function_lines: int = 60
+    min_static_payload_literal_lines: int = 20
+    min_unreferenced_private_function_lines: int = 8
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
@@ -172,6 +175,15 @@ class DetectorConfig:
                 namespace_values.get("min_reflective_selector_values", 2)
             ),
             min_hardcoded_string_sites=int(namespace.min_hardcoded_string_sites),
+            min_static_payload_function_lines=int(
+                namespace_values.get("min_static_payload_function_lines", 60)
+            ),
+            min_static_payload_literal_lines=int(
+                namespace_values.get("min_static_payload_literal_lines", 20)
+            ),
+            min_unreferenced_private_function_lines=int(
+                namespace_values.get("min_unreferenced_private_function_lines", 8)
+            ),
             min_orchestration_function_lines=int(
                 namespace_values.get("min_orchestration_function_lines", 150)
             ),

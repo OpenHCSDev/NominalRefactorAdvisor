@@ -1621,6 +1621,1220 @@ class RepeatedHardcodedStringDetector(CandidateFindingDetector):
         )
 
 
+_STATIC_PAYLOAD_WRITE_METHODS = frozenset(
+    {"dump", "dumps", "write", "write_text", "write_bytes", "writelines"}
+)
+_WRITE_MODE_TOKENS = frozenset({"w", "a", "x", "wt", "at", "xt", "wb", "ab", "xb"})
+
+
+@dataclass(frozen=True)
+class StaticPayloadStats:
+    payload_line_count: int
+    largest_literal_line_count: int
+    marker_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EmbeddedStaticPayloadCandidate(LineWitnessCandidate):
+    qualname: str
+    function_name: str
+    line_count: int
+    static_payload_line_count: int
+    largest_literal_line_count: int
+    marker_kinds: tuple[str, ...]
+    sink_kinds: tuple[str, ...]
+    call_site_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
+
+
+def _function_line_count(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    end_lineno = function.end_lineno if function.end_lineno is not None else function.lineno
+    return end_lineno - function.lineno + 1
+
+
+def _iter_surface_functions(
+    module_node: ast.Module,
+) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
+    functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+
+    def visit_body(body: list[ast.stmt], prefix: tuple[str, ...]) -> None:
+        for statement in body:
+            if isinstance(statement, ast.ClassDef):
+                visit_body(_trim_docstring_body(statement.body), (*prefix, statement.name))
+                continue
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions.append((".".join((*prefix, statement.name)), statement))
+
+    visit_body(_trim_docstring_body(module_node.body), ())
+    return tuple(functions)
+
+
+def _walk_function_body_nodes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.AST, ...]:
+    nodes: list[ast.AST] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                for statement in _trim_docstring_body(node.body):
+                    self.visit(statement)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            if node is function:
+                for statement in _trim_docstring_body(node.body):
+                    self.visit(statement)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            del node
+
+        def generic_visit(self, node: ast.AST) -> None:
+            nodes.append(node)
+            super().generic_visit(node)
+
+    Visitor().visit(function)
+    return tuple(nodes)
+
+
+def _payload_literal_line_count(value: str) -> int:
+    return max(1, len(value.splitlines()))
+
+
+def _static_payload_marker_kinds(value: str) -> tuple[str, ...]:
+    markers: set[str] = set()
+    if len(value.strip()) < 80 or _payload_literal_line_count(value) < 2:
+        return ()
+    if value.count("<") >= 3 and re.search(r"</?[A-Za-z][\w:.-]*(\s|>|/)", value):
+        markers.add("markup")
+    if value.count("{") + value.count("}") >= 4 and value.count(":") >= 2:
+        markers.add("structured_data")
+    if (
+        value.count("{") + value.count("}") >= 4
+        and value.count(";") >= 2
+        and re.search(r"\b(class|const|function|let|var)\b", value)
+    ):
+        markers.add("script_or_stylesheet")
+    if re.search(r"\b(SELECT|WITH|INSERT|UPDATE|CREATE|FROM|WHERE)\b", value, re.I):
+        markers.add("query_language")
+    if re.search(r"^[A-Za-z0-9_.-]+:\s+.+$", value, re.M):
+        markers.add("keyed_config")
+    return tuple(sorted(markers))
+
+
+def _static_payload_stats(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> StaticPayloadStats:
+    literal_values = tuple(
+        node.value
+        for node in _walk_function_body_nodes(function)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    )
+    payload_values = tuple(
+        value
+        for value in literal_values
+        if len(value.strip()) >= 80 and _payload_literal_line_count(value) >= 2
+    )
+    marker_kinds = tuple(
+        sorted(
+            {
+                marker
+                for value in payload_values
+                for marker in _static_payload_marker_kinds(value)
+            }
+        )
+    )
+    return StaticPayloadStats(
+        payload_line_count=sum(_payload_literal_line_count(value) for value in payload_values),
+        largest_literal_line_count=max(
+            (_payload_literal_line_count(value) for value in payload_values),
+            default=0,
+        ),
+        marker_kinds=marker_kinds,
+    )
+
+
+def _is_write_mode_literal(value: ast.AST) -> bool:
+    if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+        return False
+    mode = value.value.replace("+", "")
+    return mode in _WRITE_MODE_TOKENS or any(token in mode for token in ("w", "a", "x"))
+
+
+def _static_payload_sink_kinds(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    sink_kinds: set[str] = set()
+    for node in _walk_function_body_nodes(function):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Attribute) and node.func.attr in _STATIC_PAYLOAD_WRITE_METHODS:
+                sink_kinds.add(node.func.attr)
+            if isinstance(node.func, ast.Name) and node.func.id == "open":
+                positional_modes = tuple(node.args[1:2])
+                keyword_modes = tuple(
+                    keyword.value for keyword in node.keywords if keyword.arg == "mode"
+                )
+                if any(_is_write_mode_literal(mode) for mode in (*positional_modes, *keyword_modes)):
+                    sink_kinds.add("open-write")
+        elif isinstance(node, ast.Return) and isinstance(
+            node.value, (ast.Constant, ast.JoinedStr)
+        ):
+            sink_kinds.add("return-payload")
+    return tuple(sorted(sink_kinds))
+
+
+def _node_within_function(
+    node: ast.AST, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> bool:
+    lineno = getattr(node, "lineno", None)
+    if lineno is None:
+        return False
+    end_lineno = function.end_lineno if function.end_lineno is not None else function.lineno
+    return function.lineno <= lineno <= end_lineno
+
+
+def _in_module_reference_count(
+    module_node: ast.Module,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    symbol_name: str,
+) -> int:
+    reference_count = 0
+    for node in ast.walk(module_node):
+        if _node_within_function(node, function):
+            continue
+        if isinstance(node, ast.Name) and node.id == symbol_name:
+            reference_count += 1
+        elif isinstance(node, ast.Attribute) and node.attr == symbol_name:
+            reference_count += 1
+        elif isinstance(node, ast.Constant) and node.value == symbol_name:
+            reference_count += 1
+    return reference_count
+
+
+def _embedded_static_payload_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[EmbeddedStaticPayloadCandidate, ...]:
+    candidates: list[EmbeddedStaticPayloadCandidate] = []
+    for qualname, function in _iter_surface_functions(module.module):
+        if not _is_private_symbol_name(function.name):
+            continue
+        line_count = _function_line_count(function)
+        if line_count < config.min_static_payload_function_lines:
+            continue
+        stats = _static_payload_stats(function)
+        if stats.payload_line_count < config.min_static_payload_literal_lines:
+            continue
+        if not stats.marker_kinds:
+            continue
+        sink_kinds = _static_payload_sink_kinds(function)
+        if not sink_kinds:
+            continue
+        if _in_module_reference_count(module.module, function, function.name) > 0:
+            continue
+        candidates.append(
+            EmbeddedStaticPayloadCandidate(
+                file_path=str(module.path),
+                line=function.lineno,
+                qualname=qualname,
+                function_name=function.name,
+                line_count=line_count,
+                static_payload_line_count=stats.payload_line_count,
+                largest_literal_line_count=stats.largest_literal_line_count,
+                marker_kinds=stats.marker_kinds,
+                sink_kinds=sink_kinds,
+                call_site_count=sum(
+                    isinstance(node, ast.Call)
+                    for node in _walk_function_body_nodes(function)
+                ),
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname)))
+
+
+class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
+    detector_id = "dead_embedded_static_payload"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Unreferenced embedded static-payload emitter should collapse",
+        why=(
+            "A private function that is not referenced in its module but still embeds and writes a large static "
+            "artifact payload is a duplicate derived-view authority. Delete it if it is genuinely dead; if it is "
+            "reached dynamically, move the payload to a template/resource or generate it from an authoritative schema."
+        ),
+        capability_gap="single authoritative template/resource or generated schema for static artifact views",
+        relation_context="private unreferenced emitter owns a large embedded static payload independently of call flow",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+            ObservationTag.EXPORT_MAPPING,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _embedded_static_payload_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        payload_candidate = cast(EmbeddedStaticPayloadCandidate, candidate)
+        marker_summary = ", ".join(payload_candidate.marker_kinds)
+        sink_summary = ", ".join(payload_candidate.sink_kinds)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{payload_candidate.qualname}` spans {payload_candidate.line_count} lines, embeds "
+                f"{payload_candidate.static_payload_line_count} static payload lines ({marker_summary}), "
+                f"writes through {sink_summary}, and has no in-module references."
+            ),
+            (payload_candidate.evidence,),
+            scaffold=(
+                f"# First verify whether `{payload_candidate.qualname}` is externally or dynamically invoked.\n"
+                "# If not, delete the emitter and its embedded payload.\n"
+                "# If it is live, move the payload into a template/resource or generate the artifact from one authoritative schema."
+            ),
+            codemod_patch=(
+                f"# Collapse `{payload_candidate.qualname}` as a dead or duplicate static-payload view.\n"
+                "# Keep at most one artifact authority: a template/resource file or a generated schema-backed writer."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=payload_candidate.line_count,
+                branch_site_count=0,
+                call_site_count=payload_candidate.call_site_count,
+                parameter_count=0,
+                callee_family_count=max(1, len(payload_candidate.sink_kinds)),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class UnreferencedPrivateFunctionCandidate(LineWitnessCandidate):
+    qualname: str
+    function_name: str
+    line_count: int
+    call_site_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
+
+
+def _has_external_protocol_shape(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    if function.decorator_list:
+        return True
+    return function.name.endswith("_")
+
+
+def _unreferenced_private_function_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
+    candidates: list[UnreferencedPrivateFunctionCandidate] = []
+    for qualname, function in _iter_surface_functions(module.module):
+        if not _is_private_symbol_name(function.name):
+            continue
+        if _has_external_protocol_shape(function):
+            continue
+        line_count = _function_line_count(function)
+        if line_count < config.min_unreferenced_private_function_lines:
+            continue
+        if _in_module_reference_count(module.module, function, function.name) > 0:
+            continue
+        candidates.append(
+            UnreferencedPrivateFunctionCandidate(
+                file_path=str(module.path),
+                line=function.lineno,
+                qualname=qualname,
+                function_name=function.name,
+                line_count=line_count,
+                call_site_count=sum(
+                    isinstance(node, ast.Call)
+                    for node in _walk_function_body_nodes(function)
+                ),
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname)))
+
+
+class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
+    detector_id = "unreferenced_private_function"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Unreferenced private function should be deleted or made explicit",
+        why=(
+            "A private function with no in-module references is not a witnessed local authority. If it is dead, "
+            "delete it. If it is invoked dynamically or by an external framework, that contract should be made "
+            "explicit through a registry, callback table, or public facade instead of relying on an invisible edge."
+        ),
+        capability_gap="explicit call-graph witness or deletion of dead private implementation surface",
+        relation_context="private function is present in the implementation surface but absent from local call flow",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _unreferenced_private_function_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        function_candidate = cast(UnreferencedPrivateFunctionCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{function_candidate.qualname}` spans {function_candidate.line_count} lines "
+                "and has no in-module references."
+            ),
+            (function_candidate.evidence,),
+            scaffold=(
+                f"# Verify whether `{function_candidate.qualname}` is reached through reflection, subclassing, or an external framework.\n"
+                "# If no such contract exists, delete it.\n"
+                "# If it is dynamic API, declare that edge through a registry, callback table, or public facade."
+            ),
+            codemod_patch=(
+                f"# Remove `{function_candidate.qualname}` or replace the implicit dynamic edge with an explicit authority."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=function_candidate.line_count,
+                branch_site_count=0,
+                call_site_count=function_candidate.call_site_count,
+                parameter_count=0,
+                callee_family_count=1,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SiblingSmallMethodTemplateCandidate(LineWitnessCandidate):
+    owner_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    statement_count: int
+    parameter_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return self.owner_name
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, method_name)
+            for line, method_name in zip(self.line_numbers, self.method_names, strict=True)
+        )
+
+
+_NORMALIZED_TEMPLATE_STABLE_NAMES = frozenset(
+    {
+        "False",
+        "None",
+        "True",
+        "cls",
+        "dict",
+        "enumerate",
+        "float",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "open",
+        "print",
+        "range",
+        "re",
+        "self",
+        "set",
+        "shutil",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+    }
+)
+
+
+def _trimmed_function_body(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.stmt, ...]:
+    return tuple(_trim_docstring_body(function.body))
+
+
+def _normalized_small_method_template(
+    body: tuple[ast.stmt, ...],
+) -> tuple[str, ...]:
+    class Normalizer(ast.NodeTransformer):
+        def visit_arg(self, node: ast.arg) -> ast.arg:
+            return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id in _NORMALIZED_TEMPLATE_STABLE_NAMES:
+                return node
+            return ast.copy_location(ast.Name(id="NAME", ctx=node.ctx), node)
+
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            if isinstance(node.value, str):
+                return ast.copy_location(ast.Constant(value="STR"), node)
+            if isinstance(node.value, (int, float, complex, bool, type(None))):
+                return ast.copy_location(ast.Constant(value="CONST"), node)
+            return node
+
+    normalizer = Normalizer()
+    return tuple(
+        ast.dump(
+            ast.fix_missing_locations(cast(ast.stmt, normalizer.visit(statement))),
+            include_attributes=False,
+        )
+        for statement in body
+    )
+
+
+def _method_name_family_tokens(method_names: tuple[str, ...]) -> tuple[str, ...]:
+    token_sets = [
+        set(_ordered_class_name_tokens(method_name.strip("_")))
+        for method_name in method_names
+    ]
+    if not token_sets:
+        return ()
+    shared = set.intersection(*token_sets)
+    return tuple(sorted(token for token in shared if len(token) >= 3))
+
+
+def _sibling_small_method_template_candidates(
+    module: ParsedModule,
+) -> tuple[SiblingSmallMethodTemplateCandidate, ...]:
+    grouped: dict[
+        tuple[str, int, tuple[str, ...]], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]
+    ] = defaultdict(list)
+    for qualname, function in _iter_surface_functions(module.module):
+        if "." not in qualname or not _is_private_symbol_name(function.name):
+            continue
+        if _has_external_protocol_shape(function):
+            continue
+        body = _trimmed_function_body(function)
+        if not 2 <= len(body) <= 6:
+            continue
+        owner_name = qualname.rsplit(".", 1)[0]
+        parameter_count = len(function.args.args) + len(function.args.kwonlyargs)
+        key = (
+            owner_name,
+            parameter_count,
+            _normalized_small_method_template(body),
+        )
+        grouped[key].append((qualname, function))
+
+    candidates: list[SiblingSmallMethodTemplateCandidate] = []
+    for (owner_name, parameter_count, template), functions in grouped.items():
+        if len(functions) < 2:
+            continue
+        ordered = tuple(sorted(functions, key=lambda item: (item[1].lineno, item[0])))
+        method_names = tuple(function.name for _, function in ordered)
+        if not _method_name_family_tokens(method_names):
+            continue
+        line_numbers = tuple(function.lineno for _, function in ordered)
+        candidates.append(
+            SiblingSmallMethodTemplateCandidate(
+                file_path=str(module.path),
+                line=line_numbers[0],
+                owner_name=owner_name,
+                method_names=method_names,
+                line_numbers=line_numbers,
+                statement_count=len(template),
+                parameter_count=parameter_count,
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.owner_name)))
+
+
+class SiblingSmallMethodTemplateDetector(CandidateFindingDetector):
+    detector_id = "sibling_small_method_template"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
+        title="Sibling small method templates should collapse to one parameterized helper",
+        why=(
+            "One owner has private sibling methods with the same small execution template and shared name family. "
+            "Only role names or literal residue vary, so the implementation should name one local authority and "
+            "pass the role-specific values as data."
+        ),
+        capability_gap="one local helper/table for repeated small method templates",
+        relation_context="same owner repeats a small private method body template across sibling roles",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _sibling_small_method_template_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        template_candidate = cast(SiblingSmallMethodTemplateCandidate, candidate)
+        method_summary = ", ".join(template_candidate.method_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{template_candidate.owner_name}` repeats the same {template_candidate.statement_count}-statement "
+                f"private method template across {method_summary}."
+            ),
+            template_candidate.evidence_locations,
+            scaffold=(
+                "# Replace the sibling methods with one parameterized local helper that accepts the varying role/literal values.\n"
+                "# Keep separate methods only when each owns a distinct invariant or external contract."
+            ),
+            codemod_patch=(
+                f"# Collapse sibling template methods {template_candidate.method_names} into one parameterized local helper."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=len(template_candidate.method_names),
+                statement_count=template_candidate.statement_count,
+                class_count=1,
+                method_symbols=template_candidate.method_names,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MirroredImportFallbackCandidate(LineWitnessCandidate):
+    imported_modules: tuple[str, ...]
+    imported_name_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return "mirrored import fallback"
+
+
+def _import_from_signature(
+    statement: ast.stmt,
+) -> tuple[str, tuple[tuple[str, str | None], ...], int] | None:
+    if not isinstance(statement, ast.ImportFrom) or statement.module is None:
+        return None
+    return (
+        statement.module,
+        tuple((alias.name, alias.asname) for alias in statement.names),
+        statement.level,
+    )
+
+
+def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
+    if handler.type is None:
+        return False
+    if isinstance(handler.type, ast.Name):
+        return handler.type.id == "ImportError"
+    return (
+        isinstance(handler.type, ast.Tuple)
+        and any(isinstance(item, ast.Name) and item.id == "ImportError" for item in handler.type.elts)
+    )
+
+
+def _mirrored_import_fallback_candidates(
+    module: ParsedModule,
+) -> tuple[MirroredImportFallbackCandidate, ...]:
+    candidates: list[MirroredImportFallbackCandidate] = []
+    for statement in _trim_docstring_body(module.module.body):
+        if not isinstance(statement, ast.Try) or not statement.handlers:
+            continue
+        relative_imports = tuple(
+            signature
+            for body_statement in statement.body
+            if (signature := _import_from_signature(body_statement)) is not None
+        )
+        if not relative_imports or len(relative_imports) != len(statement.body):
+            continue
+        if not all(level > 0 for _, _, level in relative_imports):
+            continue
+        for handler in statement.handlers:
+            if not _is_import_error_handler(handler):
+                continue
+            absolute_imports = tuple(
+                signature
+                for body_statement in handler.body
+                if (signature := _import_from_signature(body_statement)) is not None
+            )
+            if len(absolute_imports) != len(handler.body):
+                continue
+            normalized_relative = tuple((module_name, names) for module_name, names, _ in relative_imports)
+            normalized_absolute = tuple(
+                (module_name, names)
+                for module_name, names, level in absolute_imports
+                if level == 0
+            )
+            if normalized_relative != normalized_absolute:
+                continue
+            candidates.append(
+                MirroredImportFallbackCandidate(
+                    file_path=str(module.path),
+                    line=statement.lineno,
+                    imported_modules=tuple(module_name for module_name, _, _ in relative_imports),
+                    imported_name_count=sum(len(names) for _, names, _ in relative_imports),
+                )
+            )
+            break
+    return tuple(candidates)
+
+
+class MirroredImportFallbackDetector(CandidateFindingDetector):
+    detector_id = "mirrored_import_fallback"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
+        title="Mirrored import fallback should collapse to one import authority",
+        why=(
+            "A try/except ImportError block that repeats the same imports once relatively and once absolutely "
+            "keeps two synchronized import surfaces. Prefer one package bootstrap or import adapter so direct-script "
+            "and package execution share the same import authority."
+        ),
+        capability_gap="single import authority for package and direct-script execution",
+        relation_context="relative and absolute import lists are mirrored across an ImportError fallback",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _mirrored_import_fallback_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        import_candidate = cast(MirroredImportFallbackCandidate, candidate)
+        module_summary = ", ".join(import_candidate.imported_modules)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{import_candidate.file_path} mirrors {import_candidate.imported_name_count} imported names "
+                f"from {module_summary} across relative and absolute ImportError branches."
+            ),
+            (import_candidate.evidence,),
+            scaffold=(
+                "# Establish one package/direct-script import authority before local imports.\n"
+                "# Then use canonical relative imports once instead of mirroring every import list."
+            ),
+            codemod_patch=(
+                "# Replace mirrored relative/absolute import branches with a package bootstrap or shared import adapter."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=2,
+                field_count=import_candidate.imported_name_count,
+                mapping_name="mirrored import fallback",
+                field_names=import_candidate.imported_modules,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ConstantBackedDispatchAxisCandidate(LineWitnessCandidate):
+    axis_name: str
+    constant_prefix: str
+    constant_names: tuple[str, ...]
+    function_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.axis_name
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for line, function_name in zip(self.line_numbers, self.function_names, strict=True)
+        )
+
+
+def _uppercase_constant_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name) and re.match(r"^[A-Z][A-Z0-9_]*$", node.id):
+        return node.id
+    return None
+
+
+def _constant_name_prefix(name: str) -> str:
+    return name.split("_", 1)[0]
+
+
+def _axis_key(expression: str) -> str:
+    return expression.rsplit(".", 1)[-1]
+
+
+def _constant_names_in_node(node: ast.AST) -> tuple[str, ...]:
+    names = {
+        name
+        for child in _walk_nodes(node)
+        if (name := _uppercase_constant_name(child)) is not None
+    }
+    return tuple(sorted(names))
+
+
+def _constant_backed_dispatch_tests(
+    node: ast.AST,
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    tests: list[tuple[str, tuple[str, ...]]] = []
+    if isinstance(node, ast.BoolOp):
+        for value in node.values:
+            tests.extend(_constant_backed_dispatch_tests(value))
+        return tuple(tests)
+    if not isinstance(node, ast.Compare):
+        return ()
+    if len(node.ops) != 1 or len(node.comparators) != 1:
+        return ()
+    op = node.ops[0]
+    comparator = node.comparators[0]
+    if isinstance(op, (ast.Eq, ast.NotEq)):
+        left_name = _uppercase_constant_name(node.left)
+        right_name = _uppercase_constant_name(comparator)
+        if right_name is not None:
+            tests.append((ast.unparse(node.left), (right_name,)))
+        elif left_name is not None:
+            tests.append((ast.unparse(comparator), (left_name,)))
+    elif isinstance(op, (ast.In, ast.NotIn)):
+        constant_names = _constant_names_in_node(comparator)
+        if constant_names:
+            tests.append((ast.unparse(node.left), constant_names))
+    return tuple(tests)
+
+
+def _constant_backed_dispatch_axis_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[ConstantBackedDispatchAxisCandidate, ...]:
+    del config
+    grouped: dict[
+        tuple[str, str], list[tuple[str, int, tuple[str, ...]]]
+    ] = defaultdict(list)
+    for qualname, function in _iter_surface_functions(module.module):
+        for node in _walk_function_body_nodes(function):
+            if not isinstance(node, ast.If):
+                continue
+            for axis_expression, constant_names in _constant_backed_dispatch_tests(node.test):
+                if not constant_names:
+                    continue
+                prefix_counts = Counter(_constant_name_prefix(name) for name in constant_names)
+                constant_prefix, count = prefix_counts.most_common(1)[0]
+                if count != len(constant_names):
+                    continue
+                grouped[(_axis_key(axis_expression), constant_prefix)].append(
+                    (qualname, node.lineno, constant_names)
+                )
+
+    candidates: list[ConstantBackedDispatchAxisCandidate] = []
+    for (axis_name, constant_prefix), sites in grouped.items():
+        constant_names = tuple(sorted({name for _, _, names in sites for name in names}))
+        function_names = tuple(dict.fromkeys(qualname for qualname, _, _ in sites))
+        if len(constant_names) < 4 or len(function_names) < 2:
+            continue
+        ordered_sites = tuple(sorted(sites, key=lambda item: (item[1], item[0])))
+        evidence_by_function: dict[str, int] = {}
+        for qualname, line, _ in ordered_sites:
+            evidence_by_function.setdefault(qualname, line)
+        candidates.append(
+            ConstantBackedDispatchAxisCandidate(
+                file_path=str(module.path),
+                line=ordered_sites[0][1],
+                axis_name=axis_name,
+                constant_prefix=constant_prefix,
+                constant_names=constant_names,
+                function_names=tuple(evidence_by_function.keys()),
+                line_numbers=tuple(evidence_by_function.values()),
+            )
+        )
+    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.axis_name)))
+
+
+class ConstantBackedDispatchAxisDetector(CandidateFindingDetector):
+    detector_id = "constant_backed_dispatch_axis"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
+        title="Constant-backed action axis should become one typed dispatch authority",
+        why=(
+            "A closed behavior axis is declared as uppercase constants and then re-derived through branch ladders. "
+            "That splits the action family across constants, choices, and dispatch code. Prefer one typed action "
+            "authority that derives choices, ordering, and execution."
+        ),
+        capability_gap="single typed action-family authority deriving choices and dispatch",
+        relation_context="same constant family drives branch dispatch across multiple functions",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.CLOSED_FAMILY_DISPATCH,
+            CapabilityTag.AUTHORITATIVE_DISPATCH,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.LITERAL_ID_DISPATCH,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _constant_backed_dispatch_axis_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        axis_candidate = cast(ConstantBackedDispatchAxisCandidate, candidate)
+        constants = ", ".join(axis_candidate.constant_names[:8])
+        functions = ", ".join(axis_candidate.function_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{axis_candidate.axis_name}` dispatches over constant family `{axis_candidate.constant_prefix}_*` "
+                f"({constants}) across {functions}."
+            ),
+            axis_candidate.evidence_locations,
+            scaffold=(
+                "class Action(ABC):\n"
+                "    key: ClassVar[str]\n"
+                "    @abstractmethod\n"
+                "    def run(self, context): ...\n\n"
+                "ACTIONS = tuple(Action.__subclasses__())\n"
+                "CHOICES = tuple(action.key for action in ACTIONS)"
+            ),
+            codemod_patch=(
+                "# Replace constant choices plus branch ladders with one typed action table or auto-registered action family.\n"
+                "# Derive CLI choices and all dispatch sites from that authority."
+            ),
+            metrics=DispatchCountMetrics.from_literal_family(
+                axis_candidate.axis_name,
+                axis_candidate.constant_names,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ManualProcessStepLadderCandidate(LineWitnessCandidate):
+    step_table_names: tuple[str, ...]
+    function_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    minimum_step_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return "manual process step ladder"
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for line, function_name in zip(self.line_numbers, self.function_names, strict=True)
+        )
+
+
+def _assigned_process_step_tables(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, tuple[int, int]]:
+    tables: dict[str, tuple[int, int]] = {}
+    for node in _walk_function_body_nodes(function):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        value = node.value
+        if not isinstance(value, (ast.List, ast.Tuple)) or len(value.elts) < 2:
+            continue
+        tuple_items = [
+            item
+            for item in value.elts
+            if isinstance(item, (ast.Tuple, ast.List)) and len(item.elts) >= 2
+        ]
+        if len(tuple_items) < 2:
+            continue
+        tables[target.id] = (node.lineno, len(tuple_items))
+    return tables
+
+
+def _loop_iter_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "enumerate"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
+    return None
+
+
+def _unpacked_target_leaf_count(node: ast.AST) -> int:
+    if isinstance(node, ast.Name):
+        return 1
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return sum(_unpacked_target_leaf_count(elt) for elt in node.elts)
+    return 0
+
+
+def _loop_has_process_call(loop: ast.For) -> bool:
+    for node in _walk_nodes(loop):
+        if not isinstance(node, ast.Call):
+            continue
+        callee = ast.unparse(node.func)
+        if any(token in callee.lower() for token in ("run", "popen", "subprocess")):
+            return True
+    return False
+
+
+def _manual_process_step_ladder_candidates(
+    module: ParsedModule,
+) -> tuple[ManualProcessStepLadderCandidate, ...]:
+    sites: list[tuple[str, str, int, int]] = []
+    for qualname, function in _iter_surface_functions(module.module):
+        tables = _assigned_process_step_tables(function)
+        if not tables:
+            continue
+        for node in _walk_function_body_nodes(function):
+            if not isinstance(node, ast.For):
+                continue
+            table_name = _loop_iter_name(node.iter)
+            if (
+                table_name not in tables
+                or _unpacked_target_leaf_count(node.target) < 2
+                or not _loop_has_process_call(node)
+            ):
+                continue
+            table_line, step_count = tables[table_name]
+            sites.append((qualname, table_name, table_line, step_count))
+    if len(sites) < 2:
+        return ()
+    ordered = tuple(sorted(sites, key=lambda item: (item[2], item[0], item[1])))
+    return (
+        ManualProcessStepLadderCandidate(
+            file_path=str(module.path),
+            line=ordered[0][2],
+            step_table_names=tuple(table_name for _, table_name, _, _ in ordered),
+            function_names=tuple(qualname for qualname, _, _, _ in ordered),
+            line_numbers=tuple(line for _, _, line, _ in ordered),
+            minimum_step_count=min(step_count for _, _, _, step_count in ordered),
+        ),
+    )
+
+
+class ManualProcessStepLadderDetector(CandidateFindingDetector):
+    detector_id = "manual_process_step_ladder"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Manual process-step ladders should become a typed stage plan",
+        why=(
+            "Multiple functions declare local command-step tables and execute them through repeated loops. "
+            "The step schema, execution policy, and failure policy are one staged orchestration authority, "
+            "not separate local declarations."
+        ),
+        capability_gap="single typed process-stage plan deriving command lists and execution loops",
+        relation_context="local process-step tables are manually executed by repeated loop skeletons",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _manual_process_step_ladder_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        ladder_candidate = cast(ManualProcessStepLadderCandidate, candidate)
+        tables = ", ".join(ladder_candidate.step_table_names)
+        functions = ", ".join(ladder_candidate.function_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{ladder_candidate.file_path} repeats local process-step tables {tables} "
+                f"and execution loops across {functions}."
+            ),
+            ladder_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class ProcessStagePlan:\n"
+                "    steps: tuple[ProcessStep, ...]\n"
+                "    def run(self, context): ..."
+            ),
+            codemod_patch=(
+                "# Replace local command-step tables and repeated loops with one typed stage plan.\n"
+                "# Derive command argv, labels, allowed failures, and callbacks from the plan rows."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=sum(ladder_candidate.line_numbers) * 0,
+                branch_site_count=len(ladder_candidate.step_table_names),
+                call_site_count=len(ladder_candidate.step_table_names),
+                parameter_count=0,
+                callee_family_count=1,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class MirroredFileRewriteLoopCandidate(LineWitnessCandidate):
+    function_name: str
+    line_numbers: tuple[int, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return "mirrored file rewrite loops"
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, self.function_name)
+            for line in self.line_numbers
+        )
+
+
+def _iterates_globbed_files(node: ast.AST) -> bool:
+    if not isinstance(node, ast.Call):
+        return False
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr in {"glob", "rglob", "iterdir"}
+    )
+
+
+def _loop_has_text_rewrite_signature(loop: ast.For) -> bool:
+    has_file_iteration = _iterates_globbed_files(loop.iter)
+    has_read = False
+    has_write = False
+    has_replace = False
+    for node in _walk_nodes(loop):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute):
+            continue
+        has_read = has_read or func.attr == "read_text"
+        has_write = has_write or func.attr == "write_text"
+        has_replace = has_replace or func.attr == "replace"
+    return has_file_iteration and has_read and has_write and has_replace
+
+
+def _mirrored_file_rewrite_loop_candidates(
+    module: ParsedModule,
+) -> tuple[MirroredFileRewriteLoopCandidate, ...]:
+    candidates: list[MirroredFileRewriteLoopCandidate] = []
+    for qualname, function in _iter_surface_functions(module.module):
+        loops = tuple(
+            node
+            for node in _walk_function_body_nodes(function)
+            if isinstance(node, ast.For) and _loop_has_text_rewrite_signature(node)
+        )
+        if len(loops) < 2:
+            continue
+        candidates.append(
+            MirroredFileRewriteLoopCandidate(
+                file_path=str(module.path),
+                line=loops[0].lineno,
+                function_name=qualname,
+                line_numbers=tuple(loop.lineno for loop in loops),
+            )
+        )
+    return tuple(candidates)
+
+
+class MirroredFileRewriteLoopDetector(CandidateFindingDetector):
+    detector_id = "mirrored_file_rewrite_loop"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
+        title="Mirrored file rewrite loops should become a text rewrite plan",
+        why=(
+            "Several loops read files, apply the same textual rewrite mechanics, and write changes back. "
+            "The traversal roots are local variation, but the rewrite algebra and write policy should be one "
+            "declared plan."
+        ),
+        capability_gap="single text rewrite plan with one file-application surface",
+        relation_context="same read/transform/write loop mirrored over different file collections",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _mirrored_file_rewrite_loop_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        loop_candidate = cast(MirroredFileRewriteLoopCandidate, candidate)
+        lines = ", ".join(str(line) for line in loop_candidate.line_numbers)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{loop_candidate.file_path} mirrors file rewrite loops in "
+                f"{loop_candidate.function_name} at lines {lines}."
+            ),
+            loop_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class TextRewritePlan:\n"
+                "    rules: tuple[TextRewriteRule, ...]\n"
+                "    def apply_to_files(self, files): ..."
+            ),
+            codemod_patch=(
+                "# Replace mirrored read/replace/write loops with one typed rewrite plan.\n"
+                "# Pass only the varying file collections and display labels at call sites."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(loop_candidate.line_numbers),
+                field_count=0,
+                mapping_name="text rewrite",
+                field_names=(),
+                source_name=loop_candidate.function_name,
+                identity_field_names=(),
+            ),
+        )
+
+
 class RepeatedProjectionHelperDetector(CandidateFindingDetector):
     detector_id = "repeated_projection_helpers"
     finding_spec = FindingSpec(
