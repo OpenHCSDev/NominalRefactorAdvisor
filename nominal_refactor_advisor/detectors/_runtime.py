@@ -1788,33 +1788,59 @@ def _node_within_function(
     return function.lineno <= lineno <= end_lineno
 
 
-def _reference_count_in_modules(
-    modules: Sequence[ParsedModule],
-    owner_module: ParsedModule,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    symbol_name: str,
-) -> int:
-    reference_count = 0
-    for module in modules:
-        for node in ast.walk(module.module):
-            if module is owner_module and _node_within_function(node, function):
-                continue
-            if isinstance(node, ast.Name) and node.id == symbol_name:
-                reference_count += 1
-            elif isinstance(node, ast.Attribute) and node.attr == symbol_name:
-                reference_count += 1
-            elif isinstance(node, ast.Constant) and node.value == symbol_name:
-                reference_count += 1
-    return reference_count
+def _reference_symbol_counts(
+    root: ast.AST,
+    *,
+    include_node: Callable[[ast.AST], bool] | None = None,
+) -> Counter[str]:
+    counts: Counter[str] = Counter()
+    for node in ast.walk(root):
+        if include_node is not None and not include_node(node):
+            continue
+        if isinstance(node, ast.Name):
+            counts[node.id] += 1
+        elif isinstance(node, ast.Attribute):
+            counts[node.attr] += 1
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+            counts[node.value] += 1
+    return counts
+
+
+@dataclass(frozen=True)
+class ReferenceCountIndex:
+    total_counts: Counter[str]
+
+    @classmethod
+    def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
+        total_counts: Counter[str] = Counter()
+        for module in modules:
+            total_counts.update(_reference_symbol_counts(module.module))
+        return cls(total_counts=total_counts)
+
+    def reference_count_outside_function(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        symbol_name: str,
+    ) -> int:
+        return (
+            self.total_counts[symbol_name]
+            - _reference_symbol_counts(
+                function,
+                include_node=lambda node: _node_within_function(node, function),
+            )[symbol_name]
+        )
 
 
 def _embedded_static_payload_candidates(
     module: ParsedModule,
     config: DetectorConfig,
     reference_modules: Sequence[ParsedModule] | None = None,
+    reference_index: ReferenceCountIndex | None = None,
 ) -> tuple[EmbeddedStaticPayloadCandidate, ...]:
     candidates: list[EmbeddedStaticPayloadCandidate] = []
-    modules_for_reference = reference_modules or (module,)
+    reference_index = reference_index or ReferenceCountIndex.from_modules(
+        reference_modules or (module,)
+    )
     for qualname, function in _iter_surface_functions(module.module):
         if not _is_private_symbol_name(function.name):
             continue
@@ -1830,8 +1856,8 @@ def _embedded_static_payload_candidates(
         if not sink_kinds:
             continue
         if (
-            _reference_count_in_modules(
-                modules_for_reference, module, function, function.name
+            reference_index.reference_count_outside_function(
+                function, function.name
             )
             > 0
         ):
@@ -1853,7 +1879,9 @@ def _embedded_static_payload_candidates(
                 ),
             )
         )
-    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname)))
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
+    )
 
 
 class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
@@ -1890,11 +1918,12 @@ class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
+        reference_index = ReferenceCountIndex.from_modules(modules)
         return [
             self._finding_for_candidate(candidate)
             for module in modules
             for candidate in _embedded_static_payload_candidates(
-                module, config, modules
+                module, config, reference_index=reference_index
             )
         ]
 
@@ -1946,9 +1975,12 @@ def _unreferenced_private_function_candidates(
     module: ParsedModule,
     config: DetectorConfig,
     reference_modules: Sequence[ParsedModule] | None = None,
+    reference_index: ReferenceCountIndex | None = None,
 ) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
     candidates: list[UnreferencedPrivateFunctionCandidate] = []
-    modules_for_reference = reference_modules or (module,)
+    reference_index = reference_index or ReferenceCountIndex.from_modules(
+        reference_modules or (module,)
+    )
     for qualname, function in _iter_surface_functions(module.module):
         if not _is_private_symbol_name(function.name):
             continue
@@ -1958,8 +1990,8 @@ def _unreferenced_private_function_candidates(
         if line_count < config.min_unreferenced_private_function_lines:
             continue
         if (
-            _reference_count_in_modules(
-                modules_for_reference, module, function, function.name
+            reference_index.reference_count_outside_function(
+                function, function.name
             )
             > 0
         ):
@@ -1977,7 +2009,9 @@ def _unreferenced_private_function_candidates(
                 ),
             )
         )
-    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname)))
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
+    )
 
 
 class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
@@ -2013,11 +2047,12 @@ class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
+        reference_index = ReferenceCountIndex.from_modules(modules)
         return [
             self._finding_for_candidate(candidate)
             for module in modules
             for candidate in _unreferenced_private_function_candidates(
-                module, config, modules
+                module, config, reference_index=reference_index
             )
         ]
 

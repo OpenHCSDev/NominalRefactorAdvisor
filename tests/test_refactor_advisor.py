@@ -87,6 +87,24 @@ class Sample:
     assert modules[0].module_name == "mod"
 
 
+def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class ProjectSource:
+    pass
+""",
+    )
+    env_module = tmp_path / ".venv/lib/python/site-packages/bad_encoding.py"
+    env_module.parent.mkdir(parents=True, exist_ok=True)
+    env_module.write_bytes(b"# coding: latin-1\nvalue = '\\xa4'\n")
+
+    modules = parse_python_modules(tmp_path)
+
+    assert [module.module_name for module in modules] == ["pkg.mod"]
+
+
 def test_detects_repeated_private_method_shape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

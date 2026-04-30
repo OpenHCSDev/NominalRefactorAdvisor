@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -58,6 +59,27 @@ from .observation_shapes import (
 _TYPE_BUILTIN = "type"
 _SETATTR_BUILTIN = "setattr"
 _RUNTIME_TYPE_GENERATORS = frozenset({_TYPE_BUILTIN, "make_dataclass", "new_class"})
+_IGNORED_PYTHON_TREE_DIRS = frozenset(
+    {
+        ".eggs",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        ".svn",
+        "__pycache__",
+        "build",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -434,6 +456,25 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
 
 
+def _python_source_paths(root: Path) -> tuple[Path, ...]:
+    if root.is_file():
+        return (root,) if root.suffix == ".py" else ()
+
+    paths: list[Path] = []
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            dirname
+            for dirname in dirnames
+            if dirname not in _IGNORED_PYTHON_TREE_DIRS
+            and not dirname.endswith((".egg-info", ".dist-info"))
+        )
+        directory_path = Path(directory)
+        for filename in sorted(filenames):
+            if filename.endswith(".py"):
+                paths.append(directory_path / filename)
+    return tuple(paths)
+
+
 def parse_python_modules(root: Path) -> list[ParsedModule]:
     analysis_root = root.parent if root.is_file() else root
 
@@ -448,8 +489,7 @@ def parse_python_modules(root: Path) -> list[ParsedModule]:
         return (".".join(module_parts), is_package_init)
 
     modules: list[ParsedModule] = []
-    paths = [root] if root.is_file() and root.suffix == ".py" else sorted(root.rglob("*.py"))
-    for path in paths:
+    for path in _python_source_paths(root):
         source = path.read_text(encoding="utf-8")
         module_name, is_package_init = module_name_for_path(path)
         modules.append(
