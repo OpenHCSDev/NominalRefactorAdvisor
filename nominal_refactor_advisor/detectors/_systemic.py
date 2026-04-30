@@ -385,8 +385,7 @@ class OrchestrationHubDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class ClassRoleQuotientCandidate(LineWitnessCandidate):
-    class_name: str
+class ClassRoleQuotientCandidate(ClassLineWitnessCandidate):
     method_count: int
     private_method_count: int
     public_method_count: int
@@ -395,10 +394,6 @@ class ClassRoleQuotientCandidate(LineWitnessCandidate):
     self_state_attribute_count: int
     self_call_count: int
     cross_role_self_call_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
 
     @property
     def role_names(self) -> tuple[str, ...]:
@@ -610,13 +605,8 @@ class ClassRoleQuotientDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class PassThroughCompositionFacadeCandidate(LineWitnessCandidate):
-    class_name: str
+class PassThroughCompositionFacadeCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
 
 
 def _is_pass_through_class_body(body: Sequence[ast.stmt]) -> bool:
@@ -719,15 +709,10 @@ class PassThroughCompositionFacadeDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class ProjectionPropertyFamilyCandidate(LineWitnessCandidate):
-    class_name: str
+class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     base_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
 
     @property
     def evidence_locations(self) -> tuple[SourceLocation, ...]:
@@ -882,14 +867,9 @@ class ProjectionPropertyFamilyDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class LiveTemplatePayloadFamilyCandidate(LineWitnessCandidate):
-    class_name: str
+class LiveTemplatePayloadFamilyCandidate(ClassLineWitnessCandidate):
     method_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
 
     @property
     def evidence_locations(self) -> tuple[SourceLocation, ...]:

@@ -939,9 +939,7 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
 
 
 @dataclass(frozen=True, slots=True)
-class _ExternalConcreteTypeIdentityTableCandidate:
-    file_path: str
-    line: int
+class _ExternalConcreteTypeIdentityTableCandidate(LineWitnessCandidate):
     symbol: str
     row_pairs: tuple[tuple[str, str, int], ...]
 
@@ -1635,8 +1633,7 @@ class StaticPayloadStats:
 
 
 @dataclass(frozen=True)
-class EmbeddedStaticPayloadCandidate(LineWitnessCandidate):
-    qualname: str
+class EmbeddedStaticPayloadCandidate(QualnameLineWitnessCandidate):
     function_name: str
     line_count: int
     static_payload_line_count: int
@@ -1644,10 +1641,6 @@ class EmbeddedStaticPayloadCandidate(LineWitnessCandidate):
     marker_kinds: tuple[str, ...]
     sink_kinds: tuple[str, ...]
     call_site_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
 
 
 def _function_line_count(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
@@ -1795,24 +1788,6 @@ def _node_within_function(
     return function.lineno <= lineno <= end_lineno
 
 
-def _in_module_reference_count(
-    module_node: ast.Module,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    symbol_name: str,
-) -> int:
-    reference_count = 0
-    for node in ast.walk(module_node):
-        if _node_within_function(node, function):
-            continue
-        if isinstance(node, ast.Name) and node.id == symbol_name:
-            reference_count += 1
-        elif isinstance(node, ast.Attribute) and node.attr == symbol_name:
-            reference_count += 1
-        elif isinstance(node, ast.Constant) and node.value == symbol_name:
-            reference_count += 1
-    return reference_count
-
-
 def _reference_count_in_modules(
     modules: Sequence[ParsedModule],
     owner_module: ParsedModule,
@@ -1955,15 +1930,10 @@ class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
 
 
 @dataclass(frozen=True)
-class UnreferencedPrivateFunctionCandidate(LineWitnessCandidate):
-    qualname: str
+class UnreferencedPrivateFunctionCandidate(QualnameLineWitnessCandidate):
     function_name: str
     line_count: int
     call_site_count: int
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
 
 
 def _has_external_protocol_shape(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:

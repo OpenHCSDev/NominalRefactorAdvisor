@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from .constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from .export_tools import PublicExportPolicy, derive_public_exports
 
 from .observation_graph import (
@@ -665,6 +666,57 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
         return f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
 
 
+def _registration_call_shape_fields(
+    parsed_module: ParsedModule,
+    node: ast.Call,
+    registry_name: str,
+    registered_class: str,
+    key_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "file_path": str(parsed_module.path),
+        "lineno": node.lineno,
+        "registry_name": registry_name,
+        "registered_class": registered_class,
+        "key_fingerprint": key_fingerprint,
+        "key_expression": ast.unparse(
+            node.args[1] if len(node.args) >= 2 else node.args[0]
+        ),
+        "registration_style": "registration_call",
+    }
+
+
+def _decorator_registration_shape_fields(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+    registry_name: str,
+    key_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "file_path": str(parsed_module.path),
+        "lineno": node.lineno,
+        "registry_name": registry_name,
+        "registered_class": node.name,
+        "key_fingerprint": key_fingerprint,
+        "key_expression": node.name,
+        "registration_style": "decorator_registration",
+    }
+
+
+_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog(
+    (
+        ConstructorVariantSpec(
+            "from_registration_call",
+            _registration_call_shape_fields,
+        ),
+        ConstructorVariantSpec(
+            "from_decorator",
+            _decorator_registration_shape_fields,
+        ),
+    )
+)
+
+
 @dataclass(frozen=True)
 class RegistrationShape:
     """Normalized record for one recovered manual registration site."""
@@ -699,44 +751,10 @@ class RegistrationShape:
             registration_style="subscript_assignment",
         )
 
-    @classmethod
-    def from_registration_call(
-        cls,
-        parsed_module: ParsedModule,
-        node: ast.Call,
-        registry_name: str,
-        registered_class: str,
-        key_fingerprint: str,
-    ) -> RegistrationShape:
-        return cls(
-            file_path=str(parsed_module.path),
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=registered_class,
-            key_fingerprint=key_fingerprint,
-            key_expression=ast.unparse(
-                node.args[1] if len(node.args) >= 2 else node.args[0]
-            ),
-            registration_style="registration_call",
-        )
-
-    @classmethod
-    def from_decorator(
-        cls,
-        parsed_module: ParsedModule,
-        node: ast.ClassDef,
-        registry_name: str,
-        key_fingerprint: str,
-    ) -> RegistrationShape:
-        return cls(
-            file_path=str(parsed_module.path),
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=node.name,
-            key_fingerprint=key_fingerprint,
-            key_expression=node.name,
-            registration_style="decorator_registration",
-        )
+    (
+        from_registration_call,
+        from_decorator,
+    ) = _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
 
     @property
     def symbol(self) -> str:

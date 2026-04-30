@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, cast
 
+from .class_composition import CompositeClassSpec
 from .patterns import PatternId
 
 from .taxonomy import (
@@ -200,8 +201,10 @@ class FindingMetrics(SemanticRecord, ABC):
         return None
 
 
-class BehaviorFindingMetrics(FindingMetrics, ABC):
-    pass
+BehaviorFindingMetrics = CompositeClassSpec(
+    "BehaviorFindingMetrics",
+    (FindingMetrics, ABC),
+).build(__name__)
 
 
 class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
@@ -212,16 +215,22 @@ class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
         return self.class_names
 
 
-class MappingFindingMetrics(FindingMetrics, ABC):
-    pass
+MappingFindingMetrics = CompositeClassSpec(
+    "MappingFindingMetrics",
+    (FindingMetrics, ABC),
+).build(__name__)
 
 
-class RegistrationFindingMetrics(FindingMetrics, ABC):
-    pass
+RegistrationFindingMetrics = CompositeClassSpec(
+    "RegistrationFindingMetrics",
+    (FindingMetrics, ABC),
+).build(__name__)
 
 
-class DispatchFindingMetrics(FindingMetrics, ABC):
-    pass
+DispatchFindingMetrics = CompositeClassSpec(
+    "DispatchFindingMetrics",
+    (FindingMetrics, ABC),
+).build(__name__)
 
 
 @dataclass(frozen=True)

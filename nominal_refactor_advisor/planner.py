@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence, TypeVar
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -1002,12 +1002,28 @@ def _field_execution_level_from_findings(
     return "mixed_levels"
 
 
-def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+_MetricValueT = TypeVar("_MetricValueT")
+
+
+def _first_metric_value(
+    findings: tuple[RefactorFinding, ...],
+    extractor: Callable[[object], _MetricValueT | None],
+    default: _MetricValueT,
+) -> _MetricValueT:
     for finding in findings:
-        registry_name = finding.metrics.plan_registry_name
-        if registry_name:
-            return _safe_identifier(registry_name)
-    return "Registry"
+        value = extractor(finding.metrics)
+        if value:
+            return value
+    return default
+
+
+def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
+    registry_name = _first_metric_value(
+        findings,
+        lambda metrics: metrics.plan_registry_name,
+        "Registry",
+    )
+    return _safe_identifier(registry_name)
 
 
 def _mapping_symbol_from_findings(
@@ -1120,11 +1136,13 @@ def _dispatch_cases_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
 
 
 def _statement_count_from_findings(findings: tuple[RefactorFinding, ...]) -> int:
-    for finding in findings:
-        statement_count = finding.metrics.plan_statement_count
-        if statement_count:
-            return int(statement_count)
-    return 0
+    return int(
+        _first_metric_value(
+            findings,
+            lambda metrics: metrics.plan_statement_count,
+            0,
+        )
+    )
 
 
 def _suggest_base_name(class_names: tuple[str, ...]) -> str:

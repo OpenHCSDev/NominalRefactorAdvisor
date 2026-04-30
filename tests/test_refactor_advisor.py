@@ -8308,3 +8308,44 @@ class {name.title()}Mixin:
     assert "3 one-class modules" in finding.summary
     assert "support" in finding.summary
     assert "ModuleFamilyCatalog" in (finding.scaffold or "")
+
+
+def test_detects_module_constructor_policy_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SelectionPolicy:
+    names: frozenset[str]
+    suffixes: tuple[str, ...]
+    predicate: object
+
+
+ALPHA_SELECTION_POLICY = SelectionPolicy(
+    ALPHA_NAMES,
+    ALPHA_SUFFIXES,
+    is_alpha,
+)
+
+
+BETA_SELECTION_POLICY = SelectionPolicy(
+    BETA_NAMES,
+    BETA_SUFFIXES,
+    is_beta,
+)
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "module_constructor_policy_family"
+    )
+
+    assert "SelectionPolicy" in finding.summary
+    assert "ALPHA_SELECTION_POLICY" in finding.summary
+    assert "PolicyCatalog" in (finding.scaffold or "")

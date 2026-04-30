@@ -5732,22 +5732,6 @@ def _collect_class_sentinel_attrs(
             )
     return grouped
 
-def _module_compares_attribute(module: ast.Module, attr_name: str) -> bool:
-    for node in _walk_nodes(module):
-        if isinstance(node, ast.Compare):
-            values = [node.left] + list(node.comparators)
-            if any(
-                isinstance(value, ast.Attribute) and value.attr == attr_name
-                for value in values
-            ):
-                return True
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-            if node.func.id == _GETATTR_BUILTIN and len(node.args) >= 2:
-                attr = node.args[1]
-                if isinstance(attr, ast.Constant) and attr.value == attr_name:
-                    return True
-    return False
-
 def _predicate_factory_chain_branch_count(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int | None:

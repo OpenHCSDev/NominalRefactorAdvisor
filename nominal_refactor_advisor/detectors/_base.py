@@ -15,12 +15,14 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
-from typing import Any, ClassVar, Sequence, TypeVar, cast
+from typing import Any, Callable, ClassVar, Sequence, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -2552,26 +2554,88 @@ def _looks_like_callable_value(value: str) -> bool:
 
 
 def _identity_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
-    names = []
-    for name, value in keyword_map.items():
-        normalized = name.lower()
-        if (
-            normalized in _IDENTITY_AXIS_KEYWORDS
-            or normalized.endswith(_IDENTITY_AXIS_SUFFIXES)
-            or _looks_like_type_or_nominal_key(ast.unparse(value))
-        ):
-            names.append(name)
-    return tuple(sorted(names))
+    return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.IDENTITY].names(keyword_map)
 
 
 def _executable_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
+    return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.EXECUTABLE].names(keyword_map)
+
+
+class AxisKeywordRole(StrEnum):
+    IDENTITY = "identity"
+    EXECUTABLE = "executable"
+
+
+@dataclass(frozen=True)
+class AxisKeywordPolicy:
+    keyword_names: frozenset[str]
+    keyword_suffixes: tuple[str, ...]
+    value_predicate: Callable[[str], bool]
+
+    def names(self, keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
+        return _axis_keyword_names(
+            keyword_map,
+            keyword_names=self.keyword_names,
+            keyword_suffixes=self.keyword_suffixes,
+            value_predicate=self.value_predicate,
+        )
+
+
+@dataclass(frozen=True)
+class AxisKeywordPolicySpec:
+    role: AxisKeywordRole
+    keyword_names: frozenset[str]
+    keyword_suffixes: tuple[str, ...]
+    value_predicate: Callable[[str], bool]
+
+    def build_policy(self) -> AxisKeywordPolicy:
+        return AxisKeywordPolicy(
+            self.keyword_names,
+            self.keyword_suffixes,
+            self.value_predicate,
+        )
+
+
+@dataclass(frozen=True)
+class AxisKeywordPolicyCatalog:
+    specs: tuple[AxisKeywordPolicySpec, ...]
+
+    def materialize(self) -> dict[AxisKeywordRole, AxisKeywordPolicy]:
+        return {spec.role: spec.build_policy() for spec in self.specs}
+
+
+_AXIS_KEYWORD_POLICIES = AxisKeywordPolicyCatalog(
+    (
+        AxisKeywordPolicySpec(
+            AxisKeywordRole.IDENTITY,
+            _IDENTITY_AXIS_KEYWORDS,
+            _IDENTITY_AXIS_SUFFIXES,
+            _looks_like_type_or_nominal_key,
+        ),
+        AxisKeywordPolicySpec(
+            AxisKeywordRole.EXECUTABLE,
+            _EXECUTABLE_AXIS_KEYWORDS,
+            _EXECUTABLE_AXIS_SUFFIXES,
+            _looks_like_callable_value,
+        ),
+    )
+).materialize()
+
+
+def _axis_keyword_names(
+    keyword_map: dict[str, ast.AST],
+    *,
+    keyword_names: frozenset[str],
+    keyword_suffixes: tuple[str, ...],
+    value_predicate: Callable[[str], bool],
+) -> tuple[str, ...]:
     names = []
     for name, value in keyword_map.items():
         normalized = name.lower()
         if (
-            normalized in _EXECUTABLE_AXIS_KEYWORDS
-            or normalized.endswith(_EXECUTABLE_AXIS_SUFFIXES)
-            or _looks_like_callable_value(ast.unparse(value))
+            normalized in keyword_names
+            or normalized.endswith(keyword_suffixes)
+            or value_predicate(ast.unparse(value))
         ):
             names.append(name)
     return tuple(sorted(names))
@@ -2898,10 +2962,13 @@ def _module_level_named_sequences(
     return sequences
 
 
-def _module_level_named_calls(
+_AstValueT = TypeVar("_AstValueT", bound=ast.AST)
+
+
+def _module_level_named_values(
     module: ParsedModule,
-) -> dict[str, tuple[int, ast.Call]]:
-    calls: dict[str, tuple[int, ast.Call]] = {}
+) -> dict[str, tuple[int, ast.AST]]:
+    values: dict[str, tuple[int, ast.AST]] = {}
     for statement in _trim_docstring_body(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
@@ -2917,35 +2984,33 @@ def _module_level_named_calls(
         ):
             target_name = statement.target.id
             value = statement.value
-        if target_name is None or not isinstance(value, ast.Call):
+        if target_name is None or value is None:
             continue
-        calls[target_name] = (statement.lineno, value)
-    return calls
+        values[target_name] = (statement.lineno, value)
+    return values
+
+
+def _module_level_named_instances(
+    module: ParsedModule,
+    value_type: type[_AstValueT],
+) -> dict[str, tuple[int, _AstValueT]]:
+    return {
+        name: (line, cast(_AstValueT, value))
+        for name, (line, value) in _module_level_named_values(module).items()
+        if isinstance(value, value_type)
+    }
+
+
+def _module_level_named_calls(
+    module: ParsedModule,
+) -> dict[str, tuple[int, ast.Call]]:
+    return _module_level_named_instances(module, ast.Call)
 
 
 def _module_level_named_dicts(
     module: ParsedModule,
 ) -> dict[str, tuple[int, ast.Dict]]:
-    dicts: dict[str, tuple[int, ast.Dict]] = {}
-    for statement in _trim_docstring_body(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-        ):
-            target_name = statement.targets[0].id
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None or not isinstance(value, ast.Dict):
-            continue
-        dicts[target_name] = (statement.lineno, value)
-    return dicts
+    return _module_level_named_instances(module, ast.Dict)
 
 
 def _single_return_case(
@@ -3073,15 +3138,21 @@ def _selected_constant_return_shape(
 def _shared_constant_suffix(names: tuple[str, ...]) -> str | None:
     if len(names) < 2:
         return None
-    token_lists = [name.split("_") for name in names]
-    suffix: list[str] = []
+    suffix = _shared_reversed_token_suffix(tuple(tuple(name.split("_")) for name in names))
+    if not suffix:
+        return None
+    return "_".join(suffix)
+
+
+def _shared_reversed_token_suffix(
+    token_lists: tuple[tuple[str, ...], ...],
+) -> tuple[str, ...]:
+    reversed_suffix: list[str] = []
     for shared_tokens in zip(*(reversed(tokens) for tokens in token_lists), strict=False):
         if len(set(shared_tokens)) != 1:
             break
-        suffix.append(shared_tokens[0])
-    if not suffix:
-        return None
-    return "_".join(reversed(suffix))
+        reversed_suffix.append(shared_tokens[0])
+    return tuple(reversed(reversed_suffix))
 
 
 def _closed_constant_selector_candidates(
@@ -3313,12 +3384,16 @@ def _derived_wrapper_spec_shadow_candidates(
     )
 
 
-def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
+def _class_annassign_target_names(node: ast.ClassDef) -> tuple[str, ...]:
     field_names: list[str] = []
     for statement in node.body:
         if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             field_names.append(statement.target.id)
     return tuple(field_names)
+
+
+def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return _class_annassign_target_names(node)
 
 
 def _selection_helper_shape(
@@ -5468,18 +5543,6 @@ def _group_repeated_validate_shape_guard_candidates(
     )
 
 
-def _repeated_validate_shape_guard_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[RepeatedValidateShapeGuardFamilyCandidate, ...]:
-    min_guard_count = max(2, config.min_duplicate_statements - 1)
-    method_candidates = _validate_shape_guard_method_candidates(
-        (module,),
-        min_guard_count=min_guard_count,
-    )
-    return _group_repeated_validate_shape_guard_candidates(method_candidates, config)
-
-
 def _repeated_validate_shape_guard_candidates_for_modules(
     modules: Sequence[ParsedModule],
     config: DetectorConfig,
@@ -5969,26 +6032,8 @@ def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
 
 
 def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    field_names: list[str] = []
-    for statement in node.body:
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            field_names.append(statement.target.id)
-    return tuple(field_names)
+    return _class_annassign_target_names(node)
 
-
-def _normalize_witness_field_roles(field_name: str) -> tuple[str, ...]:
-    roles: list[str] = []
-    if field_name == "file_path":
-        roles.append("witness_file_path")
-    if field_name in {"line", "init_line", "method_line", "mutator_line"}:
-        roles.append("witness_line")
-    if field_name in {"class_name", "function_name", "registry_name", _SUBJECT_NAME_FIELD}:
-        roles.extend(("witness_subject", "witness_name_payload"))
-    if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
-        roles.extend(("witness_name_family", "witness_name_payload"))
-    return tuple(dict.fromkeys(roles))
 
 
 def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
@@ -6053,19 +6098,6 @@ def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
     if not tokens:
         return ()
     return (tokens[-1],)
-
-
-def _normalized_witness_role_fields(
-    field_names: tuple[str, ...],
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
-    role_to_fields: dict[str, set[str]] = defaultdict(set)
-    for field_name in field_names:
-        for role_name in _normalize_witness_field_roles(field_name):
-            role_to_fields[role_name].add(field_name)
-    return tuple(
-        (role_name, tuple(sorted(field_names)))
-        for role_name, field_names in sorted(role_to_fields.items())
-    )
 
 
 def _witness_carrier_class_candidates(
@@ -6261,17 +6293,10 @@ def _shared_registry_key_suffix(class_names: Sequence[str]) -> str | None:
     )
     if not all(token_list for token_list in lower_token_lists):
         return None
-    shared_reversed: list[str] = []
-    for shared_tokens in zip(
-        *(reversed(tokens) for tokens in lower_token_lists),
-        strict=False,
-    ):
-        if len(set(shared_tokens)) != 1:
-            break
-        shared_reversed.append(shared_tokens[0])
-    if not shared_reversed:
+    shared_suffix = _shared_reversed_token_suffix(lower_token_lists)
+    if not shared_suffix:
         return None
-    shared_count = len(shared_reversed)
+    shared_count = len(shared_suffix)
     if len(lower_token_lists[0]) <= shared_count:
         return None
     return "".join(raw_token_lists[0][-shared_count:])
@@ -6683,6 +6708,71 @@ def _fiber_grouped_shapes(
     return groups
 
 
+def _semantic_dataclass_recommendation_fields(
+    class_name: str,
+    base_class_name: str,
+    matched_schema_name: str | None,
+    rationale: str,
+    scaffold: str,
+    certification: CertificationLevel,
+) -> dict[str, object]:
+    return {
+        "class_name": class_name,
+        "base_class_name": base_class_name,
+        "matched_schema_name": matched_schema_name,
+        "rationale": rationale,
+        "scaffold": scaffold,
+        "certification": certification,
+    }
+
+
+def _existing_semantic_dataclass_recommendation_fields(
+    class_name: str,
+    base_class_name: str,
+    rationale: str,
+    scaffold: str,
+) -> dict[str, object]:
+    return _semantic_dataclass_recommendation_fields(
+        class_name,
+        base_class_name,
+        class_name,
+        rationale,
+        scaffold,
+        CERTIFIED,
+    )
+
+
+def _proposed_semantic_dataclass_recommendation_fields(
+    class_name: str,
+    base_class_name: str,
+    matched_schema_name: str | None,
+    rationale: str,
+    scaffold: str,
+) -> dict[str, object]:
+    return _semantic_dataclass_recommendation_fields(
+        class_name,
+        base_class_name,
+        matched_schema_name,
+        rationale,
+        scaffold,
+        STRONG_HEURISTIC,
+    )
+
+
+_SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS = ConstructorVariantCatalog(
+    (
+        ConstructorVariantSpec(
+            "existing_schema",
+            _existing_semantic_dataclass_recommendation_fields,
+        ),
+        ConstructorVariantSpec(
+            "proposed_schema",
+            _proposed_semantic_dataclass_recommendation_fields,
+        ),
+    )
+)
+
+
 @dataclass(frozen=True)
 class SemanticDataclassRecommendation:
     class_name: str
@@ -6692,40 +6782,10 @@ class SemanticDataclassRecommendation:
     scaffold: str
     certification: CertificationLevel
 
-    @classmethod
-    def existing_schema(
-        cls,
-        class_name: str,
-        base_class_name: str,
-        rationale: str,
-        scaffold: str,
-    ) -> "SemanticDataclassRecommendation":
-        return cls(
-            class_name,
-            base_class_name,
-            class_name,
-            rationale,
-            scaffold,
-            CERTIFIED,
-        )
-
-    @classmethod
-    def proposed_schema(
-        cls,
-        class_name: str,
-        base_class_name: str,
-        matched_schema_name: str | None,
-        rationale: str,
-        scaffold: str,
-    ) -> "SemanticDataclassRecommendation":
-        return cls(
-            class_name,
-            base_class_name,
-            matched_schema_name,
-            rationale,
-            scaffold,
-            STRONG_HEURISTIC,
-        )
+    (
+        existing_schema,
+        proposed_schema,
+    ) = _SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS.derived_methods()
 
 
 @dataclass(frozen=True)
@@ -6761,6 +6821,35 @@ class LineWitnessCandidate(ABC):
         return SourceLocation(self.file_path, self.line, self.witness_name)
 
 
+class WitnessNameAliasMixin(ABC):
+    @property
+    @abstractmethod
+    def witness_name(self) -> str:
+        raise NotImplementedError
+
+
+class ClassNameWitnessNameMixin(WitnessNameAliasMixin):
+    class_name: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+
+class QualnameWitnessNameMixin(WitnessNameAliasMixin):
+    qualname: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
+
+
+@dataclass(frozen=True)
+class EnumCaseFamilyMixin(ABC):
+    enum_name: str
+    case_names: tuple[str, ...]
+
+
 @dataclass(frozen=True)
 class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
     evidence_locations: tuple[SourceLocation, ...]
@@ -6771,12 +6860,8 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ClassLineWitnessCandidate(LineWitnessCandidate):
+class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate):
     class_name: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
 
 
 @dataclass(frozen=True)
@@ -7000,10 +7085,78 @@ class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class ClassLineNumbersGroup(ABC):
-    file_path: str
+class ClassNameLineNumbersGroup(ABC):
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
+
+    def evidence_for_file(self, file_path: str) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(file_path, line, class_name)
+            for class_name, line in zip(
+                self.class_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
+    file_path: str
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence_for_file(self.file_path)
+
+
+@dataclass(frozen=True)
+class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
+    file_paths: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(file_path, line, class_name)
+            for file_path, line, class_name in zip(
+                self.file_paths,
+                self.line_numbers,
+                self.class_names,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ClassMethodFamilyCandidate(ABC):
+    file_path: str
+    class_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for method_name, line in zip(
+                self.method_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
+    keyword_names: tuple[str, ...]
+
+    @property
+    def mapping_metrics(self) -> MappingMetrics:
+        return MappingMetrics(
+            mapping_site_count=len(self.method_names),
+            field_count=len(self.keyword_names),
+            mapping_name=self.class_name,
+            field_names=self.keyword_names,
+        )
 
 
 @dataclass(frozen=True)
@@ -7145,12 +7298,7 @@ class SubclassTraversalGroup:
 
 
 @dataclass(frozen=True)
-class AlternateConstructorFamilyGroup:
-    file_path: str
-    class_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    keyword_names: tuple[str, ...]
+class AlternateConstructorFamilyGroup(KeywordMethodFamilyCandidate):
     source_type_names: tuple[str, ...]
 
 
@@ -7235,12 +7383,8 @@ class FunctionProfile:
 
 
 @dataclass(frozen=True)
-class QualnameLineWitnessCandidate(LineWitnessCandidate):
+class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
     qualname: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
 
 
 @dataclass(frozen=True)
@@ -7303,10 +7447,8 @@ class SiblingRoleHelperSymmetryCandidate:
 
 
 @dataclass(frozen=True)
-class EnumProjectionTableCandidate(LineWitnessCandidate):
+class EnumProjectionTableCandidate(EnumCaseFamilyMixin, LineWitnessCandidate):
     table_name: str
-    enum_name: str
-    case_names: tuple[str, ...]
     value_summaries: tuple[str, ...]
 
     @property
@@ -7387,10 +7529,8 @@ class RepeatedEnumStrategyDispatchCandidate:
 
 
 @dataclass(frozen=True)
-class InlineEnumSubsetGuardCandidate(FunctionLineWitnessCandidate):
+class InlineEnumSubsetGuardCandidate(EnumCaseFamilyMixin, FunctionLineWitnessCandidate):
     axis_expression: str
-    enum_name: str
-    case_names: tuple[str, ...]
     operator: str
 
 

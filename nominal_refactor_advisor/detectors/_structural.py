@@ -6,6 +6,9 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeVar
+
 from ._base import *
 from ._helpers import *
 from ._substrate_support import *
@@ -457,10 +460,7 @@ def _prefixed_role_field_bundle_candidates(
     )
     observations_by_class: dict[str, list[FieldObservation]] = defaultdict(list)
     for observation in observations:
-        if observation.execution_level not in {
-            StructuralExecutionLevel.CLASS_BODY,
-            StructuralExecutionLevel.INIT_BODY,
-        }:
+        if not observation.execution_level.allows_prefixed_role_field_bundle:
             continue
         observations_by_class[observation.class_name].append(observation)
 
@@ -1469,48 +1469,18 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
 
 
 @dataclass(frozen=True)
-class ConstructorVariantFamilyCandidate:
-    file_path: str
-    class_name: str
+class ConstructorVariantFamilyCandidate(ClassMethodFamilyCandidate):
     callee_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     coordinate_count: int
     varying_coordinate_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
-            for method_name, line in zip(
-                self.method_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
-
 
 @dataclass(frozen=True)
-class AccumulatorFoldFamilyCandidate:
-    file_path: str
-    class_name: str
+class AccumulatorFoldFamilyCandidate(ClassMethodFamilyCandidate):
     accumulator_type_name: str
     result_method_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     source_parameter_names: tuple[str, ...]
     step_method_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
-            for method_name, line in zip(
-                self.method_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
 
 
 @dataclass(frozen=True)
@@ -1530,81 +1500,42 @@ class ExcessiveBlankLineRunCandidate:
 
 
 @dataclass(frozen=True)
-class CatalogInstallingMixinFamilyCandidate:
-    file_path: str
-    class_names: tuple[str, ...]
+class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
     catalog_attribute_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, class_name)
-            for class_name, line in zip(
-                self.class_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
 
 
 @dataclass(frozen=True)
-class RegexGroupExtractorFamilyCandidate:
-    file_path: str
-    class_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
+class RegexGroupExtractorFamilyCandidate(ClassMethodFamilyCandidate):
     pattern_attribute_names: tuple[str, ...]
     matcher_names: tuple[str, ...]
     group_index: int
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
-            for method_name, line in zip(
-                self.method_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
+
+@dataclass(frozen=True)
+class SparseConstructorVariantFamilyCandidate(KeywordMethodFamilyCandidate):
+    pass
 
 
 @dataclass(frozen=True)
-class SparseConstructorVariantFamilyCandidate:
-    file_path: str
-    class_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    keyword_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
-            for method_name, line in zip(
-                self.method_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
-
-
-@dataclass(frozen=True)
-class SupportPreludeModuleFamilyCandidate:
+class SupportPreludeModuleFamilyCandidate(MultiFileClassLineNumbersGroup):
     support_module_name: str
-    file_paths: tuple[str, ...]
-    class_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ModuleConstructorPolicyFamilyCandidate:
+    file_path: str
+    constructor_name: str
+    row_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
+    field_names: tuple[str, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
-            SourceLocation(file_path, line, class_name)
-            for file_path, line, class_name in zip(
-                self.file_paths,
+            SourceLocation(self.file_path, line, row_name)
+            for row_name, line in zip(
+                self.row_names,
                 self.line_numbers,
-                self.class_names,
                 strict=True,
             )
         )
@@ -1718,40 +1649,65 @@ def _varying_coordinate_names(
     return tuple(varying)
 
 
+_ParsedFamilyMethod = TypeVar("_ParsedFamilyMethod")
+
+
+def _class_method_shape_groups(
+    module: ParsedModule,
+    method_parser: Callable[[ast.FunctionDef], _ParsedFamilyMethod | None],
+    shape_key: Callable[[_ParsedFamilyMethod], object],
+) -> tuple[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]], ...]:
+    groups: list[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]]] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        grouped: dict[object, list[_ParsedFamilyMethod]] = defaultdict(list)
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            method = method_parser(statement)
+            if method is not None:
+                grouped[shape_key(method)].append(method)
+        for methods in grouped.values():
+            if len(methods) < 2:
+                continue
+            groups.append(
+                (
+                    class_node,
+                    tuple(
+                        sorted(
+                            methods,
+                            key=lambda item: (item.line, item.method_name),
+                        )
+                    ),
+                )
+            )
+    return tuple(groups)
+
+
 def _constructor_variant_family_candidates(
     module: ParsedModule,
 ) -> tuple[ConstructorVariantFamilyCandidate, ...]:
     candidates: list[ConstructorVariantFamilyCandidate] = []
-    for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    for class_node, ordered in _class_method_shape_groups(
+        module,
+        _constructor_variant_method,
+        lambda method: method.shape_key,
     ):
-        grouped: dict[tuple[object, ...], list[_ConstructorVariantMethod]] = defaultdict(list)
-        for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            method = _constructor_variant_method(statement)
-            if method is not None:
-                grouped[method.shape_key].append(method)
-        for methods in grouped.values():
-            if len(methods) < 2:
-                continue
-            ordered = tuple(
-                sorted(methods, key=lambda item: (item.line, item.method_name))
+        varying_coordinates = _varying_coordinate_names(ordered)
+        if not varying_coordinates:
+            continue
+        candidates.append(
+            ConstructorVariantFamilyCandidate(
+                file_path=str(module.path),
+                class_name=class_node.name,
+                callee_name=ordered[0].callee_name,
+                method_names=tuple(method.method_name for method in ordered),
+                line_numbers=tuple(method.line for method in ordered),
+                coordinate_count=len(ordered[0].coordinate_fingerprints),
+                varying_coordinate_names=varying_coordinates,
             )
-            varying_coordinates = _varying_coordinate_names(ordered)
-            if not varying_coordinates:
-                continue
-            candidates.append(
-                ConstructorVariantFamilyCandidate(
-                    file_path=str(module.path),
-                    class_name=class_node.name,
-                    callee_name=ordered[0].callee_name,
-                    method_names=tuple(method.method_name for method in ordered),
-                    line_numbers=tuple(method.line for method in ordered),
-                    coordinate_count=len(ordered[0].coordinate_fingerprints),
-                    varying_coordinate_names=varying_coordinates,
-                )
-            )
+        )
     return tuple(
         sorted(
             candidates,
@@ -1827,38 +1783,27 @@ def _accumulator_fold_family_candidates(
     module: ParsedModule,
 ) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
     candidates: list[AccumulatorFoldFamilyCandidate] = []
-    for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    for class_node, ordered in _class_method_shape_groups(
+        module,
+        _accumulator_fold_method,
+        lambda method: method.shape_key,
     ):
-        grouped: dict[tuple[str, str], list[_AccumulatorFoldMethod]] = defaultdict(list)
-        for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            method = _accumulator_fold_method(statement)
-            if method is not None:
-                grouped[method.shape_key].append(method)
-        for methods in grouped.values():
-            if len(methods) < 2:
-                continue
-            ordered = tuple(
-                sorted(methods, key=lambda item: (item.line, item.method_name))
+        if len({method.step_method_name for method in ordered}) < 2:
+            continue
+        candidates.append(
+            AccumulatorFoldFamilyCandidate(
+                file_path=str(module.path),
+                class_name=class_node.name,
+                accumulator_type_name=ordered[0].accumulator_type_name,
+                result_method_name=ordered[0].result_method_name,
+                method_names=tuple(method.method_name for method in ordered),
+                line_numbers=tuple(method.line for method in ordered),
+                source_parameter_names=tuple(
+                    method.source_parameter_name for method in ordered
+                ),
+                step_method_names=tuple(method.step_method_name for method in ordered),
             )
-            if len({method.step_method_name for method in ordered}) < 2:
-                continue
-            candidates.append(
-                AccumulatorFoldFamilyCandidate(
-                    file_path=str(module.path),
-                    class_name=class_node.name,
-                    accumulator_type_name=ordered[0].accumulator_type_name,
-                    result_method_name=ordered[0].result_method_name,
-                    method_names=tuple(method.method_name for method in ordered),
-                    line_numbers=tuple(method.line for method in ordered),
-                    source_parameter_names=tuple(
-                        method.source_parameter_name for method in ordered
-                    ),
-                    step_method_names=tuple(method.step_method_name for method in ordered),
-                )
-            )
+        )
     return tuple(
         sorted(
             candidates,
@@ -2207,6 +2152,51 @@ def _support_prelude_module_family_candidates(
     return tuple(candidates)
 
 
+def _is_module_policy_row_name(name: str) -> bool:
+    return name.isupper() and "_" in name
+
+
+def _constructor_call_schema(call: ast.Call) -> tuple[str, ...]:
+    return (
+        *(f"arg{index}" for index, _arg in enumerate(call.args)),
+        *(keyword.arg or "**" for keyword in call.keywords),
+    )
+
+
+def _module_constructor_policy_family_candidates(
+    module: ParsedModule,
+) -> tuple[ModuleConstructorPolicyFamilyCandidate, ...]:
+    grouped: dict[tuple[str, tuple[str, ...]], list[tuple[str, int]]] = defaultdict(list)
+    for row_name, (line, call) in _module_level_named_calls(module).items():
+        if not _is_module_policy_row_name(row_name):
+            continue
+        schema = _constructor_call_schema(call)
+        if len(schema) < 2:
+            continue
+        grouped[(ast.unparse(call.func), schema)].append((row_name, line))
+
+    candidates: list[ModuleConstructorPolicyFamilyCandidate] = []
+    for (constructor_name, field_names), rows in grouped.items():
+        if len(rows) < 2:
+            continue
+        ordered = tuple(sorted(rows, key=lambda item: (item[1], item[0])))
+        candidates.append(
+            ModuleConstructorPolicyFamilyCandidate(
+                file_path=str(module.path),
+                constructor_name=constructor_name,
+                row_names=tuple(row_name for row_name, _line in ordered),
+                line_numbers=tuple(line for _row_name, line in ordered),
+                field_names=field_names,
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line_numbers, item.constructor_name),
+        )
+    )
+
+
 class AlternateConstructorFamilyDetector(CandidateFindingDetector):
     detector_id = "alternate_constructor_family"
     finding_spec = FindingSpec(
@@ -2263,12 +2253,7 @@ class AlternateConstructorFamilyDetector(CandidateFindingDetector):
                 f"# Collapse {group.method_names} into one provenance-dispatched constructor for `{group.class_name}`.\n"
                 "# Keep source-kind differences in dispatch handlers and keep the shared record schema in one authoritative builder."
             ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(group.method_names),
-                field_count=len(group.keyword_names),
-                mapping_name=group.class_name,
-                field_names=group.keyword_names,
-            ),
+            metrics=group.mapping_metrics,
         )
 
 
@@ -2616,12 +2601,7 @@ class SparseConstructorVariantFamilyDetector(CandidateFindingDetector):
                 f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n"
                 "# Keep dataclass defaults as the base point and declare only each variant's overridden fields."
             ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(sparse_candidate.method_names),
-                field_count=len(sparse_candidate.keyword_names),
-                mapping_name=sparse_candidate.class_name,
-                field_names=sparse_candidate.keyword_names,
-            ),
+            metrics=sparse_candidate.mapping_metrics,
         )
 
 
@@ -2682,6 +2662,69 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
                 )
             )
         return findings
+
+
+class ModuleConstructorPolicyFamilyDetector(CandidateFindingDetector):
+    detector_id = "module_constructor_policy_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Module constructor policy rows should derive from a semantic catalog",
+        why=(
+            "Several module-level constant rows instantiate the same policy constructor with the same argument schema. "
+            "Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than "
+            "spell each constructor call by hand."
+        ),
+        capability_gap="one constructor-row catalog keyed by semantic policy role",
+        relation_context="same module has multiple constant rows assigned from the same constructor shape",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _module_constructor_policy_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        policy_candidate = cast(ModuleConstructorPolicyFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Module constants {', '.join(policy_candidate.row_names)} repeat "
+                f"`{policy_candidate.constructor_name}` constructor rows with schema "
+                f"{policy_candidate.field_names}."
+            ),
+            policy_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class PolicyRowSpec:\n"
+                "    role_name: str\n"
+                "    constructor_args: tuple[object, ...]\n\n"
+                "class PolicyCatalog:\n"
+                "    def materialize(self) -> dict[str, object]: ..."
+            ),
+            codemod_patch=(
+                "# Replace repeated module-level constructor rows with one semantic policy catalog.\n"
+                "# Keep role names and constructor coordinates as data, then derive the module constants from the catalog."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(policy_candidate.row_names),
+                field_count=len(policy_candidate.field_names),
+                mapping_name=policy_candidate.constructor_name,
+                field_names=policy_candidate.row_names,
+            ),
+        )
 
 
 class DynamicSelfFieldSelectionDetector(CandidateFindingDetector):
