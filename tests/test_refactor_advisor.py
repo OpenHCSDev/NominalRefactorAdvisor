@@ -5719,6 +5719,76 @@ class Parser:
     )
 
 
+def test_detects_algebraic_duplicate_compound_blocks(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Renderer:
+    def render_left(self, items, index):
+        rendered = []
+        for item in items:
+            key = item.left_name
+            if key in index:
+                rendered.append(index[key])
+            else:
+                rendered.append(str(item))
+        return rendered
+
+    def render_right(self, rows, lookup):
+        values = []
+        for row in rows:
+            code = row.right_name
+            if code in lookup:
+                values.append(lookup[code])
+            else:
+                values.append(str(row))
+        return values
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "algebraic_duplicate_compound_block"
+    )
+
+    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
+    assert "render_left" in finding.summary
+    assert "render_right" in finding.summary
+    assert "quotient-normal-form AST" in finding.why
+    assert "BlockAlgebra" in (finding.scaffold or "")
+
+
+def test_ignores_flat_repeated_loops_without_nested_control(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Renderer:
+    def render_left(self, items):
+        rendered = []
+        for item in items:
+            rendered.append(str(item))
+        return rendered
+
+    def render_right(self, rows):
+        values = []
+        for row in rows:
+            values.append(str(row))
+        return values
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "algebraic_duplicate_compound_block"
+        for finding in findings
+    )
+
+
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

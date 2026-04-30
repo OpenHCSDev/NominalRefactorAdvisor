@@ -3024,6 +3024,193 @@ class RepeatedLocalRegexBundleDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class AlgebraicDuplicateCompoundBlockCandidate(LineWitnessCandidate):
+    block_kind: str
+    function_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    normal_form_size: int
+
+    @property
+    def witness_name(self) -> str:
+        return "algebraic duplicate compound block"
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for line, function_name in zip(
+                self.line_numbers, self.function_names, strict=True
+            )
+        )
+
+
+def _algebraic_ast_key(node: object) -> object:
+    if isinstance(node, ast.Name):
+        return ("Name", type(node.ctx).__name__)
+    if isinstance(node, ast.arg):
+        return ("arg",)
+    if isinstance(node, ast.Attribute):
+        return ("Attribute", _algebraic_ast_key(node.value), "ATTR")
+    if isinstance(node, ast.Constant):
+        return ("Constant", type(node.value).__name__)
+    if isinstance(node, ast.keyword):
+        return ("keyword", "ARG", _algebraic_ast_key(node.value))
+    if isinstance(node, ast.alias):
+        return ("alias",)
+    if isinstance(node, ast.AST):
+        fields = []
+        for field_name, value in ast.iter_fields(node):
+            if field_name in {
+                "lineno",
+                "col_offset",
+                "end_lineno",
+                "end_col_offset",
+                "ctx",
+                "type_comment",
+            }:
+                continue
+            fields.append((field_name, _algebraic_ast_key(value)))
+        return (type(node).__name__, tuple(fields))
+    if isinstance(node, list):
+        return tuple(_algebraic_ast_key(item) for item in node)
+    if isinstance(node, tuple):
+        return tuple(_algebraic_ast_key(item) for item in node)
+    return type(node).__name__
+
+
+def _algebraic_normal_form_size(normal_form: object) -> int:
+    if isinstance(normal_form, tuple):
+        return 1 + sum(_algebraic_normal_form_size(item) for item in normal_form)
+    return 1
+
+
+def _has_nested_compound_statement(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if child is node:
+            continue
+        if isinstance(child, (ast.For, ast.While, ast.If, ast.Try, ast.With)):
+            return True
+    return False
+
+
+def _algebraic_duplicate_compound_block_candidates(
+    module: ParsedModule,
+) -> tuple[AlgebraicDuplicateCompoundBlockCandidate, ...]:
+    grouped: dict[
+        tuple[str, object],
+        list[tuple[str, int, object]],
+    ] = defaultdict(list)
+    for qualname, function in _iter_surface_functions(module.module):
+        for node in _walk_function_body_nodes(function):
+            if not isinstance(node, (ast.For, ast.While)):
+                continue
+            if not _has_nested_compound_statement(node):
+                continue
+            block_kind = type(node).__name__
+            normal_form = _algebraic_ast_key(node)
+            grouped[(block_kind, normal_form)].append(
+                (qualname, node.lineno, normal_form)
+            )
+
+    candidates: list[AlgebraicDuplicateCompoundBlockCandidate] = []
+    for (block_kind, normal_form), sites in grouped.items():
+        first_site_by_function: dict[str, tuple[int, object]] = {}
+        for function_name, line_number, site_normal_form in sorted(
+            sites, key=lambda item: (item[0], item[1])
+        ):
+            first_site_by_function.setdefault(
+                function_name, (line_number, site_normal_form)
+            )
+        if len(first_site_by_function) < 2:
+            continue
+        ordered_items = tuple(
+            sorted(first_site_by_function.items(), key=lambda item: item[1][0])
+        )
+        candidates.append(
+            AlgebraicDuplicateCompoundBlockCandidate(
+                file_path=str(module.path),
+                line=ordered_items[0][1][0],
+                block_kind=block_kind,
+                function_names=tuple(function_name for function_name, _ in ordered_items),
+                line_numbers=tuple(line for _, (line, _) in ordered_items),
+                normal_form_size=_algebraic_normal_form_size(normal_form),
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.block_kind,
+                candidate.function_names,
+            ),
+        )
+    )
+
+
+class AlgebraicDuplicateCompoundBlockDetector(CandidateFindingDetector):
+    detector_id = "algebraic_duplicate_compound_block"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Anti-unified compound blocks should become one derived algebra",
+        why=(
+            "The repeated blocks have the same quotient-normal-form AST after alpha-renaming "
+            "local names, literals, and attribute labels. That is a formal witness that the "
+            "algorithmic structure is duplicated modulo representation choices."
+        ),
+        capability_gap="single derived algorithm authority for an anti-unified compound block",
+        relation_context="compound blocks are equal in the AST quotient algebra modulo names and literals",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _algebraic_duplicate_compound_block_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        block_candidate = cast(AlgebraicDuplicateCompoundBlockCandidate, candidate)
+        functions = ", ".join(block_candidate.function_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{block_candidate.file_path} repeats an anti-unified "
+                f"{block_candidate.block_kind} block across {functions}."
+            ),
+            block_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class BlockAlgebra:\n"
+                "    def run(self, context): ...\n\n"
+                "# Route each former block through one derived algebra with typed context rows."
+            ),
+            codemod_patch=(
+                "# Extract the repeated quotient-normal-form block into one typed helper or algebra object.\n"
+                "# Keep variation as context data; derive the shared control structure once."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=0,
+                branch_site_count=len(block_candidate.function_names),
+                call_site_count=len(block_candidate.function_names),
+                parameter_count=0,
+                callee_family_count=1,
+            ),
+        )
+
+
 class RepeatedProjectionHelperDetector(CandidateFindingDetector):
     detector_id = "repeated_projection_helpers"
     finding_spec = FindingSpec(
