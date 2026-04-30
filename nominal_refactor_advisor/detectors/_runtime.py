@@ -2835,6 +2835,195 @@ class MirroredFileRewriteLoopDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class RepeatedLocalRegexBundleCandidate(LineWitnessCandidate):
+    owner_name: str
+    function_names: tuple[str, ...]
+    regex_literals: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return "repeated local regex bundle"
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for line, function_name in zip(
+                self.line_numbers, self.function_names, strict=True
+            )
+        )
+
+
+def _regex_literal_from_call(node: ast.Call) -> str | None:
+    func = node.func
+    if not (
+        isinstance(func, ast.Attribute)
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "re"
+        and func.attr in {
+            "compile",
+            "findall",
+            "finditer",
+            "search",
+            "match",
+            "fullmatch",
+            "sub",
+        }
+    ):
+        return None
+    if not node.args:
+        return None
+    pattern_arg = node.args[0]
+    if not (
+        isinstance(pattern_arg, ast.Constant) and isinstance(pattern_arg.value, str)
+    ):
+        return None
+    return pattern_arg.value
+
+
+def _is_substantial_regex_literal(literal: str) -> bool:
+    if len(literal) < 12:
+        return False
+    if not any(token in literal for token in ("\\", "[", "(", "{", "^", "$")):
+        return False
+    alpha_count = sum(1 for char in literal if char.isalpha())
+    return alpha_count >= 3
+
+
+def _local_regex_literals_by_function(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, int]:
+    literals: dict[str, int] = {}
+    for node in _walk_function_body_nodes(function):
+        if not isinstance(node, ast.Call):
+            continue
+        literal = _regex_literal_from_call(node)
+        if literal is None or not _is_substantial_regex_literal(literal):
+            continue
+        literals.setdefault(literal, node.lineno)
+    return literals
+
+
+def _function_owner_name(qualname: str) -> str:
+    if "." not in qualname:
+        return "<module>"
+    return qualname.rsplit(".", 1)[0]
+
+
+def _repeated_local_regex_bundle_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[RepeatedLocalRegexBundleCandidate, ...]:
+    functions_by_owner: dict[
+        str,
+        list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, dict[str, int]]],
+    ] = defaultdict(list)
+    for qualname, function in _iter_surface_functions(module.module):
+        literals = _local_regex_literals_by_function(function)
+        if literals:
+            functions_by_owner[_function_owner_name(qualname)].append(
+                (qualname, function, literals)
+            )
+
+    candidates: list[RepeatedLocalRegexBundleCandidate] = []
+    for owner_name, functions in functions_by_owner.items():
+        for left_index, (left_name, _left_function, left_literals) in enumerate(
+            functions
+        ):
+            for right_name, _right_function, right_literals in functions[
+                left_index + 1 :
+            ]:
+                shared = tuple(sorted(set(left_literals) & set(right_literals)))
+                if len(shared) < config.min_repeated_local_regex_literals:
+                    continue
+                line_numbers = (
+                    min(left_literals[literal] for literal in shared),
+                    min(right_literals[literal] for literal in shared),
+                )
+                candidates.append(
+                    RepeatedLocalRegexBundleCandidate(
+                        file_path=str(module.path),
+                        line=min(line_numbers),
+                        owner_name=owner_name,
+                        function_names=(left_name, right_name),
+                        regex_literals=shared,
+                        line_numbers=line_numbers,
+                    )
+                )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.function_names,
+                candidate.regex_literals,
+            ),
+        )
+    )
+
+
+class RepeatedLocalRegexBundleDetector(CandidateFindingDetector):
+    detector_id = "repeated_local_regex_bundle"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated local regex bundles should become a typed syntax authority",
+        why=(
+            "Sibling functions redeclare the same substantial regex grammar locally. "
+            "That makes each function a partial syntax authority instead of deriving parsing "
+            "from one typed grammar object."
+        ),
+        capability_gap="single typed syntax authority deriving all repeated regex recognizers",
+        relation_context="substantial regex literals are redeclared inside sibling functions",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _repeated_local_regex_bundle_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        regex_candidate = cast(RepeatedLocalRegexBundleCandidate, candidate)
+        functions = ", ".join(regex_candidate.function_names)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{regex_candidate.file_path} repeats {len(regex_candidate.regex_literals)} "
+                f"local regex grammar literals across {functions}."
+            ),
+            regex_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class SyntaxAuthority:\n"
+                "    recognizers: tuple[Pattern[str], ...]\n"
+                "    def parse(self, text: str): ..."
+            ),
+            codemod_patch=(
+                "# Move repeated local regex grammar into one typed syntax authority.\n"
+                "# Derive parser operations from named recognizers instead of redeclaring patterns in each helper."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(regex_candidate.function_names),
+                field_count=len(regex_candidate.regex_literals),
+                mapping_name="regex syntax authority",
+                field_names=regex_candidate.regex_literals,
+                source_name=regex_candidate.owner_name,
+                identity_field_names=(),
+            ),
+        )
+
+
 class RepeatedProjectionHelperDetector(CandidateFindingDetector):
     detector_id = "repeated_projection_helpers"
     finding_spec = FindingSpec(

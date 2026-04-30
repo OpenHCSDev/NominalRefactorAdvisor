@@ -147,6 +147,7 @@ class DetectorConfig:
     min_static_payload_function_lines: int = 60
     min_static_payload_literal_lines: int = 20
     min_unreferenced_private_function_lines: int = 8
+    min_repeated_local_regex_literals: int = 3
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
@@ -183,6 +184,9 @@ class DetectorConfig:
             ),
             min_unreferenced_private_function_lines=int(
                 namespace_values.get("min_unreferenced_private_function_lines", 8)
+            ),
+            min_repeated_local_regex_literals=int(
+                namespace_values.get("min_repeated_local_regex_literals", 3)
             ),
             min_orchestration_function_lines=int(
                 namespace_values.get("min_orchestration_function_lines", 150)

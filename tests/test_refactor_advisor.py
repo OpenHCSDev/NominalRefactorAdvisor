@@ -5657,6 +5657,68 @@ def rewrite_package(root_dir):
     )
 
 
+def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        r'''
+import re
+
+
+class Parser:
+    def parse_one(self, text):
+        name = re.compile(r"\bname\s+([A-Za-z_][A-Za-z0-9_]*)")
+        namespace = re.compile(r"^\s*namespace\s+([A-Za-z0-9_.]+)\s*$")
+        end = re.compile(r"^\s*end(?:\s+[A-Za-z0-9_.]+)?\s*$")
+        return name.search(text), namespace.search(text), end.search(text)
+
+    def parse_two(self, text):
+        name = re.compile(r"\bname\s+([A-Za-z_][A-Za-z0-9_]*)")
+        namespace = re.compile(r"^\s*namespace\s+([A-Za-z0-9_.]+)\s*$")
+        end = re.compile(r"^\s*end(?:\s+[A-Za-z0-9_.]+)?\s*$")
+        return name.search(text), namespace.search(text), end.search(text)
+''',
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "repeated_local_regex_bundle"
+    )
+
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "parse_one" in finding.summary
+    assert "parse_two" in finding.summary
+    assert "typed syntax authority" in finding.title
+    assert "SyntaxAuthority" in (finding.scaffold or "")
+
+
+def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        r'''
+import re
+
+
+class Parser:
+    def normalize_one(self, text):
+        return re.sub(r"\s+", " ", text)
+
+    def normalize_two(self, text):
+        return re.sub(r"\s+", " ", text)
+''',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "repeated_local_regex_bundle"
+        for finding in findings
+    )
+
+
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
