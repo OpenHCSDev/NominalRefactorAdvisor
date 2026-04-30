@@ -7905,6 +7905,68 @@ class RegistrationShape:
     assert "@singledispatchmethod" in (finding.scaffold or "")
 
 
+def test_detects_constructor_variant_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class ArchiveSpec:
+    @classmethod
+    def alpha(cls, root, package, prefix):
+        return cls(root, package, f"{prefix}_alpha", prefix)
+
+    @classmethod
+    def beta(cls, root, package, prefix):
+        return cls(root, package, f"{prefix}_beta", prefix)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "constructor_variant_family"
+    )
+
+    assert "ArchiveSpec" in finding.summary
+    assert "alpha" in finding.summary
+    assert "ConstructorVariantMixin" in (finding.scaffold or "")
+
+
+def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Stats:
+    @classmethod
+    def from_files(cls, files):
+        accumulator = StatsAccumulator()
+        for item in files:
+            accumulator.add_file(item)
+        return accumulator.to_stats()
+
+    @classmethod
+    def from_parts(cls, parts):
+        accumulator = StatsAccumulator()
+        for item in parts:
+            accumulator.add_part(item)
+        return accumulator.to_stats()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "accumulator_fold_family"
+    )
+
+    assert "StatsAccumulator" in finding.summary
+    assert "add_file" in finding.summary
+    assert "AccumulatorFoldMixin" in (finding.scaffold or "")
+
+
 def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -1467,6 +1467,309 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             )
         ]
 
+
+@dataclass(frozen=True)
+class ConstructorVariantFamilyCandidate:
+    file_path: str
+    class_name: str
+    callee_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    coordinate_count: int
+    varying_coordinate_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for method_name, line in zip(
+                self.method_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class AccumulatorFoldFamilyCandidate:
+    file_path: str
+    class_name: str
+    accumulator_type_name: str
+    result_method_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    source_parameter_names: tuple[str, ...]
+    step_method_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for method_name, line in zip(
+                self.method_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class _ConstructorVariantMethod:
+    method_name: str
+    line: int
+    callee_name: str
+    positional_count: int
+    keyword_names: tuple[str, ...]
+    coordinate_fingerprints: tuple[str, ...]
+
+    @property
+    def shape_key(self) -> tuple[object, ...]:
+        return (self.callee_name, self.positional_count, self.keyword_names)
+
+
+@dataclass(frozen=True)
+class _AccumulatorFoldMethod:
+    method_name: str
+    line: int
+    source_parameter_name: str
+    accumulator_type_name: str
+    step_method_name: str
+    result_method_name: str
+
+    @property
+    def shape_key(self) -> tuple[str, str]:
+        return (self.accumulator_type_name, self.result_method_name)
+
+
+def _simple_classmethod_return_call(
+    node: ast.FunctionDef,
+) -> ast.Call | None:
+    if not _is_classmethod(node):
+        return None
+    body = _trim_docstring_body(node.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    returned = body[0].value
+    if not isinstance(returned, ast.Call):
+        return None
+    return returned
+
+
+def _classmethod_constructor_callee_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name) and call.func.id == "cls":
+        return "cls"
+    if (
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "cls"
+    ):
+        return f"cls.{call.func.attr}"
+    return None
+
+
+def _call_coordinate_fingerprints(call: ast.Call) -> tuple[str, ...] | None:
+    if any(keyword.arg is None for keyword in call.keywords):
+        return None
+    positional = tuple(ast.dump(arg, annotate_fields=False) for arg in call.args)
+    keywords = tuple(
+        ast.dump(keyword.value, annotate_fields=False)
+        for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
+    )
+    return positional + keywords
+
+
+def _constructor_variant_method(
+    method: ast.FunctionDef,
+) -> _ConstructorVariantMethod | None:
+    call = _simple_classmethod_return_call(method)
+    if call is None:
+        return None
+    callee_name = _classmethod_constructor_callee_name(call)
+    if callee_name is None:
+        return None
+    coordinate_fingerprints = _call_coordinate_fingerprints(call)
+    if coordinate_fingerprints is None:
+        return None
+    return _ConstructorVariantMethod(
+        method_name=method.name,
+        line=method.lineno,
+        callee_name=callee_name,
+        positional_count=len(call.args),
+        keyword_names=tuple(
+            keyword.arg or ""
+            for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
+        ),
+        coordinate_fingerprints=coordinate_fingerprints,
+    )
+
+
+def _varying_coordinate_names(
+    methods: tuple[_ConstructorVariantMethod, ...],
+) -> tuple[str, ...]:
+    coordinate_count = len(methods[0].coordinate_fingerprints)
+    varying: list[str] = []
+    positional_count = methods[0].positional_count
+    keyword_names = methods[0].keyword_names
+    for index in range(coordinate_count):
+        values = {method.coordinate_fingerprints[index] for method in methods}
+        if len(values) < 2:
+            continue
+        if index < positional_count:
+            varying.append(f"arg{index}")
+        else:
+            varying.append(keyword_names[index - positional_count])
+    return tuple(varying)
+
+
+def _constructor_variant_family_candidates(
+    module: ParsedModule,
+) -> tuple[ConstructorVariantFamilyCandidate, ...]:
+    candidates: list[ConstructorVariantFamilyCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        grouped: dict[tuple[object, ...], list[_ConstructorVariantMethod]] = defaultdict(list)
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            method = _constructor_variant_method(statement)
+            if method is not None:
+                grouped[method.shape_key].append(method)
+        for methods in grouped.values():
+            if len(methods) < 2:
+                continue
+            ordered = tuple(
+                sorted(methods, key=lambda item: (item.line, item.method_name))
+            )
+            varying_coordinates = _varying_coordinate_names(ordered)
+            if not varying_coordinates:
+                continue
+            candidates.append(
+                ConstructorVariantFamilyCandidate(
+                    file_path=str(module.path),
+                    class_name=class_node.name,
+                    callee_name=ordered[0].callee_name,
+                    method_names=tuple(method.method_name for method in ordered),
+                    line_numbers=tuple(method.line for method in ordered),
+                    coordinate_count=len(ordered[0].coordinate_fingerprints),
+                    varying_coordinate_names=varying_coordinates,
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line_numbers, item.class_name),
+        )
+    )
+
+
+def _accumulator_fold_method(
+    method: ast.FunctionDef,
+) -> _AccumulatorFoldMethod | None:
+    body = _trim_docstring_body(method.body)
+    if len(body) != 3:
+        return None
+    assign, loop, returned = body
+    if not (
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and isinstance(assign.targets[0], ast.Name)
+        and isinstance(assign.value, ast.Call)
+        and not assign.value.args
+        and not assign.value.keywords
+        and isinstance(loop, ast.For)
+        and isinstance(returned, ast.Return)
+    ):
+        return None
+    accumulator_name = assign.targets[0].id
+    accumulator_type_name = ast.unparse(assign.value.func)
+    if not isinstance(loop.target, ast.Name):
+        return None
+    if len(loop.body) != 1 or not isinstance(loop.body[0], ast.Expr):
+        return None
+    step_call = loop.body[0].value
+    if not (
+        isinstance(step_call, ast.Call)
+        and isinstance(step_call.func, ast.Attribute)
+        and isinstance(step_call.func.value, ast.Name)
+        and step_call.func.value.id == accumulator_name
+        and len(step_call.args) == 1
+        and not step_call.keywords
+        and isinstance(step_call.args[0], ast.Name)
+        and step_call.args[0].id == loop.target.id
+    ):
+        return None
+    if not (
+        returned.value is not None
+        and isinstance(returned.value, ast.Call)
+        and isinstance(returned.value.func, ast.Attribute)
+        and isinstance(returned.value.func.value, ast.Name)
+        and returned.value.func.value.id == accumulator_name
+        and not returned.value.args
+        and not returned.value.keywords
+    ):
+        return None
+    args = method.args.args
+    offset = 1 if args and args[0].arg in {"self", "cls"} else 0
+    if len(args) <= offset:
+        return None
+    source_parameter = args[offset].arg
+    if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter):
+        return None
+    return _AccumulatorFoldMethod(
+        method_name=method.name,
+        line=method.lineno,
+        source_parameter_name=source_parameter,
+        accumulator_type_name=accumulator_type_name,
+        step_method_name=step_call.func.attr,
+        result_method_name=returned.value.func.attr,
+    )
+
+
+def _accumulator_fold_family_candidates(
+    module: ParsedModule,
+) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
+    candidates: list[AccumulatorFoldFamilyCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        grouped: dict[tuple[str, str], list[_AccumulatorFoldMethod]] = defaultdict(list)
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            method = _accumulator_fold_method(statement)
+            if method is not None:
+                grouped[method.shape_key].append(method)
+        for methods in grouped.values():
+            if len(methods) < 2:
+                continue
+            ordered = tuple(
+                sorted(methods, key=lambda item: (item.line, item.method_name))
+            )
+            if len({method.step_method_name for method in ordered}) < 2:
+                continue
+            candidates.append(
+                AccumulatorFoldFamilyCandidate(
+                    file_path=str(module.path),
+                    class_name=class_node.name,
+                    accumulator_type_name=ordered[0].accumulator_type_name,
+                    result_method_name=ordered[0].result_method_name,
+                    method_names=tuple(method.method_name for method in ordered),
+                    line_numbers=tuple(method.line for method in ordered),
+                    source_parameter_names=tuple(
+                        method.source_parameter_name for method in ordered
+                    ),
+                    step_method_names=tuple(method.step_method_name for method in ordered),
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line_numbers, item.class_name),
+        )
+    )
+
+
 class AlternateConstructorFamilyDetector(CandidateFindingDetector):
     detector_id = "alternate_constructor_family"
     finding_spec = FindingSpec(
@@ -1530,6 +1833,133 @@ class AlternateConstructorFamilyDetector(CandidateFindingDetector):
                 field_names=group.keyword_names,
             ),
         )
+
+
+class ConstructorVariantFamilyDetector(CandidateFindingDetector):
+    detector_id = "constructor_variant_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Constructor variants should derive from one constructor algebra",
+        why=(
+            "Several classmethods on one class are pure constructor vectors over the same target. "
+            "The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog."
+        ),
+        capability_gap="single constructor-variant catalog that derives named class constructors",
+        relation_context="same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _constructor_variant_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        variant_candidate = cast(ConstructorVariantFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}."
+            ),
+            variant_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class ConstructorVariantSpec:\n"
+                "    name: str\n"
+                "    args: tuple[ConstructorArg, ...]\n\n"
+                "class ConstructorVariantMixin:\n"
+                "    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n"
+                "    def __init_subclass__(cls):\n"
+                "        cls.__constructor_variants__.install(cls)"
+            ),
+            codemod_patch=(
+                f"# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n"
+                "# Each method name becomes data; one mixin derives the bound classmethods from the catalog."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(variant_candidate.method_names),
+                field_count=variant_candidate.coordinate_count,
+                mapping_name=variant_candidate.class_name,
+                field_names=variant_candidate.varying_coordinate_names,
+            ),
+        )
+
+
+class AccumulatorFoldFamilyDetector(CandidateFindingDetector):
+    detector_id = "accumulator_fold_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Accumulator folds should derive from one fold algebra",
+        why=(
+            "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. "
+            "The loop skeleton is an algebraic fold and should be one reusable composition primitive."
+        ),
+        capability_gap="single accumulator-fold substrate with declarative step hooks",
+        relation_context="same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _accumulator_fold_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        fold_candidate = cast(AccumulatorFoldFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
+            ),
+            fold_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class AccumulatorFoldSpec:\n"
+                "    name: str\n"
+                "    step_method_name: str\n\n"
+                "class AccumulatorFoldMixin:\n"
+                "    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n"
+                "    def __init_subclass__(cls):\n"
+                "        cls.__accumulator_folds__.install(cls)"
+            ),
+            codemod_patch=(
+                f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n"
+                "# Keep accumulator type and result projection in one authority; each source method only declares its step hook."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=len(fold_candidate.method_names),
+                statement_count=3,
+                class_count=1,
+                method_symbols=tuple(
+                    f"{fold_candidate.class_name}.{name}"
+                    for name in fold_candidate.method_names
+                ),
+            ),
+        )
+
 
 class DynamicSelfFieldSelectionDetector(CandidateFindingDetector):
     detector_id = "dynamic_self_field_selection"
