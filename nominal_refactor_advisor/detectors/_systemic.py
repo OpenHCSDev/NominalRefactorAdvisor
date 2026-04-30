@@ -384,6 +384,231 @@ class OrchestrationHubDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class ClassRoleQuotientCandidate(LineWitnessCandidate):
+    class_name: str
+    method_count: int
+    private_method_count: int
+    public_method_count: int
+    role_method_counts: tuple[tuple[str, int], ...]
+    role_representatives: tuple[tuple[str, int, str], ...]
+    self_state_attribute_count: int
+    self_call_count: int
+    cross_role_self_call_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+    @property
+    def role_names(self) -> tuple[str, ...]:
+        return tuple(role for role, _ in self.role_method_counts)
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for role, line, method_name in self.role_representatives
+        )
+
+
+def _method_role_token(method_name: str) -> str:
+    stripped = method_name.strip("_")
+    if not stripped:
+        return ""
+    return stripped.split("_", maxsplit=1)[0]
+
+
+def _class_role_quotient_candidates(
+    module: ParsedModule,
+) -> tuple[ClassRoleQuotientCandidate, ...]:
+    candidates: list[ClassRoleQuotientCandidate] = []
+    for class_node in (
+        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        methods = tuple(
+            statement
+            for statement in class_node.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and not (
+                statement.name.startswith("__") and statement.name.endswith("__")
+            )
+        )
+        if not methods:
+            continue
+        role_groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = (
+            defaultdict(list)
+        )
+        method_role: dict[str, str] = {}
+        for method in methods:
+            role = _method_role_token(method.name)
+            if not role:
+                continue
+            role_groups[role].append(method)
+            method_role[method.name] = role
+        nontrivial_roles = {
+            role: role_methods
+            for role, role_methods in role_groups.items()
+            if len(role_methods) >= 2
+        }
+        nontrivial_method_count = sum(
+            len(role_methods) for role_methods in nontrivial_roles.values()
+        )
+        private_method_count = sum(
+            1 for method in methods if method.name.startswith("_")
+        )
+        public_method_count = len(methods) - private_method_count
+        if len(nontrivial_roles) < 3:
+            continue
+        if private_method_count <= public_method_count:
+            continue
+        if nontrivial_method_count * 2 < len(methods):
+            continue
+
+        self_state_attributes: set[str] = set()
+        self_call_count = 0
+        cross_role_self_call_count = 0
+        method_names = {method.name for method in methods}
+        for method in methods:
+            caller_role = method_role.get(method.name, "")
+            for child in ast.walk(method):
+                if (
+                    isinstance(child, ast.Call)
+                    and isinstance(child.func, ast.Attribute)
+                    and isinstance(child.func.value, ast.Name)
+                    and child.func.value.id == "self"
+                    and child.func.attr in method_names
+                ):
+                    self_call_count += 1
+                    callee_role = method_role.get(child.func.attr, "")
+                    if callee_role and caller_role and callee_role != caller_role:
+                        cross_role_self_call_count += 1
+                elif (
+                    isinstance(child, ast.Attribute)
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id == "self"
+                    and child.attr not in method_names
+                ):
+                    self_state_attributes.add(child.attr)
+
+        role_method_counts = tuple(
+            sorted(
+                (
+                    (role, len(role_methods))
+                    for role, role_methods in nontrivial_roles.items()
+                ),
+                key=lambda item: (-item[1], item[0]),
+            )
+        )
+        representatives: list[tuple[str, int, str]] = []
+        for role, _ in role_method_counts:
+            role_methods = sorted(
+                nontrivial_roles[role], key=lambda method: method.lineno
+            )
+            representative = role_methods[0]
+            representatives.append((role, representative.lineno, representative.name))
+
+        candidates.append(
+            ClassRoleQuotientCandidate(
+                file_path=str(module.path),
+                line=class_node.lineno,
+                class_name=class_node.name,
+                method_count=len(methods),
+                private_method_count=private_method_count,
+                public_method_count=public_method_count,
+                role_method_counts=role_method_counts,
+                role_representatives=tuple(representatives[:8]),
+                self_state_attribute_count=len(self_state_attributes),
+                self_call_count=self_call_count,
+                cross_role_self_call_count=cross_role_self_call_count,
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (
+                candidate.file_path,
+                candidate.line,
+                candidate.class_name,
+            ),
+        )
+    )
+
+
+class ClassRoleQuotientDetector(CandidateFindingDetector):
+    detector_id = "class_role_quotient"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Class method-role quotient should become composed subsystems",
+        why=(
+            "The class method namespace factors into several nontrivial role-equivalence classes, "
+            "while private methods dominate the public facade. That quotient is a formal signal "
+            "that one nominal object is carrying a product of subsystem algebras instead of composing "
+            "role-owned services."
+        ),
+        capability_gap="composed subsystem authorities derived from the class method-role quotient",
+        relation_context="one class contains several nontrivial method-role equivalence classes behind a smaller public facade",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _class_role_quotient_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        role_candidate = cast(ClassRoleQuotientCandidate, candidate)
+        role_summary = ", ".join(
+            f"{role}:{count}" for role, count in role_candidate.role_method_counts[:8]
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Class `{role_candidate.class_name}` has {role_candidate.method_count} methods "
+                f"whose nontrivial method-role quotient is {role_summary}; "
+                f"{role_candidate.private_method_count} private methods sit behind "
+                f"{role_candidate.public_method_count} public methods."
+            ),
+            role_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class BuilderContext:\n"
+                "    ...\n\n"
+                "class RoleSubsystem:\n"
+                "    def __init__(self, context: BuilderContext): ...\n\n"
+                "class Facade:\n"
+                "    def __init__(self, context: BuilderContext):\n"
+                "        self.role = RoleSubsystem(context)\n\n"
+                "# Factor the role quotient into composed subsystem authorities. "
+                "Leave the original class as a public facade and sequencing boundary."
+            ),
+            codemod_patch=(
+                "# Partition the class by the method-role quotient. Move each cohesive role "
+                "class into a subsystem object or mixin with a shared context record.\n"
+                "# The facade should expose public operations and delegate to the composed role authorities."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=0,
+                branch_site_count=role_candidate.private_method_count,
+                call_site_count=role_candidate.self_call_count,
+                parameter_count=role_candidate.self_state_attribute_count,
+                callee_family_count=len(role_candidate.role_method_counts),
+            ),
+        )
+
+
 class PrivateCohortShouldBeModuleDetector(CandidateFindingDetector):
     detector_id = "private_cohort_should_be_module"
     finding_spec = FindingSpec(

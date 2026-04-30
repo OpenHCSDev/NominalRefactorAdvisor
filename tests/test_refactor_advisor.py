@@ -5789,6 +5789,167 @@ class Renderer:
     )
 
 
+def test_detects_class_role_quotient(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Builder:
+    def run(self):
+        self._build_pdf()
+        self._write_pdf()
+        self._copy_pdf()
+        self._extract_pdf()
+
+    def _build_pdf(self):
+        return self.root / "paper.pdf"
+
+    def _build_markdown(self):
+        return self.root / "paper.md"
+
+    def _write_pdf(self):
+        return self.output.write_text("pdf")
+
+    def _write_markdown(self):
+        return self.output.write_text("md")
+
+    def _copy_pdf(self):
+        return self.destination / "paper.pdf"
+
+    def _copy_markdown(self):
+        return self.destination / "paper.md"
+
+    def _extract_pdf(self):
+        return self.source.name
+
+    def _extract_markdown(self):
+        return self.source.stem
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "class_role_quotient"
+    )
+
+    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
+    assert "Builder" in finding.summary
+    assert "method-role quotient" in finding.title
+    assert "composed subsystem" in (finding.scaffold or "")
+
+
+def test_unreferenced_private_function_uses_repo_wide_call_witness(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/worker.py",
+        """
+class WorkerMixin:
+    def _derived_artifact(self):
+        step_one = 1
+        step_two = step_one + 1
+        step_three = step_two + 1
+        step_four = step_three + 1
+        step_five = step_four + 1
+        step_six = step_five + 1
+        return step_six
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/facade.py",
+        """
+from .worker import WorkerMixin
+
+
+class Facade(WorkerMixin):
+    def run(self):
+        return self._derived_artifact()
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "unreferenced_private_function"
+        and "WorkerMixin._derived_artifact" in finding.summary
+        for finding in findings
+    )
+
+
+def test_dead_embedded_payload_uses_repo_wide_call_witness(
+    tmp_path: Path,
+) -> None:
+    payload = "\n".join(f"key_{index}: value_{index}" for index in range(25))
+    padding = "\n".join(f"        step_{index} = {index}" for index in range(40))
+    _write_module(
+        tmp_path,
+        "pkg/artifact.py",
+        f'''
+class ArtifactMixin:
+    def _write_payload(self, path):
+        payload = """{payload}"""
+{padding}
+        path.write_text(payload)
+        return payload
+''',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/facade.py",
+        """
+from .artifact import ArtifactMixin
+
+
+class Facade(ArtifactMixin):
+    def run(self, path):
+        return self._write_payload(path)
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "dead_embedded_static_payload"
+        and "ArtifactMixin._write_payload" in finding.summary
+        for finding in findings
+    )
+
+
+def test_ignores_small_class_role_quotient(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Builder:
+    def run(self):
+        self._build_pdf()
+        self._write_pdf()
+
+    def _build_pdf(self):
+        return self.root / "paper.pdf"
+
+    def _build_markdown(self):
+        return self.root / "paper.md"
+
+    def _write_pdf(self):
+        return self.output.write_text("pdf")
+
+    def _write_markdown(self):
+        return self.output.write_text("md")
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "class_role_quotient" for finding in findings
+    )
+
+
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -1813,10 +1813,33 @@ def _in_module_reference_count(
     return reference_count
 
 
+def _reference_count_in_modules(
+    modules: Sequence[ParsedModule],
+    owner_module: ParsedModule,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    symbol_name: str,
+) -> int:
+    reference_count = 0
+    for module in modules:
+        for node in ast.walk(module.module):
+            if module is owner_module and _node_within_function(node, function):
+                continue
+            if isinstance(node, ast.Name) and node.id == symbol_name:
+                reference_count += 1
+            elif isinstance(node, ast.Attribute) and node.attr == symbol_name:
+                reference_count += 1
+            elif isinstance(node, ast.Constant) and node.value == symbol_name:
+                reference_count += 1
+    return reference_count
+
+
 def _embedded_static_payload_candidates(
-    module: ParsedModule, config: DetectorConfig
+    module: ParsedModule,
+    config: DetectorConfig,
+    reference_modules: Sequence[ParsedModule] | None = None,
 ) -> tuple[EmbeddedStaticPayloadCandidate, ...]:
     candidates: list[EmbeddedStaticPayloadCandidate] = []
+    modules_for_reference = reference_modules or (module,)
     for qualname, function in _iter_surface_functions(module.module):
         if not _is_private_symbol_name(function.name):
             continue
@@ -1831,7 +1854,12 @@ def _embedded_static_payload_candidates(
         sink_kinds = _static_payload_sink_kinds(function)
         if not sink_kinds:
             continue
-        if _in_module_reference_count(module.module, function, function.name) > 0:
+        if (
+            _reference_count_in_modules(
+                modules_for_reference, module, function, function.name
+            )
+            > 0
+        ):
             continue
         candidates.append(
             EmbeddedStaticPayloadCandidate(
@@ -1884,6 +1912,17 @@ class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
     ) -> Sequence[object]:
         return _embedded_static_payload_candidates(module, config)
 
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        return [
+            self._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in _embedded_static_payload_candidates(
+                module, config, modules
+            )
+        ]
+
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         payload_candidate = cast(EmbeddedStaticPayloadCandidate, candidate)
         marker_summary = ", ".join(payload_candidate.marker_kinds)
@@ -1934,9 +1973,12 @@ def _has_external_protocol_shape(function: ast.FunctionDef | ast.AsyncFunctionDe
 
 
 def _unreferenced_private_function_candidates(
-    module: ParsedModule, config: DetectorConfig
+    module: ParsedModule,
+    config: DetectorConfig,
+    reference_modules: Sequence[ParsedModule] | None = None,
 ) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
     candidates: list[UnreferencedPrivateFunctionCandidate] = []
+    modules_for_reference = reference_modules or (module,)
     for qualname, function in _iter_surface_functions(module.module):
         if not _is_private_symbol_name(function.name):
             continue
@@ -1945,7 +1987,12 @@ def _unreferenced_private_function_candidates(
         line_count = _function_line_count(function)
         if line_count < config.min_unreferenced_private_function_lines:
             continue
-        if _in_module_reference_count(module.module, function, function.name) > 0:
+        if (
+            _reference_count_in_modules(
+                modules_for_reference, module, function, function.name
+            )
+            > 0
+        ):
             continue
         candidates.append(
             UnreferencedPrivateFunctionCandidate(
@@ -1992,6 +2039,17 @@ class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[object]:
         return _unreferenced_private_function_candidates(module, config)
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        return [
+            self._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in _unreferenced_private_function_candidates(
+                module, config, modules
+            )
+        ]
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         function_candidate = cast(UnreferencedPrivateFunctionCandidate, candidate)
