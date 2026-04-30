@@ -1514,6 +1514,103 @@ class AccumulatorFoldFamilyCandidate:
 
 
 @dataclass(frozen=True)
+class ExcessiveBlankLineRunCandidate:
+    file_path: str
+    start_line: int
+    end_line: int
+    blank_line_count: int
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.file_path,
+            self.start_line,
+            f"blank-lines:{self.blank_line_count}",
+        )
+
+
+@dataclass(frozen=True)
+class CatalogInstallingMixinFamilyCandidate:
+    file_path: str
+    class_names: tuple[str, ...]
+    catalog_attribute_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, class_name)
+            for class_name, line in zip(
+                self.class_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class RegexGroupExtractorFamilyCandidate:
+    file_path: str
+    class_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    pattern_attribute_names: tuple[str, ...]
+    matcher_names: tuple[str, ...]
+    group_index: int
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for method_name, line in zip(
+                self.method_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class SparseConstructorVariantFamilyCandidate:
+    file_path: str
+    class_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    keyword_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for method_name, line in zip(
+                self.method_names,
+                self.line_numbers,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class SupportPreludeModuleFamilyCandidate:
+    support_module_name: str
+    file_paths: tuple[str, ...]
+    class_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(file_path, line, class_name)
+            for file_path, line, class_name in zip(
+                self.file_paths,
+                self.line_numbers,
+                self.class_names,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
 class _ConstructorVariantMethod:
     method_name: str
     line: int
@@ -1770,6 +1867,346 @@ def _accumulator_fold_family_candidates(
     )
 
 
+def _docstring_line_ranges(root: ast.AST) -> set[int]:
+    protected: set[int] = set()
+
+    for node in _walk_nodes(root):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = getattr(node, "body", ())
+        if not body or not _is_docstring_expr(body[0]):
+            continue
+        start = getattr(body[0], "lineno", None)
+        end = getattr(body[0], "end_lineno", start)
+        if start is None or end is None:
+            continue
+        protected.update(range(start, end + 1))
+    return protected
+
+
+def _excessive_blank_line_run_candidates(
+    module: ParsedModule,
+) -> tuple[ExcessiveBlankLineRunCandidate, ...]:
+    protected_lines = _docstring_line_ranges(module.module)
+    candidates: list[ExcessiveBlankLineRunCandidate] = []
+    run_start: int | None = None
+    run_length = 0
+
+    def flush(end_line: int) -> None:
+        nonlocal run_start, run_length
+        if run_start is not None and run_length > 4:
+            candidates.append(
+                ExcessiveBlankLineRunCandidate(
+                    file_path=str(module.path),
+                    start_line=run_start,
+                    end_line=end_line,
+                    blank_line_count=run_length,
+                )
+            )
+        run_start = None
+        run_length = 0
+
+    for line_number, line in enumerate(module.path.read_text(encoding="utf-8").splitlines(), 1):
+        if line_number in protected_lines or line.strip():
+            flush(line_number - 1)
+            continue
+        if run_start is None:
+            run_start = line_number
+        run_length += 1
+    flush(line_number if "line_number" in locals() else 0)
+    return tuple(candidates)
+
+
+def _catalog_installing_mixin_candidate(
+    method: ast.FunctionDef,
+) -> str | None:
+    if method.name != "__init_subclass__":
+        return None
+    body = _trim_docstring_body(method.body)
+    if len(body) != 2 or not all(isinstance(item, ast.Expr) for item in body):
+        return None
+    first = cast(ast.Expr, body[0]).value
+    second = cast(ast.Expr, body[1]).value
+    if not (
+        isinstance(first, ast.Call)
+        and isinstance(first.func, ast.Attribute)
+        and first.func.attr == "__init_subclass__"
+        and isinstance(first.func.value, ast.Call)
+        and isinstance(first.func.value.func, ast.Name)
+        and first.func.value.func.id == "super"
+        and not first.args
+        and not first.keywords
+    ):
+        return None
+    if not (
+        isinstance(second, ast.Call)
+        and isinstance(second.func, ast.Attribute)
+        and second.func.attr == "install"
+        and len(second.args) == 1
+        and isinstance(second.args[0], ast.Name)
+        and second.args[0].id == "cls"
+        and isinstance(second.func.value, ast.Attribute)
+        and isinstance(second.func.value.value, ast.Name)
+        and second.func.value.value.id == "cls"
+    ):
+        return None
+    return second.func.value.attr
+
+
+def _catalog_installing_mixin_family_candidates(
+    module: ParsedModule,
+) -> tuple[CatalogInstallingMixinFamilyCandidate, ...]:
+    items: list[tuple[str, str, int]] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            catalog_attribute = _catalog_installing_mixin_candidate(statement)
+            if catalog_attribute is not None:
+                items.append((class_node.name, catalog_attribute, statement.lineno))
+    if len(items) < 2:
+        return ()
+    ordered = tuple(sorted(items, key=lambda item: (item[2], item[0])))
+    return (
+        CatalogInstallingMixinFamilyCandidate(
+            file_path=str(module.path),
+            class_names=tuple(item[0] for item in ordered),
+            catalog_attribute_names=tuple(item[1] for item in ordered),
+            line_numbers=tuple(item[2] for item in ordered),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _RegexGroupExtractorMethod:
+    method_name: str
+    line: int
+    pattern_attribute_name: str
+    matcher_name: str
+    group_index: int
+
+
+def _regex_group_extractor_method(
+    method: ast.FunctionDef,
+) -> _RegexGroupExtractorMethod | None:
+    body = _trim_docstring_body(method.body)
+    if len(body) != 2:
+        return None
+    assign, returned = body
+    if not (
+        isinstance(assign, ast.Assign)
+        and len(assign.targets) == 1
+        and isinstance(assign.targets[0], ast.Name)
+        and isinstance(assign.value, ast.Call)
+        and isinstance(returned, ast.Return)
+        and isinstance(returned.value, ast.IfExp)
+    ):
+        return None
+    match_name = assign.targets[0].id
+    call = assign.value
+    if not (
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr in {"search", "match", "fullmatch"}
+        and isinstance(call.func.value, ast.Attribute)
+        and isinstance(call.func.value.value, ast.Name)
+        and call.func.value.value.id == "self"
+        and len(call.args) == 1
+        and not call.keywords
+    ):
+        return None
+    ifexp = returned.value
+    if not (
+        isinstance(ifexp.test, ast.Name)
+        and ifexp.test.id == match_name
+        and isinstance(ifexp.orelse, ast.Constant)
+        and ifexp.orelse.value is None
+        and isinstance(ifexp.body, ast.Call)
+        and isinstance(ifexp.body.func, ast.Attribute)
+        and ifexp.body.func.attr == "group"
+        and isinstance(ifexp.body.func.value, ast.Name)
+        and ifexp.body.func.value.id == match_name
+        and len(ifexp.body.args) == 1
+        and isinstance(ifexp.body.args[0], ast.Constant)
+        and isinstance(ifexp.body.args[0].value, int)
+    ):
+        return None
+    return _RegexGroupExtractorMethod(
+        method_name=method.name,
+        line=method.lineno,
+        pattern_attribute_name=call.func.value.attr,
+        matcher_name=call.func.attr,
+        group_index=ifexp.body.args[0].value,
+    )
+
+
+def _regex_group_extractor_family_candidates(
+    module: ParsedModule,
+) -> tuple[RegexGroupExtractorFamilyCandidate, ...]:
+    candidates: list[RegexGroupExtractorFamilyCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        methods = tuple(
+            extractor
+            for statement in class_node.body
+            if isinstance(statement, ast.FunctionDef)
+            for extractor in (_regex_group_extractor_method(statement),)
+            if extractor is not None
+        )
+        grouped: dict[int, list[_RegexGroupExtractorMethod]] = defaultdict(list)
+        for method in methods:
+            grouped[method.group_index].append(method)
+        for group_index, grouped_methods in grouped.items():
+            if len(grouped_methods) < 2:
+                continue
+            ordered = tuple(
+                sorted(grouped_methods, key=lambda item: (item.line, item.method_name))
+            )
+            candidates.append(
+                RegexGroupExtractorFamilyCandidate(
+                    file_path=str(module.path),
+                    class_name=class_node.name,
+                    method_names=tuple(method.method_name for method in ordered),
+                    line_numbers=tuple(method.line for method in ordered),
+                    pattern_attribute_names=tuple(
+                        method.pattern_attribute_name for method in ordered
+                    ),
+                    matcher_names=tuple(method.matcher_name for method in ordered),
+                    group_index=group_index,
+                )
+            )
+    return tuple(candidates)
+
+
+def _class_has_constructor_variant_mixin(node: ast.ClassDef) -> bool:
+    return any(_ast_terminal_name(base) == "ConstructorVariantMixin" for base in node.bases)
+
+
+def _sparse_constructor_variant_family_candidates(
+    module: ParsedModule,
+) -> tuple[SparseConstructorVariantFamilyCandidate, ...]:
+    candidates: list[SparseConstructorVariantFamilyCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        if not _is_dataclass_class(class_node) or _class_has_constructor_variant_mixin(class_node):
+            continue
+        field_names = set(_dataclass_field_names(class_node))
+        methods: list[tuple[ast.FunctionDef, tuple[str, ...]]] = []
+        for statement in class_node.body:
+            if not isinstance(statement, ast.FunctionDef) or not _is_classmethod(statement):
+                continue
+            call = _constructor_return_call(statement)
+            if call is None or call.args:
+                continue
+            keyword_names = tuple(
+                keyword.arg or "" for keyword in call.keywords if keyword.arg is not None
+            )
+            if not keyword_names or not set(keyword_names) <= field_names:
+                continue
+            methods.append((statement, keyword_names))
+        if len(methods) < 2:
+            continue
+        union_keywords = tuple(sorted({name for _, names in methods for name in names}))
+        if not union_keywords:
+            continue
+        ordered = tuple(sorted(methods, key=lambda item: (item[0].lineno, item[0].name)))
+        candidates.append(
+            SparseConstructorVariantFamilyCandidate(
+                file_path=str(module.path),
+                class_name=class_node.name,
+                method_names=tuple(method.name for method, _ in ordered),
+                line_numbers=tuple(method.lineno for method, _ in ordered),
+                keyword_names=union_keywords,
+            )
+        )
+    return tuple(candidates)
+
+
+def _support_prelude_import_name(module_node: ast.Module) -> str | None:
+    for statement in module_node.body:
+        if not isinstance(statement, ast.ImportFrom):
+            continue
+        if len(statement.names) != 1 or statement.names[0].name != "*":
+            continue
+        imported_module = statement.module or ""
+        if "support" not in imported_module.lower():
+            continue
+        return "." * statement.level + imported_module
+    return None
+
+
+def _module_has_family_catalog(module_path: Path) -> bool:
+    if not module_path.exists():
+        return False
+    try:
+        tree = ast.parse(module_path.read_text(encoding="utf-8"))
+    except SyntaxError:
+        return False
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name)
+            and "MODULE" in target.id
+            and ("CATALOG" in target.id or "MANIFEST" in target.id)
+            for target in node.targets
+        ):
+            continue
+        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Call)):
+            return True
+    return False
+
+
+def _support_module_path(module: ParsedModule, import_name: str) -> Path | None:
+    stripped = import_name.lstrip(".")
+    if not stripped:
+        return None
+    return module.path.parent / f"{stripped.split('.')[-1]}.py"
+
+
+def _support_prelude_module_family_candidates(
+    modules: list[ParsedModule],
+) -> tuple[SupportPreludeModuleFamilyCandidate, ...]:
+    grouped: dict[tuple[str, str], list[tuple[ParsedModule, ast.ClassDef]]] = defaultdict(list)
+    for module in modules:
+        top_level_classes = [
+            node for node in module.module.body if isinstance(node, ast.ClassDef)
+        ]
+        top_level_functions = [
+            node
+            for node in module.module.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        if len(top_level_classes) != 1 or top_level_functions:
+            continue
+        support_import = _support_prelude_import_name(module.module)
+        if support_import is None:
+            continue
+        support_path = _support_module_path(module, support_import)
+        if support_path is not None and _module_has_family_catalog(support_path):
+            continue
+        grouped[(str(module.path.parent), support_import)].append(
+            (module, top_level_classes[0])
+        )
+    candidates: list[SupportPreludeModuleFamilyCandidate] = []
+    for (_, support_import), items in grouped.items():
+        if len(items) < 3:
+            continue
+        ordered = tuple(sorted(items, key=lambda item: str(item[0].path)))
+        candidates.append(
+            SupportPreludeModuleFamilyCandidate(
+                support_module_name=support_import,
+                file_paths=tuple(str(item[0].path) for item in ordered),
+                class_names=tuple(item[1].name for item in ordered),
+                line_numbers=tuple(item[1].lineno for item in ordered),
+            )
+        )
+    return tuple(candidates)
+
+
 class AlternateConstructorFamilyDetector(CandidateFindingDetector):
     detector_id = "alternate_constructor_family"
     finding_spec = FindingSpec(
@@ -1959,6 +2396,292 @@ class AccumulatorFoldFamilyDetector(CandidateFindingDetector):
                 ),
             ),
         )
+
+
+class ExcessiveBlankLineRunDetector(CandidateFindingDetector):
+    detector_id = "excessive_blank_line_run"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
+        title="Nonsemantic blank source regions should be collapsed",
+        why=(
+            "A contiguous run of blank source lines outside docstrings carries no semantic information. "
+            "It inflates the module and hides true structure without adding an abstraction boundary."
+        ),
+        capability_gap="compact source layout with no nonsemantic blank-line payload",
+        relation_context="source contains an empty region larger than a canonical separator",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(ObservationTag.NORMALIZED_AST,),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _excessive_blank_line_run_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        blank_candidate = cast(ExcessiveBlankLineRunCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}."
+            ),
+            (blank_candidate.evidence,),
+            scaffold=(
+                "# Delete the nonsemantic blank-line run.\n"
+                "# Keep at most the canonical separator needed by the surrounding declarations."
+            ),
+            codemod_patch=(
+                f"# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=blank_candidate.blank_line_count,
+                statement_count=1,
+                class_count=0,
+                method_symbols=("blank-line-run",),
+            ),
+        )
+
+
+class CatalogInstallingMixinFamilyDetector(CandidateFindingDetector):
+    detector_id = "catalog_installing_mixin_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Catalog-installing mixins should share one subclass hook",
+        why=(
+            "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. "
+            "Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm."
+        ),
+        capability_gap="one reusable catalog-installing subclass hook with declarative catalog attribute residue",
+        relation_context="sibling mixins repeat an identical class-creation hook over different catalog classvars",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.MRO_ORDERING,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _catalog_installing_mixin_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        catalog_candidate = cast(CatalogInstallingMixinFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
+            ),
+            catalog_candidate.evidence,
+            scaffold=(
+                "class CatalogInstallingMixin:\n"
+                "    __catalog_attribute__: ClassVar[str]\n"
+                "    def __init_subclass__(cls):\n"
+                "        super().__init_subclass__()\n"
+                "        getattr(cls, cls.__catalog_attribute__).install(cls)"
+            ),
+            codemod_patch=(
+                "# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n"
+                "# Leave only `__catalog_attribute__` on each concrete catalog mixin."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=len(catalog_candidate.class_names),
+                statement_count=2,
+                class_count=len(catalog_candidate.class_names),
+                method_symbols=tuple(
+                    f"{class_name}.__init_subclass__"
+                    for class_name in catalog_candidate.class_names
+                ),
+            ),
+        )
+
+
+class RegexGroupExtractorFamilyDetector(CandidateFindingDetector):
+    detector_id = "regex_group_extractor_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Regex group extractor methods should derive from descriptors",
+        why=(
+            "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. "
+            "The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate."
+        ),
+        capability_gap="one regex group extraction descriptor with declared pattern and matcher coordinates",
+        relation_context="same class repeats regex group extractor methods over different pattern fields",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _regex_group_extractor_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        regex_candidate = cast(RegexGroupExtractorFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
+            ),
+            regex_candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class RegexGroupExtractor:\n"
+                "    pattern_attr: str\n"
+                "    matcher_name: str = 'search'\n"
+                "    group_index: int = 1\n"
+                "    def __get__(self, instance, owner): ..."
+            ),
+            codemod_patch=(
+                "# Replace repeated regex extractor methods with descriptor rows.\n"
+                "# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(regex_candidate.method_names),
+                field_count=len(regex_candidate.pattern_attribute_names),
+                mapping_name=regex_candidate.class_name,
+                field_names=regex_candidate.pattern_attribute_names,
+            ),
+        )
+
+
+class SparseConstructorVariantFamilyDetector(CandidateFindingDetector):
+    detector_id = "sparse_constructor_variant_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Sparse dataclass constructor variants should derive from one variant catalog",
+        why=(
+            "Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. "
+            "Those sparse overrides are rows in the constructor algebra, not independent methods."
+        ),
+        capability_gap="single sparse constructor-variant catalog over dataclass defaults",
+        relation_context="same dataclass repeats classmethod constructors that override different keyword subsets",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _sparse_constructor_variant_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        sparse_candidate = cast(SparseConstructorVariantFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}."
+            ),
+            sparse_candidate.evidence,
+            scaffold=(
+                "ConstructorVariantCatalog(\n"
+                "    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n"
+                ")"
+            ),
+            codemod_patch=(
+                f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n"
+                "# Keep dataclass defaults as the base point and declare only each variant's overridden fields."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(sparse_candidate.method_names),
+                field_count=len(sparse_candidate.keyword_names),
+                mapping_name=sparse_candidate.class_name,
+                field_names=sparse_candidate.keyword_names,
+            ),
+        )
+
+
+class SupportPreludeModuleFamilyDetector(IssueDetector):
+    detector_id = "support_prelude_module_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Support-prelude module families should have a manifest authority",
+        why=(
+            "Many one-class modules importing the same support prelude form an implicit module family. "
+            "The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape."
+        ),
+        capability_gap="one manifest authority for a support-prelude module family",
+        relation_context="several one-class modules share the same star-import support prelude without a module-family catalog",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.PROVENANCE,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.MANUAL_SYNCHRONIZATION,
+        ),
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _support_prelude_module_family_candidates(modules):
+            findings.append(
+                self.finding_spec.build(
+                    self.detector_id,
+                    (
+                        f"{len(candidate.class_names)} one-class modules share support prelude `{candidate.support_module_name}` without a manifest authority."
+                    ),
+                    candidate.evidence[:8],
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        "class ModuleFamilyCatalog:\n"
+                        "    members: tuple[ModuleFamilyMember, ...]\n"
+                        "    @classmethod\n"
+                        "    def from_package(cls, package_dir, support_module): ..."
+                    ),
+                    codemod_patch=(
+                        "# Add one module-family catalog beside the shared support prelude.\n"
+                        "# Derive member rows from package structure instead of relying only on repeated star-import shape."
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(candidate.class_names),
+                        field_count=len(candidate.class_names),
+                        mapping_name=candidate.support_module_name,
+                        field_names=candidate.class_names,
+                    ),
+                )
+            )
+        return findings
 
 
 class DynamicSelfFieldSelectionDetector(CandidateFindingDetector):

@@ -8152,3 +8152,159 @@ def resolve_backend(scoring_family: ScoringFamily) -> str:
     assert "ScoringPolicy" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "return cls.__registry__[key]()" in (finding.scaffold or "")
+
+
+def test_detects_excessive_blank_line_runs(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\n".join(
+            [
+                "def alpha():",
+                "    return 1",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "def beta():",
+                "    return 2",
+            ]
+        ),
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "excessive_blank_line_run"
+    )
+
+    assert "5 contiguous blank lines" in finding.summary
+    assert "Collapse blank lines" in (finding.codemod_patch or "")
+
+
+def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class AlphaMixin:
+    __alpha_catalog__ = AlphaCatalog()
+
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        cls.__alpha_catalog__.install(cls)
+
+
+class BetaMixin:
+    __beta_catalog__ = BetaCatalog()
+
+    def __init_subclass__(cls):
+        super().__init_subclass__()
+        cls.__beta_catalog__.install(cls)
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "catalog_installing_mixin_family"
+    )
+
+    assert "AlphaMixin" in finding.summary
+    assert "__beta_catalog__" in finding.summary
+    assert "CatalogInstallingMixin" in (finding.scaffold or "")
+
+
+def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Syntax:
+    def declaration_name(self, line):
+        match = self.declaration.search(line)
+        return match.group(1) if match else None
+
+    def namespace_name(self, line):
+        match = self.namespace.match(line)
+        return match.group(1) if match else None
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "regex_group_extractor_family"
+    )
+
+    assert "declaration_name" in finding.summary
+    assert "namespace" in finding.summary
+    assert "RegexGroupExtractor" in (finding.scaffold or "")
+
+
+def test_detects_sparse_constructor_variant_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ParsePolicy:
+    verbose_prefix: str = ""
+    collect_unknown: bool = False
+    count_unknown: bool = False
+
+    @classmethod
+    def primary(cls):
+        return cls(collect_unknown=True)
+
+    @classmethod
+    def retry(cls):
+        return cls(verbose_prefix="(retry) ", count_unknown=True)
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "sparse_constructor_variant_family"
+    )
+
+    assert "ParsePolicy" in finding.summary
+    assert "collect_unknown" in finding.summary
+    assert "ConstructorVariantCatalog" in (finding.scaffold or "")
+
+
+def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/support.py",
+        """
+from pathlib import Path
+""",
+    )
+    for name in ("alpha", "beta", "gamma"):
+        _write_module(
+            tmp_path,
+            f"pkg/{name}.py",
+            f"""
+from .support import *
+
+
+class {name.title()}Mixin:
+    pass
+""",
+        )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "support_prelude_module_family"
+    )
+
+    assert "3 one-class modules" in finding.summary
+    assert "support" in finding.summary
+    assert "ModuleFamilyCatalog" in (finding.scaffold or "")
