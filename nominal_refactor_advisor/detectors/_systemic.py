@@ -609,6 +609,402 @@ class ClassRoleQuotientDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class PassThroughCompositionFacadeCandidate(LineWitnessCandidate):
+    class_name: str
+    base_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+
+def _is_pass_through_class_body(body: Sequence[ast.stmt]) -> bool:
+    trimmed = _trim_docstring_body(list(body))
+    if not trimmed:
+        return True
+    return all(
+        isinstance(statement, ast.Pass)
+        or (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and statement.value.value is Ellipsis
+        )
+        for statement in trimmed
+    )
+
+
+def _pass_through_composition_facade_candidates(
+    module: ParsedModule,
+) -> tuple[PassThroughCompositionFacadeCandidate, ...]:
+    candidates: list[PassThroughCompositionFacadeCandidate] = []
+    for class_node in (
+        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        if len(class_node.bases) < 2:
+            continue
+        if not _is_pass_through_class_body(class_node.body):
+            continue
+        base_names = tuple(ast.unparse(base) for base in class_node.bases)
+        candidates.append(
+            PassThroughCompositionFacadeCandidate(
+                file_path=str(module.path),
+                line=class_node.lineno,
+                class_name=class_node.name,
+                base_names=base_names,
+            )
+        )
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
+    )
+
+
+class PassThroughCompositionFacadeDetector(CandidateFindingDetector):
+    detector_id = "pass_through_composition_facade"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
+        title="Pass-through composition facade should be derived from a composite spec",
+        why=(
+            "A class whose whole body is pass-through inheritance is a declaration of a composite family, "
+            "not hand-written behavior. The architecture should name that composition as data and derive "
+            "the class object from one generic composite-class authority."
+        ),
+        capability_gap="generic composite-class derivation for pass-through multiple-inheritance facades",
+        relation_context="class body contains no behavior beyond composing several base roles",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.MRO_ORDERING,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+        ),
+        observation_tags=(
+            ObservationTag.CLASS_FAMILY,
+            ObservationTag.METHOD_ROLE,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _pass_through_composition_facade_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        facade_candidate = cast(PassThroughCompositionFacadeCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{facade_candidate.class_name}` is a pass-through composition facade over "
+                f"{', '.join(facade_candidate.base_names)}."
+            ),
+            (facade_candidate.evidence,),
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class CompositeClassSpec:\n"
+                "    name: str\n"
+                "    bases: tuple[type, ...]\n"
+                "    def build(self, module_name: str) -> type: ..."
+            ),
+            codemod_patch=(
+                f"# Replace `{facade_candidate.class_name}` with a derived class from a CompositeClassSpec.\n"
+                "# Keep the ordered base list as data; derive the nominal facade class object generically."
+            ),
+            metrics=HierarchyCandidateMetrics(
+                duplicate_group_count=1,
+                class_count=len(facade_candidate.base_names),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ProjectionPropertyFamilyCandidate(LineWitnessCandidate):
+    class_name: str
+    property_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    base_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{property_name}")
+            for line, property_name in zip(
+                self.line_numbers, self.property_names, strict=True
+            )
+        )
+
+
+def _is_self_attribute(node: ast.AST) -> str | None:
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ):
+        return node.attr
+    return None
+
+
+def _is_path_projection_part(node: ast.AST) -> bool:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return True
+    if isinstance(node, ast.JoinedStr):
+        return all(
+            isinstance(value, ast.Constant)
+            or (
+                isinstance(value, ast.FormattedValue)
+                and _is_self_attribute(value.value) is not None
+            )
+            for value in node.values
+        )
+    return False
+
+
+def _path_projection_base(returned: ast.AST) -> str | None:
+    node = returned
+    saw_path_part = False
+    while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        if not _is_path_projection_part(node.right):
+            return None
+        saw_path_part = True
+        node = node.left
+    if not saw_path_part:
+        return None
+    return _is_self_attribute(node)
+
+
+def _projection_property_family_candidates(
+    module: ParsedModule,
+) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
+    candidates: list[ProjectionPropertyFamilyCandidate] = []
+    for class_node in (
+        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
+        for statement in class_node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if not any(
+                _ast_terminal_name(decorator) == "property"
+                for decorator in statement.decorator_list
+            ):
+                continue
+            body = _trim_docstring_body(statement.body)
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            base_name = _path_projection_base(body[0].value)
+            if base_name is None:
+                continue
+            properties.append((statement, base_name))
+        if len(properties) < 3:
+            continue
+        ordered = tuple(sorted(properties, key=lambda item: item[0].lineno))
+        candidates.append(
+            ProjectionPropertyFamilyCandidate(
+                file_path=str(module.path),
+                line=class_node.lineno,
+                class_name=class_node.name,
+                property_names=tuple(function.name for function, _ in ordered),
+                line_numbers=tuple(function.lineno for function, _ in ordered),
+                base_names=tuple(sorted({base_name for _, base_name in ordered})),
+            )
+        )
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
+    )
+
+
+class ProjectionPropertyFamilyDetector(CandidateFindingDetector):
+    detector_id = "projection_property_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.DESCRIPTOR_DERIVED_VIEW,
+        title="Path projection properties should be derived descriptors",
+        why=(
+            "Several properties project Path-valued views from owned base fields through the same `/` algebra. "
+            "That is a descriptor-derived view family: the varying suffixes should be data while the projection "
+            "algorithm lives in one reusable descriptor."
+        ),
+        capability_gap="single descriptor authority for repeated Path projection properties",
+        relation_context="same class repeats Path projection properties over owned base fields",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.PROJECTION_HELPER,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _projection_property_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        projection_candidate = cast(ProjectionPropertyFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{projection_candidate.class_name}` repeats Path projection properties "
+                f"{', '.join(projection_candidate.property_names)} over bases "
+                f"{', '.join(projection_candidate.base_names)}."
+            ),
+            projection_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class PathProjection:\n"
+                "    base_attr: str\n"
+                "    parts: tuple[str, ...]\n"
+                "    def __get__(self, instance, owner=None) -> Path: ..."
+            ),
+            codemod_patch=(
+                "# Replace repeated @property path projections with PathProjection descriptors.\n"
+                "# Keep only base attribute and path parts as declarative data."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(projection_candidate.property_names),
+                field_count=len(projection_candidate.base_names),
+                mapping_name=f"{projection_candidate.class_name} path projection",
+                field_names=projection_candidate.property_names,
+                source_name=", ".join(projection_candidate.base_names),
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class LiveTemplatePayloadFamilyCandidate(LineWitnessCandidate):
+    class_name: str
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+    @property
+    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+            for line, method_name in zip(
+                self.line_numbers, self.method_names, strict=True
+            )
+        )
+
+
+def _returns_direct_text_template(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    body = _trim_docstring_body(function.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return False
+    returned = body[0].value
+    return (
+        isinstance(returned, ast.JoinedStr)
+        or (isinstance(returned, ast.Constant) and isinstance(returned.value, str))
+    )
+
+
+def _live_template_payload_family_candidates(
+    module: ParsedModule,
+) -> tuple[LiveTemplatePayloadFamilyCandidate, ...]:
+    candidates: list[LiveTemplatePayloadFamilyCandidate] = []
+    for class_node in (
+        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        template_methods = tuple(
+            statement
+            for statement in class_node.body
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and _returns_direct_text_template(statement)
+        )
+        if len(template_methods) < 3:
+            continue
+        ordered = tuple(sorted(template_methods, key=lambda item: item.lineno))
+        candidates.append(
+            LiveTemplatePayloadFamilyCandidate(
+                file_path=str(module.path),
+                line=class_node.lineno,
+                class_name=class_node.name,
+                method_names=tuple(method.name for method in ordered),
+                line_numbers=tuple(method.lineno for method in ordered),
+            )
+        )
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
+    )
+
+
+class LiveTemplatePayloadFamilyDetector(CandidateFindingDetector):
+    detector_id = "live_template_payload_family"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Live template payload methods should be derived from template specs",
+        why=(
+            "Several live methods return template payloads directly. Unlike dead payload emitters, these methods "
+            "are real API, so the correct collapse is to keep the template declarations as data and derive the "
+            "method surface from one generic template descriptor."
+        ),
+        capability_gap="single template-method descriptor authority for live text payload families",
+        relation_context="same class repeats direct text-template return methods",
+        confidence=HIGH_CONFIDENCE,
+        certification=CERTIFIED,
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+        ),
+        observation_tags=(
+            ObservationTag.EXPORT_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _live_template_payload_family_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        template_candidate = cast(LiveTemplatePayloadFamilyCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{template_candidate.class_name}` exposes live template payload methods "
+                f"{', '.join(template_candidate.method_names)}."
+            ),
+            template_candidate.evidence_locations,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class TextTemplateMethod:\n"
+                "    parameters: tuple[str, ...]\n"
+                "    template: str\n"
+                "    def __get__(self, instance, owner=None): ..."
+            ),
+            codemod_patch=(
+                "# Replace direct template-return methods with TextTemplateMethod descriptors.\n"
+                "# Keep template bodies declarative; derive the bound method API generically."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(template_candidate.method_names),
+                field_count=len(template_candidate.method_names),
+                mapping_name=f"{template_candidate.class_name} templates",
+                field_names=template_candidate.method_names,
+            ),
+        )
+
+
 class PrivateCohortShouldBeModuleDetector(CandidateFindingDetector):
     detector_id = "private_cohort_should_be_module"
     finding_spec = FindingSpec(
