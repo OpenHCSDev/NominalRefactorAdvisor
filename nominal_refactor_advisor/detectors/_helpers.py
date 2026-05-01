@@ -5177,6 +5177,8 @@ def _trivial_forwarding_wrapper_candidate(
 ) -> TrivialForwardingWrapperCandidate | None:
     if function.name.startswith("__") and function.name.endswith("__"):
         return None
+    if function.name == _CANDIDATE_COLLECTOR_METHOD_NAME:
+        return None
     chain_match = _transport_call_chain_match(function)
     if chain_match is None:
         return None
@@ -6310,6 +6312,93 @@ def _under_amortized_infrastructure_candidates(
     return tuple(
         sorted(candidates, key=lambda item: (item.file_path, item.line))
     )
+
+_CANDIDATE_COLLECTOR_METHOD_NAME = "_candidate_items"
+_CANDIDATE_COLLECTOR_BASE_BY_SHAPE = {
+    ("module", False): "ModuleCollectorCandidateDetector",
+    ("module", True): "ConfiguredModuleCollectorCandidateDetector",
+    ("cross_module", False): "CrossModuleCollectorCandidateDetector",
+    ("cross_module", True): "ConfiguredCrossModuleCollectorCandidateDetector",
+}
+
+def _candidate_detector_scope_kind(node: ast.ClassDef) -> str | None:
+    if not any(
+        isinstance(statement, ast.Assign)
+        and any(name_id(target) == "detector_id" for target in statement.targets)
+        for statement in node.body
+    ):
+        return None
+    base_names = set(_class_base_names(node))
+    if "CandidateFindingDetector" in base_names:
+        return "module"
+    if "CrossModuleCandidateDetector" in base_names:
+        return "cross_module"
+    return None
+
+def _candidate_collector_method_call(
+    method: ast.FunctionDef,
+    scope_kind: str,
+) -> tuple[str, bool] | None:
+    body = tuple(
+        statement
+        for statement in _trim_docstring_body(method.body)
+        if not (
+            isinstance(statement, ast.Delete)
+            and any(name_id(target) == "config" for target in statement.targets)
+        )
+    )
+    returned_call = return_call(single_item(body)) if len(body) == 1 else None
+    collector_name = _call_name(returned_call.func) if returned_call else None
+    if collector_name is None:
+        return None
+    expected_first_arg = "modules" if scope_kind == "cross_module" else "module"
+    arg_names = tuple(name_id(argument) for argument in returned_call.args)
+    if arg_names == (expected_first_arg,):
+        return collector_name, False
+    if arg_names == (expected_first_arg, "config"):
+        return collector_name, True
+    return None
+
+def _candidate_collector_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
+    candidates: list[CandidateCollectorBoilerplateCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        scope_kind = _candidate_detector_scope_kind(node)
+        if scope_kind is None:
+            continue
+        method = next(
+            (
+                statement
+                for statement in node.body
+                if isinstance(statement, ast.FunctionDef)
+                and statement.name == _CANDIDATE_COLLECTOR_METHOD_NAME
+            ),
+            None,
+        )
+        if method is None:
+            continue
+        collector_call = _candidate_collector_method_call(method, scope_kind)
+        if collector_call is None:
+            continue
+        collector_name, uses_config = collector_call
+        candidates.append(
+            CandidateCollectorBoilerplateCandidate(
+                file_path=str(module.path),
+                line=method.lineno,
+                class_name=node.name,
+                method_name=method.name,
+                collector_name=collector_name,
+                scope_kind=scope_kind,
+                uses_config=uses_config,
+                recommended_base_name=_CANDIDATE_COLLECTOR_BASE_BY_SHAPE[
+                    (scope_kind, uses_config)
+                ],
+            )
+        )
+    return tuple(candidates)
 
 _EFFECT_STEP_BASE_NAMES = frozenset(
     {

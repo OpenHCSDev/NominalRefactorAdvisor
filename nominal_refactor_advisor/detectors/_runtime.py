@@ -384,8 +384,9 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         )
 
 
-class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
+class ManualConcreteSubclassRosterDetector(ConfiguredCrossModuleCollectorCandidateDetector):
     detector_id = "manual_concrete_subclass_roster"
+    candidate_collector = _manual_concrete_subclass_roster_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Manual concrete-subclass roster should become a metaclass-registry base",
@@ -409,11 +410,6 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
             ObservationTag.MANUAL_REGISTRATION,
         ),
     )
-
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
-        return _manual_concrete_subclass_roster_candidates(modules, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         roster_candidate = cast(ManualConcreteSubclassRosterCandidate, candidate)
@@ -477,8 +473,9 @@ class ManualConcreteSubclassRosterDetector(CrossModuleCandidateDetector):
         )
 
 
-class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
+class PredicateSelectedConcreteFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetector):
     detector_id = "predicate_selected_concrete_family"
+    candidate_collector = _predicate_selected_concrete_family_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Predicate-selected concrete family should collapse into one metaclass-registry selector base",
@@ -503,11 +500,6 @@ class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
             ObservationTag.REGISTRY_POPULATION,
         ),
     )
-
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
-        return _predicate_selected_concrete_family_candidates(modules, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         family_candidate = cast(PredicateSelectedConcreteFamilyCandidate, candidate)
@@ -556,8 +548,9 @@ class PredicateSelectedConcreteFamilyDetector(CrossModuleCandidateDetector):
         )
 
 
-class ParallelMirroredLeafFamilyDetector(CrossModuleCandidateDetector):
+class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetector):
     detector_id = "parallel_mirrored_leaf_family"
+    candidate_collector = _parallel_mirrored_leaf_family_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Parallel mirrored leaf families should derive from one axis-declared family substrate",
@@ -581,11 +574,6 @@ class ParallelMirroredLeafFamilyDetector(CrossModuleCandidateDetector):
             ObservationTag.REPEATED_METHOD_ROLES,
         ),
     )
-
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
-        return _parallel_mirrored_leaf_family_candidates(modules, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         mirrored_candidate = cast(ParallelMirroredLeafFamilyCandidate, candidate)
@@ -787,8 +775,9 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
         return f"{module.path} contains {len(evidence)} config-specific attribute probes or comparisons."
 
 
-class ConcreteConfigFieldProbeDetector(CandidateFindingDetector):
+class ConcreteConfigFieldProbeDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "concrete_config_field_probe"
+    candidate_collector = _concrete_config_field_probe_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.CONFIG_CONTRACTS,
         title="Concrete config backend is probing fields outside its declared contract",
@@ -812,11 +801,6 @@ class ConcreteConfigFieldProbeDetector(CandidateFindingDetector):
             ObservationTag.CLASS_FAMILY,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _concrete_config_field_probe_candidates(module, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         probe_candidate = cast(ConcreteConfigFieldProbeCandidate, candidate)
@@ -1950,8 +1934,9 @@ def _embedded_static_payload_candidates(
     )
 
 
-class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
+class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "dead_embedded_static_payload"
+    candidate_collector = _embedded_static_payload_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Unreferenced embedded static-payload emitter should collapse",
@@ -1975,11 +1960,6 @@ class DeadEmbeddedStaticPayloadDetector(CandidateFindingDetector):
             ObservationTag.EXPORT_MAPPING,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _embedded_static_payload_candidates(module, config)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -2080,8 +2060,9 @@ def _unreferenced_private_function_candidates(
     )
 
 
-class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
+class UnreferencedPrivateFunctionDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "unreferenced_private_function"
+    candidate_collector = _unreferenced_private_function_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Unreferenced private function should be deleted or made explicit",
@@ -2104,11 +2085,6 @@ class UnreferencedPrivateFunctionDetector(CandidateFindingDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _unreferenced_private_function_candidates(module, config)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -2290,8 +2266,9 @@ def _sibling_small_method_template_candidates(
     return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.owner_name)))
 
 
-class SiblingSmallMethodTemplateDetector(CandidateFindingDetector):
+class SiblingSmallMethodTemplateDetector(ModuleCollectorCandidateDetector):
     detector_id = "sibling_small_method_template"
+    candidate_collector = _sibling_small_method_template_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
         title="Sibling small method templates should collapse to one parameterized helper",
@@ -2315,12 +2292,6 @@ class SiblingSmallMethodTemplateDetector(CandidateFindingDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _sibling_small_method_template_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         template_candidate = cast(SiblingSmallMethodTemplateCandidate, candidate)
@@ -2427,8 +2398,9 @@ def _mirrored_import_fallback_candidates(
     return tuple(candidates)
 
 
-class MirroredImportFallbackDetector(CandidateFindingDetector):
+class MirroredImportFallbackDetector(ModuleCollectorCandidateDetector):
     detector_id = "mirrored_import_fallback"
+    candidate_collector = _mirrored_import_fallback_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
         title="Mirrored import fallback should collapse to one import authority",
@@ -2451,12 +2423,6 @@ class MirroredImportFallbackDetector(CandidateFindingDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _mirrored_import_fallback_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         import_candidate = cast(MirroredImportFallbackCandidate, candidate)
@@ -2602,8 +2568,9 @@ def _constant_backed_dispatch_axis_candidates(
     return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.axis_name)))
 
 
-class ConstantBackedDispatchAxisDetector(CandidateFindingDetector):
+class ConstantBackedDispatchAxisDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "constant_backed_dispatch_axis"
+    candidate_collector = _constant_backed_dispatch_axis_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Constant-backed action axis should become one typed dispatch authority",
@@ -2627,11 +2594,6 @@ class ConstantBackedDispatchAxisDetector(CandidateFindingDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _constant_backed_dispatch_axis_candidates(module, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         axis_candidate = cast(ConstantBackedDispatchAxisCandidate, candidate)
@@ -2773,8 +2735,9 @@ def _manual_process_step_ladder_candidates(
     )
 
 
-class ManualProcessStepLadderDetector(CandidateFindingDetector):
+class ManualProcessStepLadderDetector(ModuleCollectorCandidateDetector):
     detector_id = "manual_process_step_ladder"
+    candidate_collector = _manual_process_step_ladder_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Manual process-step ladders should become a typed stage plan",
@@ -2798,12 +2761,6 @@ class ManualProcessStepLadderDetector(CandidateFindingDetector):
             ObservationTag.PARTIAL_VIEW,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _manual_process_step_ladder_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         ladder_candidate = cast(ManualProcessStepLadderCandidate, candidate)
@@ -2903,8 +2860,9 @@ def _mirrored_file_rewrite_loop_candidates(
     return tuple(candidates)
 
 
-class MirroredFileRewriteLoopDetector(CandidateFindingDetector):
+class MirroredFileRewriteLoopDetector(ModuleCollectorCandidateDetector):
     detector_id = "mirrored_file_rewrite_loop"
+    candidate_collector = _mirrored_file_rewrite_loop_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
         title="Mirrored file rewrite loops should become a text rewrite plan",
@@ -2926,12 +2884,6 @@ class MirroredFileRewriteLoopDetector(CandidateFindingDetector):
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _mirrored_file_rewrite_loop_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         loop_candidate = cast(MirroredFileRewriteLoopCandidate, candidate)
@@ -3093,8 +3045,9 @@ def _repeated_local_regex_bundle_candidates(
     )
 
 
-class RepeatedLocalRegexBundleDetector(CandidateFindingDetector):
+class RepeatedLocalRegexBundleDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "repeated_local_regex_bundle"
+    candidate_collector = _repeated_local_regex_bundle_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated local regex bundles should become a typed syntax authority",
@@ -3116,11 +3069,6 @@ class RepeatedLocalRegexBundleDetector(CandidateFindingDetector):
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _repeated_local_regex_bundle_candidates(module, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         regex_candidate = cast(RepeatedLocalRegexBundleCandidate, candidate)
@@ -3279,8 +3227,9 @@ def _algebraic_duplicate_compound_block_candidates(
     )
 
 
-class AlgebraicDuplicateCompoundBlockDetector(CandidateFindingDetector):
+class AlgebraicDuplicateCompoundBlockDetector(ModuleCollectorCandidateDetector):
     detector_id = "algebraic_duplicate_compound_block"
+    candidate_collector = _algebraic_duplicate_compound_block_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Anti-unified compound blocks should become one derived algebra",
@@ -3303,12 +3252,6 @@ class AlgebraicDuplicateCompoundBlockDetector(CandidateFindingDetector):
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _algebraic_duplicate_compound_block_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         block_candidate = cast(AlgebraicDuplicateCompoundBlockCandidate, candidate)
@@ -3340,8 +3283,9 @@ class AlgebraicDuplicateCompoundBlockDetector(CandidateFindingDetector):
         )
 
 
-class RepeatedProjectionHelperDetector(CandidateFindingDetector):
+class RepeatedProjectionHelperDetector(ModuleCollectorCandidateDetector):
     detector_id = "repeated_projection_helpers"
+    candidate_collector = _projection_helper_groups
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated projection helper wrappers should become one projector",
@@ -3363,12 +3307,6 @@ class RepeatedProjectionHelperDetector(CandidateFindingDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _projection_helper_groups(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         ordered = cast(tuple[ProjectionHelperShape, ...], candidate)
@@ -3519,8 +3457,9 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
         return findings
 
 
-class AccessorWrapperDetector(CandidateFindingDetector):
+class AccessorWrapperDetector(ModuleCollectorCandidateDetector):
     detector_id = "accessor_wrapper"
+    candidate_collector = _accessor_wrapper_groups
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Trivial structural accessor wrapper should collapse to attribute/property access",
@@ -3542,12 +3481,6 @@ class AccessorWrapperDetector(CandidateFindingDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _accessor_wrapper_groups(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         ordered = cast(tuple[AccessorWrapperCandidate, ...], candidate)
@@ -3672,8 +3605,9 @@ def _flattened_projection_properties(
     )
 
 
-class FlattenedProjectionPropertyDetector(CandidateFindingDetector):
+class FlattenedProjectionPropertyDetector(ModuleCollectorCandidateDetector):
     detector_id = "flattened_projection_property"
+    candidate_collector = _flattened_projection_properties
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Flattened compatibility projection properties should be deleted",
@@ -3697,12 +3631,6 @@ class FlattenedProjectionPropertyDetector(CandidateFindingDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _flattened_projection_properties(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         ordered = cast(tuple[FlattenedProjectionPropertyCandidate, ...], candidate)
@@ -3736,8 +3664,9 @@ class FlattenedProjectionPropertyDetector(CandidateFindingDetector):
         )
 
 
-class WrapperChainDetector(CandidateFindingDetector):
+class WrapperChainDetector(ModuleCollectorCandidateDetector):
     detector_id = "wrapper_chain"
+    candidate_collector = _wrapper_chain_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Transport wrapper chain should collapse to one authoritative view",
@@ -3756,12 +3685,6 @@ class WrapperChainDetector(CandidateFindingDetector):
             CapabilityTag.PROVENANCE,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _wrapper_chain_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         chain_candidate = cast(WrapperChainCandidate, candidate)
@@ -3810,8 +3733,9 @@ class WrapperChainDetector(CandidateFindingDetector):
         )
 
 
-class TrivialForwardingWrapperDetector(CandidateFindingDetector):
+class TrivialForwardingWrapperDetector(ModuleCollectorCandidateDetector):
     detector_id = "trivial_forwarding_wrapper"
+    candidate_collector = _trivial_forwarding_wrapper_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Trivial forwarding wrapper should be deleted in favor of the delegate authority",
@@ -3834,12 +3758,6 @@ class TrivialForwardingWrapperDetector(CandidateFindingDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _trivial_forwarding_wrapper_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         wrapper_candidate = cast(TrivialForwardingWrapperCandidate, candidate)
@@ -4007,8 +3925,9 @@ class PublicApiPrivateDelegateFamilyDetector(IssueDetector):
         return findings
 
 
-class NominalPolicySurfaceDetector(CandidateFindingDetector):
+class NominalPolicySurfaceDetector(ConfiguredModuleCollectorCandidateDetector):
     detector_id = "nominal_policy_surface"
+    candidate_collector = _nominal_policy_surface_family_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Nominal surface methods should not be thin shells over a policy family",
@@ -4032,11 +3951,6 @@ class NominalPolicySurfaceDetector(CandidateFindingDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return _nominal_policy_surface_family_candidates(module, config)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         family_candidate = cast(NominalPolicySurfaceFamilyCandidate, candidate)
@@ -4138,8 +4052,9 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
         return findings
 
 
-class BidirectionalRegistryDetector(CandidateFindingDetector):
+class BidirectionalRegistryDetector(ModuleCollectorCandidateDetector):
     detector_id = "bidirectional_registry"
+    candidate_collector = _mirrored_registry_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.BIDIRECTIONAL_LOOKUP,
         title="Bidirectional registry maintained manually",
@@ -4163,12 +4078,6 @@ class BidirectionalRegistryDetector(CandidateFindingDetector):
             ObservationTag.MANUAL_SYNCHRONIZATION,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _mirrored_registry_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         file_path, class_name, mirrored_pairs = cast(

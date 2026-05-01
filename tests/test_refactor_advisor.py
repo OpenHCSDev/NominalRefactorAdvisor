@@ -2807,6 +2807,52 @@ def consume_again(node):
     assert "shared_matcher" not in finding.summary
 
 
+def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalDetector(CandidateFindingDetector):
+    detector_id = "local"
+
+    def _candidate_items(self, module, config):
+        del config
+        return _local_candidates(module)
+
+    def _finding_for_candidate(self, candidate):
+        return candidate
+
+
+class ConfiguredDetector(CandidateFindingDetector):
+    detector_id = "configured"
+
+    def _candidate_items(self, module, config):
+        return _configured_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate):
+        return candidate
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "candidate_collector_boilerplate"
+    ]
+
+    assert {finding.evidence[0].symbol for finding in findings} == {
+        "LocalDetector._candidate_items",
+        "ConfiguredDetector._candidate_items",
+    }
+    assert any(
+        "ModuleCollectorCandidateDetector" in finding.summary for finding in findings
+    )
+    assert any(
+        "ConfiguredModuleCollectorCandidateDetector" in finding.summary
+        for finding in findings
+    )
+
+
 def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -8577,6 +8623,31 @@ def test_detects_excessive_blank_line_runs(tmp_path: Path) -> None:
 
     assert "5 contiguous blank lines" in finding.summary
     assert "Collapse blank lines" in (finding.codemod_patch or "")
+
+
+def test_detects_intra_class_blank_line_runs(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\n".join(
+            [
+                "class Alpha:",
+                "    marker = True",
+                "",
+                "",
+                "    def run(self):",
+                "        return 1",
+            ]
+        ),
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "excessive_blank_line_run"
+    )
+
+    assert "2 contiguous blank lines" in finding.summary
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:

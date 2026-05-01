@@ -328,6 +328,39 @@ class CandidateFindingDetector(PerModuleIssueDetector, ABC):
         raise NotImplementedError
 
 
+ModuleCandidateCollector = Callable[[ParsedModule], Sequence[object]]
+ConfiguredModuleCandidateCollector = Callable[
+    [ParsedModule, DetectorConfig], Sequence[object]
+]
+CrossModuleCandidateCollector = Callable[[Sequence[ParsedModule]], Sequence[object]]
+ConfiguredCrossModuleCandidateCollector = Callable[
+    [Sequence[ParsedModule], DetectorConfig], Sequence[object]
+]
+
+
+class ModuleCollectorCandidateDetector(CandidateFindingDetector, ABC):
+    """Candidate detector whose collector is a typed class-level strategy."""
+
+    candidate_collector: ClassVar[ModuleCandidateCollector]
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return type(self).candidate_collector(module)
+
+
+class ConfiguredModuleCollectorCandidateDetector(CandidateFindingDetector, ABC):
+    """Candidate detector whose collector depends on detector configuration."""
+
+    candidate_collector: ClassVar[ConfiguredModuleCandidateCollector]
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return type(self).candidate_collector(module, config)
+
+
 class CrossModuleCandidateDetector(IssueDetector, ABC):
     """Detector base for repository-wide candidate-to-finding pipelines."""
 
@@ -348,6 +381,31 @@ class CrossModuleCandidateDetector(IssueDetector, ABC):
     @abstractmethod
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         raise NotImplementedError
+
+
+class CrossModuleCollectorCandidateDetector(CrossModuleCandidateDetector, ABC):
+    """Cross-module candidate detector backed by a typed class-level strategy."""
+
+    candidate_collector: ClassVar[CrossModuleCandidateCollector]
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return type(self).candidate_collector(modules)
+
+
+class ConfiguredCrossModuleCollectorCandidateDetector(
+    CrossModuleCandidateDetector, ABC
+):
+    """Cross-module candidate detector whose collector needs configuration."""
+
+    candidate_collector: ClassVar[ConfiguredCrossModuleCandidateCollector]
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[object]:
+        return type(self).candidate_collector(modules, config)
 
 
 class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
@@ -8611,6 +8669,14 @@ class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
     @property
     def witness_name(self) -> str:
         return ", ".join(self.declaration_names[:4])
+
+
+@dataclass(frozen=True)
+class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+    collector_name: str
+    scope_kind: str
+    uses_config: bool
+    recommended_base_name: str
 
 
 @dataclass(frozen=True)

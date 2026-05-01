@@ -84,8 +84,9 @@ class ManualFamilyRosterDetector(IssueDetector):
         return findings
 
 
-class FragmentedFamilyAuthorityDetector(CandidateFindingDetector):
+class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector):
     detector_id = "fragmented_family_authority"
+    candidate_collector = _fragmented_family_authority_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Parallel key-family tables should become one authoritative record",
@@ -103,12 +104,6 @@ class FragmentedFamilyAuthorityDetector(CandidateFindingDetector):
             CapabilityTag.PROVENANCE,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _fragmented_family_authority_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         authority_candidate = cast(FragmentedFamilyAuthorityCandidate, candidate)
@@ -148,8 +143,9 @@ class FragmentedFamilyAuthorityDetector(CandidateFindingDetector):
         )
 
 
-class DerivedQueryIndexSurfaceDetector(CandidateFindingDetector):
+class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector):
     detector_id = "derived_query_index_surface"
+    candidate_collector = _derived_query_index_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated linear query helpers should derive keyed indexes from the immutable authority",
@@ -167,12 +163,6 @@ class DerivedQueryIndexSurfaceDetector(CandidateFindingDetector):
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _derived_query_index_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         query_candidate = cast(DerivedQueryIndexCandidate, candidate)
@@ -205,8 +195,9 @@ class DerivedQueryIndexSurfaceDetector(CandidateFindingDetector):
         )
 
 
-class RuntimeAdapterShellDetector(CandidateFindingDetector):
+class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector):
     detector_id = "runtime_adapter_shell"
+    candidate_collector = _runtime_adapter_shell_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Secondary runtime adapter shell should collapse into the authoritative spec",
@@ -225,12 +216,6 @@ class RuntimeAdapterShellDetector(CandidateFindingDetector):
             CapabilityTag.NOMINAL_IDENTITY,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _runtime_adapter_shell_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         adapter_candidate = cast(RuntimeAdapterShellCandidate, candidate)
@@ -276,8 +261,9 @@ class RuntimeAdapterShellDetector(CandidateFindingDetector):
         )
 
 
-class KeywordBagAdapterShellDetector(CandidateFindingDetector):
+class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector):
     detector_id = "keyword_bag_adapter_shell"
+    candidate_collector = _keyword_bag_adapter_candidates
     finding_spec = FindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Record-to-kwargs adapter shell should collapse onto the record authority",
@@ -294,12 +280,6 @@ class KeywordBagAdapterShellDetector(CandidateFindingDetector):
             CapabilityTag.PROVENANCE,
         ),
     )
-
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return _keyword_bag_adapter_candidates(module)
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         adapter_candidate = cast(KeywordBagAdapterCandidate, candidate)
