@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
-from typing import Any, Callable, ClassVar, Sequence, TypeVar, cast
+from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -27,6 +27,7 @@ from ..semantic_match import (
     FirstSuccessfulEffectStep,
     GuardedEffectStep,
     Maybe,
+    NamedCallAssignment,
     RegisteredEffectStep,
     SingleCompareEffectStep,
     as_ast,
@@ -109,10 +110,13 @@ from ..models import (
     SPECULATIVE,
     STRONG_HEURISTIC,
     BranchCountMetrics,
+    CertifiedFindingSpec,
     DispatchCountMetrics,
     FieldFamilyMetrics,
     FindingMetrics,
     FindingSpec,
+    HighConfidenceCertifiedFindingSpec,
+    HighConfidenceFindingSpec,
     HierarchyCandidateMetrics,
     ImpactDelta,
     MappingMetrics,
@@ -143,6 +147,7 @@ from ..taxonomy import (
     MEDIUM_CONFIDENCE,
     CapabilityTag,
     CertificationLevel,
+    ConfidenceLevel,
     ObservationTag,
 )
 from ._substrate_support import *
@@ -157,6 +162,37 @@ _REFLECTIVE_SELF_BUILTINS = frozenset(
 )
 _PIPELINE_ASSIGN_STAGE = "assign"
 _PIPELINE_RETURN_STAGE = "return"
+
+_ACCESSOR_WRAPPER_INTERFACE_IDENTITY_NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.ACCESSOR_WRAPPER, ObservationTag.INTERFACE_IDENTITY, ObservationTag.NORMALIZED_AST)
+_ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.ACCESSOR_WRAPPER, ObservationTag.NORMALIZED_AST)
+_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.CLOSED_FAMILY_DISPATCH, CapabilityTag.PROVENANCE)
+_AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_DISPATCH, CapabilityTag.CLOSED_FAMILY_DISPATCH, CapabilityTag.NOMINAL_IDENTITY)
+_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_DISPATCH, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.SHARED_ALGORITHM_AUTHORITY)
+_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.ENUMERATION)
+_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.PROVENANCE)
+_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.SHARED_ALGORITHM_AUTHORITY)
+_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.PROVENANCE, CapabilityTag.NOMINAL_IDENTITY)
+_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.PROVENANCE, CapabilityTag.UNIT_RATE_COHERENCE)
+_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS = (CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.SHARED_ALGORITHM_AUTHORITY, CapabilityTag.NOMINAL_IDENTITY)
+_BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS = (ObservationTag.BUILDER_CALL, ObservationTag.DATAFLOW_ROOT, ObservationTag.CLASS_FAMILY)
+_CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS = (ObservationTag.CLASS_FAMILY, ObservationTag.BUILDER_CALL, ObservationTag.DATAFLOW_ROOT)
+_CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS = (ObservationTag.CLASS_FAMILY, ObservationTag.FACTORY_DISPATCH, ObservationTag.DATAFLOW_ROOT)
+_CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS = (ObservationTag.CLASS_FAMILY, ObservationTag.KEYWORD_MAPPING, ObservationTag.MANUAL_SYNCHRONIZATION)
+_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.CLASS_FAMILY, ObservationTag.NORMALIZED_AST)
+_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS = (CapabilityTag.CLASS_LEVEL_REGISTRATION, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.ENUMERATION)
+_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS = (CapabilityTag.CLOSED_FAMILY_DISPATCH, CapabilityTag.AUTHORITATIVE_DISPATCH)
+_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.DATAFLOW_ROOT, ObservationTag.NORMALIZED_AST)
+_MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS = (ObservationTag.MIRRORED_REGISTRY, ObservationTag.CLASS_LEVEL_POSITION, ObservationTag.MANUAL_SYNCHRONIZATION)
+_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS = (CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.FAIL_LOUD_CONTRACTS, CapabilityTag.AUTHORITATIVE_MAPPING)
+_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS = (CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.FAIL_LOUD_CONTRACTS, CapabilityTag.PROVENANCE)
+_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS = (ObservationTag.NORMALIZED_AST, ObservationTag.DATAFLOW_ROOT)
+_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS = (ObservationTag.NORMALIZED_AST, ObservationTag.MANUAL_SYNCHRONIZATION)
+_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS = (ObservationTag.NORMALIZED_AST, ObservationTag.PARTIAL_VIEW)
+_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS = (CapabilityTag.SHARED_ALGORITHM_AUTHORITY, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.MRO_ORDERING)
+_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS = (CapabilityTag.SHARED_ALGORITHM_AUTHORITY, CapabilityTag.NOMINAL_IDENTITY, CapabilityTag.PROVENANCE)
+_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (CapabilityTag.SHARED_ALGORITHM_AUTHORITY, CapabilityTag.PROVENANCE, CapabilityTag.NOMINAL_IDENTITY)
+_UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS = (CapabilityTag.UNIT_RATE_COHERENCE, CapabilityTag.AUTHORITATIVE_MAPPING)
+_UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS = (CapabilityTag.UNIT_RATE_COHERENCE, CapabilityTag.AUTHORITATIVE_MAPPING, CapabilityTag.PROVENANCE)
 
 
 @dataclass(frozen=True)
@@ -250,6 +286,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = "detector_id"
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
+    finding_spec: ClassVar[FindingSpec]
     genericity: ClassVar[str] = "generic"
     detector_priority: ClassVar[int] = 0
 
@@ -281,6 +318,43 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
             key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
         )
 
+    def build_finding(
+        self,
+        summary: str,
+        evidence: tuple[SourceLocation, ...],
+        /,
+        scaffold: str | None = None,
+        codemod_patch: str | None = None,
+        metrics: FindingMetrics | None = None,
+        title: str | None = None,
+        why: str | None = None,
+        capability_gap: str | None = None,
+        confidence: ConfidenceLevel | None = None,
+        relation_context: str | None = None,
+        certification: CertificationLevel | None = None,
+        capability_tags: tuple[CapabilityTag, ...] | None = None,
+        observation_tags: tuple[ObservationTag, ...] | None = None,
+    ) -> RefactorFinding:
+        detector_id = self.detector_id
+        if detector_id is None:
+            raise TypeError(f"{type(self).__name__} has no detector_id")
+        return type(self).finding_spec.build(
+            detector_id,
+            summary,
+            evidence,
+            scaffold=scaffold,
+            codemod_patch=codemod_patch,
+            metrics=metrics,
+            title=title,
+            why=why,
+            capability_gap=capability_gap,
+            confidence=confidence,
+            relation_context=relation_context,
+            certification=certification,
+            capability_tags=capability_tags,
+            observation_tags=observation_tags,
+        )
+
     @abstractmethod
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -306,7 +380,10 @@ class PerModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
-class CandidateFindingDetector(PerModuleIssueDetector, ABC):
+CandidateItemT = TypeVar("CandidateItemT")
+
+
+class CandidateFindingDetector(PerModuleIssueDetector, Generic[CandidateItemT], ABC):
     """Detector base for candidate-to-finding pipelines."""
 
     def _findings_for_module(
@@ -320,48 +397,58 @@ class CandidateFindingDetector(PerModuleIssueDetector, ABC):
     @abstractmethod
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
     @abstractmethod
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
         raise NotImplementedError
 
 
-ModuleCandidateCollector = Callable[[ParsedModule], Sequence[object]]
+ModuleCandidateCollector = Callable[[ParsedModule], Sequence[CandidateItemT]]
 ConfiguredModuleCandidateCollector = Callable[
-    [ParsedModule, DetectorConfig], Sequence[object]
+    [ParsedModule, DetectorConfig], Sequence[CandidateItemT]
 ]
-CrossModuleCandidateCollector = Callable[[Sequence[ParsedModule]], Sequence[object]]
+CrossModuleCandidateCollector = Callable[
+    [Sequence[ParsedModule]], Sequence[CandidateItemT]
+]
 ConfiguredCrossModuleCandidateCollector = Callable[
-    [Sequence[ParsedModule], DetectorConfig], Sequence[object]
+    [Sequence[ParsedModule], DetectorConfig], Sequence[CandidateItemT]
 ]
 
 
-class ModuleCollectorCandidateDetector(CandidateFindingDetector, ABC):
+class ModuleCollectorCandidateDetector(
+    CandidateFindingDetector[CandidateItemT], Generic[CandidateItemT], ABC
+):
     """Candidate detector whose collector is a typed class-level strategy."""
 
-    candidate_collector: ClassVar[ModuleCandidateCollector]
+    candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         del config
         return type(self).candidate_collector(module)
 
 
-class ConfiguredModuleCollectorCandidateDetector(CandidateFindingDetector, ABC):
+class ConfiguredModuleCollectorCandidateDetector(
+    CandidateFindingDetector[CandidateItemT], Generic[CandidateItemT], ABC
+):
     """Candidate detector whose collector depends on detector configuration."""
 
-    candidate_collector: ClassVar[ConfiguredModuleCandidateCollector]
+    candidate_collector: ClassVar[
+        ConfiguredModuleCandidateCollector[CandidateItemT]
+    ]
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(module, config)
 
 
-class CrossModuleCandidateDetector(IssueDetector, ABC):
+class CrossModuleCandidateDetector(
+    IssueDetector, Generic[CandidateItemT], ABC
+):
     """Detector base for repository-wide candidate-to-finding pipelines."""
 
     def _collect_findings(
@@ -375,36 +462,40 @@ class CrossModuleCandidateDetector(IssueDetector, ABC):
     @abstractmethod
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
     @abstractmethod
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
         raise NotImplementedError
 
 
-class CrossModuleCollectorCandidateDetector(CrossModuleCandidateDetector, ABC):
+class CrossModuleCollectorCandidateDetector(
+    CrossModuleCandidateDetector[CandidateItemT], Generic[CandidateItemT], ABC
+):
     """Cross-module candidate detector backed by a typed class-level strategy."""
 
-    candidate_collector: ClassVar[CrossModuleCandidateCollector]
+    candidate_collector: ClassVar[CrossModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         del config
         return type(self).candidate_collector(modules)
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
-    CrossModuleCandidateDetector, ABC
+    CrossModuleCandidateDetector[CandidateItemT], Generic[CandidateItemT], ABC
 ):
     """Cross-module candidate detector whose collector needs configuration."""
 
-    candidate_collector: ClassVar[ConfiguredCrossModuleCandidateCollector]
+    candidate_collector: ClassVar[
+        ConfiguredCrossModuleCandidateCollector[CandidateItemT]
+    ]
 
     def _candidate_items(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(modules, config)
 
 
@@ -449,8 +540,7 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         evidence: tuple[SourceLocation, ...],
         config: DetectorConfig,
     ) -> RefactorFinding:
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             self._summary(module, evidence),
             self._evidence_slice(evidence),
         )
@@ -8677,6 +8767,37 @@ class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
     scope_kind: str
     uses_config: bool
     recommended_base_name: str
+
+
+@dataclass(frozen=True)
+class TypedCandidateCastBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+    parameter_name: str
+    local_name: str
+    candidate_type_name: str
+    detector_base_name: str
+
+
+@dataclass(frozen=True)
+class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
+    constructor_name: str
+    recommended_constructor_name: str
+    redundant_keyword_names: tuple[str, ...]
+    redundant_keyword_values: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.constructor_name
+
+
+@dataclass(frozen=True)
+class SemanticTagTupleBoilerplateCandidate(EvidenceLocationsWitnessCandidate):
+    keyword_name: str
+    constant_name: str
+    tag_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.constant_name
 
 
 @dataclass(frozen=True)

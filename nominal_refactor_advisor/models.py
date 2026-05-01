@@ -15,6 +15,7 @@ from .class_composition import CompositeClassSpec
 from .patterns import PatternId
 
 from .taxonomy import (
+    HIGH_CONFIDENCE,
     MEDIUM_CONFIDENCE,
     CERTIFIED,
     SPECULATIVE,
@@ -715,6 +716,27 @@ class FindingSpec(FindingSemantics):
             observation_tags=observation_tags,
             metrics=metrics,
         )
+
+
+@dataclass(frozen=True)
+class HighConfidenceFindingSpec(FindingSpec):
+    """Finding spec whose confidence is intentionally high by construction."""
+
+    confidence: ConfidenceLevel = HIGH_CONFIDENCE
+
+
+@dataclass(frozen=True)
+class CertifiedFindingSpec(FindingSpec):
+    """Finding spec whose certification is intentionally certified by construction."""
+
+    certification: CertificationLevel = CERTIFIED
+
+
+@dataclass(frozen=True)
+class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
+    """Finding spec whose high-confidence certified status is constructor-level."""
+
+    certification: CertificationLevel = CERTIFIED
 
 
 @dataclass(frozen=True)

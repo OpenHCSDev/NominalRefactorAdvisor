@@ -329,6 +329,8 @@ def _indexed_descendant_classes(
 
 
 def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Subscript):
+        return _call_name(node.value)
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):

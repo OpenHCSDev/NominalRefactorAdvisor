@@ -11,7 +11,7 @@ from ._helpers import *
 
 class ManualFamilyRosterDetector(IssueDetector):
     detector_id = "manual_family_roster"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Manual subclass roster should become metaclass-registry auto-registration",
         why=(
@@ -20,8 +20,6 @@ class ManualFamilyRosterDetector(IssueDetector):
         ),
         capability_gap="zero-delay metaclass-registry class-family discovery with declarative ordering",
         relation_context="family membership is maintained by a manual roster function or constant",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -48,8 +46,7 @@ class ManualFamilyRosterDetector(IssueDetector):
                     for shape in index.shapes_named(member_name)[:1]
                 )
                 findings.append(
-                    self.finding_spec.build(
-                        self.detector_id,
+                    self.build_finding(
                         (
                             f"`{candidate.owner_name}` manually enumerates {len(candidate.member_names)} members of the `{candidate.family_base_name}` family."
                         ),
@@ -84,10 +81,10 @@ class ManualFamilyRosterDetector(IssueDetector):
         return findings
 
 
-class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector):
+class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]):
     detector_id = "fragmented_family_authority"
     candidate_collector = _fragmented_family_authority_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Parallel key-family tables should become one authoritative record",
         why=(
@@ -96,17 +93,10 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative enum-keyed planning record",
         relation_context="one key family is split across parallel metadata tables",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        authority_candidate = cast(FragmentedFamilyAuthorityCandidate, candidate)
+    def _finding_for_candidate(self, authority_candidate: FragmentedFamilyAuthorityCandidate) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(authority_candidate.file_path, line, name)
             for name, line in zip(
@@ -115,8 +105,7 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector):
                 strict=True,
             )
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Tables {', '.join(authority_candidate.mapping_names)} split one `{authority_candidate.key_family_name}` metadata family across {len(authority_candidate.mapping_names)} authorities."
             ),
@@ -143,10 +132,10 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector):
+class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector[DerivedQueryIndexCandidate]):
     detector_id = "derived_query_index_surface"
     candidate_collector = _derived_query_index_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated linear query helpers should derive keyed indexes from the immutable authority",
         why=(
@@ -155,19 +144,11 @@ class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative immutable family plus derived keyed indexes",
         relation_context="same immutable authority is rescanned by multiple query helpers with different key selectors",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        query_candidate = cast(DerivedQueryIndexCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, query_candidate: DerivedQueryIndexCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan "
                 f"`{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
@@ -195,10 +176,10 @@ class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector):
+class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapterShellCandidate]):
     detector_id = "runtime_adapter_shell"
     candidate_collector = _runtime_adapter_shell_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Secondary runtime adapter shell should collapse into the authoritative spec",
         why=(
@@ -208,21 +189,13 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell",
         relation_context="one function copies source-record fields into a second record and resolves runtime hooks through keyed tables",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        adapter_candidate = cast(RuntimeAdapterShellCandidate, candidate)
+    def _finding_for_candidate(self, adapter_candidate: RuntimeAdapterShellCandidate) -> RefactorFinding:
         copied_fields = ", ".join(adapter_candidate.copied_field_names[:4])
         resolved_fields = ", ".join(adapter_candidate.resolver_field_names[:4])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{adapter_candidate.function_name}` rebuilds `{adapter_candidate.adapter_class_name}` from "
                 f"`{adapter_candidate.source_name}` by copying {copied_fields} and resolving "
@@ -261,10 +234,10 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector):
+class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBagAdapterCandidate]):
     detector_id = "keyword_bag_adapter_shell"
     candidate_collector = _keyword_bag_adapter_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Record-to-kwargs adapter shell should collapse onto the record authority",
         why=(
@@ -273,18 +246,14 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
         relation_context="one helper copies several fields from a source record into a transient kwargs dictionary",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        adapter_candidate = cast(KeywordBagAdapterCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, adapter_candidate: KeywordBagAdapterCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} "
                 f"from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}."
@@ -318,7 +287,7 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector):
 
 class ExistingNominalAuthorityReuseDetector(IssueDetector):
     detector_id = "existing_nominal_authority_reuse"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Existing nominal authority should be reused",
         why=(
@@ -327,8 +296,6 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
         ),
         capability_gap="reuse of an existing authoritative base or mixin instead of duplicating the family",
         relation_context="a concrete class repeats a semantic family already declared by an existing nominal authority",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -360,8 +327,7 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
                 else candidate.compatible_authority_name
             )
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"`{candidate.class_name}` repeats semantic fields {candidate.shared_field_names} already owned by `{candidate.compatible_authority_name}`."
                     ),
@@ -392,7 +358,7 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
 
 class PassThroughNominalWrapperDetector(IssueDetector):
     detector_id = "pass_through_nominal_wrapper"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Pass-through wrapper should reuse the existing nominal authority directly",
         why=(
@@ -402,8 +368,6 @@ class PassThroughNominalWrapperDetector(IssueDetector):
         ),
         capability_gap="direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
         relation_context="a concrete class forwards an existing nominal contract member-for-member without adding new semantics",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,
@@ -426,8 +390,7 @@ class PassThroughNominalWrapperDetector(IssueDetector):
                 ),
             )
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"`{candidate.class_name}` forwards members {candidate.forwarded_member_names} to "
                         f"`{candidate.delegate_authority_name}` through `{candidate.delegate_field_name}` without "
@@ -450,7 +413,7 @@ class PassThroughNominalWrapperDetector(IssueDetector):
 
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     detector_id = "finding_assembly_pipeline"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated finding-assembly pipeline should move into a detector base",
         why=(
@@ -459,13 +422,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         ),
         capability_gap="candidate-driven detector template with abstract hooks and mixins",
         relation_context="same finding assembly stages repeat across sibling detector classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -487,8 +444,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
             sorted({candidate.candidate_source_name for candidate in candidates})
         )
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Detectors {', '.join(candidate.class_name for candidate in candidates[:5])} repeat the same candidate-to-finding pipeline over collectors {', '.join(collector_names[:4])}."
                 ),
@@ -534,7 +490,7 @@ def _keyword_mapping_metrics(
 
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     detector_id = "projection_builder_authority"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Projection-style record rebuild should collapse into one authoritative builder",
         why=(
@@ -544,8 +500,6 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
         ),
         capability_gap="one authoritative projection builder for a repeated record family",
         relation_context="same nominal record is re-projected from overlapping sources at several call sites",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -570,8 +524,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                 for builder in builders[:6]
             )
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"`{callee_name}` is rebuilt across {len(builders)} projection sites over keyword family {keyword_names}, "
                         "with guards/defaults varying per site."
@@ -598,7 +551,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
 
 class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     detector_id = "guarded_delegator_spec"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated guarded spec wrappers should collapse into mixins",
         why=(
@@ -607,13 +560,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         ),
         capability_gap="shared wrapper substrate with orthogonal scope mixins",
         relation_context="guard-and-delegate wrapper logic repeats across sibling observation specs",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -633,8 +580,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         )
         scope_roles = tuple(sorted({candidate.scope_role for candidate in candidates}))
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Observation specs {', '.join(candidate.class_name for candidate in candidates[:5])} repeat guarded delegation over scope roles {', '.join(scope_roles)}."
                 ),
@@ -669,7 +615,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
 
 class StructuralObservationProjectionDetector(CandidateFindingDetector):
     detector_id = "structural_observation_projection"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated property projection builders should share one projection substrate",
         why=(
@@ -678,13 +624,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         ),
         capability_gap="single authoritative projection builder with role hooks",
         relation_context="same property-backed constructor schema is manually rebuilt across many classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     )
 
     def _candidate_items(
@@ -722,8 +662,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
             SourceLocation(item.file_path, item.line, item.class_name)
             for item in grouped_candidates[:6]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{property_name}` with the same `{constructor_name}` schema over roles {keyword_names}."
             ),

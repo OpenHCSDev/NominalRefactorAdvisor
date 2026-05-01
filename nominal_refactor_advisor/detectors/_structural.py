@@ -81,7 +81,7 @@ def _witness_mixin_enforcement_candidate(
 
 class MixinEnforcementDetector(PerModuleIssueDetector):
     detector_id = "mixin_enforcement"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
         title="Renamed orthogonal semantic slices should become mixins",
         why=(
@@ -90,8 +90,6 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
         ),
         capability_gap="one authoritative semantic carrier spine plus reusable semantic-role mixins",
         relation_context="same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -117,8 +115,7 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
             for role_name, field_names in candidate.role_field_names
         )
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance."
                 ),
@@ -528,9 +525,9 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
         return prefix if prefix.endswith("Base") else f"{prefix}Base"
     return "SharedFieldsBase"
 
-class RepeatedFieldFamilyDetector(CandidateFindingDetector):
+class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
     detector_id = "repeated_field_family"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Shared field family across sibling classes should move to an ABC base",
         why=(
@@ -540,17 +537,8 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
         ),
         capability_gap="single authoritative state component for a nominal class family",
         relation_context="same field family repeats across sibling classes at one structural execution level",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _candidate_items(
@@ -563,8 +551,7 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
             if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        field_candidate = cast(FieldFamilyCandidate, candidate)
+    def _finding_for_candidate(self, field_candidate: FieldFamilyCandidate) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(
                 item.file_path,
@@ -573,8 +560,7 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
             )
             for item in field_candidate.observations[:8]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`."
             ),
@@ -593,10 +579,10 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector):
             ),
         )
 
-class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector):
+class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]):
     detector_id = "prefixed_role_field_bundle"
     candidate_collector = _prefixed_role_field_bundle_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Role-prefixed field bundle should become nominal subrecords",
         why=(
@@ -606,22 +592,11 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
         ),
         capability_gap="explicit nominal role records instead of parallel role-prefixed fields",
         relation_context="same semantic member family repeats under several leading role prefixes in one record",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        bundle_candidate = cast(PrefixedRoleFieldBundleCandidate, candidate)
+    def _finding_for_candidate(self, bundle_candidate: PrefixedRoleFieldBundleCandidate) -> RefactorFinding:
         role_summary = ", ".join(bundle_candidate.role_names)
         member_summary = ", ".join(bundle_candidate.shared_member_names)
         transport_summary = ""
@@ -635,8 +610,7 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
                 " The record also participates in PyTree transport via "
                 f"{', '.join(bundle_candidate.pytree_base_names)}."
             )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{bundle_candidate.class_name}` repeats role-prefixed fields for roles "
                 f"{role_summary} over shared members {member_summary}.{transport_summary}"
@@ -657,10 +631,10 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
             ),
         )
 
-class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector):
+class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[PropertyAliasHookGroup]):
     detector_id = "repeated_property_alias_hooks"
     candidate_collector = _property_alias_hook_groups
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated property hook aliases should move into a shared base or mixin",
         why=(
@@ -669,21 +643,11 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative hook property implementation for a nominal subclass family",
         relation_context="same property hook alias repeats across siblings of one base family",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        hook_group = cast(PropertyAliasHookGroup, candidate)
+    def _finding_for_candidate(self, hook_group: PropertyAliasHookGroup) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(
                 hook_group.file_path, line, f"{class_name}.{hook_group.property_name}"
@@ -695,8 +659,7 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector):
             )
         )
         mixin_name = f"{_camel_case(hook_group.returned_attribute)}{_camel_case(hook_group.property_name)}Mixin"
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as `return self.{hook_group.returned_attribute}`."
             ),
@@ -715,10 +678,10 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector):
+class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantPropertyHookGroup]):
     detector_id = "constant_property_hooks"
     candidate_collector = _constant_property_hook_groups
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Constant property hooks should move into classvars or fixed mixins",
         why=(
@@ -727,21 +690,11 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative constant hook implementation for a nominal subclass family",
         relation_context="same property hook is re-declared as a constant return across one subclass family",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        hook_group = cast(ConstantPropertyHookGroup, candidate)
+    def _finding_for_candidate(self, hook_group: ConstantPropertyHookGroup) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(
                 hook_group.file_path,
@@ -773,8 +726,7 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector):
                 f"        return type(self).{constant_name}"
             )
             patch = f"# Replace repeated constant `{hook_group.property_name}` hooks with one classvar-backed base for `{hook_group.base_name}`."
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as constant returns {unique_returns}."
             ),
@@ -786,10 +738,10 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector):
+class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]):
     detector_id = "reflective_self_attribute_escape"
     candidate_collector = _reflective_self_attribute_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.CONFIG_CONTRACTS,
         title="Reflective self-attribute access hides a nominal contract",
         why=(
@@ -798,24 +750,16 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="declared fail-loud nominal attribute contract on the carrier family",
         relation_context="class template probes its own required state through reflective string access",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.PARTIAL_VIEW,
             ObservationTag.NORMALIZED_AST,
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        reflective_candidate = cast(ReflectiveSelfAttributeCandidate, candidate)
+    def _finding_for_candidate(self, reflective_candidate: ReflectiveSelfAttributeCandidate) -> RefactorFinding:
         carrier_name = f"{reflective_candidate.class_name}Carrier"
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` uses `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')` instead of declaring `{reflective_candidate.attribute_name}` on the nominal carrier."
             ),
@@ -839,7 +783,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector):
 
 class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
     detector_id = "helper_backed_observation_spec"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Helper-backed wrapper classes should use a declarative substrate",
         why=(
@@ -848,8 +792,6 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         ),
         capability_gap="one declarative helper-backed wrapper family with class-level registration",
         relation_context="same helper-backed wrapper shape repeats across sibling classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -875,8 +817,7 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         helper_names = tuple(dict.fromkeys(group.helper_names))
         wrapper_kinds = tuple(dict.fromkeys(group.wrapper_kinds))
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Classes {', '.join(group.class_names[:6])} under base family {group.base_names} are helper-backed wrappers over {', '.join(helper_names[:6])} via wrapper kinds {', '.join(wrapper_kinds)}."
                 ),
@@ -911,10 +852,10 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
             )
         ]
 
-class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector):
+class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[DeclarativeFamilyBoilerplateGroup]):
     detector_id = "classvar_only_sibling_leaf"
     candidate_collector = _classvar_only_sibling_leaf_groups
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Classvar-only sibling leaves should come from one metaprogrammed family table",
         why=(
@@ -923,17 +864,10 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative declarative family-definition table with class-generation or metaclass support",
         relation_context="same class-level family declaration boilerplate repeats across sibling family leaves",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group = cast(DeclarativeFamilyBoilerplateGroup, candidate)
+    def _finding_for_candidate(self, group: DeclarativeFamilyBoilerplateGroup) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(group.file_path, line, class_name)
             for class_name, line in zip(
@@ -943,8 +877,7 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector):
             )
         )
         spec_name = _camel_case(group.base_names[0]) + "Declaration"
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Family classes {', '.join(group.class_names[:6])} all repeat declarative classvars {group.assigned_names} under bases {group.base_names}."
             ),
@@ -972,10 +905,10 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector):
+class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[TypeIndexedDefinitionBoilerplateGroup]):
     detector_id = "type_indexed_definition_boilerplate"
     candidate_collector = _type_indexed_definition_boilerplate_groups
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Type-indexed family definitions should derive from one typed declaration table",
         why=(
@@ -984,17 +917,10 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector)
         ),
         capability_gap="one authoritative typed declaration table for family generation and export derivation",
         relation_context="same type-indexed family definition and alias boilerplate repeats across sibling declarations",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group = cast(TypeIndexedDefinitionBoilerplateGroup, candidate)
+    def _finding_for_candidate(self, group: TypeIndexedDefinitionBoilerplateGroup) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(group.file_path, line, class_name)
             for class_name, line in zip(
@@ -1003,8 +929,7 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector)
                 strict=True,
             )
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
             ),
@@ -1033,10 +958,10 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector)
             ),
         )
 
-class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector):
+class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExportSurfaceCandidate]):
     detector_id = "derived_export_surface"
     candidate_collector = _derived_export_surface_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Manual export surfaces should derive from the authoritative type family",
         why=(
@@ -1045,20 +970,12 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one derived export surface projected from the authoritative class family",
         relation_context="manual export tuple/list repeats names already implied by local type families",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        export_candidate = cast(DerivedExportSurfaceCandidate, candidate)
+    def _finding_for_candidate(self, export_candidate: DerivedExportSurfaceCandidate) -> RefactorFinding:
         root_names = ", ".join(export_candidate.derivable_root_names)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{export_candidate.export_symbol}` manually enumerates {len(export_candidate.exported_names)} exported names that are derivable from local `{root_names}` families."
             ),
@@ -1091,10 +1008,10 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector):
+class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector[ManualPublicApiSurfaceCandidate]):
     detector_id = "manual_public_api_surface"
     candidate_collector = _manual_public_api_surface_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Manual public API surfaces should derive from the module authority",
         why=(
@@ -1103,19 +1020,11 @@ class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one derived public API surface projected from the module's authoritative declarations",
         relation_context="manual public export list repeats names already present in module bindings",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        api_candidate = cast(ManualPublicApiSurfaceCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, api_candidate: ManualPublicApiSurfaceCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings."
             ),
@@ -1147,7 +1056,7 @@ class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector):
 
 class ExportPolicyPredicateDetector(IssueDetector):
     detector_id = "export_policy_predicate"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated derived-surface policy predicates should collapse into one declarative policy",
         why=(
@@ -1155,13 +1064,7 @@ class ExportPolicyPredicateDetector(IssueDetector):
         ),
         capability_gap="one declarative policy substrate for derived module surfaces",
         relation_context="surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -1193,8 +1096,7 @@ class ExportPolicyPredicateDetector(IssueDetector):
             )
         )
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Derived-surface predicates {', '.join(candidate.function_name for candidate in candidates[:6])} repeat policy roles {all_roles} over root types {root_type_names or ('<unconstrained>',)}."
                 ),
@@ -1225,10 +1127,10 @@ class ExportPolicyPredicateDetector(IssueDetector):
             )
         ]
 
-class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector):
+class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedIndexedSurfaceCandidate]):
     detector_id = "derived_indexed_surface"
     candidate_collector = _derived_indexed_surface_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Manual indexed module surfaces should derive from the authoritative type family",
         why=(
@@ -1237,20 +1139,12 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one derived index projected from the authoritative local type family",
         relation_context="manual dict index repeats keys and values already implied by local type families",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        index_candidate = cast(DerivedIndexedSurfaceCandidate, candidate)
+    def _finding_for_candidate(self, index_candidate: DerivedIndexedSurfaceCandidate) -> RefactorFinding:
         root_names = ", ".join(index_candidate.derivable_root_names)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{index_candidate.surface_name}` manually indexes {len(index_candidate.value_names)} local types by `{index_candidate.key_kind}` even though that surface is derivable from local `{root_names}` families."
             ),
@@ -1277,10 +1171,10 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector):
+class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector[RegisteredUnionSurfaceCandidate]):
     detector_id = "registered_union_surface"
     candidate_collector = _registered_union_surface_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Manual sibling-registry unions should derive from one authoritative query",
         why=(
@@ -1288,8 +1182,6 @@ class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
         relation_context="manual union of sibling registry queries repeats information already present in class-time registration",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -1297,10 +1189,8 @@ class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        union_candidate = cast(RegisteredUnionSurfaceCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, union_candidate: RegisteredUnionSurfaceCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}."
             ),
@@ -1334,7 +1224,7 @@ class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector):
 
 class RegistryTraversalSubstrateDetector(IssueDetector):
     detector_id = "registry_traversal_substrate"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Repeated subclass-family traversal should collapse into one discovery substrate",
         why=(
@@ -1342,8 +1232,6 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         ),
         capability_gap="one authoritative subclass-family discovery substrate with declarative materialization hooks",
         relation_context="same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -1409,8 +1297,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             )
         )
         return [
-            self.finding_spec.build(
-                self.detector_id,
+            self.build_finding(
                 (
                     f"Helpers {', '.join(group.symbols[:6])} repeat subclass-family traversal from roots {group.root_expressions[:6]}"
                     f"{registry_clause}{filter_clause} with materialization modes {group.materialization_kinds}."
@@ -2413,10 +2300,10 @@ def _module_constructor_policy_family_candidates(
     )
 
 
-class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector):
+class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[AlternateConstructorFamilyGroup]):
     detector_id = "alternate_constructor_family"
     candidate_collector = _alternate_constructor_family_groups
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Alternate constructors should collapse into one provenance-dispatched builder",
         why=(
@@ -2425,8 +2312,6 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single provenance-aware builder for one record schema",
         relation_context="same record schema is rebuilt across sibling alternate constructors for different source types",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -2434,8 +2319,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group = cast(AlternateConstructorFamilyGroup, candidate)
+    def _finding_for_candidate(self, group: AlternateConstructorFamilyGroup) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(group.file_path, line, f"{group.class_name}.{method_name}")
             for method_name, line in zip(
@@ -2444,8 +2328,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector):
                 strict=True,
             )
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
             ),
@@ -2468,10 +2351,10 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
+class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[ConstructorVariantFamilyCandidate]):
     detector_id = "constructor_variant_family"
     candidate_collector = _constructor_variant_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Constructor variants should derive from one constructor algebra",
         why=(
@@ -2480,13 +2363,7 @@ class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single constructor-variant catalog that derives named class constructors",
         relation_context="same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.CLASS_FAMILY,
             ObservationTag.NORMALIZED_AST,
@@ -2494,10 +2371,8 @@ class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        variant_candidate = cast(ConstructorVariantFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, variant_candidate: ConstructorVariantFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}."
             ),
@@ -2525,10 +2400,10 @@ class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector):
+class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector[AccumulatorFoldFamilyCandidate]):
     detector_id = "accumulator_fold_family"
     candidate_collector = _accumulator_fold_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Accumulator folds should derive from one fold algebra",
         why=(
@@ -2537,23 +2412,16 @@ class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single accumulator-fold substrate with declarative step hooks",
         relation_context="same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
         ),
-        observation_tags=(
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        fold_candidate = cast(AccumulatorFoldFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, fold_candidate: AccumulatorFoldFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
             ),
@@ -2584,10 +2452,10 @@ class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector):
+class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector[ExcessiveBlankLineRunCandidate]):
     detector_id = "excessive_blank_line_run"
     candidate_collector = _excessive_blank_line_run_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
         title="Nonsemantic blank source regions should be collapsed",
         why=(
@@ -2596,8 +2464,6 @@ class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="compact source layout with no nonsemantic blank-line payload",
         relation_context="source contains an empty region larger than a canonical separator",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -2605,10 +2471,8 @@ class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector):
         observation_tags=(ObservationTag.NORMALIZED_AST,),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        blank_candidate = cast(ExcessiveBlankLineRunCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, blank_candidate: ExcessiveBlankLineRunCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}."
             ),
@@ -2629,10 +2493,10 @@ class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector):
+class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector[CatalogInstallingMixinFamilyCandidate]):
     detector_id = "catalog_installing_mixin_family"
     candidate_collector = _catalog_installing_mixin_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Catalog-installing mixins should share one subclass hook",
         why=(
@@ -2641,23 +2505,16 @@ class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one reusable catalog-installing subclass hook with declarative catalog attribute residue",
         relation_context="sibling mixins repeat an identical class-creation hook over different catalog classvars",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.MRO_ORDERING,
             CapabilityTag.AUTHORITATIVE_MAPPING,
         ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        catalog_candidate = cast(CatalogInstallingMixinFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, catalog_candidate: CatalogInstallingMixinFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
             ),
@@ -2685,10 +2542,10 @@ class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector):
+class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector[RegexGroupExtractorFamilyCandidate]):
     detector_id = "regex_group_extractor_family"
     candidate_collector = _regex_group_extractor_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Regex group extractor methods should derive from descriptors",
         why=(
@@ -2697,23 +2554,16 @@ class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one regex group extraction descriptor with declared pattern and matcher coordinates",
         relation_context="same class repeats regex group extractor methods over different pattern fields",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
         ),
-        observation_tags=(
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        regex_candidate = cast(RegexGroupExtractorFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, regex_candidate: RegexGroupExtractorFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
             ),
@@ -2739,10 +2589,10 @@ class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
+class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[SparseConstructorVariantFamilyCandidate]):
     detector_id = "sparse_constructor_variant_family"
     candidate_collector = _sparse_constructor_variant_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Sparse dataclass constructor variants should derive from one variant catalog",
         why=(
@@ -2751,24 +2601,12 @@ class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single sparse constructor-variant catalog over dataclass defaults",
         relation_context="same dataclass repeats classmethod constructors that override different keyword subsets",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        sparse_candidate = cast(SparseConstructorVariantFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, sparse_candidate: SparseConstructorVariantFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}."
             ),
@@ -2797,13 +2635,7 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         ),
         capability_gap="one manifest authority for a support-prelude module family",
         relation_context="several one-class modules share the same star-import support prelude without a module-family catalog",
-        confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.CLASS_FAMILY,
             ObservationTag.MANUAL_SYNCHRONIZATION,
@@ -2817,8 +2649,7 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         findings: list[RefactorFinding] = []
         for candidate in _support_prelude_module_family_candidates(modules):
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"{len(candidate.class_names)} one-class modules share support prelude `{candidate.support_module_name}` without a manifest authority."
                     ),
@@ -2845,10 +2676,10 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         return findings
 
 
-class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector):
+class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector[ModuleConstructorPolicyFamilyCandidate]):
     detector_id = "module_constructor_policy_family"
     candidate_collector = _module_constructor_policy_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Module constructor policy rows should derive from a semantic catalog",
         why=(
@@ -2858,8 +2689,6 @@ class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one constructor-row catalog keyed by semantic policy role",
         relation_context="same module has multiple constant rows assigned from the same constructor shape",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2872,10 +2701,8 @@ class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        policy_candidate = cast(ModuleConstructorPolicyFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, policy_candidate: ModuleConstructorPolicyFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"Module constants {', '.join(policy_candidate.row_names)} repeat "
                 f"`{policy_candidate.constructor_name}` constructor rows with schema "
@@ -2903,10 +2730,10 @@ class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector):
+class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector[DynamicSelfFieldSelectionCandidate]):
     detector_id = "dynamic_self_field_selection"
     candidate_collector = _dynamic_self_field_selection_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.CONFIG_CONTRACTS,
         title="Dynamic self-field selection hides a nominal contract",
         why=(
@@ -2914,8 +2741,6 @@ class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="declared nominal count/value hook instead of selector-driven reflective lookup",
         relation_context="class template selects its own state through dynamic reflective field names",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.FAIL_LOUD_CONTRACTS,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2923,10 +2748,8 @@ class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        dynamic_candidate = cast(DynamicSelfFieldSelectionCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, dynamic_candidate: DynamicSelfFieldSelectionCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal hook."
             ),
@@ -2942,10 +2765,10 @@ class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector):
             ),
         )
 
-class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandidateDetector):
+class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandidateDetector[StringBackedReflectiveNominalLookupCandidate]):
     detector_id = "string_backed_reflective_nominal_lookup"
     candidate_collector = _string_backed_reflective_nominal_lookup_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="String-backed reflective lookup is simulating nominal identity",
         why=(
@@ -2955,13 +2778,7 @@ class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandi
         ),
         capability_gap="declared nominal hook or typed family handle instead of string selector plus reflection",
         relation_context="class family encodes behavior with constant selector strings and resolves it reflectively",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.STRING_DISPATCH,
             ObservationTag.SEMANTIC_STRING_LITERAL,
@@ -2969,12 +2786,8 @@ class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandi
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        reflective_candidate = cast(
-            StringBackedReflectiveNominalLookupCandidate, candidate
-        )
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, reflective_candidate: StringBackedReflectiveNominalLookupCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes."
             ),

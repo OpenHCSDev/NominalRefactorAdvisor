@@ -2853,6 +2853,143 @@ class ConfiguredDetector(CandidateFindingDetector):
     )
 
 
+def test_detects_typed_candidate_cast_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from typing import cast
+
+
+class Payload:
+    pass
+
+
+class LocalDetector(ModuleCollectorCandidateDetector):
+    detector_id = "local"
+    candidate_collector = _payloads
+
+    def _finding_for_candidate(self, candidate: object):
+        payload = cast(Payload, candidate)
+        return payload
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "typed_candidate_cast_boilerplate"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalDetector._finding_for_candidate" == findings[0].evidence[0].symbol
+    assert "Payload" in findings[0].summary
+
+
+def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class Detector:
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Example",
+        why="Example",
+        capability_gap="example",
+        relation_context="example",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "finding_spec_default_field_boilerplate"
+    ]
+
+    assert len(findings) == 1
+    assert "HighConfidenceFindingSpec" in findings[0].summary
+    assert "confidence=HIGH_CONFIDENCE" in findings[0].summary
+    assert "certification=STRONG_HEURISTIC" in findings[0].summary
+
+
+def test_detects_finding_spec_build_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalDetector:
+    detector_id = "local"
+
+    def render(self, item):
+        return self.finding_spec.build(
+            self.detector_id,
+            "summary",
+            (),
+        )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "finding_spec_build_boilerplate"
+    ]
+
+    assert len(findings) == 1
+    assert findings[0].evidence[0].symbol == "LocalDetector.render"
+    assert "build_finding" in findings[0].summary
+
+
+def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class First:
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="First",
+        why="First",
+        capability_gap="first",
+        relation_context="first",
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+
+
+class Second:
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Second",
+        why="Second",
+        capability_gap="second",
+        relation_context="second",
+        capability_tags=(
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "semantic_tag_tuple_boilerplate"
+    ]
+
+    assert len(findings) == 1
+    assert "AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS" in findings[0].summary
+
+
 def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

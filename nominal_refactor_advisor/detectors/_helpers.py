@@ -6400,6 +6400,342 @@ def _candidate_collector_boilerplate_candidates(
         )
     return tuple(candidates)
 
+
+_TYPED_CANDIDATE_DETECTOR_BASE_NAMES = frozenset(
+    {
+        "CandidateFindingDetector",
+        "ModuleCollectorCandidateDetector",
+        "ConfiguredModuleCollectorCandidateDetector",
+        "CrossModuleCandidateDetector",
+        "CrossModuleCollectorCandidateDetector",
+        "ConfiguredCrossModuleCollectorCandidateDetector",
+    }
+)
+
+
+def _concrete_detector_base_name(node: ast.ClassDef) -> str | None:
+    if not any(
+        isinstance(statement, ast.Assign)
+        and any(name_id(target) == "detector_id" for target in statement.targets)
+        for statement in node.body
+    ):
+        return None
+    base_names = tuple(
+        base_name
+        for base_name in _class_base_names(node)
+        if base_name in _TYPED_CANDIDATE_DETECTOR_BASE_NAMES
+    )
+    return single_item(base_names) if len(base_names) == 1 else None
+
+
+def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
+    positional = (*method.args.posonlyargs, *method.args.args)
+    payload_names = tuple(
+        argument.arg for argument in positional if argument.arg not in {"self", "cls"}
+    )
+    if method.args.vararg is not None or method.args.kwarg is not None:
+        return None
+    return single_item(payload_names) if len(payload_names) == 1 else None
+
+
+def _parameter_name_is_reused(
+    statements: Sequence[ast.stmt],
+    parameter_name: str,
+) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == parameter_name
+        for statement in statements
+        for node in ast.walk(statement)
+    )
+
+
+def _first_named_call_assignment(
+    statements: Sequence[ast.stmt],
+) -> NamedCallAssignment | None:
+    first_statement = single_item(statements[:1])
+    assignment = as_ast(first_statement, ast.Assign)
+    return named_call_assignment(assignment) if assignment is not None else None
+
+
+def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
+    return (
+        _call_name(call.func) == "cast"
+        and len(call.args) == 2
+        and name_id(call.args[1]) == parameter_name
+    )
+
+
+def _typed_candidate_cast_assignment(
+    method: ast.FunctionDef,
+) -> tuple[str, str, str] | None:
+    parameter_name = _single_payload_parameter_name(method)
+    body = _trim_docstring_body(method.body)
+    call_assignment = _first_named_call_assignment(body)
+    if parameter_name is None or call_assignment is None:
+        return None
+    cast_call = call_assignment.call
+    if not _call_is_cast_of_parameter(cast_call, parameter_name):
+        return None
+    if _parameter_name_is_reused(body[1:], parameter_name):
+        return None
+    return (
+        parameter_name,
+        call_assignment.target_name,
+        ast.unparse(cast_call.args[0]),
+    )
+
+
+def _typed_candidate_cast_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[TypedCandidateCastBoilerplateCandidate, ...]:
+    candidates: list[TypedCandidateCastBoilerplateCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        detector_base_name = _concrete_detector_base_name(node)
+        if detector_base_name is None:
+            continue
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.FunctionDef)
+                and statement.name == "_finding_for_candidate"
+            ):
+                continue
+            cast_assignment = _typed_candidate_cast_assignment(statement)
+            if cast_assignment is None:
+                continue
+            parameter_name, local_name, candidate_type_name = cast_assignment
+            candidates.append(
+                TypedCandidateCastBoilerplateCandidate(
+                    file_path=str(module.path),
+                    line=statement.lineno,
+                    class_name=node.name,
+                    method_name=statement.name,
+                    parameter_name=parameter_name,
+                    local_name=local_name,
+                    candidate_type_name=candidate_type_name,
+                    detector_base_name=detector_base_name,
+                )
+            )
+    return tuple(candidates)
+
+
+_FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR = {
+    "FindingSpec": ("MEDIUM_CONFIDENCE", "STRONG_HEURISTIC"),
+    "HighConfidenceFindingSpec": ("HIGH_CONFIDENCE", "STRONG_HEURISTIC"),
+    "CertifiedFindingSpec": ("MEDIUM_CONFIDENCE", "CERTIFIED"),
+    "HighConfidenceCertifiedFindingSpec": ("HIGH_CONFIDENCE", "CERTIFIED"),
+}
+_FINDING_SPEC_CONSTRUCTOR_BY_DEFAULTS = {
+    defaults: constructor
+    for constructor, defaults in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR.items()
+}
+_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX = {
+    "confidence": 0,
+    "certification": 1,
+}
+
+
+def _keyword_value_name(keyword: ast.keyword | None) -> str | None:
+    return _call_name(keyword.value) if keyword is not None else None
+
+
+def _recommended_finding_spec_constructor(
+    constructor_name: str,
+    semantic_keywords: dict[str, ast.keyword],
+) -> str:
+    defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[constructor_name]
+    confidence_name = _keyword_value_name(semantic_keywords.get("confidence"))
+    certification_name = _keyword_value_name(semantic_keywords.get("certification"))
+    target_defaults = (
+        confidence_name or defaults[0],
+        certification_name or defaults[1],
+    )
+    return _FINDING_SPEC_CONSTRUCTOR_BY_DEFAULTS.get(
+        target_defaults,
+        constructor_name,
+    )
+
+
+def _finding_spec_default_field_candidates(
+    module: ParsedModule,
+) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
+    candidates: list[FindingSpecDefaultFieldCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        constructor_name = _call_name(node.func)
+        if constructor_name not in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR:
+            continue
+        semantic_keywords = {
+            keyword.arg: keyword
+            for keyword in node.keywords
+            if keyword.arg in _FINDING_SPEC_SEMANTIC_KEYWORD_INDEX
+        }
+        if not semantic_keywords:
+            continue
+        recommended_constructor_name = _recommended_finding_spec_constructor(
+            constructor_name,
+            semantic_keywords,
+        )
+        recommended_defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[
+            recommended_constructor_name
+        ]
+        redundant_keywords = tuple(
+            (name, value_name)
+            for name, keyword in semantic_keywords.items()
+            for value_name in (_keyword_value_name(keyword),)
+            if value_name
+            == recommended_defaults[_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX[name]]
+        )
+        if not redundant_keywords:
+            continue
+        candidates.append(
+            FindingSpecDefaultFieldCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                constructor_name=constructor_name,
+                recommended_constructor_name=recommended_constructor_name,
+                redundant_keyword_names=tuple(name for name, _ in redundant_keywords),
+                redundant_keyword_values=tuple(
+                    value for _, value in redundant_keywords
+                ),
+            )
+        )
+    return tuple(candidates)
+
+
+def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
+    call = as_ast(node, ast.Call)
+    if call is None or len(call.args) < 1:
+        return None
+    if not _is_self_finding_spec_build_func(call.func):
+        return None
+    if not _is_self_detector_id_attribute(call.args[0]):
+        return None
+    return call
+
+
+def _is_self_finding_spec_build_func(node: ast.AST) -> bool:
+    build_attr = as_ast(node, ast.Attribute)
+    spec_attr = as_ast(build_attr.value if build_attr else None, ast.Attribute)
+    return (
+        build_attr is not None
+        and build_attr.attr == "build"
+        and spec_attr is not None
+        and spec_attr.attr == "finding_spec"
+        and name_id(spec_attr.value) == "self"
+    )
+
+
+def _is_self_detector_id_attribute(node: ast.AST) -> bool:
+    detector_id_arg = as_ast(node, ast.Attribute)
+    return (
+        detector_id_arg is not None
+        and detector_id_arg.attr == "detector_id"
+        and name_id(detector_id_arg.value) == "self"
+    )
+
+
+def _finding_spec_build_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[ClassMethodLineWitnessCandidate, ...]:
+    candidates: list[ClassMethodLineWitnessCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not any(
+            isinstance(statement, ast.Assign)
+            and any(name_id(target) == "detector_id" for target in statement.targets)
+            for statement in node.body
+        ):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            for child in ast.walk(statement):
+                if _self_finding_spec_build_call(child) is None:
+                    continue
+                candidates.append(
+                    ClassMethodLineWitnessCandidate(
+                        file_path=str(module.path),
+                        line=child.lineno,
+                        class_name=node.name,
+                        method_name=statement.name,
+                    )
+                )
+    return tuple(candidates)
+
+
+_SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
+_SEMANTIC_TAG_CONSTANT_SUFFIX = {
+    "capability_tags": "CAPABILITY_TAGS",
+    "observation_tags": "OBSERVATION_TAGS",
+}
+
+
+def _semantic_tag_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return name_id(node)
+
+
+def _semantic_tag_tuple_value(
+    keyword: ast.keyword,
+) -> tuple[str, tuple[str, ...]] | None:
+    tuple_node = as_ast(keyword.value, ast.Tuple)
+    if tuple_node is None or len(tuple_node.elts) < 2:
+        return None
+    tag_names = tuple(_semantic_tag_name(element) for element in tuple_node.elts)
+    if any(tag_name is None for tag_name in tag_names):
+        return None
+    return ast.unparse(tuple_node), cast(tuple[str, ...], tag_names)
+
+
+def _semantic_tag_constant_name(
+    keyword_name: str,
+    tag_names: tuple[str, ...],
+) -> str:
+    role_tokens = tuple(
+        tag_name.removesuffix("_MAPPING").removesuffix("_TAG")
+        for tag_name in tag_names
+    )
+    return f"_{'_'.join(role_tokens)}_{_SEMANTIC_TAG_CONSTANT_SUFFIX[keyword_name]}"
+
+
+def _semantic_tag_tuple_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
+    grouped: dict[
+        tuple[str, str, tuple[str, ...]],
+        list[SourceLocation],
+    ] = defaultdict(list)
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.keyword) or node.arg not in _SEMANTIC_TAG_KEYWORDS:
+            continue
+        tuple_value = _semantic_tag_tuple_value(node)
+        if tuple_value is None:
+            continue
+        tuple_expression, tag_names = tuple_value
+        grouped[(node.arg, tuple_expression, tag_names)].append(
+            SourceLocation(str(module.path), node.lineno, node.arg)
+        )
+    candidates: list[SemanticTagTupleBoilerplateCandidate] = []
+    for (keyword_name, _, tag_names), locations in grouped.items():
+        if len(locations) < 2:
+            continue
+        candidates.append(
+            SemanticTagTupleBoilerplateCandidate(
+                file_path=str(module.path),
+                line=locations[0].line,
+                evidence_locations=tuple(locations[:6]),
+                keyword_name=keyword_name,
+                constant_name=_semantic_tag_constant_name(keyword_name, tag_names),
+                tag_names=tag_names,
+            )
+        )
+    return tuple(candidates)
+
 _EFFECT_STEP_BASE_NAMES = frozenset(
     {
         "AstTypedEffectStep",

@@ -55,10 +55,19 @@ def _is_qualified_name(
     )
 
 
+_SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
+    function_line_count=0,
+    branch_site_count=0,
+    call_site_count=1,
+    parameter_count=1,
+    callee_family_count=1,
+)
+
+
 class TypingProtocolContractDetector(IssueDetector):
     detector_id = "typing_protocol_contract"
     detector_priority = -20
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Structural Protocol contract should be a nominal ABC",
         why=(
@@ -68,8 +77,6 @@ class TypingProtocolContractDetector(IssueDetector):
         ),
         capability_gap="nominal runtime contract instead of structural shape membership",
         relation_context="class declares interface identity through structural typing",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -136,8 +143,7 @@ class TypingProtocolContractDetector(IssueDetector):
                 continue
             class_summary = ", ".join(protocol_class_names) or "runtime-checkable class"
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"{module.path} declares structural typing interfaces "
                         f"({class_summary}); replace them with ABC-backed nominal contracts."
@@ -159,7 +165,7 @@ class TypingProtocolContractDetector(IssueDetector):
 class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
     detector_id = "repeated_private_methods"
     observation_kind = ObservationKind.METHOD_SHAPE
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated non-orthogonal method skeleton across classes",
         why=(
@@ -169,13 +175,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
         ),
         capability_gap="single authoritative algorithm for a nominal behavior family",
         relation_context="same method role across sibling classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.NORMALIZED_AST,
             ObservationTag.CLASS_FAMILY,
@@ -220,8 +220,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
             if methods[0].is_private
             else "same method role across sibling classes"
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"{len(methods)} methods across {len(class_names)} classes share the same normalized AST shape."
             ),
@@ -241,7 +240,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
 
 class InheritanceHierarchyCandidateDetector(IssueDetector):
     detector_id = "inheritance_hierarchy_candidate"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Classes cluster into an ABC hierarchy candidate",
         why=(
@@ -251,13 +250,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         ),
         capability_gap="single authoritative inheritance hierarchy for a duplicated behavior family",
         relation_context="same class set repeats several method roles across the same family boundary",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.REPEATED_METHOD_ROLES,
             ObservationTag.CLASS_FAMILY,
@@ -316,8 +309,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                 for method in methods
             ]
             findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
+                self.build_finding(
                     (
                         f"Classes {', '.join(sorted(class_names))} share {len(groups)} repeated method-shape groups and repeated method roles that likely want one ABC family."
                     ),
@@ -333,9 +325,9 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         return findings
 
 
-class OrchestrationHubDetector(CandidateFindingDetector):
+class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
     detector_id = "orchestration_hub"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Oversized orchestration hub",
         why=(
@@ -344,13 +336,7 @@ class OrchestrationHubDetector(CandidateFindingDetector):
         ),
         capability_gap="explicit staged orchestration boundaries with named phase contracts",
         relation_context="one owner centralizes many operational phases and helper families",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
     def _candidate_items(
@@ -364,10 +350,8 @@ class OrchestrationHubDetector(CandidateFindingDetector):
             and profile.call_count >= config.min_orchestration_calls
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        profile = cast(FunctionProfile, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, profile: FunctionProfile) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner."
             ),
@@ -530,10 +514,10 @@ def _class_role_quotient_candidates(
     )
 
 
-class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector):
+class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector[ClassRoleQuotientCandidate]):
     detector_id = "class_role_quotient"
     candidate_collector = _class_role_quotient_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Class method-role quotient should become composed subsystems",
         why=(
@@ -544,13 +528,7 @@ class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="composed subsystem authorities derived from the class method-role quotient",
         relation_context="one class contains several nontrivial method-role equivalence classes behind a smaller public facade",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.METHOD_ROLE,
             ObservationTag.DATAFLOW_ROOT,
@@ -558,13 +536,11 @@ class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        role_candidate = cast(ClassRoleQuotientCandidate, candidate)
+    def _finding_for_candidate(self, role_candidate: ClassRoleQuotientCandidate) -> RefactorFinding:
         role_summary = ", ".join(
             f"{role}:{count}" for role, count in role_candidate.role_method_counts[:8]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Class `{role_candidate.class_name}` has {role_candidate.method_count} methods "
                 f"whose nontrivial method-role quotient is {role_summary}; "
@@ -644,10 +620,10 @@ def _pass_through_composition_facade_candidates(
     )
 
 
-class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector):
+class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector[PassThroughCompositionFacadeCandidate]):
     detector_id = "pass_through_composition_facade"
     candidate_collector = _pass_through_composition_facade_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Pass-through composition facade should be derived from a composite spec",
         why=(
@@ -657,8 +633,6 @@ class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="generic composite-class derivation for pass-through multiple-inheritance facades",
         relation_context="class body contains no behavior beyond composing several base roles",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.MRO_ORDERING,
@@ -671,10 +645,8 @@ class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        facade_candidate = cast(PassThroughCompositionFacadeCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, facade_candidate: PassThroughCompositionFacadeCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{facade_candidate.class_name}` is a pass-through composition facade over "
                 f"{', '.join(facade_candidate.base_names)}."
@@ -793,10 +765,10 @@ def _projection_property_family_candidates(
     )
 
 
-class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector):
+class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector[ProjectionPropertyFamilyCandidate]):
     detector_id = "projection_property_family"
     candidate_collector = _projection_property_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.DESCRIPTOR_DERIVED_VIEW,
         title="Path projection properties should be derived descriptors",
         why=(
@@ -806,13 +778,7 @@ class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single descriptor authority for repeated Path projection properties",
         relation_context="same class repeats Path projection properties over owned base fields",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.PROJECTION_HELPER,
             ObservationTag.NORMALIZED_AST,
@@ -820,10 +786,8 @@ class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        projection_candidate = cast(ProjectionPropertyFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, projection_candidate: ProjectionPropertyFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{projection_candidate.class_name}` repeats Path projection properties "
                 f"{', '.join(projection_candidate.property_names)} over bases "
@@ -909,10 +873,10 @@ def _live_template_payload_family_candidates(
     )
 
 
-class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector):
+class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector[LiveTemplatePayloadFamilyCandidate]):
     detector_id = "live_template_payload_family"
     candidate_collector = _live_template_payload_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceCertifiedFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Live template payload methods should be derived from template specs",
         why=(
@@ -922,13 +886,7 @@ class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single template-method descriptor authority for live text payload families",
         relation_context="same class repeats direct text-template return methods",
-        confidence=HIGH_CONFIDENCE,
-        certification=CERTIFIED,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.EXPORT_MAPPING,
             ObservationTag.NORMALIZED_AST,
@@ -936,10 +894,8 @@ class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        template_candidate = cast(LiveTemplatePayloadFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, template_candidate: LiveTemplatePayloadFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{template_candidate.class_name}` exposes live template payload methods "
                 f"{', '.join(template_candidate.method_names)}."
@@ -965,10 +921,10 @@ class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDetector):
+class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDetector[PrivateCohortShouldBeModuleCandidate]):
     detector_id = "private_cohort_should_be_module"
     candidate_collector = _private_cohort_should_be_module_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Private subsystem cohort wants its own module",
         why=(
@@ -977,17 +933,10 @@ class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDete
         ),
         capability_gap="explicit module-level subsystem boundaries with extracted private cohorts",
         relation_context="one file contains a dense private context/result/helper family that should move together",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        cohort = cast(PrivateCohortShouldBeModuleCandidate, candidate)
+    def _finding_for_candidate(self, cohort: PrivateCohortShouldBeModuleCandidate) -> RefactorFinding:
         shared_tokens = ", ".join(cohort.shared_tokens[:3]) or "subsystem"
         sample_symbols = ", ".join(
             symbol.symbol
@@ -997,8 +946,7 @@ class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDete
             )[:3]
         )
         target_module = _suggest_private_cohort_module_name(cohort)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{cohort.module_name}` carries a private {shared_tokens} cohort across "
                 f"{len(cohort.symbols)} top-level symbols / {cohort.total_cohort_lines} lines "
@@ -1025,10 +973,10 @@ class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDete
         )
 
 
-class ParameterThreadFamilyDetector(ConfiguredModuleCollectorCandidateDetector):
+class ParameterThreadFamilyDetector(ConfiguredModuleCollectorCandidateDetector[ParameterThreadFamilyCandidate]):
     detector_id = "parameter_thread_family"
     candidate_collector = _parameter_thread_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
         title="Repeated threaded semantic parameter family",
         why=(
@@ -1037,20 +985,12 @@ class ParameterThreadFamilyDetector(ConfiguredModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative context/request record for a shared semantic parameter family",
         relation_context="the same semantic parameter bundle is threaded through several sibling helpers",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        parameter_family = cast(ParameterThreadFamilyCandidate, candidate)
+    def _finding_for_candidate(self, parameter_family: ParameterThreadFamilyCandidate) -> RefactorFinding:
         function_names = tuple(item.qualname for item in parameter_family.functions)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(parameter_family.shared_parameter_names)}` across {len(parameter_family.functions)} helpers."
             ),
@@ -1065,10 +1005,10 @@ class ParameterThreadFamilyDetector(ConfiguredModuleCollectorCandidateDetector):
         )
 
 
-class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateDetector):
+class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[SuffixAxisSurfaceCandidate]):
     detector_id = "suffix_axis_compatibility_surface"
     candidate_collector = _suffix_axis_surface_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
         title="Mirrored suffix-axis APIs should collapse to one authoritative context",
         why=(
@@ -1079,13 +1019,7 @@ class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateD
         ),
         capability_gap="single authoritative context/request record instead of repeated suffix-axis adapter surfaces",
         relation_context="same owner repeats an operation family across the same suffix-named axes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.METHOD_ROLE,
             ObservationTag.PARTIAL_VIEW,
@@ -1093,13 +1027,11 @@ class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateD
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        surface_candidate = cast(SuffixAxisSurfaceCandidate, candidate)
+    def _finding_for_candidate(self, surface_candidate: SuffixAxisSurfaceCandidate) -> RefactorFinding:
         axis_summary = " / ".join(surface_candidate.axis_names)
         operation_summary = ", ".join(surface_candidate.operation_names[:5])
         method_names = tuple(method.qualname for method in surface_candidate.methods)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{surface_candidate.owner_name}` repeats suffix-axis APIs for axes {axis_summary} "
                 f"across operations {operation_summary}."
@@ -1124,10 +1056,10 @@ class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateD
         )
 
 
-class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector):
+class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector[SiblingRoleHelperSymmetryCandidate]):
     detector_id = "sibling_role_helper_symmetry"
     candidate_collector = _sibling_role_helper_symmetry_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
         title="Sibling role helpers should collapse to one local authority",
         why=(
@@ -1137,8 +1069,6 @@ class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative local computation instead of parallel role-specific helpers",
         relation_context="same owner has role-token sibling helpers with matching control skeletons",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -1151,13 +1081,11 @@ class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        helper_candidate = cast(SiblingRoleHelperSymmetryCandidate, candidate)
+    def _finding_for_candidate(self, helper_candidate: SiblingRoleHelperSymmetryCandidate) -> RefactorFinding:
         helper_summary = ", ".join(helper_candidate.method_names)
         role_summary = " / ".join(helper_candidate.role_tokens)
         shared_summary = "_".join(helper_candidate.shared_tokens)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{helper_candidate.owner_name}` splits `{shared_summary}` across role helpers "
                 f"{helper_summary} for roles {role_summary}."
@@ -1182,10 +1110,10 @@ class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
+class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[EnumStrategyDispatchCandidate]):
     detector_id = "enum_strategy_dispatch"
     candidate_collector = _enum_strategy_dispatch_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Enum strategy ladder wants nominal family",
         why=(
@@ -1194,8 +1122,6 @@ class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="nominal strategy family with one guaranteed call surface",
         relation_context="one owner branches over a closed enum/member family instead of delegating to implementation classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -1203,10 +1129,8 @@ class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        dispatch_candidate = cast(EnumStrategyDispatchCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, dispatch_candidate: EnumStrategyDispatchCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{dispatch_candidate.qualname}` branches on `{dispatch_candidate.dispatch_axis}` across closed cases {', '.join(dispatch_candidate.case_names)} and should delegate to a nominal strategy family."
             ),
@@ -1221,10 +1145,10 @@ class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector):
+class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]):
     detector_id = "residual_closed_axis_indirection"
     candidate_collector = _residual_closed_axis_indirection_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Enum-keyed table with residual branching should become a nominal strategy family",
         why=(
@@ -1235,13 +1159,7 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="metaclass-registry-backed nominal strategy family instead of enum table plus residual branching",
         relation_context="same function indexes an enum-keyed table and branches on that enum axis",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.PROJECTION_DICT,
             ObservationTag.BRANCH_DISPATCH,
@@ -1249,13 +1167,11 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        axis_candidate = cast(ResidualClosedAxisIndirectionCandidate, candidate)
+    def _finding_for_candidate(self, axis_candidate: ResidualClosedAxisIndirectionCandidate) -> RefactorFinding:
         residual_cases = ", ".join(axis_candidate.residual_case_names)
         table_cases = ", ".join(axis_candidate.table_case_names)
         value_summary = ", ".join(axis_candidate.table_value_summaries[:4])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{axis_candidate.qualname}` indexes `{axis_candidate.table_name}` by "
                 f"`{axis_candidate.axis_expression}` for `{axis_candidate.enum_name}` cases {table_cases}, "
@@ -1293,10 +1209,10 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
+class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[RepeatedEnumStrategyDispatchCandidate]):
     detector_id = "repeated_enum_strategy_dispatch"
     candidate_collector = _repeated_enum_strategy_dispatch_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Repeated closed-strategy dispatch should centralize in one nominal strategy family",
         why=(
@@ -1306,8 +1222,6 @@ class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative nominal strategy family for a repeated closed dispatch axis",
         relation_context="same closed enum family is re-dispatched across sibling functions or methods",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1315,8 +1229,7 @@ class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        dispatch_candidate = cast(RepeatedEnumStrategyDispatchCandidate, candidate)
+    def _finding_for_candidate(self, dispatch_candidate: RepeatedEnumStrategyDispatchCandidate) -> RefactorFinding:
         evidence = tuple(
             item.evidence for item in dispatch_candidate.functions[:6]
         )
@@ -1324,8 +1237,7 @@ class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         function_names = ", ".join(
             item.qualname for item in dispatch_candidate.functions[:4]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Functions {function_names} each re-dispatch `{dispatch_candidate.enum_family}` cases "
                 f"{', '.join(dispatch_candidate.shared_case_names)} inline."
@@ -1341,10 +1253,10 @@ class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector):
+class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector[InlineEnumSubsetGuardCandidate]):
     detector_id = "inline_enum_subset_guard"
     candidate_collector = _inline_enum_subset_guard_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Inline enum subset guard should derive from enum-owned policy",
         why=(
@@ -1354,8 +1266,6 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="type-safe enum-owned policy instead of inline enum subset literals",
         relation_context="function branches on a hand-enumerated subset of one closed enum axis",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -1367,14 +1277,12 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        guard_candidate = cast(InlineEnumSubsetGuardCandidate, candidate)
+    def _finding_for_candidate(self, guard_candidate: InlineEnumSubsetGuardCandidate) -> RefactorFinding:
         cases = ", ".join(
             f"{guard_candidate.enum_name}.{case_name}"
             for case_name in guard_candidate.case_names
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{guard_candidate.function_name}` checks `{guard_candidate.axis_expression} "
                 f"{guard_candidate.operator} {{{cases}}}`; move that subset into enum-owned typed policy."
@@ -1406,10 +1314,10 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector):
+class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector[SplitDispatchAuthorityCandidate]):
     detector_id = "split_dispatch_authority"
     candidate_collector = _split_dispatch_authority_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Cooperating dispatch layers should collapse into one product-family authority",
         why=(
@@ -1419,13 +1327,7 @@ class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative product-family or request-dispatched policy for cooperating dispatch axes",
         relation_context="one orchestrator combines a strategy-family selector with a separate singledispatch generic",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.CLASS_FAMILY,
             ObservationTag.FACTORY_DISPATCH,
@@ -1433,8 +1335,7 @@ class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        dispatch_candidate = cast(SplitDispatchAuthorityCandidate, candidate)
+    def _finding_for_candidate(self, dispatch_candidate: SplitDispatchAuthorityCandidate) -> RefactorFinding:
         evidence = (
             dispatch_candidate.evidence,
             SourceLocation(
@@ -1448,8 +1349,7 @@ class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector):
                 dispatch_candidate.generic_function_name,
             ),
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{dispatch_candidate.qualname}` combines strategy selector "
                 f"`{dispatch_candidate.strategy_root_name}.{dispatch_candidate.selector_method_name}({dispatch_candidate.strategy_axis_expression})` "
@@ -1484,10 +1384,10 @@ class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector):
+class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector[EmptyLeafProductFamilyCandidate]):
     detector_id = "empty_leaf_product_family"
     candidate_collector = _empty_leaf_product_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Empty multiple-inheritance leaves should collapse into one product-family authority",
         why=(
@@ -1497,8 +1397,6 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative keyed product family instead of empty inheritance combinations",
         relation_context="empty leaf classes encode the full Cartesian product of two reusable inheritance axes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -1510,13 +1408,11 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        product_candidate = cast(EmptyLeafProductFamilyCandidate, candidate)
+    def _finding_for_candidate(self, product_candidate: EmptyLeafProductFamilyCandidate) -> RefactorFinding:
         left_axis = ", ".join(product_candidate.left_axis_base_names)
         right_axis = ", ".join(product_candidate.right_axis_base_names)
         leaf_preview = ", ".join(product_candidate.leaf_class_names[:6])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Empty leaf classes {leaf_preview} encode `{left_axis}` x `{right_axis}` through multiple inheritance instead of one product-family authority."
             ),
@@ -1544,10 +1440,10 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector):
+class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector[ClosedConstantSelectorCandidate]):
     detector_id = "closed_constant_selector"
     candidate_collector = _closed_constant_selector_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Closed selector over sibling constants should derive from one selector table",
         why=(
@@ -1557,13 +1453,7 @@ class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative selector table for a closed constant family",
         relation_context="one function branches over a small predicate family and returns sibling constants or one shared wrapper around them",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.BUILDER_CALL,
             ObservationTag.DATAFLOW_ROOT,
@@ -1571,8 +1461,7 @@ class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        selector_candidate = cast(ClosedConstantSelectorCandidate, candidate)
+    def _finding_for_candidate(self, selector_candidate: ClosedConstantSelectorCandidate) -> RefactorFinding:
         constants_preview = ", ".join(selector_candidate.constant_names[:4])
         guard_preview = ", ".join(selector_candidate.guard_expressions[:2])
         family_label = (
@@ -1590,8 +1479,7 @@ class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector):
             if selector_candidate.guard_expressions
             else "a closed fallback ladder"
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{selector_candidate.qualname}` branches over {guard_summary}, returning {wrapper_summary}"
                 f"sibling constants {constants_preview} from `{family_label}`."
@@ -1621,10 +1509,10 @@ class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector):
+class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector[DerivedWrapperSpecShadowCandidate]):
     detector_id = "derived_wrapper_spec_shadow"
     candidate_collector = _derived_wrapper_spec_shadow_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Generated wrapper spec family should collapse into the authoritative spec family",
         why=(
@@ -1634,8 +1522,6 @@ class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative spec family carrying wrapper-generation metadata",
         relation_context="secondary spec table references an authoritative spec family entry-by-entry and is only consumed by wrapper generation",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -1648,15 +1534,13 @@ class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        shadow_candidate = cast(DerivedWrapperSpecShadowCandidate, candidate)
+    def _finding_for_candidate(self, shadow_candidate: DerivedWrapperSpecShadowCandidate) -> RefactorFinding:
         primary_family_label = (
             shadow_candidate.primary_family_name or shadow_candidate.primary_constructor_name
         )
         constant_preview = ", ".join(shadow_candidate.primary_constant_names[:4])
         builder_preview = ", ".join(shadow_candidate.builder_names[:3])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{shadow_candidate.derived_family_name}` re-encodes wrapper metadata over authoritative family "
                 f"`{primary_family_label}` through link field `{shadow_candidate.link_field_name}` for {constant_preview}, "
@@ -1688,10 +1572,10 @@ class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class ModuleKeyedSelectionHelperDetector(ModuleCollectorCandidateDetector):
+class ModuleKeyedSelectionHelperDetector(ModuleCollectorCandidateDetector[ModuleKeyedSelectionHelperCandidate]):
     detector_id = "module_keyed_selection_helper"
     candidate_collector = _module_keyed_selection_helper_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Local keyed-selection helper should collapse into the generic keyed-record table",
         why=(
@@ -1701,24 +1585,12 @@ class ModuleKeyedSelectionHelperDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative keyed-record table substrate reused across module-level selector tables",
         relation_context="module-local selection helper framework powers multiple keyed rule tables",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        capability_tags=_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        helper_candidate = cast(ModuleKeyedSelectionHelperCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, helper_candidate: ModuleKeyedSelectionHelperCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{helper_candidate.rule_class_name}`, `{helper_candidate.helper_function_name}`, and "
                 f"`{helper_candidate.lookup_function_name}` implement a local keyed-selection substrate for "
@@ -1750,10 +1622,10 @@ class ModuleKeyedSelectionHelperDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class CrossModuleAxisShadowFamilyDetector(CrossModuleCollectorCandidateDetector):
+class CrossModuleAxisShadowFamilyDetector(CrossModuleCollectorCandidateDetector[CrossModuleAxisShadowFamilyCandidate]):
     detector_id = "cross_module_axis_shadow_family"
     candidate_collector = _cross_module_axis_shadow_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Cross-module shadow family should collapse into one axis authority",
         why=(
@@ -1763,24 +1635,12 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCollectorCandidateDetector)
         ),
         capability_gap="single authoritative closed-axis family reused across modules",
         relation_context="same keyed enum axis is modeled by an authoritative family in one module and a shadow selector family in another",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.FACTORY_DISPATCH,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        shadow_candidate = cast(CrossModuleAxisShadowFamilyCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, shadow_candidate: CrossModuleAxisShadowFamilyCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"Axis `{shadow_candidate.key_type_name}` is already owned by "
                 f"`{shadow_candidate.authoritative.family_name}` but re-encoded by "
@@ -1806,10 +1666,10 @@ class CrossModuleAxisShadowFamilyDetector(CrossModuleCollectorCandidateDetector)
         )
 
 
-class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector):
+class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector[ResidualClosedAxisBranchingCandidate]):
     detector_id = "residual_closed_axis_branching"
     candidate_collector = _residual_closed_axis_branching_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.CLOSED_FAMILY_DISPATCH,
         title="Manual closed-axis branching should derive from existing keyed authority",
         why=(
@@ -1818,13 +1678,7 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector)
         ),
         capability_gap="behavior derived from authoritative keyed family rather than downstream enum branching",
         relation_context="function branches on an enum axis already owned by a keyed nominal family in another module",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.BRANCH_DISPATCH,
             ObservationTag.CLASS_FAMILY,
@@ -1832,14 +1686,12 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector)
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        residual_candidate = cast(ResidualClosedAxisBranchingCandidate, candidate)
+    def _finding_for_candidate(self, residual_candidate: ResidualClosedAxisBranchingCandidate) -> RefactorFinding:
         authoritative_family_names = ", ".join(
             family_name
             for family_name, _, _ in residual_candidate.authoritative_families[:4]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{residual_candidate.qualname}` branches {residual_candidate.branch_site_count} time(s) on axis "
                 f"`{residual_candidate.key_type_name}` across cases {', '.join(residual_candidate.case_names)}, "
@@ -1865,10 +1717,10 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector)
         )
 
 
-class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector):
+class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate]):
     detector_id = "parallel_keyed_axis_family"
     candidate_collector = _parallel_keyed_axis_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_STRATEGY_FAMILY,
         title="Parallel keyed families should collapse into one axis authority",
         why=(
@@ -1877,23 +1729,16 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector):
         ),
         capability_gap="single cross-module keyed-axis authority with module-local adapters derived from it",
         relation_context="same keyed enum axis is modeled by multiple nominal families across modules",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
         ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.FACTORY_DISPATCH,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        family_candidate = cast(ParallelKeyedAxisFamilyCandidate, candidate)
+    def _finding_for_candidate(self, family_candidate: ParallelKeyedAxisFamilyCandidate) -> RefactorFinding:
         shared_cases = ", ".join(family_candidate.shared_case_names[:4])
         label_clause = ""
         if (
@@ -1903,8 +1748,7 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector):
             label_clause = (
                 f" Both declare family label `{family_candidate.left.family_label}`."
             )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Axis `{family_candidate.key_type_name}` is owned in parallel by "
                 f"`{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` "
@@ -1930,10 +1774,10 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector):
         )
 
 
-class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector):
+class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector[ParallelKeyedTableAxisCandidate]):
     detector_id = "parallel_keyed_table_axis"
     candidate_collector = _parallel_keyed_table_axis_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Parallel enum-keyed tables across modules should collapse into one axis record",
         why=(
@@ -1942,13 +1786,7 @@ class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative enum-keyed row family with derived module-local projections",
         relation_context="same closed enum/key axis is encoded by multiple keyed tables across modules",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.PROJECTION_DICT,
             ObservationTag.DATAFLOW_ROOT,
@@ -1956,10 +1794,8 @@ class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        table_candidate = cast(ParallelKeyedTableAxisCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, table_candidate: ParallelKeyedTableAxisCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and "
                 f"`{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}."
@@ -1991,10 +1827,10 @@ class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector):
         )
 
 
-class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector):
+class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate]):
     detector_id = "parallel_keyed_table_and_family"
     candidate_collector = _parallel_keyed_table_and_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Keyed table and keyed family should collapse into one auto-registered axis family",
         why=(
@@ -2004,30 +1840,22 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector)
         ),
         capability_gap="single authoritative metaclass-registry axis family with derived table/view projections",
         relation_context="same enum/key axis is encoded by both a keyed table and a keyed nominal family",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
         ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        table_candidate = cast(ParallelKeyedTableAndFamilyCandidate, candidate)
+    def _finding_for_candidate(self, table_candidate: ParallelKeyedTableAndFamilyCandidate) -> RefactorFinding:
         shape_clause = (
             ""
             if table_candidate.value_shape_name is None
             else f" of `{table_candidate.value_shape_name}` records"
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Axis `{table_candidate.key_type_name}` is split between keyed table `{table_candidate.table_name}`"
                 f"{shape_clause} and keyed family `{table_candidate.family_name}` across cases "
@@ -2059,10 +1887,10 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector)
         )
 
 
-class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector):
+class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector[EnumKeyedTableClassAxisShadowCandidate]):
     detector_id = "enum_keyed_table_class_axis_shadow"
     candidate_collector = _enum_keyed_table_class_axis_shadow_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Enum-keyed table should derive from auto-registered class-declared axis keys",
         why=(
@@ -2073,8 +1901,6 @@ class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative metaclass-registry closed-axis owner with derived table/view projections",
         relation_context="module-level enum-keyed table overlaps a class family that already declares the same enum axis",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -2087,13 +1913,11 @@ class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        axis_candidate = cast(EnumKeyedTableClassAxisShadowCandidate, candidate)
+    def _finding_for_candidate(self, axis_candidate: EnumKeyedTableClassAxisShadowCandidate) -> RefactorFinding:
         class_names = ", ".join(axis_candidate.class_names[:4])
         shared_cases = ", ".join(axis_candidate.shared_case_names[:4])
         value_names = ", ".join(axis_candidate.value_type_names[:4])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{axis_candidate.table_name}` maps `{axis_candidate.key_type_name}` cases {shared_cases} "
                 f"to {value_names}, while classes {class_names} already declare the same axis via "
@@ -2123,10 +1947,10 @@ class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class TransportShellTemplateMethodDetector(ConfiguredModuleCollectorCandidateDetector):
+class TransportShellTemplateMethodDetector(ConfiguredModuleCollectorCandidateDetector[TransportShellTemplateCandidate]):
     detector_id = "transport_shell_template_method"
     candidate_collector = _transport_shell_template_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Template-method family is a transport shell over a downstream authority",
         why=(
@@ -2137,30 +1961,18 @@ class TransportShellTemplateMethodDetector(ConfiguredModuleCollectorCandidateDet
         ),
         capability_gap="single authoritative materialization/execution family instead of a parallel transport shell",
         relation_context="template family varies mostly by class-level selector and result adapter",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        shell_candidate = cast(TransportShellTemplateCandidate, candidate)
+    def _finding_for_candidate(self, shell_candidate: TransportShellTemplateCandidate) -> RefactorFinding:
         selector_values = ", ".join(shell_candidate.selector_value_names)
         kwargs_clause = (
             f" plus `{shell_candidate.kwargs_helper_name}({shell_candidate.source_param_name})`"
             if shell_candidate.kwargs_helper_name is not None
             else ""
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{shell_candidate.class_name}.{shell_candidate.driver_method_name}` materializes selector values "
                 f"{selector_values} from `{shell_candidate.selector_attr_name}` via `{shell_candidate.constructor_name}`"
@@ -2184,10 +1996,10 @@ class TransportShellTemplateMethodDetector(ConfiguredModuleCollectorCandidateDet
         )
 
 
-class CrossModuleSpecAxisAuthorityDetector(ConfiguredCrossModuleCollectorCandidateDetector):
+class CrossModuleSpecAxisAuthorityDetector(ConfiguredCrossModuleCollectorCandidateDetector[CrossModuleSpecAxisAuthorityCandidate]):
     detector_id = "cross_module_spec_axis_authority"
     candidate_collector = _cross_module_spec_axis_authority_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Cross-module spec axis should have one authority",
         why=(
@@ -2196,22 +2008,11 @@ class CrossModuleSpecAxisAuthorityDetector(ConfiguredCrossModuleCollectorCandida
         ),
         capability_gap="one repository-wide authoritative spec-axis family",
         relation_context="same identity/executable spec axis is re-encoded across modules",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        authority_candidate = cast(CrossModuleSpecAxisAuthorityCandidate, candidate)
+    def _finding_for_candidate(self, authority_candidate: CrossModuleSpecAxisAuthorityCandidate) -> RefactorFinding:
         family_names = ", ".join(
             f"{Path(family.file_path).name}:{family.family_name}"
             for family in authority_candidate.families
@@ -2224,8 +2025,7 @@ class CrossModuleSpecAxisAuthorityDetector(ConfiguredCrossModuleCollectorCandida
         evidence = tuple(
             family.evidence for family in authority_candidate.families[:6]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Families {family_names} each encode the same `{axis_fields}` pairs {pair_names} across module boundaries."
             ),
@@ -2244,10 +2044,10 @@ class CrossModuleSpecAxisAuthorityDetector(ConfiguredCrossModuleCollectorCandida
         )
 
 
-class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector):
+class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector[ParallelRegistryProjectionFamilyCandidate]):
     detector_id = "parallel_registry_projection_family"
     candidate_collector = _parallel_registry_projection_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Parallel registry projection builders should collapse into one family spec",
         why=(
@@ -2257,13 +2057,7 @@ class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector)
         ),
         capability_gap="single authoritative registry-projection family",
         relation_context="same registry-authority-to-target projection shape repeated across sibling functions",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.BUILDER_CALL,
             ObservationTag.CLASS_FAMILY,
@@ -2271,8 +2065,7 @@ class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector)
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        catalog_candidate = cast(ParallelRegistryProjectionFamilyCandidate, candidate)
+    def _finding_for_candidate(self, catalog_candidate: ParallelRegistryProjectionFamilyCandidate) -> RefactorFinding:
         function_names = ", ".join(
             function.qualname for function in catalog_candidate.functions[:4]
         )
@@ -2283,8 +2076,7 @@ class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector)
             function.catalog_type_name for function in catalog_candidate.functions[:4]
         )
         evidence = tuple(function.evidence for function in catalog_candidate.functions[:6])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Functions {function_names} each build {catalog_types} through "
                 f"`{catalog_candidate.collector_name}(structure, ExtractorBase.{catalog_candidate.registry_accessor_name}())` "
@@ -2305,10 +2097,10 @@ class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector)
         )
 
 
-class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetector):
+class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetector[RepeatedKeyedFamilyCandidate]):
     detector_id = "repeated_keyed_family"
     candidate_collector = _repeated_keyed_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Repeated keyed family scaffolding should collapse into one typed metaclass-registry base",
         why=(
@@ -2319,8 +2111,6 @@ class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetecto
         ),
         capability_gap="single typed metaclass-registry substrate for keyed nominal registries",
         relation_context="same keyed family registration and lookup shell repeated across nominal family roots",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2332,8 +2122,7 @@ class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetecto
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        family_candidate = cast(RepeatedKeyedFamilyCandidate, candidate)
+    def _finding_for_candidate(self, family_candidate: RepeatedKeyedFamilyCandidate) -> RefactorFinding:
         class_names = ", ".join(
             root.class_name for root in family_candidate.roots[:8]
         )
@@ -2344,8 +2133,7 @@ class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetecto
             sorted({root.registry_key_attr_name for root in family_candidate.roots[:8]})
         )
         evidence = tuple(root.evidence for root in family_candidate.roots[:8])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Registry roots {class_names} each repeat `{registry_keys}` + `_registry` + "
                 f"`{lookup_names}` over `{family_candidate.family_base_name}`."
@@ -2373,10 +2161,10 @@ class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetecto
         )
 
 
-class ManualKeyedRecordTableDetector(ConfiguredModuleCollectorCandidateDetector):
+class ManualKeyedRecordTableDetector(ConfiguredModuleCollectorCandidateDetector[ManualKeyedRecordTableGroupCandidate]):
     detector_id = "manual_keyed_record_table"
     candidate_collector = _manual_keyed_record_table_group_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Manual keyed record tables should collapse into one authoritative spec table",
         why=(
@@ -2386,22 +2174,11 @@ class ManualKeyedRecordTableDetector(ConfiguredModuleCollectorCandidateDetector)
         ),
         capability_gap="single authoritative keyed-record table or derived index",
         relation_context="same manual record registration and keyed lookup shell repeated across data classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        capability_tags=_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group_candidate = cast(ManualKeyedRecordTableGroupCandidate, candidate)
+    def _finding_for_candidate(self, group_candidate: ManualKeyedRecordTableGroupCandidate) -> RefactorFinding:
         class_names = ", ".join(
             item.class_name for item in group_candidate.classes[:6]
         )
@@ -2412,8 +2189,7 @@ class ManualKeyedRecordTableDetector(ConfiguredModuleCollectorCandidateDetector)
             sorted({item.lookup_method_name for item in group_candidate.classes[:6]})
         )
         evidence = tuple(item.evidence for item in group_candidate.classes[:6])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Record tables {class_names} each repeat `_registry`, `{group_candidate.classes[0].register_method_name}`, "
                 f"and `{lookup_names}` around key fields {key_fields}."
@@ -2436,10 +2212,10 @@ class ManualKeyedRecordTableDetector(ConfiguredModuleCollectorCandidateDetector)
         )
 
 
-class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidateDetector):
+class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidateDetector[ManualStructuralRecordMechanicsGroupCandidate]):
     detector_id = "manual_structural_record_mechanics"
     candidate_collector = _manual_structural_record_mechanics_group_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
         title="Repeated structural record mechanics should derive from field metadata",
         why=(
@@ -2450,8 +2226,6 @@ class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidate
         ),
         capability_gap="single typed structural-record substrate with derived validation, projection, and transform mechanics",
         relation_context="same dataclass record lifecycle mechanics repeated across sibling structural record classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -2465,8 +2239,7 @@ class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidate
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group_candidate = cast(ManualStructuralRecordMechanicsGroupCandidate, candidate)
+    def _finding_for_candidate(self, group_candidate: ManualStructuralRecordMechanicsGroupCandidate) -> RefactorFinding:
         class_names = ", ".join(
             item.class_name for item in group_candidate.classes[:6]
         )
@@ -2474,8 +2247,7 @@ class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidate
         transform_methods = ", ".join(group_candidate.transform_method_names[:6])
         base_names = ", ".join(group_candidate.base_names)
         evidence = tuple(item.evidence for item in group_candidate.classes[:6])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Dataclass records {class_names} each hand-roll `{shared_methods}` plus fieldwise transforms "
                 f"{transform_methods} on top of base family `{base_names}`."
@@ -2497,10 +2269,10 @@ class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidate
         )
 
 
-class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCandidateDetector):
+class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCandidateDetector[RepeatedConcreteTypeCaseAnalysisCandidate]):
     detector_id = "repeated_concrete_type_case_analysis"
     candidate_collector = _repeated_concrete_type_case_analysis_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_INTERFACE_WITNESS,
         title="Repeated concrete-type recovery should become nominal family behavior",
         why=(
@@ -2510,8 +2282,6 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
         ),
         capability_gap="single ABC-backed family for the carried subject, with repeated case recovery moved into nominal properties or hooks",
         relation_context="same attribute-carried family is re-decoded through repeated concrete runtime type checks across several functions",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -2524,8 +2294,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        case_candidate = cast(RepeatedConcreteTypeCaseAnalysisCandidate, candidate)
+    def _finding_for_candidate(self, case_candidate: RepeatedConcreteTypeCaseAnalysisCandidate) -> RefactorFinding:
         function_names = ", ".join(
             function.function_name for function in case_candidate.functions[:6]
         )
@@ -2550,8 +2319,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
             suggested_family_name = f"{suggested_family_name}{shared_suffix}"
         elif not suggested_family_name.endswith(("Family", "Witness", "Variant")):
             suggested_family_name = f"{suggested_family_name}Family"
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Functions {function_names} repeatedly recover `{case_candidate.subject_role}` across concrete classes {class_names}.{alias_summary}{existing_base_summary}"
             ),
@@ -2577,10 +2345,10 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
         )
 
 
-class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateDetector):
+class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate]):
     detector_id = "implicit_self_contract_mixin"
     candidate_collector = _implicit_self_contract_mixin_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Concrete mixins should not hide consumer contracts behind `self`-casts",
         why=(
@@ -2590,13 +2358,7 @@ class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateD
         ),
         capability_gap="declared nominal base or policy row for the shared algorithm instead of a hidden mixin self-contract",
         relation_context="concrete mixin methods erase `self` through casts and depend on consumer-owned attributes across several subclasses",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.CLASS_FAMILY,
             ObservationTag.REPEATED_METHOD_ROLES,
@@ -2604,14 +2366,12 @@ class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateD
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        mixin_candidate = cast(ImplicitSelfContractMixinCandidate, candidate)
+    def _finding_for_candidate(self, mixin_candidate: ImplicitSelfContractMixinCandidate) -> RefactorFinding:
         methods = ", ".join(mixin_candidate.method_names)
         consumers = ", ".join(mixin_candidate.consumer_class_names[:6])
         accessed_attributes = ", ".join(mixin_candidate.accessed_attribute_names[:6])
         cast_types = ", ".join(mixin_candidate.cast_type_names[:6])
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{mixin_candidate.mixin_name}` uses `cast(..., self)` ({cast_types}) in `{methods}` to reach consumer-owned attributes ({accessed_attributes}) across subclasses {consumers}."
             ),
@@ -2633,10 +2393,10 @@ class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateD
         )
 
 
-class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDetector):
+class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDetector[RepeatedGuardValidatorFamilyCandidate]):
     detector_id = "repeated_guard_validator_family"
     candidate_collector = _repeated_guard_validator_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated guard validators should collapse into one case-policy authority",
         why=(
@@ -2646,13 +2406,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
         ),
         capability_gap="single authoritative case-policy or rule-table validator",
         relation_context="same subject and subordinate view validated through repeated fail-fast sibling helpers",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.DATAFLOW_ROOT,
             ObservationTag.PARTIAL_VIEW,
@@ -2660,8 +2414,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        family_candidate = cast(RepeatedGuardValidatorFamilyCandidate, candidate)
+    def _finding_for_candidate(self, family_candidate: RepeatedGuardValidatorFamilyCandidate) -> RefactorFinding:
         function_names = ", ".join(
             function.function_name for function in family_candidate.functions[:6]
         )
@@ -2677,8 +2430,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
             if shared_helpers
             else ""
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Boolean validators {function_names} each guard `{family_candidate.subject_param_name}`{alias_summary} "
                 f"with the same fail-fast attribute checks over {shared_attrs}.{helper_summary}"
@@ -2703,7 +2455,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
 
 class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
     detector_id = "repeated_validate_shape_guard_family"
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated validate() shape guards should collapse into one validated-record authority",
         why=(
@@ -2713,13 +2465,7 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
         ),
         capability_gap="single authoritative validated-record contract for repeated shape/ndim guards",
         relation_context="same nominal record family repeats fail-loud shape validation scaffolding",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.CLASS_FAMILY,
             ObservationTag.METHOD_ROLE,
@@ -2750,8 +2496,7 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
             if shared_guard_preview
             else ""
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Validate methods {method_summary} repeat {shared_guard_count} shared shape/ndim guard forms."
             ),
@@ -2777,10 +2522,10 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
         )
 
 
-class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateDetector):
+class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateDetector[RepeatedResultAssemblyPipelineCandidate]):
     detector_id = "repeated_result_assembly_pipeline"
     candidate_collector = _repeated_result_assembly_pipeline_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="Repeated result-assembly pipeline should collapse into one authoritative assembler",
         why=(
@@ -2791,8 +2536,6 @@ class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateD
         ),
         capability_gap="single authoritative result-assembly pipeline with one source hook",
         relation_context="same staged assembly tail is repeated across sibling functions or methods",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -2800,8 +2543,7 @@ class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateD
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        pipeline_candidate = cast(RepeatedResultAssemblyPipelineCandidate, candidate)
+    def _finding_for_candidate(self, pipeline_candidate: RepeatedResultAssemblyPipelineCandidate) -> RefactorFinding:
         function_names = ", ".join(
             function.qualname for function in pipeline_candidate.functions[:4]
         )
@@ -2811,8 +2553,7 @@ class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateD
         evidence = tuple(
             function.evidence for function in pipeline_candidate.functions[:6]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Functions {function_names} share the same result-assembly tail "
                 f"{stage_names} and differ only in their leading source stages."
@@ -2956,7 +2697,7 @@ _NORMAL_FORM_SCAFFOLDS = {
 }
 
 
-class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector):
+class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector[FailSoftEffectPipelineCandidate]):
     detector_id = "fail_soft_effect_pipeline"
     candidate_collector = _fail_soft_effect_pipeline_candidates
     finding_spec = FindingSpec(
@@ -2970,8 +2711,6 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector)
         ),
         capability_gap="single typed effect carrier with nominal inherited matcher steps for optional extraction, validation, and provenance flow",
         relation_context="same fail-soft absence effect is manually re-threaded across one extraction pipeline",
-        confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.PROVENANCE,
@@ -2997,8 +2736,7 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector)
             else self._DEFAULT_NORMAL_FORM_SCAFFOLD
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        pipeline_candidate = cast(FailSoftEffectPipelineCandidate, candidate)
+    def _finding_for_candidate(self, pipeline_candidate: FailSoftEffectPipelineCandidate) -> RefactorFinding:
         binding_preview = ", ".join(pipeline_candidate.guarded_binding_names[:5])
         helper_preview = ", ".join(pipeline_candidate.helper_call_names[:5])
         binding_suffix = (
@@ -3007,8 +2745,7 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector)
         helper_suffix = (
             f" helper calls include {helper_preview}." if helper_preview else ""
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{pipeline_candidate.function_name}` manually threads {pipeline_candidate.guard_count} "
                 f"fail-soft guard stages{binding_suffix} before returning {pipeline_candidate.success_return_kind}; "
@@ -3047,7 +2784,7 @@ def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> 
     )
 
 
-class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector):
+class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector[EffectStepAmortizationCandidate]):
     detector_id = "effect_step_amortization"
     candidate_collector = _effect_step_amortization_candidates
     finding_spec = FindingSpec(
@@ -3061,13 +2798,7 @@ class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector)
         ),
         capability_gap="reusable nominal EffectStep family for recurring AST type, cardinality, and optional-exit guards",
         relation_context="same optional AST matcher mechanics are hand-expanded inside one helper",
-        confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=(
             ObservationTag.PREDICATE_CHAIN,
             ObservationTag.NORMALIZED_AST,
@@ -3075,15 +2806,13 @@ class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector)
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        payoff_candidate = cast(EffectStepAmortizationCandidate, candidate)
+    def _finding_for_candidate(self, payoff_candidate: EffectStepAmortizationCandidate) -> RefactorFinding:
         ast_types = ", ".join(payoff_candidate.ast_type_names[:5]) or "no ast types"
         helpers = (
             ", ".join(payoff_candidate.semantic_helper_names[:5])
             or "no semantic helpers"
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{payoff_candidate.function_name}` has payoff score "
                 f"{payoff_candidate.payoff_score}: {payoff_candidate.none_return_count} optional exits, "
@@ -3111,10 +2840,10 @@ class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector)
         )
 
 
-class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector):
+class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector[EffectStepImplementationLeakCandidate]):
     detector_id = "effect_step_implementation_leak"
     candidate_collector = _effect_step_implementation_leak_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.ABC_TEMPLATE_METHOD,
         title="EffectStep leaf should declare hooks instead of owning apply",
         why=(
@@ -3125,8 +2854,6 @@ class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="template-method EffectStep base that owns optional flow, type narrowing, and guard sequencing",
         relation_context="concrete EffectStep leaf repeats mechanics that belong in an ABC/template base",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.FAIL_LOUD_CONTRACTS,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -3138,10 +2865,8 @@ class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        leak = cast(EffectStepImplementationLeakCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, leak: EffectStepImplementationLeakCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{leak.class_name}.{leak.method_name}` owns {leak.raw_guard_count} raw guard "
                 f"mechanics and {leak.none_return_count} optional exits; move the algorithm into "
@@ -3171,7 +2896,7 @@ class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector):
+class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector[UnderAmortizedInfrastructureCandidate]):
     detector_id = "under_amortized_infrastructure"
     candidate_collector = _under_amortized_infrastructure_candidates
     finding_spec = FindingSpec(
@@ -3185,21 +2910,15 @@ class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector
         ),
         capability_gap="public matcher infrastructure whose declaration cost is amortized by multiple consumers",
         relation_context="effect/matcher module public surface has single-consumer declarations",
-        confidence=MEDIUM_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.UNIT_RATE_COHERENCE,
             CapabilityTag.NOMINAL_IDENTITY,
         ),
-        observation_tags=(
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        under_amortized = cast(UnderAmortizedInfrastructureCandidate, candidate)
+    def _finding_for_candidate(self, under_amortized: UnderAmortizedInfrastructureCandidate) -> RefactorFinding:
         declaration_preview = ", ".join(under_amortized.declaration_names[:8])
         consumer_preview = ", ".join(under_amortized.consumer_symbols[:4])
         support_suffix = (
@@ -3207,8 +2926,7 @@ class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector
             if under_amortized.support_names
             else ""
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"{under_amortized.file_path} exposes single-consumer matcher infrastructure "
                 f"{declaration_preview}; consumers: {consumer_preview}.{support_suffix}"
@@ -3233,10 +2951,10 @@ class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector
         )
 
 
-class CandidateCollectorBoilerplateDetector(ModuleCollectorCandidateDetector):
+class CandidateCollectorBoilerplateDetector(ModuleCollectorCandidateDetector[CandidateCollectorBoilerplateCandidate]):
     detector_id = "candidate_collector_boilerplate"
     detector_priority = -19
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.STAGED_ORCHESTRATION,
         title="Candidate detector should declare collector strategy",
         why=(
@@ -3246,27 +2964,20 @@ class CandidateCollectorBoilerplateDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="typed metaprogrammed detector base that derives candidate collection from a declared strategy",
         relation_context="detector class repeats collector forwarding method instead of declaring a collector",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.UNIT_RATE_COHERENCE,
         ),
-        observation_tags=(
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     candidate_collector: ClassVar[ModuleCandidateCollector] = (
         _candidate_collector_boilerplate_candidates
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        collector = cast(CandidateCollectorBoilerplateCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, collector: CandidateCollectorBoilerplateCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{collector.class_name}.{collector.method_name}` only forwards to "
                 f"`{collector.collector_name}`; inherit `{collector.recommended_base_name}` "
@@ -3292,10 +3003,214 @@ class CandidateCollectorBoilerplateDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class NestedBuilderShellDetector(ConfiguredModuleCollectorCandidateDetector):
+class TypedCandidateCastBoilerplateDetector(
+    ModuleCollectorCandidateDetector[TypedCandidateCastBoilerplateCandidate]
+):
+    detector_id = "typed_candidate_cast_boilerplate"
+    detector_priority = -18
+    candidate_collector = _typed_candidate_cast_boilerplate_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Candidate template method should receive typed candidates directly",
+        why=(
+            "Detector classes repeatedly accept `candidate: object`, immediately cast it to a nominal candidate type, "
+            "and then never use the object-typed parameter again. That cast belongs in the generic detector base contract: "
+            "the implementation hook should receive the typed candidate directly."
+        ),
+        capability_gap="generic typed candidate detector base with no per-detector cast prelude",
+        relation_context="candidate-rendering template method starts with a local cast of its only payload parameter",
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, candidate: TypedCandidateCastBoilerplateCandidate
+    ) -> RefactorFinding:
+        return self.build_finding(
+            (
+                f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` "
+                f"to `{candidate.candidate_type_name}` before doing real work; parameterize "
+                f"`{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type."
+            ),
+            (candidate.evidence,),
+            scaffold=(
+                f"class {candidate.class_name}({candidate.detector_base_name}[{candidate.candidate_type_name}]):\n"
+                f"    def {candidate.method_name}(self, {candidate.local_name}: {candidate.candidate_type_name}) -> RefactorFinding:\n"
+                "        ..."
+            ),
+            codemod_patch=(
+                f"# Change the detector base to `{candidate.detector_base_name}[{candidate.candidate_type_name}]`.\n"
+                f"# Rename the hook argument from `{candidate.parameter_name}` to `{candidate.local_name}` and delete the local `cast(...)` prelude."
+            ),
+            metrics=_SINGLE_TEMPLATE_CALL_METRICS,
+        )
+
+
+class FindingSpecDefaultFieldBoilerplateDetector(
+    ModuleCollectorCandidateDetector[FindingSpecDefaultFieldCandidate]
+):
+    detector_id = "finding_spec_default_field_boilerplate"
+    candidate_collector = _finding_spec_default_field_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="FindingSpec semantic defaults should be constructor-derived",
+        why=(
+            "FindingSpec constructors already encode confidence and certification defaults. "
+            "Restating those semantic fields in every detector is declaration boilerplate; "
+            "the constructor should carry the shared semantic tier and leave only true local residue."
+        ),
+        capability_gap="constructor-level semantic spec defaults with no repeated confidence/certification payload",
+        relation_context="FindingSpec call repeats semantic default keywords that can be derived from its constructor",
+        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, field_candidate: FindingSpecDefaultFieldCandidate
+    ) -> RefactorFinding:
+        keyword_summary = ", ".join(
+            f"{name}={value}"
+            for name, value in zip(
+                field_candidate.redundant_keyword_names,
+                field_candidate.redundant_keyword_values,
+                strict=True,
+            )
+        )
+        constructor_note = (
+            f" and use `{field_candidate.recommended_constructor_name}`"
+            if field_candidate.recommended_constructor_name
+            != field_candidate.constructor_name
+            else ""
+        )
+        return self.build_finding(
+            (
+                f"`{field_candidate.constructor_name}` restates derived semantic defaults "
+                f"{keyword_summary}{constructor_note}."
+            ),
+            (field_candidate.evidence,),
+            scaffold=(
+                f"{field_candidate.recommended_constructor_name}(\n"
+                "    pattern_id=...,\n"
+                "    title=...,\n"
+                "    ...\n"
+                ")"
+            ),
+            codemod_patch=(
+                f"# Replace `{field_candidate.constructor_name}` with "
+                f"`{field_candidate.recommended_constructor_name}` where needed.\n"
+                f"# Delete redundant semantic keywords: {', '.join(field_candidate.redundant_keyword_names)}."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(field_candidate.redundant_keyword_names),
+                field_count=len(field_candidate.redundant_keyword_names),
+                mapping_name=field_candidate.constructor_name,
+                field_names=field_candidate.redundant_keyword_names,
+            ),
+        )
+
+
+class FindingSpecBuildBoilerplateDetector(
+    ModuleCollectorCandidateDetector[ClassMethodLineWitnessCandidate]
+):
+    detector_id = "finding_spec_build_boilerplate"
+    candidate_collector = _finding_spec_build_boilerplate_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Detector finding builder should derive detector_id",
+        why=(
+            "Concrete detectors repeatedly call `self.finding_spec.build(self.detector_id, ...)`. "
+            "The detector id is instance-owned template context, not per-finding payload; a shared "
+            "`build_finding(...)` hook should inject it once."
+        ),
+        capability_gap="typed detector template method that injects detector identity into finding construction",
+        relation_context="finding renderer manually passes detector-owned identity into its own spec builder",
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.AUTHORITATIVE_MAPPING,
+        ),
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, candidate: ClassMethodLineWitnessCandidate
+    ) -> RefactorFinding:
+        return self.build_finding(
+            (
+                f"`{candidate.symbol}` calls `self.finding_spec.build(self.detector_id, ...)`; "
+                "`build_finding(...)` can derive the detector id from the instance."
+            ),
+            (candidate.evidence,),
+            scaffold=(
+                "return self.build_finding(\n"
+                "    summary,\n"
+                "    evidence,\n"
+                "    ...\n"
+                ")"
+            ),
+            codemod_patch=(
+                "# Replace `self.finding_spec.build(` with `self.build_finding(`.\n"
+                "# Delete the leading `self.detector_id,` argument."
+            ),
+            metrics=_SINGLE_TEMPLATE_CALL_METRICS,
+        )
+
+
+class SemanticTagTupleBoilerplateDetector(
+    ModuleCollectorCandidateDetector[SemanticTagTupleBoilerplateCandidate]
+):
+    detector_id = "semantic_tag_tuple_boilerplate"
+    candidate_collector = _semantic_tag_tuple_boilerplate_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Repeated semantic tag tuple should become a named authority",
+        why=(
+            "Repeated capability or observation tag tuples are semantic classifications, not local control flow. "
+            "When the same tuple appears multiple times in one module, a named constant should carry that "
+            "classification so the detector specs reference one authority."
+        ),
+        capability_gap="named semantic tag tuple authority reused across detector specs",
+        relation_context="same FindingSpec tag tuple literal appears multiple times in one module",
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, tag_candidate: SemanticTagTupleBoilerplateCandidate
+    ) -> RefactorFinding:
+        return self.build_finding(
+            (
+                f"`{tag_candidate.keyword_name}` repeats tag tuple {tag_candidate.tag_names}; "
+                f"lift it to `{tag_candidate.constant_name}`."
+            ),
+            tag_candidate.evidence,
+            scaffold=(
+                f"{tag_candidate.constant_name} = (\n"
+                "    ...\n"
+                ")\n\n"
+                f"finding_spec = HighConfidenceFindingSpec({tag_candidate.keyword_name}={tag_candidate.constant_name})"
+            ),
+            codemod_patch=(
+                f"# Add `{tag_candidate.constant_name}` for the repeated tag tuple.\n"
+                f"# Replace each repeated `{tag_candidate.keyword_name}=(...)` value with the named constant."
+            ),
+            metrics=MappingMetrics(
+                mapping_site_count=len(tag_candidate.evidence),
+                field_count=len(tag_candidate.tag_names),
+                mapping_name=tag_candidate.constant_name,
+                field_names=tag_candidate.tag_names,
+            ),
+        )
+
+
+class NestedBuilderShellDetector(ConfiguredModuleCollectorCandidateDetector[NestedBuilderShellCandidate]):
     detector_id = "nested_builder_shell"
     candidate_collector = _nested_builder_shell_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_CONTEXT,
         title="Nested builder shell should collapse into one authoritative request boundary",
         why=(
@@ -3305,22 +3220,14 @@ class NestedBuilderShellDetector(ConfiguredModuleCollectorCandidateDetector):
         ),
         capability_gap="single authoritative request/context builder boundary",
         relation_context="one builder nests a forwarded subordinate request builder inside a second nominal shell",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        shell_candidate = cast(NestedBuilderShellCandidate, candidate)
+    def _finding_for_candidate(self, shell_candidate: NestedBuilderShellCandidate) -> RefactorFinding:
         forwarded = ", ".join(shell_candidate.forwarded_parameter_names)
         residue_fields = ", ".join(shell_candidate.residue_field_names)
         residue_sources = ", ".join(shell_candidate.residue_source_names)
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{shell_candidate.qualname}` forwards `{forwarded}` into "
                 f"`{shell_candidate.nested_callee_name}` under `{shell_candidate.nested_field_name}` "
@@ -3347,10 +3254,10 @@ class NestedBuilderShellDetector(ConfiguredModuleCollectorCandidateDetector):
         )
 
 
-class ManualFiberTagDetector(ModuleCollectorCandidateDetector):
+class ManualFiberTagDetector(ModuleCollectorCandidateDetector[ManualFiberTagCandidate]):
     detector_id = "manual_fiber_tag"
     candidate_collector = _manual_fiber_tag_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
         title="Manual fiber tag should become nominal family",
         why=(
@@ -3359,8 +3266,6 @@ class ManualFiberTagDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="host-native nominal fiber decomposition with one subclass per behavior fiber",
         relation_context="manual instance tag drives behavior while irrelevant coordinates remain constructible on every fiber",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,
@@ -3368,10 +3273,8 @@ class ManualFiberTagDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        fiber_candidate = cast(ManualFiberTagCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, fiber_candidate: ManualFiberTagCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{fiber_candidate.class_name}` branches on manual fiber tag `self.{fiber_candidate.tag_name}` across {fiber_candidate.case_names} while still carrying cross-fiber fields {fiber_candidate.assigned_field_names}."
             ),
@@ -3397,10 +3300,10 @@ class ManualFiberTagDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector):
+class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector[DescriptorDerivedViewCandidate]):
     detector_id = "descriptor_derived_view"
     candidate_collector = _descriptor_derived_view_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.DESCRIPTOR_DERIVED_VIEW,
         title="Derived views stored independently of their source",
         why=(
@@ -3409,8 +3312,6 @@ class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="descriptor- or property-mediated derived views rooted in one authoritative source",
         relation_context="stored derived views must be manually kept coherent with a single source field",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.UNIT_RATE_COHERENCE,
@@ -3418,10 +3319,8 @@ class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        view_candidate = cast(DescriptorDerivedViewCandidate, candidate)
-        return self.finding_spec.build(
-            self.detector_id,
+    def _finding_for_candidate(self, view_candidate: DescriptorDerivedViewCandidate) -> RefactorFinding:
+        return self.build_finding(
             (
                 f"`{view_candidate.class_name}` stores derived views {view_candidate.derived_field_names} from `{view_candidate.source_attr}`, but `{view_candidate.mutator_name}` only updates {view_candidate.updated_field_names}."
             ),
@@ -3442,10 +3341,10 @@ class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector):
+class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector[ManualRegistryCandidate]):
     detector_id = "deferred_class_registration"
     candidate_collector = _manual_registry_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTO_REGISTER_META,
         title="Class registration is decoupled from class existence",
         why=(
@@ -3454,8 +3353,6 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="zero-delay metaclass-registry class registration with collision checks and runtime provenance",
         relation_context="class registration is performed as a separate auxiliary step rather than at class creation time",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.PROVENANCE,
@@ -3463,8 +3360,7 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        registry_candidate = cast(ManualRegistryCandidate, candidate)
+    def _finding_for_candidate(self, registry_candidate: ManualRegistryCandidate) -> RefactorFinding:
         evidence = [
             SourceLocation(
                 registry_candidate.file_path,
@@ -3480,8 +3376,7 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector):
             )
             for class_name in registry_candidate.class_names[:5]
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation."
             ),
@@ -3495,10 +3390,10 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector):
+class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector[StructuralConfusabilityCandidate]):
     detector_id = "structural_confusability"
     candidate_collector = _structural_confusability_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_INTERFACE_WITNESS,
         title="Consumer observes a confusable duck-typed family",
         why=(
@@ -3507,8 +3402,6 @@ class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="ABC-backed nominal witness for a structurally confusable implementation family",
         relation_context="consumer depends on a partial structural view shared by several unrelated classes",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -3516,8 +3409,7 @@ class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        confusability_candidate = cast(StructuralConfusabilityCandidate, candidate)
+    def _finding_for_candidate(self, confusability_candidate: StructuralConfusabilityCandidate) -> RefactorFinding:
         evidence = (
             SourceLocation(
                 confusability_candidate.file_path,
@@ -3525,8 +3417,7 @@ class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector):
                 confusability_candidate.function_name,
             ),
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view."
             ),
@@ -3536,10 +3427,10 @@ class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector):
         )
 
 
-class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector):
+class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector[WitnessCarrierFamilyCandidate]):
     detector_id = "semantic_witness_family"
     candidate_collector = _witness_carrier_family_candidates
-    finding_spec = FindingSpec(
+    finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
         title="Semantic carrier family should share one nominal base",
         why=(
@@ -3548,8 +3439,6 @@ class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="one authoritative nominal base for a semantic metadata carrier family",
         relation_context="same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
         capability_tags=(
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,
@@ -3557,8 +3446,7 @@ class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector):
         ),
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        witness_candidate = cast(WitnessCarrierFamilyCandidate, candidate)
+    def _finding_for_candidate(self, witness_candidate: WitnessCarrierFamilyCandidate) -> RefactorFinding:
         evidence = tuple(
             SourceLocation(witness_candidate.file_path, line, class_name)
             for class_name, line in zip(
@@ -3567,8 +3455,7 @@ class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector):
                 strict=True,
             )
         )
-        return self.finding_spec.build(
-            self.detector_id,
+        return self.build_finding(
             (
                 f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier."
             ),
