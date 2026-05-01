@@ -9,6 +9,28 @@ from __future__ import annotations
 from ._base import *
 from ._substrate_support import *
 
+class _BuiltinCollectionName(StrEnum):
+    TUPLE = "tuple"
+    LIST = "list"
+    SET = "set"
+    DICT = "dict"
+
+
+_SEQUENCE_WRAPPER_CALL_NAMES = frozenset(
+    {
+        _BuiltinCollectionName.TUPLE,
+        _BuiltinCollectionName.LIST,
+        _BuiltinCollectionName.SET,
+    }
+)
+_RETURN_COLLECTION_KIND_NAMES = frozenset(
+    {
+        _BuiltinCollectionName.TUPLE,
+        _BuiltinCollectionName.LIST,
+        _BuiltinCollectionName.DICT,
+    }
+)
+
 def _semantic_dict_bag_candidates(
     module: ParsedModule,
 ) -> list[SemanticDictBagCandidate]:
@@ -628,33 +650,33 @@ def _shared_typed_field_names(
         if concrete_types.get(name) == annotation_text
     )
 
+def _family_roster_member(
+    node: ast.AST,
+    known_class_names: set[str],
+) -> tuple[str, str] | None:
+    name = name_id(node)
+    if name is not None and name in known_class_names:
+        return name, "class_reference"
+    call = zero_argument_named_call(node)
+    if call is not None and call.name in known_class_names:
+        return call.name, "constructor_call"
+    return None
+
 def _extract_family_roster_members(
     node: ast.AST,
     known_class_names: set[str],
 ) -> tuple[tuple[str, ...], str] | None:
-    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+    collection = collection_literal(node)
+    if collection is None:
         return None
-    member_names: list[str] = []
-    constructor_styles: set[str] = set()
-    for element in node.elts:
-        if isinstance(element, ast.Name) and element.id in known_class_names:
-            member_names.append(element.id)
-            constructor_styles.add("class_reference")
-            continue
-        if (
-            isinstance(element, ast.Call)
-            and not element.args
-            and not element.keywords
-            and isinstance(element.func, ast.Name)
-            and element.func.id in known_class_names
-        ):
-            member_names.append(element.func.id)
-            constructor_styles.add("constructor_call")
-            continue
+    roster_members = tuple(
+        _family_roster_member(element, known_class_names)
+        for element in collection.elements
+    )
+    if len(roster_members) < 2 or any(member is None for member in roster_members):
         return None
-    if len(member_names) < 2:
-        return None
-    return (tuple(member_names), "+".join(sorted(constructor_styles)))
+    member_names, constructor_styles = zip(*roster_members)
+    return (tuple(member_names), "+".join(sorted(set(constructor_styles))))
 
 def _best_shared_family_base_name(
     member_names: tuple[str, ...], index: NominalAuthorityIndex
@@ -956,7 +978,7 @@ def _if_returns_none_only(node: ast.If) -> bool:
 def _delegate_name_from_return(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call):
         outer_name = _call_display_name(node)
-        if outer_name in {"tuple", "list", "set"} and len(node.args) == 1:
+        if outer_name in _SEQUENCE_WRAPPER_CALL_NAMES and len(node.args) == 1:
             inner = node.args[0]
             if isinstance(inner, ast.Call):
                 return _call_display_name(inner)
@@ -1609,65 +1631,58 @@ def _is_self_delegate_attribute(node: ast.AST, delegate_field_name: str) -> bool
         and node.attr == delegate_field_name
     )
 
-def _is_forwarded_parameter_reference(
-    node: ast.AST,
-    parameter_names: tuple[str, ...],
-) -> bool:
-    return (
-        isinstance(node, ast.Name) and node.id in set(parameter_names)
-    ) or (
-        isinstance(node, ast.Starred)
-        and isinstance(node.value, ast.Name)
-        and node.value.id in set(parameter_names)
+def _forwarded_delegate_property_name(
+    returned: ast.AST,
+    method_name: str,
+    delegate_field_name: str,
+) -> str | None:
+    attribute = as_ast(returned, ast.Attribute)
+    if (
+        attribute is None
+        or attribute.attr != method_name
+        or not _is_self_delegate_attribute(attribute.value, delegate_field_name)
+    ):
+        return None
+    return attribute.attr
+
+def _forwarded_delegate_call(
+    returned: ast.AST,
+    method_name: str,
+    delegate_field_name: str,
+) -> ast.Call | None:
+    call = as_ast(returned, ast.Call)
+    match = (
+        attribute_call_match(
+            call,
+            method_name=method_name,
+            owner_type=ast.Attribute,
+            owner_name="self",
+        )
+        if call is not None
+        else None
     )
+    if match is None or match.owner.attr != delegate_field_name:
+        return None
+    return call
 
 def _forwarded_delegate_member_name(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     delegate_field_name: str,
 ) -> str | None:
     body = _trim_docstring_body(method.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+    returned = single_return_value(body)
+    if returned is None:
         return None
-    returned = body[0].value
     if any(_ast_terminal_name(decorator) == "property" for decorator in method.decorator_list):
-        if (
-            isinstance(returned, ast.Attribute)
-            and _is_self_delegate_attribute(returned.value, delegate_field_name)
-            and method.name == returned.attr
-        ):
-            return returned.attr
-        return None
-    if not (
-        isinstance(returned, ast.Call)
-        and isinstance(returned.func, ast.Attribute)
-        and _is_self_delegate_attribute(returned.func.value, delegate_field_name)
-        and method.name == returned.func.attr
-    ):
-        return None
-    parameter_names = tuple(
-        arg.arg
-        for arg in (
-            *method.args.posonlyargs,
-            *method.args.args[1:],
-            *method.args.kwonlyargs,
+        return _forwarded_delegate_property_name(
+            returned, method.name, delegate_field_name
         )
-    )
-    if not all(
-        _is_forwarded_parameter_reference(argument, parameter_names)
-        for argument in returned.args
+    call = _forwarded_delegate_call(returned, method.name, delegate_field_name)
+    if call is None or not call_forwards_parameters(
+        call, method_forwarded_parameter_names(method)
     ):
         return None
-    if not all(
-        keyword.arg is None
-        or (
-            keyword.arg in set(parameter_names)
-            and isinstance(keyword.value, ast.Name)
-            and keyword.value.id == keyword.arg
-        )
-        for keyword in returned.keywords
-    ):
-        return None
-    return returned.func.attr
+    return method.name
 
 def _pass_through_nominal_wrapper_candidates(
     modules: Sequence[ParsedModule],
@@ -2048,7 +2063,7 @@ _NON_HELPER_CALL_NAMES = frozenset(
         "frozenset",
         "int",
         "len",
-        "list",
+        _BuiltinCollectionName.LIST,
         "max",
         "min",
         "set",
@@ -2076,23 +2091,14 @@ def _looks_like_helper_call_name(helper_name: str) -> bool:
     )
 
 def _helper_call_from_returned_value(node: ast.AST) -> tuple[str, bool] | None:
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "tuple"
-        and len(node.args) == 1
-        and isinstance(node.args[0], ast.Call)
-    ):
-        helper_name = _call_display_name(node.args[0])
-        if helper_name is None or not _looks_like_helper_call_name(helper_name):
-            return None
-        return (helper_name, True)
-    if isinstance(node, ast.Call):
-        helper_name = _call_display_name(node)
-        if helper_name is None or not _looks_like_helper_call_name(helper_name):
-            return None
-        return (helper_name, False)
-    return None
+    tuple_wrapped_call = single_named_call_argument(
+        node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
+    )
+    helper_call = tuple_wrapped_call or as_ast(node, ast.Call)
+    helper_name = _call_display_name(helper_call) if helper_call is not None else None
+    if helper_name is None or not _looks_like_helper_call_name(helper_name):
+        return None
+    return (helper_name, tuple_wrapped_call is not None)
 
 def _helper_backed_wrapper_kind(
     returned_value: ast.AST,
@@ -2382,24 +2388,21 @@ def _class_list_registry_names(node: ast.ClassDef) -> tuple[str, ...]:
 def _registration_append_registry_name(
     node: ast.AST, registry_names: tuple[str, ...], owner_name: str
 ) -> str | None:
-    if not isinstance(node, ast.Call):
+    call = as_ast(node, ast.Call)
+    if call is None:
         return None
-    if not isinstance(node.func, ast.Attribute) or node.func.attr != "append":
+    append_call = attribute_call_match(
+        call,
+        method_name="append",
+        owner_type=ast.Attribute,
+        single_argument_required=True,
+    )
+    if append_call is None or append_call.owner.attr not in registry_names:
         return None
-    if len(node.args) != 1 or not _looks_like_cls_registration_value(node.args[0]):
+    if not _looks_like_cls_registration_value(append_call.single_argument):
         return None
-    target = node.func.value
-    if not isinstance(target, ast.Attribute):
-        return None
-    if target.attr not in registry_names:
-        return None
-    if isinstance(target.value, ast.Name) and target.value.id in {"cls", _TYPE_NAME_LITERAL}:
-        return target.attr
-    if (
-        isinstance(target.value, ast.Name)
-        and target.value.id == owner_name
-    ):
-        return target.attr
+    if name_id(append_call.owner.value) in {"cls", _TYPE_NAME_LITERAL, owner_name}:
+        return append_call.owner.attr
     return None
 
 def _looks_like_cls_registration_value(node: ast.AST) -> bool:
@@ -2415,35 +2418,32 @@ def _looks_like_cls_registration_value(node: ast.AST) -> bool:
     return False
 
 def _class_dict_get_attr_name(node: ast.AST) -> str | None:
-    if (
-        not isinstance(node, ast.Call)
-        or not isinstance(node.func, ast.Attribute)
-        or node.func.attr != "get"
-        or len(node.args) != 1
-    ):
+    call = as_ast(node, ast.Call)
+    if call is None:
         return None
-    if not isinstance(node.func.value, ast.Attribute) or node.func.value.attr != "__dict__":
+    dict_get = attribute_call_match(
+        call,
+        method_name="get",
+        owner_type=ast.Attribute,
+        owner_name="cls",
+        single_argument_required=True,
+    )
+    if dict_get is None or dict_get.owner.attr != "__dict__":
         return None
-    if (
-        not isinstance(node.func.value.value, ast.Name)
-        or node.func.value.value.id != "cls"
-    ):
-        return None
-    return _constant_string(node.args[0])
+    return _constant_string(dict_get.single_argument)
 
 def _guarded_defined_attr_name(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call):
         return _class_dict_get_attr_name(node)
-    if not isinstance(node, ast.Compare):
+    compare = as_ast(node, ast.Compare)
+    if compare is None:
         return None
-    if len(node.ops) != 1 or len(node.comparators) != 1:
+    comparison = single_compare_match(compare, ast.IsNot) or single_compare_match(
+        compare, ast.NotEq
+    )
+    if comparison is None or not is_none_constant(comparison.right):
         return None
-    if not isinstance(node.ops[0], (ast.IsNot, ast.NotEq)):
-        return None
-    comparator = node.comparators[0]
-    if not isinstance(comparator, ast.Constant) or comparator.value is not None:
-        return None
-    return _class_dict_get_attr_name(node.left)
+    return _class_dict_get_attr_name(comparison.left)
 
 def _guard_requires_concrete_subclass(node: ast.AST) -> bool:
     if not isinstance(node, ast.UnaryOp) or not isinstance(node.op, ast.Not):
@@ -2658,47 +2658,36 @@ def _registered_type_match_assignment_shape(
 def _registered_type_list_assignment(
     body: list[ast.stmt],
 ) -> tuple[str, ast.ListComp] | None:
-    assignment = next(
+    binding = next(
         (
-            statement
+            typed_binding
             for statement in body
-            if as_ast(single_assign_target(statement), ast.Name) is not None
-            and as_ast(statement.value if isinstance(statement, ast.Assign) else None, ast.ListComp)
-            is not None
+            if isinstance(statement, ast.Assign)
+            and (typed_binding := named_value_as(statement, ast.ListComp)) is not None
         ),
         None,
     )
-    assignment = as_ast(assignment, ast.Assign)
-    if assignment is None:
-        return None
-    target = as_ast(single_assign_target(assignment), ast.Name)
-    list_comp = as_ast(assignment.value, ast.ListComp)
-    if target is None or list_comp is None:
-        return None
-    return target.id, list_comp
+    return None if binding is None else (binding.name, binding.value)
 
 
 def _registered_type_list_generator(
     list_comp: ast.ListComp,
 ) -> ast.comprehension | None:
-    generator = single_item(list_comp.generators)
-    if generator is None or generator.is_async:
+    identity = identity_comprehension(list_comp)
+    if identity is None:
         return None
-    target = as_ast(generator.target, ast.Name)
-    element = as_ast(list_comp.elt, ast.Name)
-    if target is None or element is None:
+    iter_call = as_ast(identity.iter, ast.Call)
+    if iter_call is None:
         return None
-    if element.id != target.id:
-        return None
-    iter_call = generator.iter
-    if not (
-        isinstance(iter_call, ast.Call)
-        and not iter_call.args
-        and not iter_call.keywords
-        and call_attribute_name(iter_call, owner_name="cls") == "registered_types"
-    ):
-        return None
-    return generator
+    registered_type_call = attribute_call_match(
+        iter_call,
+        method_name="registered_types",
+        owner_type=ast.Name,
+        owner_name="cls",
+        argument_count=0,
+        allow_keywords=False,
+    )
+    return identity.generator if registered_type_call is not None else None
 
 
 def _registered_type_predicate_shape(
@@ -3368,22 +3357,14 @@ def _is_simple_classvar_value(node: ast.AST) -> bool:
 def _classvar_assignment_names(node: ast.ClassDef) -> tuple[str, ...] | None:
     assigned_names: list[str] = []
     for statement in _trim_docstring_body(node.body):
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if not isinstance(target, ast.Name) or not _is_simple_classvar_value(
-                statement.value
-            ):
-                return None
-            assigned_names.append(target.id)
-            continue
-        if isinstance(statement, ast.AnnAssign):
-            if not isinstance(statement.target, ast.Name) or statement.value is None:
-                return None
-            if not _is_simple_classvar_value(statement.value):
-                return None
-            assigned_names.append(statement.target.id)
-            continue
-        return None
+        binding = named_value_binding(statement)
+        if (
+            binding is None
+            or binding.value is None
+            or not _is_simple_classvar_value(binding.value)
+        ):
+            return None
+        assigned_names.append(binding.name)
     return tuple(assigned_names)
 
 def _classvar_only_sibling_leaf_candidates(
@@ -3650,37 +3631,27 @@ def _derived_indexed_surface_candidates(
     return tuple(candidates)
 
 def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
-    calls: list[ast.Call] = []
-
-    def collect_calls(current: ast.AST) -> bool:
-        if isinstance(current, ast.BinOp) and isinstance(current.op, ast.Add):
-            return collect_calls(current.left) and collect_calls(current.right)
-        if isinstance(current, ast.Call):
-            calls.append(current)
-            return True
-        return False
-
-    if not collect_calls(node) or len(calls) < 2:
+    calls = additive_call_chain(node)
+    if calls is None:
         return None
-    accessor_names = {
-        call.func.attr
+    accessors = tuple(
+        accessor
         for call in calls
-        if isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and not call.args
-        and not call.keywords
-    }
+        if (
+            accessor := attribute_call_match(
+                call,
+                owner_type=ast.Name,
+                argument_count=0,
+                allow_keywords=False,
+            )
+        )
+        is not None
+    )
+    accessor_names = {accessor.attribute.attr for accessor in accessors}
     if len(accessor_names) != 1:
         return None
     accessor_name = next(iter(accessor_names))
-    root_names = tuple(
-        sorted(
-            call.func.value.id
-            for call in calls
-            if isinstance(call.func, ast.Attribute)
-            and isinstance(call.func.value, ast.Name)
-        )
-    )
+    root_names = tuple(sorted(accessor.owner.id for accessor in accessors))
     return (accessor_name, root_names)
 
 def _registered_union_surface_candidates(
@@ -3909,26 +3880,18 @@ def _returned_sequence_name(
     return None
 
 def _subclasses_root_expression(node: ast.AST) -> str | None:
-    subclasses_call: ast.Call | None = None
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "list"
-        and len(node.args) == 1
-        and isinstance(node.args[0], ast.Call)
-    ):
-        subclasses_call = node.args[0]
-    elif isinstance(node, ast.Call):
-        subclasses_call = node
+    subclasses_call = single_named_call_argument(
+        node, call_name=_BuiltinCollectionName.LIST, argument_type=ast.Call
+    ) or as_ast(node, ast.Call)
     if subclasses_call is None:
         return None
-    if (
-        not isinstance(subclasses_call.func, ast.Attribute)
-        or subclasses_call.func.attr != "__subclasses__"
-        or subclasses_call.args
-    ):
-        return None
-    return ast.unparse(subclasses_call.func.value)
+    match = attribute_call_match(
+        subclasses_call,
+        method_name="__subclasses__",
+        owner_type=ast.AST,
+        argument_count=0,
+    )
+    return None if match is None else ast.unparse(match.owner)
 
 def _subclass_traversal_seed(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -3946,22 +3909,22 @@ def _subclass_traversal_seed(
     return None
 
 def _queue_pop_target_name(statement: ast.stmt, queue_name: str) -> str | None:
-    if (
-        not isinstance(statement, ast.Assign)
-        or len(statement.targets) != 1
-        or not isinstance(statement.targets[0], ast.Name)
-        or not isinstance(statement.value, ast.Call)
-        or not isinstance(statement.value.func, ast.Attribute)
-        or statement.value.func.attr != "pop"
-        or not isinstance(statement.value.func.value, ast.Name)
-        or statement.value.func.value.id != queue_name
-        or len(statement.value.args) != 1
-    ):
+    assignment_node = as_ast(statement, ast.Assign)
+    assignment = named_call_assignment(assignment_node) if assignment_node else None
+    pop_call = (
+        attribute_call_match(
+            assignment.call,
+            method_name="pop",
+            owner_type=ast.Name,
+            owner_name=queue_name,
+            single_argument_required=True,
+        )
+        if assignment is not None
+        else None
+    )
+    if pop_call is None or constant_value(pop_call.single_argument) != 0:
         return None
-    pop_index = statement.value.args[0]
-    if not (isinstance(pop_index, ast.Constant) and pop_index.value == 0):
-        return None
-    return statement.targets[0].id
+    return assignment.target_name
 
 def _extends_subclasses_queue(
     statement: ast.stmt, queue_name: str, current_name: str
@@ -5671,41 +5634,40 @@ def _pipeline_body_stages(
         return None
     return tuple(stages)
 
+@dataclass(frozen=True)
+class _PipelineStageSource:
+    kind: str
+    call: ast.Call
+    output_arity: int
+
+
+def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
+    assignment = as_ast(statement, ast.Assign)
+    if assignment is not None:
+        call = as_ast(assignment.value, ast.Call)
+        output_arity = _assignment_target_arity(single_assign_target(assignment))
+        if call is None or output_arity is None:
+            return None
+        return _PipelineStageSource(_PIPELINE_ASSIGN_STAGE, call, output_arity)
+    call = return_call(statement)
+    if call is None:
+        return None
+    return _PipelineStageSource(_PIPELINE_RETURN_STAGE, call, 0)
+
+
 def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
-    if isinstance(statement, ast.Assign):
-        if len(statement.targets) != 1 or not isinstance(statement.value, ast.Call):
-            return None
-        output_arity = _assignment_target_arity(statement.targets[0])
-        if output_arity is None:
-            return None
-        callee_name = _call_name(statement.value.func)
-        if callee_name is None:
-            return None
-        keyword_names = tuple(
-            keyword.arg for keyword in statement.value.keywords if keyword.arg is not None
-        )
-        return PipelineAssemblyStage(
-            kind=_PIPELINE_ASSIGN_STAGE,
-            callee_name=callee_name,
-            output_arity=output_arity,
-            arg_count=len(statement.value.args) + len(keyword_names),
-            keyword_names=keyword_names,
-        )
-    if isinstance(statement, ast.Return) and isinstance(statement.value, ast.Call):
-        callee_name = _call_name(statement.value.func)
-        if callee_name is None:
-            return None
-        keyword_names = tuple(
-            keyword.arg for keyword in statement.value.keywords if keyword.arg is not None
-        )
-        return PipelineAssemblyStage(
-            kind=_PIPELINE_RETURN_STAGE,
-            callee_name=callee_name,
-            output_arity=0,
-            arg_count=len(statement.value.args) + len(keyword_names),
-            keyword_names=keyword_names,
-        )
-    return None
+    source = _pipeline_stage_source(statement)
+    callee_name = _call_name(source.call.func) if source is not None else None
+    if source is None or callee_name is None:
+        return None
+    keyword_names = call_keyword_names(source.call)
+    return PipelineAssemblyStage(
+        kind=source.kind,
+        callee_name=callee_name,
+        output_arity=source.output_arity,
+        arg_count=len(source.call.args) + len(keyword_names),
+        keyword_names=keyword_names,
+    )
 
 def _return_none_statement(statement: ast.stmt) -> bool:
     return bool(
@@ -5769,7 +5731,7 @@ def _return_kind(statement: ast.Return) -> str:
     if isinstance(value, ast.Tuple):
         return "tuple"
     if isinstance(value, ast.List):
-        return "list"
+        return _BuiltinCollectionName.LIST
     if isinstance(value, ast.Dict):
         return "dict"
     if isinstance(value, ast.Name):
@@ -5815,7 +5777,7 @@ def _effect_pipeline_normal_form(
         return "ast_shape_matcher"
     if "loop" in stage_kinds or "exception_boundary" in stage_kinds:
         return "statement_sequence_matcher"
-    if success_return_kind in {"tuple", "list", "dict"}:
+    if success_return_kind in _RETURN_COLLECTION_KIND_NAMES:
         return "statement_sequence_matcher"
     return "typed_effect_carrier"
 
@@ -6682,23 +6644,17 @@ def _collect_class_sentinel_attrs(
 def _predicate_factory_chain_branch_count(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int | None:
-    if not function.body or not isinstance(function.body[0], ast.If):
+    branches = if_elif_chain(function.body[0]) if function.body else None
+    if branches is None or len(branches) < 2:
         return None
-    branch_count = 0
-    current: ast.stmt | None = function.body[0]
-    while isinstance(current, ast.If):
-        if not _test_has_call(current.test):
+    for branch in branches:
+        if not _test_has_call(branch.test):
             return None
         if not any(
-            isinstance(stmt, ast.Return) and isinstance(stmt.value, ast.Call)
-            for stmt in current.body
+            return_call(statement) is not None for statement in branch.body
         ):
             return None
-        branch_count += 1
-        current = current.orelse[0] if len(current.orelse) == 1 else None
-    if branch_count < 2:
-        return None
-    return branch_count
+    return len(branches)
 
 def _test_has_call(node: ast.AST) -> bool:
     return any(isinstance(child, ast.Call) for child in _walk_nodes(node))

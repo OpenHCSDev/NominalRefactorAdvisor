@@ -29,21 +29,39 @@ from ..semantic_match import (
     Maybe,
     RegisteredEffectStep,
     SingleCompareEffectStep,
+    additive_call_chain,
     as_ast,
     ast_sequence,
+    attribute_call_match,
     attribute_name,
+    call_forwards_parameters,
     call_attribute_name,
+    call_keyword_names,
+    collection_literal,
+    constant_value,
+    identity_comprehension,
+    if_elif_chain,
+    is_none_constant,
+    method_forwarded_parameter_names,
     name_id,
     named_call_assignment,
+    named_value_as,
+    named_value_binding,
     registered_effect_steps,
     single_assign_target,
     single_ast,
     single_call_arg,
     single_call_arg_name,
+    single_compare_of,
+    single_compare_match,
     single_item,
+    single_named_call_argument,
+    return_call,
+    return_value,
     single_return_as,
     single_return_call,
     single_return_value,
+    zero_argument_named_call,
 )
 from ..ast_tools import (
     AccessorWrapperCandidate,
@@ -1560,21 +1578,21 @@ def _enum_member_ref(node: ast.AST) -> tuple[str, str] | None:
 def _enum_subset_guard_from_compare(
     node: ast.Compare,
 ) -> tuple[str, str, tuple[str, ...], str] | None:
-    operator = single_item(node.ops)
-    comparator = single_item(node.comparators)
-    if not isinstance(operator, (ast.In, ast.NotIn)):
+    comparison = single_compare_of(node, (ast.In, ast.NotIn))
+    if comparison is None:
         return None
-    if not isinstance(comparator, (ast.Set, ast.Tuple, ast.List)):
+    comparator = collection_literal(comparison.right)
+    if comparator is None:
         return None
-    ref_family = _enum_member_ref_family(comparator.elts)
+    ref_family = _enum_member_ref_family(comparator.elements)
     if ref_family is None:
         return None
     enum_name, member_names = ref_family
     return (
-        ast.unparse(node.left),
+        ast.unparse(comparison.left),
         enum_name,
         member_names,
-        "not in" if isinstance(operator, ast.NotIn) else "in",
+        "not in" if isinstance(comparison.operator, ast.NotIn) else "in",
     )
 
 
@@ -2711,147 +2729,226 @@ def _axis_keyword_names(
     return tuple(sorted(names))
 
 
+@dataclass(frozen=True)
+class _SpecAxisEntry:
+    constructor_name: str
+    axis_pairs: tuple[
+        tuple[tuple[str, str], tuple[str, str]],
+        ...,
+    ]
+    extra_keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _SpecAxisBinding:
+    family_name: str
+    line: int
+    value: ast.AST
+
+
+@dataclass(frozen=True)
+class _SpecAxisSource:
+    family_name: str
+    line: int
+    constructor_name: str
+    axis_pairs: tuple[
+        tuple[tuple[str, str], tuple[str, str]],
+        ...,
+    ]
+    extra_keyword_names: tuple[str, ...]
+    is_standalone: bool
+
+
+def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]:
+    return {
+        keyword.arg: keyword.value
+        for keyword in call.keywords
+        if keyword.arg is not None and keyword.value is not None
+    }
+
+
+def _spec_axis_entry_from_call(element: ast.AST) -> _SpecAxisEntry | None:
+    call = as_ast(element, ast.Call)
+    if call is None or call.args:
+        return None
+    constructor_name = _call_name(call.func)
+    if constructor_name is None:
+        return None
+    keyword_map = _call_keyword_map(call)
+    if len(keyword_map) < 2:
+        return None
+    identity_names = _identity_axis_keyword_names(keyword_map)
+    executable_names = _executable_axis_keyword_names(keyword_map)
+    axis_pairs = tuple(
+        (
+            (identity_name, executable_name),
+            (
+                ast.unparse(keyword_map[identity_name]),
+                ast.unparse(keyword_map[executable_name]),
+            ),
+        )
+        for identity_name in identity_names
+        for executable_name in executable_names
+        if identity_name != executable_name
+    )
+    if not axis_pairs:
+        return None
+    extra_keyword_names = tuple(
+        sorted(
+            name
+            for name in keyword_map
+            if name not in set(identity_names) | set(executable_names)
+        )
+    )
+    return _SpecAxisEntry(
+        constructor_name=constructor_name,
+        axis_pairs=axis_pairs,
+        extra_keyword_names=extra_keyword_names,
+    )
+
+
+def _spec_axis_binding(statement: ast.stmt) -> _SpecAxisBinding | None:
+    binding = named_value_binding(statement)
+    if binding is None or binding.value is None:
+        return None
+    return _SpecAxisBinding(binding.name, binding.line, binding.value)
+
+
+def _spec_axis_collection_entries(value: ast.AST) -> tuple[_SpecAxisEntry, ...] | None:
+    collection = value if isinstance(value, (ast.Tuple, ast.List)) else None
+    if collection is None or len(collection.elts) < 2:
+        return None
+    entries = tuple(_spec_axis_entry_from_call(element) for element in collection.elts)
+    if any(entry is None for entry in entries):
+        return None
+    return cast(tuple[_SpecAxisEntry, ...], entries)
+
+
+def _spec_axis_source(binding: _SpecAxisBinding) -> _SpecAxisSource | None:
+    entry = _spec_axis_entry_from_call(binding.value)
+    if entry is not None:
+        return _SpecAxisSource(
+            family_name=binding.family_name,
+            line=binding.line,
+            constructor_name=entry.constructor_name,
+            axis_pairs=entry.axis_pairs,
+            extra_keyword_names=entry.extra_keyword_names,
+            is_standalone=True,
+        )
+    entries = _spec_axis_collection_entries(binding.value)
+    if entries is None:
+        return None
+    constructor_names = {entry.constructor_name for entry in entries}
+    if len(constructor_names) != 1:
+        return None
+    return _SpecAxisSource(
+        family_name=binding.family_name,
+        line=binding.line,
+        constructor_name=entries[0].constructor_name,
+        axis_pairs=tuple(
+            axis_pair for entry in entries for axis_pair in entry.axis_pairs
+        ),
+        extra_keyword_names=tuple(
+            sorted(
+                {
+                    extra_keyword_name
+                    for entry in entries
+                    for extra_keyword_name in entry.extra_keyword_names
+                }
+            )
+        ),
+        is_standalone=False,
+    )
+
+
+def _spec_axis_entries_by_axis(
+    axis_pairs: tuple[
+        tuple[tuple[str, str], tuple[str, str]],
+        ...,
+    ],
+) -> dict[tuple[str, str], list[tuple[str, str]]]:
+    grouped: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+    for axis_field_names, axis_pair in axis_pairs:
+        grouped[axis_field_names].append(axis_pair)
+    return grouped
+
+
+def _spec_axis_family_from_source(
+    module: ParsedModule,
+    source: _SpecAxisSource,
+) -> tuple[SpecAxisFamily, ...]:
+    return tuple(
+        SpecAxisFamily(
+            file_path=str(module.path),
+            line=source.line,
+            family_name=source.family_name,
+            constructor_name=source.constructor_name,
+            axis_field_names=axis_field_names,
+            axis_pairs=tuple(entries),
+            extra_keyword_names=source.extra_keyword_names,
+        )
+        for axis_field_names, entries in _spec_axis_entries_by_axis(
+            source.axis_pairs
+        ).items()
+        if len(entries) >= 2
+    )
+
+
+def _standalone_spec_axis_sources(
+    sources: Sequence[_SpecAxisSource],
+) -> tuple[_SpecAxisSource, ...]:
+    grouped: dict[str, list[_SpecAxisSource]] = defaultdict(list)
+    for source in sources:
+        if source.is_standalone:
+            grouped[source.constructor_name].append(source)
+    collapsed_sources: list[_SpecAxisSource] = []
+    for constructor_name, items in sorted(grouped.items()):
+        if len(items) < 2:
+            continue
+        ordered_items = tuple(sorted(items, key=lambda item: (item.line, item.family_name)))
+        collapsed_sources.append(
+            _SpecAxisSource(
+                family_name=" + ".join(item.family_name for item in ordered_items),
+                line=ordered_items[0].line,
+                constructor_name=constructor_name,
+                axis_pairs=tuple(
+                    axis_pair for item in ordered_items for axis_pair in item.axis_pairs
+                ),
+                extra_keyword_names=tuple(
+                    sorted(
+                        {
+                            extra_keyword_name
+                            for item in ordered_items
+                            for extra_keyword_name in item.extra_keyword_names
+                        }
+                    )
+                ),
+                is_standalone=False,
+            )
+        )
+    return tuple(collapsed_sources)
+
+
 def _spec_axis_families(
     module: ParsedModule,
 ) -> tuple[SpecAxisFamily, ...]:
-    def parse_entry_call(
-        element: ast.AST,
-    ) -> tuple[str, tuple[tuple[str, str], tuple[str, str]], tuple[str, ...]] | None:
-        if not isinstance(element, ast.Call) or element.args:
-            return None
-        current_constructor_name = _call_name(element.func)
-        if current_constructor_name is None:
-            return None
-        keyword_map = {
-            keyword.arg: keyword.value
-            for keyword in element.keywords
-            if keyword.arg is not None and keyword.value is not None
-        }
-        if len(keyword_map) < 2:
-            return None
-        identity_names = _identity_axis_keyword_names(keyword_map)
-        executable_names = _executable_axis_keyword_names(keyword_map)
-        axis_pairs: list[tuple[tuple[str, str], tuple[str, str]]] = []
-        for identity_name in identity_names:
-            for executable_name in executable_names:
-                if identity_name == executable_name:
-                    continue
-                axis_pairs.append(
-                    (
-                        (identity_name, executable_name),
-                        (
-                            ast.unparse(keyword_map[identity_name]),
-                            ast.unparse(keyword_map[executable_name]),
-                        ),
-                    )
-                )
-        if not axis_pairs:
-            return None
-        extra_keyword_names = tuple(
-            sorted(
-                name
-                for name in keyword_map
-                if name not in set(identity_names) | set(executable_names)
-            )
-        )
-        return (
-            current_constructor_name,
-            tuple(axis_pairs),
-            extra_keyword_names,
-        )
-
-    families: list[SpecAxisFamily] = []
-    standalone_specs_by_constructor: dict[
-        str, list[tuple[str, int, tuple[tuple[tuple[str, str], tuple[str, str]], ...], tuple[str, ...]]]
-    ] = defaultdict(list)
-    for statement in _trim_docstring_body(module.module.body):
-        family_name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            if isinstance(statement.targets[0], ast.Name):
-                family_name = statement.targets[0].id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            family_name = statement.target.id
-            value = statement.value
-        if family_name is None or value is None:
-            continue
-        if isinstance(value, ast.Call):
-            parsed_entry = parse_entry_call(value)
-            if parsed_entry is None:
-                continue
-            constructor_name, axis_pairs, extra_keyword_names = parsed_entry
-            standalone_specs_by_constructor[constructor_name].append(
-                (
-                    family_name,
-                    statement.lineno,
-                    axis_pairs,
-                    extra_keyword_names,
-                )
-            )
-            continue
-        if not isinstance(value, (ast.Tuple, ast.List)) or len(value.elts) < 2:
-            continue
-        entries_by_axis: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-        extra_keyword_names: set[str] = set()
-        constructor_name: str | None = None
-        line = statement.lineno
-        for element in value.elts:
-            parsed_entry = parse_entry_call(element)
-            if parsed_entry is None:
-                entries_by_axis = {}
-                break
-            current_constructor_name, axis_pairs, entry_extra_keyword_names = parsed_entry
-            if constructor_name is None:
-                constructor_name = current_constructor_name
-            elif current_constructor_name != constructor_name:
-                entries_by_axis = {}
-                break
-            for axis_field_names, axis_pair in axis_pairs:
-                entries_by_axis[axis_field_names].append(axis_pair)
-            extra_keyword_names.update(entry_extra_keyword_names)
-        if constructor_name is None:
-            continue
-        for axis_field_names, entries in entries_by_axis.items():
-            if len(entries) < 2:
-                continue
-            families.append(
-                SpecAxisFamily(
-                    file_path=str(module.path),
-                    line=line,
-                    family_name=family_name,
-                    constructor_name=constructor_name,
-                    axis_field_names=axis_field_names,
-                    axis_pairs=tuple(entries),
-                    extra_keyword_names=tuple(sorted(extra_keyword_names)),
-                )
-            )
-    for constructor_name, items in sorted(standalone_specs_by_constructor.items()):
-        if len(items) < 2:
-            continue
-        ordered_items = tuple(sorted(items, key=lambda item: (item[1], item[0])))
-        entries_by_axis: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-        for _, _, axis_pairs, _ in ordered_items:
-            for axis_field_names, axis_pair in axis_pairs:
-                entries_by_axis[axis_field_names].append(axis_pair)
-        for axis_field_names, entries in entries_by_axis.items():
-            if len(entries) < 2:
-                continue
-            families.append(
-                SpecAxisFamily(
-                    file_path=str(module.path),
-                    line=ordered_items[0][1],
-                    family_name=" + ".join(item[0] for item in ordered_items),
-                    constructor_name=constructor_name,
-                    axis_field_names=axis_field_names,
-                    axis_pairs=tuple(entries),
-                    extra_keyword_names=tuple(
-                        sorted({name for _, _, _, names in ordered_items for name in names})
-                    ),
-                )
-            )
+    sources = tuple(
+        source
+        for statement in _trim_docstring_body(module.module.body)
+        if (binding := _spec_axis_binding(statement)) is not None
+        and (source := _spec_axis_source(binding)) is not None
+    )
+    families = [
+        family
+        for source in sources
+        if not source.is_standalone
+        for family in _spec_axis_family_from_source(module, source)
+    ]
+    families.extend(
+        family
+        for source in _standalone_spec_axis_sources(sources)
+        for family in _spec_axis_family_from_source(module, source)
+    )
     return tuple(
         sorted(families, key=lambda item: (item.file_path, item.line, item.family_name))
     )

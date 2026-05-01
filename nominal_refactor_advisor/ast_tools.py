@@ -30,6 +30,7 @@ from .semantic_match import (
     RegisteredEffectStep,
     SingleCompareEffectStep,
     as_ast,
+    named_value_binding,
     registered_effect_steps,
     single_assign_target,
     single_call_arg,
@@ -806,14 +807,17 @@ def _class_body_field_observation(
 ) -> FieldObservation | None:
     if not is_dataclass_family:
         return None
-    if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+    binding = named_value_binding(stmt)
+    if binding is None:
+        return None
+    if isinstance(stmt, ast.AnnAssign):
         if _node_matches_family(stmt.annotation, _CLASSVAR_REFERENCE_FAMILY):
             return None
         return FieldObservation(
             file_path=str(parsed_module.path),
             class_name=class_name,
-            field_name=stmt.target.id,
-            lineno=stmt.lineno,
+            field_name=binding.name,
+            lineno=binding.line,
             execution_level=StructuralExecutionLevel.CLASS_BODY,
             origin_kind=(
                 FieldOriginKind.DATACLASS_FIELD
@@ -822,26 +826,23 @@ def _class_body_field_observation(
             ),
             is_dataclass_family=is_dataclass_family,
             value_fingerprint=(
-                _fingerprint_builder_value(stmt.value)
-                if stmt.value is not None
+                _fingerprint_builder_value(binding.value)
+                if binding.value is not None
                 else None
             ),
             annotation_text=ast.unparse(stmt.annotation),
             annotation_fingerprint=_annotation_fingerprint(stmt.annotation),
         )
-    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
-        target = stmt.targets[0]
-        if not isinstance(target, ast.Name):
-            return None
+    if isinstance(stmt, ast.Assign):
         return FieldObservation(
             file_path=str(parsed_module.path),
             class_name=class_name,
-            field_name=target.id,
-            lineno=stmt.lineno,
+            field_name=binding.name,
+            lineno=binding.line,
             execution_level=StructuralExecutionLevel.CLASS_BODY,
             origin_kind=FieldOriginKind.CLASS_ASSIGNMENT,
             is_dataclass_family=is_dataclass_family,
-            value_fingerprint=_fingerprint_builder_value(stmt.value),
+            value_fingerprint=_fingerprint_builder_value(binding.value),
         )
     return None
 

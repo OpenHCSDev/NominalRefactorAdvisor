@@ -17,6 +17,7 @@ AstT = TypeVar("AstT", bound=ast.AST)
 AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
 AstC = TypeVar("AstC", bound=ast.AST)
+CmpOpT = TypeVar("CmpOpT", bound=ast.cmpop)
 OwnerT = TypeVar("OwnerT", bound=ast.AST)
 TargetT = TypeVar("TargetT", bound=ast.AST)
 StepT = TypeVar("StepT", bound="RegisteredEffectStep")
@@ -123,6 +124,13 @@ class SingleCompareMatch:
     right: ast.AST
 
 
+@dataclass(frozen=True)
+class SingleOperatorCompareMatch(Generic[CmpOpT]):
+    left: ast.AST
+    operator: CmpOpT
+    right: ast.AST
+
+
 class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
     """Comparison step whose leaf declares the operator and comparison hook."""
 
@@ -151,12 +159,46 @@ class AttributeCallMatch(Generic[OwnerT]):
 @dataclass(frozen=True)
 class CallArgumentMatch:
     argument: ast.AST | None
+    arguments: tuple[ast.AST, ...] = ()
 
 
 @dataclass(frozen=True)
 class NamedCallAssignment:
     target_name: str
     call: ast.Call
+
+
+@dataclass(frozen=True)
+class NamedValueBinding:
+    name: str
+    value: ast.AST | None
+    line: int
+
+
+@dataclass(frozen=True)
+class NamedTypedValueBinding(Generic[AstT]):
+    name: str
+    value: AstT
+    line: int
+
+
+@dataclass(frozen=True)
+class CollectionLiteral:
+    node: ast.Tuple | ast.List | ast.Set
+    elements: tuple[ast.AST, ...]
+
+
+@dataclass(frozen=True)
+class ZeroArgumentNamedCall:
+    call: ast.Call
+    name: str
+
+
+@dataclass(frozen=True)
+class IdentityComprehension:
+    target_name: str
+    generator: ast.comprehension
+    iter: ast.AST
 
 
 @dataclass(frozen=True)
@@ -174,11 +216,13 @@ class _AttributeCallOwnedParts(Generic[OwnerT]):
 
 @dataclass(frozen=True)
 class _AttributeCallMethodStep(GuardedEffectStep[ast.Call, _AttributeCallParts]):
-    method_names: frozenset[str]
+    method_names: frozenset[str] | None
 
     def project(self, value: ast.Call) -> _AttributeCallParts | None:
         attribute = as_ast(value.func, ast.Attribute)
-        if attribute is None or attribute.attr not in self.method_names:
+        if attribute is None:
+            return None
+        if self.method_names is not None and attribute.attr not in self.method_names:
             return None
         return _AttributeCallParts(value, attribute)
 
@@ -211,6 +255,8 @@ class _AttributeCallArgumentStep(
 ):
     single_argument_name: str | None
     single_argument_required: bool
+    argument_count: int | None
+    allow_keywords: bool
 
     def project(
         self, value: _AttributeCallOwnedParts[OwnerT]
@@ -219,6 +265,8 @@ class _AttributeCallArgumentStep(
             value.call,
             argument_name=self.single_argument_name,
             required=self.single_argument_required,
+            argument_count=self.argument_count,
+            allow_keywords=self.allow_keywords,
         )
         if argument is None:
             return None
@@ -239,6 +287,8 @@ class AttributeCallProjectionStep(GuardedEffectStep[T, U], Generic[T, OwnerT, U]
     owner_name: ClassVar[str | None] = None
     single_argument_name: ClassVar[str | None] = None
     single_argument_required: ClassVar[bool] = False
+    argument_count: ClassVar[int | None] = None
+    allow_keywords: ClassVar[bool] = True
 
     def project(self, value: T) -> U | None:
         call = self.call_from(value)
@@ -252,6 +302,8 @@ class AttributeCallProjectionStep(GuardedEffectStep[T, U], Generic[T, OwnerT, U]
             owner_name=self.owner_name,
             single_argument_name=self.single_argument_name,
             single_argument_required=self.single_argument_required,
+            argument_count=self.argument_count,
+            allow_keywords=self.allow_keywords,
         )
         if match is None:
             return None
@@ -430,6 +482,40 @@ def named_call_assignment(node: ast.Assign) -> NamedCallAssignment | None:
     return NamedCallAssignment(target.id, call)
 
 
+def named_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+    assignment = as_ast(node, ast.Assign)
+    if assignment is None:
+        return None
+    name = name_id(single_assign_target(assignment))
+    if name is None:
+        return None
+    return NamedValueBinding(name, assignment.value, assignment.lineno)
+
+
+def named_ann_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+    assignment = as_ast(node, ast.AnnAssign)
+    if assignment is None:
+        return None
+    name = name_id(assignment.target)
+    if name is None:
+        return None
+    return NamedValueBinding(name, assignment.value, assignment.lineno)
+
+
+def named_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+    return named_assign_value_binding(node) or named_ann_assign_value_binding(node)
+
+
+def named_value_as(
+    node: ast.stmt, value_type: type[AstT]
+) -> NamedTypedValueBinding[AstT] | None:
+    binding = named_value_binding(node)
+    value = as_ast(binding.value if binding is not None else None, value_type)
+    if binding is None or value is None:
+        return None
+    return NamedTypedValueBinding(binding.name, value, binding.line)
+
+
 def single_compare_match(
     node: ast.Compare, operator_type: type[ast.cmpop]
 ) -> SingleCompareMatch | None:
@@ -440,9 +526,28 @@ def single_compare_match(
     return SingleCompareMatch(node.left, comparator)
 
 
+def single_compare_of(
+    node: ast.Compare, operator_types: type[CmpOpT] | tuple[type[CmpOpT], ...]
+) -> SingleOperatorCompareMatch[CmpOpT] | None:
+    operator = single_item(node.ops)
+    comparator = single_item(node.comparators)
+    if not isinstance(operator, operator_types) or comparator is None:
+        return None
+    return SingleOperatorCompareMatch(node.left, operator, comparator)
+
+
 def single_return_value(body: Sequence[ast.stmt]) -> ast.AST | None:
     statement = single_ast(body, ast.Return)
     return None if statement is None else statement.value
+
+
+def return_value(statement: ast.stmt) -> ast.AST | None:
+    returned = as_ast(statement, ast.Return)
+    return None if returned is None else returned.value
+
+
+def return_call(statement: ast.stmt) -> ast.Call | None:
+    return as_ast(return_value(statement), ast.Call)
 
 
 def single_return_call(body: Sequence[ast.stmt]) -> ast.Call | None:
@@ -460,17 +565,147 @@ def single_call_arg(node: ast.AST) -> ast.AST | None:
     return None if call is None else single_item(call.args)
 
 
+def zero_argument_named_call(node: ast.AST) -> ZeroArgumentNamedCall | None:
+    call = as_ast(node, ast.Call)
+    name = name_id(call.func if call is not None else None)
+    if call is None or name is None or call.args or call.keywords:
+        return None
+    return ZeroArgumentNamedCall(call, name)
+
+
+def single_named_call_argument(
+    node: ast.AST, *, call_name: str, argument_type: type[AstT]
+) -> AstT | None:
+    call = as_ast(node, ast.Call)
+    argument = single_item(call.args) if call is not None else None
+    if (
+        call is None
+        or name_id(call.func) != call_name
+        or call.keywords
+        or argument is None
+    ):
+        return None
+    return as_ast(argument, argument_type)
+
+
 def call_argument_match(
-    call: ast.Call, *, argument_name: str | None = None, required: bool = False
+    call: ast.Call,
+    *,
+    argument_name: str | None = None,
+    required: bool = False,
+    argument_count: int | None = None,
+    allow_keywords: bool = True,
 ) -> CallArgumentMatch | None:
+    if not allow_keywords and call.keywords:
+        return None
+    if argument_count is not None and len(call.args) != argument_count:
+        return None
     if argument_name is None and not required:
-        return CallArgumentMatch(None)
+        return CallArgumentMatch(None, tuple(call.args))
     argument = single_item(call.args)
     if argument is None:
         return None
     if argument_name is not None and name_id(argument) != argument_name:
         return None
-    return CallArgumentMatch(argument)
+    return CallArgumentMatch(argument, tuple(call.args))
+
+
+def call_keyword_names(call: ast.Call) -> tuple[str, ...]:
+    return tuple(keyword.arg for keyword in call.keywords if keyword.arg is not None)
+
+
+def method_forwarded_parameter_names(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        arg.arg
+        for arg in (
+            *method.args.posonlyargs,
+            *method.args.args[1:],
+            *method.args.kwonlyargs,
+        )
+    )
+
+
+def is_forwarded_parameter_reference(
+    node: ast.AST,
+    parameter_names: tuple[str, ...],
+) -> bool:
+    parameters = frozenset(parameter_names)
+    name = name_id(node)
+    if name is not None:
+        return name in parameters
+    starred = as_ast(node, ast.Starred)
+    return name_id(starred.value if starred else None) in parameters
+
+
+def call_forwards_parameters(
+    call: ast.Call,
+    parameter_names: tuple[str, ...],
+) -> bool:
+    parameters = frozenset(parameter_names)
+    return all(
+        is_forwarded_parameter_reference(argument, parameter_names)
+        for argument in call.args
+    ) and all(
+        keyword.arg is None
+        or (keyword.arg in parameters and name_id(keyword.value) == keyword.arg)
+        for keyword in call.keywords
+    )
+
+
+def collection_literal(
+    node: ast.AST,
+    *,
+    collection_types: tuple[type[ast.Tuple], type[ast.List], type[ast.Set]] = (
+        ast.Tuple,
+        ast.List,
+        ast.Set,
+    ),
+) -> CollectionLiteral | None:
+    if not isinstance(node, collection_types):
+        return None
+    return CollectionLiteral(node, tuple(node.elts))
+
+
+def if_elif_chain(statement: ast.stmt) -> tuple[ast.If, ...] | None:
+    current = as_ast(statement, ast.If)
+    branches: list[ast.If] = []
+    while current is not None:
+        branches.append(current)
+        current = as_ast(single_item(current.orelse), ast.If)
+    return tuple(branches) or None
+
+
+def identity_comprehension(list_comp: ast.ListComp) -> IdentityComprehension | None:
+    generator = single_item(list_comp.generators)
+    target_name = name_id(generator.target) if generator is not None else None
+    if (
+        generator is None
+        or generator.is_async
+        or target_name is None
+        or name_id(list_comp.elt) != target_name
+    ):
+        return None
+    return IdentityComprehension(target_name, generator, generator.iter)
+
+
+def additive_call_chain(node: ast.AST) -> tuple[ast.Call, ...] | None:
+    calls: list[ast.Call] = []
+
+    def collect(current: ast.AST) -> bool:
+        binary = as_ast(current, ast.BinOp)
+        if binary is not None and isinstance(binary.op, ast.Add):
+            return collect(binary.left) and collect(binary.right)
+        call = as_ast(current, ast.Call)
+        if call is None:
+            return False
+        calls.append(call)
+        return True
+
+    if not collect(node) or len(calls) < 2:
+        return None
+    return tuple(calls)
 
 
 def name_id(node: ast.AST | None) -> str | None:
@@ -506,10 +741,10 @@ def node_has_owner_name(node: ast.AST | None, owner_name: str) -> bool:
 
 def attribute_method_names(
     method_name: str | None, method_names: frozenset[str] | None
-) -> frozenset[str]:
+) -> frozenset[str] | None:
     if method_names is not None:
         return method_names
-    return frozenset() if method_name is None else frozenset({method_name})
+    return None if method_name is None else frozenset({method_name})
 
 
 def call_attribute_name(
@@ -534,12 +769,21 @@ def attribute_call_match(
     owner_name: str | None = None,
     single_argument_name: str | None = None,
     single_argument_required: bool = False,
+    argument_count: int | None = None,
+    allow_keywords: bool = True,
 ) -> AttributeCallMatch[OwnerT] | None:
     return (
         Maybe.of(call)
         .bind(_AttributeCallMethodStep(attribute_method_names(method_name, method_names)))
         .bind(_AttributeCallOwnerStep(owner_type, owner_name))
-        .bind(_AttributeCallArgumentStep(single_argument_name, single_argument_required))
+        .bind(
+            _AttributeCallArgumentStep(
+                single_argument_name,
+                single_argument_required,
+                argument_count,
+                allow_keywords,
+            )
+        )
         .unwrap_or_none()
     )
 
