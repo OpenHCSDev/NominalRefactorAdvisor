@@ -20,9 +20,17 @@ from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .semantic_match import (
-    EffectStep,
+    AstTypedEffectStep,
+    AttributeOwnerNameProjectionStep,
+    CallArgCountEffectStep,
+    ComprehensionTargetGuardStep,
+    GuardedEffectStep,
+    IdentityGuardEffectStep,
     Maybe,
+    RegisteredEffectStep,
+    SingleCompareEffectStep,
     as_ast,
+    registered_effect_steps,
     single_assign_target,
     single_call_arg,
     single_item,
@@ -930,27 +938,53 @@ def _enclosing_function_name(
 def _literal_dispatch_case(
     test: ast.AST, literal_type: type[object]
 ) -> tuple[str, str, str] | None:
-    if not isinstance(test, ast.Compare):
-        return None
-    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.Eq):
-        return None
-    if len(test.comparators) != 1:
-        return None
-    left = test.left
-    right = test.comparators[0]
-    if isinstance(left, ast.Constant) and isinstance(left.value, literal_type):
-        return (
-            ast.dump(right, include_attributes=False),
-            ast.unparse(right),
-            repr(left.value),
+    return (
+        Maybe.of(test)
+        .bind(_LiteralDispatchCompareStep())
+        .bind(_LiteralDispatchCaseStep(literal_type))
+        .unwrap_or_none()
+    )
+
+
+@dataclass(frozen=True)
+class _LiteralDispatchCompare:
+    left: ast.AST
+    right: ast.AST
+
+
+class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompare]):
+    step_id = "literal_dispatch_compare"
+    operator_type = ast.Eq
+
+    def project_compare(self, left: ast.AST, right: ast.AST) -> _LiteralDispatchCompare:
+        return _LiteralDispatchCompare(left, right)
+
+
+@dataclass(frozen=True)
+class _LiteralDispatchCaseStep(
+    GuardedEffectStep[_LiteralDispatchCompare, tuple[str, str, str]]
+):
+    literal_type: type[object]
+    step_id = "literal_dispatch_case"
+
+    def project(self, value: _LiteralDispatchCompare) -> tuple[str, str, str] | None:
+        return _literal_dispatch_side(value.right, value.left, self.literal_type) or (
+            _literal_dispatch_side(value.left, value.right, self.literal_type)
         )
-    if isinstance(right, ast.Constant) and isinstance(right.value, literal_type):
-        return (
-            ast.dump(left, include_attributes=False),
-            ast.unparse(left),
-            repr(right.value),
-        )
-    return None
+
+
+def _literal_dispatch_side(
+    axis: ast.AST, literal: ast.AST, literal_type: type[object]
+) -> tuple[str, str, str] | None:
+    if not isinstance(literal, ast.Constant) or not isinstance(
+        literal.value, literal_type
+    ):
+        return None
+    return (
+        ast.dump(axis, include_attributes=False),
+        ast.unparse(axis),
+        repr(literal.value),
+    )
 
 
 def _literal_dispatch_observation_from_if(
@@ -1137,50 +1171,37 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-class _ProjectionOuterCallStep(EffectStep[Any, Any], metaclass=AutoRegisterMeta):
-    __registry_key__ = "step_id"
-    __skip_if_no_key__ = True
-
-    step_id: ClassVar[str | None] = None
-    registration_order: ClassVar[int] = 0
+class _ProjectionOuterCallStep(RegisteredEffectStep):
+    pass
 
 
-class _SingleReturnCallStep(_ProjectionOuterCallStep):
+class _SingleReturnCallStep(
+    _ProjectionOuterCallStep, GuardedEffectStep[list[ast.stmt], ast.Call]
+):
     step_id = "single_return_call"
     registration_order = 10
 
-    def apply(self, value: list[ast.stmt]) -> ast.Call | None:
+    def project(self, value: list[ast.stmt]) -> ast.Call | None:
         return single_return_call(value)
 
 
-class _SingleArgumentCallStep(_ProjectionOuterCallStep):
+class _SingleArgumentCallStep(
+    _ProjectionOuterCallStep, CallArgCountEffectStep
+):
     step_id = "single_argument_call"
     registration_order = 20
-
-    def apply(self, value: ast.Call) -> ast.Call | None:
-        return value if len(value.args) == 1 else None
+    required_arg_count = 1
 
 
-class _TerminalCalleeFamilyStep(_ProjectionOuterCallStep):
+class _TerminalCalleeFamilyStep(
+    _ProjectionOuterCallStep, IdentityGuardEffectStep[ast.Call]
+):
     step_id = "terminal_callee_family"
     registration_order = 30
     terminal_names = frozenset({"tuple", "list", "set"})
 
-    def apply(self, value: ast.Call) -> ast.Call | None:
-        return value if _terminal_name(value.func) in self.terminal_names else None
-
-
-@lru_cache(maxsize=1)
-def _projection_outer_call_steps() -> tuple[_ProjectionOuterCallStep, ...]:
-    registry = cast(
-        dict[str, type[_ProjectionOuterCallStep]], _ProjectionOuterCallStep.__registry__
-    )
-    return tuple(
-        step_type()
-        for step_type in sorted(
-            registry.values(), key=lambda item: item.registration_order
-        )
-    )
+    def accepts(self, value: ast.Call) -> bool:
+        return _terminal_name(value.func) in self.terminal_names
 
 
 def _projection_outer_inner_calls(
@@ -1188,7 +1209,7 @@ def _projection_outer_inner_calls(
 ) -> tuple[str, ast.Call] | None:
     outer_call = (
         Maybe.of(_trim_docstring_body(function.body))
-        .bind_all(_projection_outer_call_steps())
+        .bind_all(registered_effect_steps(_ProjectionOuterCallStep))
         .unwrap_or_none()
     )
     if outer_call is None:
@@ -1203,17 +1224,65 @@ def _projection_outer_inner_calls(
     return outer_call_name, inner_call
 
 
+@dataclass(frozen=True)
+class _ProjectionGeneratorMatch:
+    node: ast.GeneratorExp
+    comprehension: ast.comprehension
+
+
+class _ProjectionGeneratorAttributeStep(RegisteredEffectStep):
+    pass
+
+
+class _SingleProjectionGeneratorStep(
+    _ProjectionGeneratorAttributeStep,
+    AstTypedEffectStep[ast.GeneratorExp, _ProjectionGeneratorMatch],
+):
+    step_id = "single_projection_generator"
+    registration_order = 10
+    node_type = ast.GeneratorExp
+
+    def project_ast(self, value: ast.GeneratorExp) -> _ProjectionGeneratorMatch | None:
+        comprehension = single_item(value.generators)
+        if comprehension is None:
+            return None
+        return _ProjectionGeneratorMatch(value, comprehension)
+
+
+class _ProjectionNameTargetStep(
+    _ProjectionGeneratorAttributeStep,
+    ComprehensionTargetGuardStep[_ProjectionGeneratorMatch, ast.Name],
+):
+    step_id = "projection_name_target"
+    registration_order = 20
+    target_type = ast.Name
+
+    def comprehension_from(self, value: _ProjectionGeneratorMatch) -> ast.comprehension:
+        return value.comprehension
+
+
+class _ProjectedAttributeStep(
+    _ProjectionGeneratorAttributeStep,
+    AttributeOwnerNameProjectionStep[_ProjectionGeneratorMatch],
+):
+    step_id = "projected_attribute"
+    registration_order = 30
+
+    def attribute_from(self, value: _ProjectionGeneratorMatch) -> ast.AST:
+        return value.node.elt
+
+    def owner_name_from(self, value: _ProjectionGeneratorMatch) -> str:
+        target = cast(ast.Name, value.comprehension.target)
+        return target.id
+
+
 def _projection_generator_attribute(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.GeneratorExp) or len(node.generators) != 1:
-        return None
-    comp = node.generators[0]
-    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
-        return None
-    if not isinstance(node.elt, ast.Attribute) or not isinstance(node.elt.value, ast.Name):
-        return None
-    if node.elt.value.id != comp.target.id:
-        return None
-    return node.elt.attr
+    return cast(
+        str | None,
+        Maybe.of(node)
+        .bind_all(registered_effect_steps(_ProjectionGeneratorAttributeStep))
+        .unwrap_or_none(),
+    )
 
 
 def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:

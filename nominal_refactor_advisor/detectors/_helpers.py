@@ -5958,6 +5958,227 @@ def _effect_step_amortization_candidates(
         )
     )
 
+_EFFECT_STEP_BASE_NAMES = frozenset(
+    {
+        "AttributeCallProjectionStep",
+        "AttributeOwnerNameProjectionStep",
+        "AstTypedEffectStep",
+        "CallArgCountEffectStep",
+        "ComprehensionTargetGuardStep",
+        "EffectStep",
+        "GuardedEffectStep",
+        "IdentityGuardEffectStep",
+        "OwnerCallGuardStep",
+        "RegisteredEffectStep",
+        "SingleCompareEffectStep",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _EffectStepLeakPolicy:
+    method_name: str
+    minimum_raw_guard_count: int
+    requires_optional_exit: bool
+    ignore_when_calling_template_hook: bool = False
+
+    def leaks(
+        self,
+        method: ast.FunctionDef,
+        *,
+        none_return_count: int,
+        raw_guard_count: int,
+    ) -> bool:
+        if self.ignore_when_calling_template_hook and _method_calls_template_hook(
+            method
+        ):
+            return False
+        if self.requires_optional_exit and none_return_count == 0:
+            return False
+        return raw_guard_count >= self.minimum_raw_guard_count
+
+
+_EFFECT_STEP_APPLY_LEAK_POLICY = _EffectStepLeakPolicy(
+    "apply",
+    minimum_raw_guard_count=1,
+    requires_optional_exit=True,
+    ignore_when_calling_template_hook=True,
+)
+_EFFECT_STEP_LEAK_POLICIES = (
+    _EFFECT_STEP_APPLY_LEAK_POLICY,
+    _EffectStepLeakPolicy(
+        "accepts",
+        minimum_raw_guard_count=3,
+        requires_optional_exit=False,
+    ),
+    _EffectStepLeakPolicy(
+        "project",
+        minimum_raw_guard_count=3,
+        requires_optional_exit=True,
+    ),
+    _EffectStepLeakPolicy(
+        "project_ast",
+        minimum_raw_guard_count=3,
+        requires_optional_exit=True,
+    ),
+)
+_EFFECT_STEP_TEMPLATE_HOOK_NAMES = frozenset(
+    policy.method_name
+    for policy in _EFFECT_STEP_LEAK_POLICIES
+    if policy is not _EFFECT_STEP_APPLY_LEAK_POLICY
+) | frozenset(
+    {
+        "attribute_from",
+        "call_from",
+        "comprehension_from",
+        "owner_name_from",
+        "project_attribute_call",
+        "project_call_pair",
+        "project_compare",
+    }
+)
+_EFFECT_STEP_LEAF_METHOD_NAMES = tuple(
+    policy.method_name for policy in _EFFECT_STEP_LEAK_POLICIES
+)
+_EFFECT_STEP_LEAK_POLICY_BY_METHOD = {
+    policy.method_name: policy for policy in _EFFECT_STEP_LEAK_POLICIES
+}
+
+
+def _class_base_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        base_name for base in node.bases if (base_name := _call_name(base)) is not None
+    )
+
+
+def _looks_like_effect_step_class(node: ast.ClassDef) -> bool:
+    return node.name.endswith("Step") or bool(
+        set(_class_base_names(node)) & _EFFECT_STEP_BASE_NAMES
+    )
+
+
+def _effect_step_leaf_methods(node: ast.ClassDef) -> tuple[ast.FunctionDef, ...]:
+    return tuple(
+        statement
+        for statement in node.body
+        if isinstance(statement, ast.FunctionDef)
+        and statement.name in _EFFECT_STEP_LEAF_METHOD_NAMES
+    )
+
+
+def _has_abstract_effect_step_hooks(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(statement, ast.FunctionDef)
+        and any(
+            _call_name(decorator) == "abstractmethod"
+            for decorator in statement.decorator_list
+        )
+        for statement in node.body
+    )
+
+
+def _method_calls_template_hook(method: ast.FunctionDef) -> bool:
+    return any(
+        isinstance(item, ast.Call)
+        and isinstance(item.func, ast.Attribute)
+        and isinstance(item.func.value, ast.Name)
+        and item.func.value.id == "self"
+        and item.func.attr in _EFFECT_STEP_TEMPLATE_HOOK_NAMES
+        for item in _walk_nodes(method)
+    )
+
+
+def _raw_effect_step_guard_count(method: ast.FunctionDef) -> int:
+    raw_guard_count = sum(
+        1
+        for item in _walk_nodes(method)
+        if (
+            isinstance(item, ast.Call)
+            and (
+                _call_name(item.func) in {"as_ast", "isinstance", "single_item"}
+                or (
+                    isinstance(item.func, ast.Attribute)
+                    and item.func.attr in {"args", "keywords"}
+                )
+            )
+        )
+        or (
+            isinstance(item, ast.Compare)
+            and any(
+                isinstance(value, ast.Call) and _call_name(value.func) == "len"
+                for value in (item.left, *item.comparators)
+            )
+        )
+    )
+    boolean_clause_count = sum(
+        max(0, len(item.values) - 1)
+        for item in _walk_nodes(method)
+        if isinstance(item, ast.BoolOp)
+    )
+    return raw_guard_count + boolean_clause_count
+
+
+def _effect_step_method_leaks(method: ast.FunctionDef) -> bool:
+    none_return_count = _none_return_count(method)
+    raw_guard_count = _raw_effect_step_guard_count(method)
+    policy = _EFFECT_STEP_LEAK_POLICY_BY_METHOD.get(method.name)
+    return False if policy is None else policy.leaks(
+        method,
+        none_return_count=none_return_count,
+        raw_guard_count=raw_guard_count,
+    )
+
+
+def _none_return_count(node: ast.AST) -> int:
+    return sum(
+        1
+        for item in _walk_nodes(node)
+        if isinstance(item, ast.Return)
+        and isinstance(item.value, ast.Constant)
+        and item.value.value is None
+    )
+
+
+def _suggested_effect_step_base(method: ast.FunctionDef) -> str:
+    ast_type_guards = sum(
+        1
+        for item in _walk_nodes(method)
+        if _isinstance_ast_type_names(item)
+        or (
+            isinstance(item, ast.Call)
+            and _call_name(item.func) == "as_ast"
+            and len(item.args) >= 2
+            and bool(_ast_type_names(item.args[1]))
+        )
+    )
+    return "AstTypedEffectStep" if ast_type_guards else "GuardedEffectStep"
+
+
+def _effect_step_implementation_leak_candidates(
+    module: ParsedModule,
+) -> tuple[EffectStepImplementationLeakCandidate, ...]:
+    candidates: list[EffectStepImplementationLeakCandidate] = []
+    for node in _walk_nodes(module.module):
+        if not isinstance(node, ast.ClassDef) or not _looks_like_effect_step_class(node):
+            continue
+        if _has_abstract_effect_step_hooks(node):
+            continue
+        for method in _effect_step_leaf_methods(node):
+            if not _effect_step_method_leaks(method):
+                continue
+            candidates.append(
+                EffectStepImplementationLeakCandidate(
+                    file_path=str(module.path),
+                    class_name=node.name,
+                    method_name=method.name,
+                    line=method.lineno,
+                    none_return_count=_none_return_count(method),
+                    raw_guard_count=_raw_effect_step_guard_count(method),
+                    suggested_base_name=_suggested_effect_step_base(method),
+                )
+            )
+    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line)))
+
 def _assignment_target_arity(target: ast.AST) -> int | None:
     if isinstance(target, ast.Name):
         return 1

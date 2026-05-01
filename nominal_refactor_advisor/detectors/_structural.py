@@ -6,9 +6,25 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 
 from __future__ import annotations
 
+import ast
+from abc import abstractmethod
 from collections.abc import Callable
-from typing import TypeVar
+from typing import ClassVar, Generic, TypeVar
 
+from ..semantic_match import (
+    AttributeCallMatch,
+    AttributeCallProjectionStep,
+    AstTypedEffectStep,
+    GuardedEffectStep,
+    Maybe,
+    OwnerCallGuardStep,
+    RegisteredEffectStep,
+    attribute_call_match,
+    conditional_return_call,
+    constant_value,
+    named_call_assignment,
+    registered_effect_steps,
+)
 from ._base import *
 from ._helpers import *
 from ._substrate_support import *
@@ -1889,37 +1905,103 @@ def _excessive_blank_line_run_candidates(
 def _catalog_installing_mixin_candidate(
     method: ast.FunctionDef,
 ) -> str | None:
-    if method.name != "__init_subclass__":
-        return None
-    body = _trim_docstring_body(method.body)
-    if len(body) != 2 or not all(isinstance(item, ast.Expr) for item in body):
-        return None
-    first = cast(ast.Expr, body[0]).value
-    second = cast(ast.Expr, body[1]).value
-    if not (
-        isinstance(first, ast.Call)
-        and isinstance(first.func, ast.Attribute)
-        and first.func.attr == "__init_subclass__"
-        and isinstance(first.func.value, ast.Call)
-        and isinstance(first.func.value.func, ast.Name)
-        and first.func.value.func.id == "super"
-        and not first.args
-        and not first.keywords
-    ):
-        return None
-    if not (
-        isinstance(second, ast.Call)
-        and isinstance(second.func, ast.Attribute)
-        and second.func.attr == "install"
-        and len(second.args) == 1
-        and isinstance(second.args[0], ast.Name)
-        and second.args[0].id == "cls"
-        and isinstance(second.func.value, ast.Attribute)
-        and isinstance(second.func.value.value, ast.Name)
-        and second.func.value.value.id == "cls"
-    ):
-        return None
-    return second.func.value.attr
+    return cast(
+        str | None,
+        Maybe.of(method)
+        .bind_all(registered_effect_steps(_CatalogInstallingMixinStep))
+        .unwrap_or_none(),
+    )
+
+
+@dataclass(frozen=True)
+class _CatalogInstallingMixinShape:
+    first_call: ast.Call
+    second_call: ast.Call
+
+
+class _CatalogInstallingMixinStep(RegisteredEffectStep):
+    pass
+
+
+_FunctionCallPairResult = TypeVar("_FunctionCallPairResult")
+
+
+class _NamedFunctionExprCallPairStep(
+    AstTypedEffectStep[ast.FunctionDef, _FunctionCallPairResult],
+    Generic[_FunctionCallPairResult],
+):
+    node_type = ast.FunctionDef
+    function_name: ClassVar[str]
+
+    def project_ast(self, value: ast.FunctionDef) -> _FunctionCallPairResult | None:
+        if value.name != self.function_name:
+            return None
+        body = _trim_docstring_body(value.body)
+        statements = ast_sequence(body, ast.Expr, ast.Expr)
+        if statements is None:
+            return None
+        first, second = statements
+        first_call = as_ast(first.value, ast.Call)
+        second_call = as_ast(second.value, ast.Call)
+        if first_call is None or second_call is None:
+            return None
+        return self.project_call_pair(first_call, second_call)
+
+    @abstractmethod
+    def project_call_pair(
+        self, first_call: ast.Call, second_call: ast.Call
+    ) -> _FunctionCallPairResult | None:
+        raise NotImplementedError
+
+
+class _CatalogInitSubclassBodyStep(
+    _CatalogInstallingMixinStep,
+    _NamedFunctionExprCallPairStep[_CatalogInstallingMixinShape],
+):
+    step_id = "catalog_init_subclass_body"
+    registration_order = 10
+    function_name = "__init_subclass__"
+
+    def project_call_pair(
+        self, first_call: ast.Call, second_call: ast.Call
+    ) -> _CatalogInstallingMixinShape:
+        return _CatalogInstallingMixinShape(first_call, second_call)
+
+
+class _CatalogSuperInitSubclassStep(
+    _CatalogInstallingMixinStep,
+    OwnerCallGuardStep[_CatalogInstallingMixinShape],
+):
+    step_id = "catalog_super_init_subclass"
+    registration_order = 20
+    method_name = "__init_subclass__"
+    owner_call_name = "super"
+
+    def call_from(self, value: _CatalogInstallingMixinShape) -> ast.Call:
+        return value.first_call
+
+
+class _CatalogInstallAttributeStep(
+    _CatalogInstallingMixinStep,
+    AttributeCallProjectionStep[_CatalogInstallingMixinShape, ast.Attribute, str],
+):
+    step_id = "catalog_install_attribute"
+    registration_order = 30
+    method_name = "install"
+    owner_type = ast.Attribute
+    owner_name = "cls"
+    single_argument_name = "cls"
+
+    def call_from(self, value: _CatalogInstallingMixinShape) -> ast.Call:
+        return value.second_call
+
+    def project_attribute_call(
+        self,
+        value: _CatalogInstallingMixinShape,
+        match: AttributeCallMatch[ast.Attribute],
+    ) -> str:
+        del value
+        return match.owner.attr
 
 
 def _catalog_installing_mixin_family_candidates(
@@ -1957,56 +2039,172 @@ class _RegexGroupExtractorMethod:
     group_index: int
 
 
+_REGEX_MATCHER_NAMES = frozenset({"search", "match", "fullmatch"})
+
+
+@dataclass(frozen=True)
+class _RegexExtractorBody:
+    method: ast.FunctionDef
+    assign: ast.Assign
+    returned: ast.Return
+
+
+@dataclass(frozen=True)
+class _RegexExtractorMethodContext:
+    method: ast.FunctionDef
+    match_name: str
+
+
+@dataclass(frozen=True)
+class _RegexExtractorReturnedContext(_RegexExtractorMethodContext):
+    returned: ast.Return
+
+
+@dataclass(frozen=True)
+class _RegexExtractorAssignment(_RegexExtractorReturnedContext):
+    call: ast.Call
+
+
+@dataclass(frozen=True)
+class _RegexExtractorMatcherCall(_RegexExtractorReturnedContext):
+    pattern_attribute_name: str
+    matcher_name: str
+
+
+@dataclass(frozen=True)
+class _RegexExtractorConditionalReturn(_RegexExtractorMatcherCall):
+    group_call: ast.Call
+
+
+class _RegexGroupExtractorStep(RegisteredEffectStep):
+    pass
+
+
+class _RegexExtractorBodyStep(
+    _RegexGroupExtractorStep,
+    AstTypedEffectStep[ast.FunctionDef, _RegexExtractorBody],
+):
+    step_id = "regex_extractor_body"
+    registration_order = 10
+    node_type = ast.FunctionDef
+
+    def project_ast(self, value: ast.FunctionDef) -> _RegexExtractorBody | None:
+        statements = ast_sequence(
+            _trim_docstring_body(value.body), ast.Assign, ast.Return
+        )
+        if statements is None:
+            return None
+        assign, returned = statements
+        return _RegexExtractorBody(value, assign, returned)
+
+
+class _RegexExtractorAssignmentStep(
+    _RegexGroupExtractorStep,
+    GuardedEffectStep[_RegexExtractorBody, _RegexExtractorAssignment],
+):
+    step_id = "regex_extractor_assignment"
+    registration_order = 20
+
+    def project(self, value: _RegexExtractorBody) -> _RegexExtractorAssignment | None:
+        assignment = named_call_assignment(value.assign)
+        if assignment is None:
+            return None
+        return _RegexExtractorAssignment(
+            method=value.method,
+            match_name=assignment.target_name,
+            returned=value.returned,
+            call=assignment.call,
+        )
+
+
+class _RegexExtractorMatcherCallStep(
+    _RegexGroupExtractorStep,
+    GuardedEffectStep[_RegexExtractorAssignment, _RegexExtractorMatcherCall],
+):
+    step_id = "regex_extractor_matcher_call"
+    registration_order = 30
+
+    def project(
+        self, value: _RegexExtractorAssignment
+    ) -> _RegexExtractorMatcherCall | None:
+        match = attribute_call_match(
+            value.call,
+            method_names=_REGEX_MATCHER_NAMES,
+            owner_type=ast.Attribute,
+            owner_name="self",
+            single_argument_required=True,
+        )
+        if match is None:
+            return None
+        return _RegexExtractorMatcherCall(
+            method=value.method,
+            match_name=value.match_name,
+            returned=value.returned,
+            pattern_attribute_name=match.owner.attr,
+            matcher_name=match.attribute.attr,
+        )
+
+
+class _RegexExtractorConditionalReturnStep(
+    _RegexGroupExtractorStep,
+    GuardedEffectStep[_RegexExtractorMatcherCall, _RegexExtractorConditionalReturn],
+):
+    step_id = "regex_extractor_conditional_return"
+    registration_order = 40
+
+    def project(
+        self, value: _RegexExtractorMatcherCall
+    ) -> _RegexExtractorConditionalReturn | None:
+        group_call = conditional_return_call(value.returned, test_name=value.match_name)
+        if group_call is None:
+            return None
+        return _RegexExtractorConditionalReturn(
+            method=value.method,
+            match_name=value.match_name,
+            returned=value.returned,
+            pattern_attribute_name=value.pattern_attribute_name,
+            matcher_name=value.matcher_name,
+            group_call=group_call,
+        )
+
+
+class _RegexExtractorGroupCallStep(
+    _RegexGroupExtractorStep,
+    GuardedEffectStep[_RegexExtractorConditionalReturn, _RegexGroupExtractorMethod],
+):
+    step_id = "regex_extractor_group_call"
+    registration_order = 50
+
+    def project(
+        self, value: _RegexExtractorConditionalReturn
+    ) -> _RegexGroupExtractorMethod | None:
+        match = attribute_call_match(
+            value.group_call,
+            method_name="group",
+            owner_type=ast.Name,
+            owner_name=value.match_name,
+            single_argument_required=True,
+        )
+        group_index = constant_value(match.single_argument) if match else None
+        if not isinstance(group_index, int):
+            return None
+        return _RegexGroupExtractorMethod(
+            method_name=value.method.name,
+            line=value.method.lineno,
+            pattern_attribute_name=value.pattern_attribute_name,
+            matcher_name=value.matcher_name,
+            group_index=group_index,
+        )
+
+
 def _regex_group_extractor_method(
     method: ast.FunctionDef,
 ) -> _RegexGroupExtractorMethod | None:
-    body = _trim_docstring_body(method.body)
-    if len(body) != 2:
-        return None
-    assign, returned = body
-    if not (
-        isinstance(assign, ast.Assign)
-        and len(assign.targets) == 1
-        and isinstance(assign.targets[0], ast.Name)
-        and isinstance(assign.value, ast.Call)
-        and isinstance(returned, ast.Return)
-        and isinstance(returned.value, ast.IfExp)
-    ):
-        return None
-    match_name = assign.targets[0].id
-    call = assign.value
-    if not (
-        isinstance(call.func, ast.Attribute)
-        and call.func.attr in {"search", "match", "fullmatch"}
-        and isinstance(call.func.value, ast.Attribute)
-        and isinstance(call.func.value.value, ast.Name)
-        and call.func.value.value.id == "self"
-        and len(call.args) == 1
-        and not call.keywords
-    ):
-        return None
-    ifexp = returned.value
-    if not (
-        isinstance(ifexp.test, ast.Name)
-        and ifexp.test.id == match_name
-        and isinstance(ifexp.orelse, ast.Constant)
-        and ifexp.orelse.value is None
-        and isinstance(ifexp.body, ast.Call)
-        and isinstance(ifexp.body.func, ast.Attribute)
-        and ifexp.body.func.attr == "group"
-        and isinstance(ifexp.body.func.value, ast.Name)
-        and ifexp.body.func.value.id == match_name
-        and len(ifexp.body.args) == 1
-        and isinstance(ifexp.body.args[0], ast.Constant)
-        and isinstance(ifexp.body.args[0].value, int)
-    ):
-        return None
-    return _RegexGroupExtractorMethod(
-        method_name=method.name,
-        line=method.lineno,
-        pattern_attribute_name=call.func.value.attr,
-        matcher_name=call.func.attr,
-        group_index=ifexp.body.args[0].value,
+    return cast(
+        _RegexGroupExtractorMethod | None,
+        Maybe.of(method)
+        .bind_all(registered_effect_steps(_RegexGroupExtractorStep))
+        .unwrap_or_none(),
     )
 
 

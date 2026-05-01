@@ -8388,6 +8388,13 @@ class EffectStepAmortizationCandidate(FunctionLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
+class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
+    none_return_count: int
+    raw_guard_count: int
+    suggested_base_name: str
+
+
+@dataclass(frozen=True)
 class NestedBuilderShellCandidate:
     file_path: str
     qualname: str

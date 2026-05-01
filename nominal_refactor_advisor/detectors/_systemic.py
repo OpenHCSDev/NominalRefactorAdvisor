@@ -3272,6 +3272,71 @@ class EffectStepAmortizationDetector(CandidateFindingDetector):
         )
 
 
+class EffectStepImplementationLeakDetector(CandidateFindingDetector):
+    detector_id = "effect_step_implementation_leak"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="EffectStep leaf should declare hooks instead of owning apply",
+        why=(
+            "Concrete effect-step leaves should carry semantic residue as attributes/properties and small hooks. "
+            "When a leaf owns raw optional exits, AST type checks, or cardinality checks inside `apply()` or "
+            "a bulky hook, "
+            "the ABC is not doing enough of the work and the monadic infrastructure is not compressing semantics."
+        ),
+        capability_gap="template-method EffectStep base that owns optional flow, type narrowing, and guard sequencing",
+        relation_context="concrete EffectStep leaf repeats mechanics that belong in an ABC/template base",
+        confidence=HIGH_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.PREDICATE_CHAIN,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _effect_step_implementation_leak_candidates(module)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        leak = cast(EffectStepImplementationLeakCandidate, candidate)
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{leak.class_name}.{leak.method_name}` owns {leak.raw_guard_count} raw guard "
+                f"mechanics and {leak.none_return_count} optional exits; move the algorithm into "
+                f"`{leak.suggested_base_name}` and leave only attrs/properties plus hooks on the leaf."
+            ),
+            (leak.evidence,),
+            scaffold=(
+                f"class {leak.class_name}({leak.suggested_base_name}):\n"
+                "    step_id = 'semantic_step'\n"
+                "    registration_order = 10\n"
+                "    # declare class attrs/properties here\n\n"
+                "    def accepts(self, value): ...\n"
+                "    def project(self, value): ..."
+            ),
+            codemod_patch=(
+                "# Delete the concrete mechanics-heavy leaf method.\n"
+                "# Move optional flow/type narrowing/cardinality mechanics to the ABC/template base.\n"
+                "# Keep the implementation class declarative: attrs, properties, and the smallest semantic hooks."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=0,
+                branch_site_count=leak.none_return_count,
+                call_site_count=leak.raw_guard_count,
+                parameter_count=0,
+                callee_family_count=1,
+            ),
+        )
+
+
 class NestedBuilderShellDetector(CandidateFindingDetector):
     detector_id = "nested_builder_shell"
     finding_spec = FindingSpec(

@@ -54,6 +54,7 @@ from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
+EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
@@ -2759,6 +2760,117 @@ def match_projected_attribute(node, steps):
 
     assert not any(
         finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_detects_effect_step_implementation_leak(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import ast
+
+class CallStep(EffectStep):
+    step_id = "call"
+
+    def apply(self, value):
+        if not isinstance(value, ast.Call):
+            return None
+        if len(value.args) != 1:
+            return None
+        return value
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
+    )
+
+    assert "CallStep.apply" in finding.summary
+    assert "attrs/properties" in finding.summary
+    assert "Delete the concrete mechanics-heavy leaf method" in (
+        finding.codemod_patch or ""
+    )
+
+
+def test_ignores_effect_step_template_method_base(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class GoodStep(GuardedEffectStep):
+    step_id = "good"
+
+    def accepts(self, value):
+        return bool(value)
+
+    def project(self, value):
+        return value
+""",
+    )
+
+    assert not any(
+        finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_detects_effect_step_boolean_guard_leak(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import ast
+
+class TargetStep(IdentityGuardEffectStep):
+    step_id = "target"
+
+    def accepts(self, value):
+        return (
+            not value.comprehension.is_async
+            and not value.comprehension.ifs
+            and isinstance(value.comprehension.target, ast.Name)
+        )
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
+    )
+
+    assert "TargetStep.accepts" in finding.summary
+    assert "raw guard mechanics" in finding.summary
+
+
+def test_ignores_abstract_effect_step_template_base(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from abc import abstractmethod
+import ast
+
+class TargetBaseStep(IdentityGuardEffectStep):
+    def accepts(self, value):
+        return (
+            not value.comprehension.is_async
+            and not value.comprehension.ifs
+            and isinstance(value.comprehension.target, ast.Name)
+        )
+
+    @abstractmethod
+    def comprehension_from(self, value):
+        raise NotImplementedError
+""",
+    )
+
+    assert not any(
+        finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
         for finding in analyze_path(tmp_path)
     )
 
