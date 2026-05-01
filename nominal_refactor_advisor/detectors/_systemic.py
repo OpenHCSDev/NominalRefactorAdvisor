@@ -3188,6 +3188,90 @@ class FailSoftEffectPipelineDetector(CandidateFindingDetector):
         )
 
 
+def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> str:
+    normal_form_class = _camel_case(candidate.normal_form)
+    return (
+        f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = 'step_id'\n"
+        "    __skip_if_no_key__ = True\n"
+        "    step_id: ClassVar[str | None] = None\n"
+        "    registration_order: ClassVar[int] = 0\n\n"
+        "@dataclass(frozen=True)\n"
+        f"class {normal_form_class}Matcher:\n"
+        f"    steps: tuple[{normal_form_class}Step, ...]\n\n"
+        "    def match(self, source):\n"
+        "        return Maybe.of(source).bind_all(self.steps)"
+    )
+
+
+class EffectStepAmortizationDetector(CandidateFindingDetector):
+    detector_id = "effect_step_amortization"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Manual AST matcher should amortize EffectStep infrastructure",
+        why=(
+            "A helper that repeatedly performs AST type/cardinality checks and exits through `return None` "
+            "is paying the cognitive cost of an effect pipeline without reusing the nominal `EffectStep` "
+            "carrier. The infrastructure pays rent when these guard atoms become registered matcher-step "
+            "objects that can be shared, ordered, tested, and composed."
+        ),
+        capability_gap="reusable nominal EffectStep family for recurring AST type, cardinality, and optional-exit guards",
+        relation_context="same optional AST matcher mechanics are hand-expanded inside one helper",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.PREDICATE_CHAIN,
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.DATAFLOW_ROOT,
+        ),
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _effect_step_amortization_candidates(module, config)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        payoff_candidate = cast(EffectStepAmortizationCandidate, candidate)
+        ast_types = ", ".join(payoff_candidate.ast_type_names[:5]) or "no ast types"
+        helpers = (
+            ", ".join(payoff_candidate.semantic_helper_names[:5])
+            or "no semantic helpers"
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{payoff_candidate.function_name}` has payoff score "
+                f"{payoff_candidate.payoff_score}: {payoff_candidate.none_return_count} optional exits, "
+                f"{payoff_candidate.ast_type_guard_count} AST type guards over {ast_types}, "
+                f"{payoff_candidate.cardinality_guard_count} cardinality guards, and "
+                f"{payoff_candidate.semantic_helper_count} semantic helper calls ({helpers}); "
+                f"normal form is `{payoff_candidate.normal_form}`."
+            ),
+            (payoff_candidate.evidence,),
+            scaffold=_effect_step_payoff_scaffold(payoff_candidate),
+            codemod_patch=(
+                "# Extract the repeated AST guard atoms into nominal `EffectStep` subclasses.\n"
+                "# Register ordered steps with `AutoRegisterMeta`, then route the helper through `Maybe.of(source).bind_all(steps)`.\n"
+                "# Keep only domain-specific witness construction outside the shared matcher pipeline."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=payoff_candidate.line_count,
+                branch_site_count=payoff_candidate.none_return_count,
+                call_site_count=payoff_candidate.semantic_helper_count,
+                parameter_count=len(payoff_candidate.ast_type_names),
+                callee_family_count=max(
+                    1, len(payoff_candidate.semantic_helper_names)
+                ),
+            ),
+        )
+
+
 class NestedBuilderShellDetector(CandidateFindingDetector):
     detector_id = "nested_builder_shell"
     finding_spec = FindingSpec(

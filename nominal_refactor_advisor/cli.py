@@ -145,6 +145,12 @@ _CLI_ARGUMENT_SPECS = (
         help="Minimum fail-soft guard stages before surfacing an effect-pipeline finding.",
     ),
     CliArgumentSpec(
+        flags=("--min-effect-step-payoff-score",),
+        value_type=int,
+        default=8,
+        help="Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
+    ),
+    CliArgumentSpec(
         flags=("--exclude-pattern",),
         action="append",
         dest="excluded_pattern_ids",

@@ -53,6 +53,7 @@ from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
 
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
+EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
@@ -2709,6 +2710,57 @@ def build_route(node):
     assert "Maybe" in (finding.scaffold or "")
     assert "EffectStep" in (finding.scaffold or "")
     assert "nominal `EffectStep` subclasses" in (finding.codemod_patch or "")
+
+
+def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+import ast
+
+def match_projected_attribute(node):
+    if not isinstance(node, ast.Call):
+        return None
+    if len(node.args) != 1:
+        return None
+    inner = node.args[0]
+    if not isinstance(inner, ast.Attribute):
+        return None
+    if not isinstance(inner.value, ast.Name):
+        return None
+    return inner.attr
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
+    )
+
+    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
+    assert "payoff score" in finding.summary
+    assert "AST type guards" in finding.summary
+    assert "EffectStep" in (finding.scaffold or "")
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "bind_all" in (finding.codemod_patch or "")
+
+
+def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def match_projected_attribute(node, steps):
+    return Maybe.of(node).bind_all(steps).unwrap_or_none()
+""",
+    )
+
+    assert not any(
+        finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_ignores_short_fail_soft_helper(tmp_path: Path) -> None:

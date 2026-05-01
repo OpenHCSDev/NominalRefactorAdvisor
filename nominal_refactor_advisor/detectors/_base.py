@@ -165,6 +165,7 @@ class DetectorConfig:
     min_unreferenced_private_function_lines: int = 8
     min_repeated_local_regex_literals: int = 3
     min_effect_guard_stages: int = 5
+    min_effect_step_payoff_score: int = 8
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
@@ -207,6 +208,9 @@ class DetectorConfig:
             ),
             min_effect_guard_stages=int(
                 namespace_values.get("min_effect_guard_stages", 5)
+            ),
+            min_effect_step_payoff_score=int(
+                namespace_values.get("min_effect_step_payoff_score", 8)
             ),
             min_orchestration_function_lines=int(
                 namespace_values.get("min_orchestration_function_lines", 150)
@@ -8368,6 +8372,19 @@ class FailSoftEffectPipelineCandidate(FunctionLineWitnessCandidate):
     stage_kinds: tuple[str, ...]
     success_return_kind: str
     helper_call_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EffectStepAmortizationCandidate(FunctionLineWitnessCandidate):
+    line_count: int
+    payoff_score: int
+    none_return_count: int
+    ast_type_guard_count: int
+    cardinality_guard_count: int
+    semantic_helper_count: int
+    ast_type_names: tuple[str, ...]
+    semantic_helper_names: tuple[str, ...]
+    normal_form: str
 
 
 @dataclass(frozen=True)

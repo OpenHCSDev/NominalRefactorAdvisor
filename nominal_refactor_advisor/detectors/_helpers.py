@@ -5713,6 +5713,251 @@ def _fail_soft_effect_pipeline_candidates(
         )
     )
 
+_SEMANTIC_MATCH_HELPER_NAMES = frozenset(
+    {
+        "as_ast",
+        "ast_sequence",
+        "attribute_name",
+        "call_attribute_name",
+        "name_id",
+        "single_assign_target",
+        "single_ast",
+        "single_call_arg",
+        "single_call_arg_name",
+        "single_item",
+        "single_return_as",
+        "single_return_call",
+        "single_return_value",
+    }
+)
+
+
+def _ast_type_name(node: ast.AST) -> str | None:
+    return (
+        node.attr
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "ast"
+        else None
+    )
+
+
+def _ast_type_names(node: ast.AST) -> tuple[str, ...]:
+    if ast_type_name := _ast_type_name(node):
+        return (ast_type_name,)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return tuple(
+            ast_type_name
+            for item in node.elts
+            if (ast_type_name := _ast_type_name(item)) is not None
+        )
+    return ()
+
+
+def _isinstance_ast_type_names(node: ast.AST) -> tuple[str, ...]:
+    call = as_ast(node, ast.Call)
+    if call is None or _call_name(call.func) != "isinstance" or len(call.args) < 2:
+        return ()
+    return _ast_type_names(call.args[1])
+
+
+def _len_cardinality_guard_count(node: ast.AST) -> int:
+    return sum(
+        1
+        for item in _walk_nodes(node)
+        if isinstance(item, ast.Compare)
+        and any(
+            isinstance(value, ast.Call) and _call_name(value.func) == "len"
+            for value in (item.left, *item.comparators)
+        )
+    )
+
+
+def _semantic_match_helper_names(node: ast.AST) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                call_name
+                for item in _walk_nodes(node)
+                if isinstance(item, ast.Call)
+                for call_name in (_call_name(item.func),)
+                if call_name in _SEMANTIC_MATCH_HELPER_NAMES
+            }
+        )
+    )
+
+
+def _uses_effect_step_pipeline(node: ast.AST) -> bool:
+    return any(
+        isinstance(item, ast.Call)
+        and (
+            _call_name(item.func) in {"Maybe.of", "bind_all"}
+            or (
+                isinstance(item.func, ast.Attribute)
+                and item.func.attr in {"bind_all", "bind_step"}
+            )
+        )
+        for item in _walk_nodes(node)
+    )
+
+
+def _effect_step_normal_form(
+    *,
+    ast_type_names: tuple[str, ...],
+    semantic_helper_names: tuple[str, ...],
+    cardinality_guard_count: int,
+) -> str:
+    ast_type_set = frozenset(ast_type_names)
+    helper_set = frozenset(semantic_helper_names)
+    if helper_set & {"single_return_call", "single_return_value", "single_return_as"}:
+        return "statement_sequence_effect_steps"
+    if cardinality_guard_count >= 2 or helper_set & {"single_item", "ast_sequence"}:
+        return "cardinality_guard_effect_steps"
+    if ast_type_set & {"Call", "Attribute", "Name", "GeneratorExp", "Compare"}:
+        return "ast_shape_effect_steps"
+    return "typed_effect_steps"
+
+
+@dataclass(frozen=True)
+class _EffectStepPayoffProfile:
+    none_return_count: int
+    ast_type_guard_count: int
+    cardinality_guard_count: int
+    semantic_helper_count: int
+    ast_type_names: tuple[str, ...]
+    semantic_helper_names: tuple[str, ...]
+    has_success_return: bool
+    already_uses_effect_step_pipeline: bool
+
+    @property
+    def payoff_score(self) -> int:
+        return (
+            self.none_return_count
+            + self.ast_type_guard_count
+            + self.cardinality_guard_count
+            + self.semantic_helper_count
+        )
+
+    @property
+    def normal_form(self) -> str:
+        return _effect_step_normal_form(
+            ast_type_names=self.ast_type_names,
+            semantic_helper_names=self.semantic_helper_names,
+            cardinality_guard_count=self.cardinality_guard_count,
+        )
+
+    def qualifies(self, config: DetectorConfig) -> bool:
+        return (
+            not self.already_uses_effect_step_pipeline
+            and self.none_return_count >= 2
+            and self.payoff_score >= config.min_effect_step_payoff_score
+            and self.ast_type_guard_count + self.semantic_helper_count >= 3
+            and self.has_success_return
+        )
+
+
+def _effect_step_payoff_profile(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> _EffectStepPayoffProfile:
+    body = _trim_docstring_body(function.body)
+    none_return_count = sum(
+        1
+        for item in _walk_nodes(ast.Module(body=body, type_ignores=[]))
+        if isinstance(item, ast.Return)
+        and isinstance(item.value, ast.Constant)
+        and item.value.value is None
+    )
+    ast_type_names = tuple(
+        sorted(
+            {
+                ast_type_name
+                for item in _walk_nodes(ast.Module(body=body, type_ignores=[]))
+                for ast_type_name in _isinstance_ast_type_names(item)
+            }
+        )
+    )
+    body_module = ast.Module(body=body, type_ignores=[])
+    semantic_helper_names = _semantic_match_helper_names(body_module)
+    ast_type_guard_count = sum(
+        1
+        for item in _walk_nodes(body_module)
+        if _isinstance_ast_type_names(item)
+    )
+    semantic_helper_count = sum(
+        1
+        for item in _walk_nodes(body_module)
+        if isinstance(item, ast.Call)
+        and _call_name(item.func) in _SEMANTIC_MATCH_HELPER_NAMES
+    )
+    return _EffectStepPayoffProfile(
+        none_return_count=none_return_count,
+        ast_type_guard_count=ast_type_guard_count,
+        cardinality_guard_count=_len_cardinality_guard_count(body_module),
+        semantic_helper_count=semantic_helper_count,
+        ast_type_names=ast_type_names,
+        semantic_helper_names=semantic_helper_names,
+        has_success_return=any(
+            isinstance(item, ast.Return)
+            and item.value is not None
+            and not (
+                isinstance(item.value, ast.Constant)
+                and item.value.value is None
+            )
+            for item in _walk_nodes(body_module)
+        ),
+        already_uses_effect_step_pipeline=_uses_effect_step_pipeline(body_module),
+    )
+
+
+def _effect_step_amortization_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    config: DetectorConfig,
+) -> EffectStepAmortizationCandidate | None:
+    profile = _effect_step_payoff_profile(function)
+    if not profile.qualifies(config):
+        return None
+    return EffectStepAmortizationCandidate(
+        file_path=str(module.path),
+        line=function.lineno,
+        function_name=qualname,
+        line_count=(
+            (function.end_lineno if function.end_lineno is not None else function.lineno)
+            - function.lineno
+            + 1
+        ),
+        payoff_score=profile.payoff_score,
+        none_return_count=profile.none_return_count,
+        ast_type_guard_count=profile.ast_type_guard_count,
+        cardinality_guard_count=profile.cardinality_guard_count,
+        semantic_helper_count=profile.semantic_helper_count,
+        ast_type_names=profile.ast_type_names,
+        semantic_helper_names=profile.semantic_helper_names,
+        normal_form=profile.normal_form,
+    )
+
+
+def _effect_step_amortization_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[EffectStepAmortizationCandidate, ...]:
+    candidates = tuple(
+        candidate
+        for qualname, function in _iter_named_functions(module)
+        if (
+            candidate := _effect_step_amortization_candidate(
+                module, qualname, function, config
+            )
+        )
+        is not None
+    )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (-item.payoff_score, item.file_path, item.line),
+        )
+    )
+
 def _assignment_target_arity(target: ast.AST) -> int | None:
     if isinstance(target, ast.Name):
         return 1
