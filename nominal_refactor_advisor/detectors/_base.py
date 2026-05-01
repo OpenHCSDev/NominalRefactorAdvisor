@@ -12,6 +12,7 @@ import ast
 import inspect
 from pathlib import Path
 import re
+import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -232,6 +233,135 @@ globals().update({
 })
 
 
+def _detector_id_value_from_class_name(name: str) -> str | None:
+    if not name.endswith("Detector"):
+        return None
+    stem = name.removesuffix("Detector")
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower()
+
+
+def _has_finding_spec_contract(cls: type[object]) -> bool:
+    return any("finding_spec" in base.__dict__ for base in cls.__mro__)
+
+
+def _detector_id_from_class_name(name: str, cls: type[object]) -> str | None:
+    if not _has_finding_spec_contract(cls):
+        return None
+    return _detector_id_value_from_class_name(name)
+
+
+def _candidate_collector_name_from_class_name(name: str) -> str | None:
+    detector_id = _detector_id_value_from_class_name(name)
+    return None if detector_id is None else f"_{detector_id}_candidates"
+
+
+def _derive_candidate_collector(cls: type[object]) -> None:
+    if "candidate_collector" in cls.__dict__:
+        return
+    collector_name = _candidate_collector_name_from_class_name(cls.__name__)
+    if collector_name is None:
+        return
+    collector = vars(sys.modules[cls.__module__]).get(collector_name)
+    if collector is not None:
+        cls.candidate_collector = collector
+
+
+def finding_spec_template(
+    pattern_id: PatternId,
+    title: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+    capability_tags: tuple[CapabilityTag, ...] = (),
+    observation_tags: tuple[ObservationTag, ...] = (),
+    *,
+    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE,
+    certification: CertificationLevel = STRONG_HEURISTIC,
+    scaffold_template: str | None = None,
+) -> FindingSpec:
+    return FindingSpec(
+        pattern_id=pattern_id,
+        title=title,
+        why=why,
+        capability_gap=capability_gap,
+        relation_context=relation_context,
+        confidence=confidence,
+        certification=certification,
+        capability_tags=capability_tags,
+        observation_tags=observation_tags,
+        scaffold_template=scaffold_template,
+    )
+
+
+def high_confidence_spec(
+    pattern_id: PatternId,
+    title: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+    capability_tags: tuple[CapabilityTag, ...] = (),
+    observation_tags: tuple[ObservationTag, ...] = (),
+    *,
+    scaffold_template: str | None = None,
+) -> HighConfidenceFindingSpec:
+    return HighConfidenceFindingSpec(
+        pattern_id=pattern_id,
+        title=title,
+        why=why,
+        capability_gap=capability_gap,
+        relation_context=relation_context,
+        capability_tags=capability_tags,
+        observation_tags=observation_tags,
+        scaffold_template=scaffold_template,
+    )
+
+
+def certified_spec(
+    pattern_id: PatternId,
+    title: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+    capability_tags: tuple[CapabilityTag, ...] = (),
+    observation_tags: tuple[ObservationTag, ...] = (),
+    *,
+    scaffold_template: str | None = None,
+) -> CertifiedFindingSpec:
+    return CertifiedFindingSpec(
+        pattern_id=pattern_id,
+        title=title,
+        why=why,
+        capability_gap=capability_gap,
+        relation_context=relation_context,
+        capability_tags=capability_tags,
+        observation_tags=observation_tags,
+        scaffold_template=scaffold_template,
+    )
+
+
+def high_confidence_certified_spec(
+    pattern_id: PatternId,
+    title: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+    capability_tags: tuple[CapabilityTag, ...] = (),
+    observation_tags: tuple[ObservationTag, ...] = (),
+    *,
+    scaffold_template: str | None = None,
+) -> HighConfidenceCertifiedFindingSpec:
+    return HighConfidenceCertifiedFindingSpec(
+        pattern_id=pattern_id,
+        title=title,
+        why=why,
+        capability_gap=capability_gap,
+        relation_context=relation_context,
+        capability_tags=capability_tags,
+        observation_tags=observation_tags,
+        scaffold_template=scaffold_template,
+    )
+
+
 @dataclass(frozen=True)
 class DetectorConfig:
     """Thresholds and tuning knobs shared by all detectors."""
@@ -321,6 +451,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     """Metaclass-registered detector base class."""
 
     __registry_key__ = "detector_id"
+    __key_extractor__ = staticmethod(_detector_id_from_class_name)
     __skip_if_no_key__ = True
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
@@ -336,7 +467,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
                 key=lambda item: (
                     item.detector_priority,
                     item.__module__,
-                    getattr(item, "__firstlineno__", 0),
+                    vars(item).get("__firstlineno__", 0),
                     item.__qualname__,
                 ),
             )
@@ -418,9 +549,57 @@ class PerModuleIssueDetector(IssueDetector):
 
 
 CandidateItemT = TypeVar("CandidateItemT")
+FindingValueT = TypeVar("FindingValueT")
 
 
-class CandidateFindingDetector(PerModuleIssueDetector, Generic[CandidateItemT], ABC):
+@dataclass(frozen=True)
+class CandidateFindingRenderer(Generic[CandidateItemT]):
+    summary: Callable[[CandidateItemT], str]
+    evidence: Callable[[CandidateItemT], tuple[SourceLocation, ...]]
+    scaffold: Callable[[CandidateItemT], str | None] | None = None
+    codemod_patch: Callable[[CandidateItemT], str | None] | None = None
+    metrics: Callable[[CandidateItemT], FindingMetrics | None] | None = None
+
+    def _optional_value(
+        self,
+        candidate: CandidateItemT,
+        value: Callable[[CandidateItemT], FindingValueT | None] | None,
+    ) -> FindingValueT | None:
+        return None if value is None else value(candidate)
+
+    def build(
+        self,
+        detector: IssueDetector,
+        candidate: CandidateItemT,
+    ) -> RefactorFinding:
+        return detector.build_finding(
+            self.summary(candidate),
+            self.evidence(candidate),
+            scaffold=self._optional_value(candidate, self.scaffold),
+            codemod_patch=self._optional_value(candidate, self.codemod_patch),
+            metrics=self._optional_value(candidate, self.metrics),
+        )
+
+
+class RenderedFindingMixin(Generic[CandidateItemT]):
+    finding_renderer: ClassVar[CandidateFindingRenderer[Any] | None] = None
+
+    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
+        renderer = type(self).finding_renderer
+        if renderer is None:
+            raise NotImplementedError
+        return cast(CandidateFindingRenderer[CandidateItemT], renderer).build(
+            cast(IssueDetector, self),
+            candidate,
+        )
+
+
+class CandidateFindingDetector(
+    RenderedFindingMixin[CandidateItemT],
+    PerModuleIssueDetector,
+    Generic[CandidateItemT],
+    ABC,
+):
     """Detector base for candidate-to-finding pipelines."""
 
     def _findings_for_module(
@@ -437,10 +616,6 @@ class CandidateFindingDetector(PerModuleIssueDetector, Generic[CandidateItemT], 
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
-    @abstractmethod
-    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
-        raise NotImplementedError
-
 
 ModuleCandidateCollector = Callable[[ParsedModule], Sequence[CandidateItemT]]
 ConfiguredModuleCandidateCollector = Callable[
@@ -454,8 +629,19 @@ ConfiguredCrossModuleCandidateCollector = Callable[
 ]
 
 
+class DerivedCandidateCollectorMixin:
+    candidate_collector: ClassVar[Callable[..., Sequence[Any]]]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        _derive_candidate_collector(cls)
+
+
 class ModuleCollectorCandidateDetector(
-    CandidateFindingDetector[CandidateItemT], Generic[CandidateItemT], ABC
+    DerivedCandidateCollectorMixin,
+    CandidateFindingDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
 ):
     """Candidate detector whose collector is a typed class-level strategy."""
 
@@ -469,7 +655,10 @@ class ModuleCollectorCandidateDetector(
 
 
 class ConfiguredModuleCollectorCandidateDetector(
-    CandidateFindingDetector[CandidateItemT], Generic[CandidateItemT], ABC
+    DerivedCandidateCollectorMixin,
+    CandidateFindingDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
 ):
     """Candidate detector whose collector depends on detector configuration."""
 
@@ -484,7 +673,10 @@ class ConfiguredModuleCollectorCandidateDetector(
 
 
 class CrossModuleCandidateDetector(
-    IssueDetector, Generic[CandidateItemT], ABC
+    RenderedFindingMixin[CandidateItemT],
+    IssueDetector,
+    Generic[CandidateItemT],
+    ABC,
 ):
     """Detector base for repository-wide candidate-to-finding pipelines."""
 
@@ -502,13 +694,12 @@ class CrossModuleCandidateDetector(
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
-    @abstractmethod
-    def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
-        raise NotImplementedError
-
 
 class CrossModuleCollectorCandidateDetector(
-    CrossModuleCandidateDetector[CandidateItemT], Generic[CandidateItemT], ABC
+    DerivedCandidateCollectorMixin,
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
 ):
     """Cross-module candidate detector backed by a typed class-level strategy."""
 
@@ -522,7 +713,10 @@ class CrossModuleCollectorCandidateDetector(
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
-    CrossModuleCandidateDetector[CandidateItemT], Generic[CandidateItemT], ABC
+    DerivedCandidateCollectorMixin,
+    CrossModuleCandidateDetector[CandidateItemT],
+    Generic[CandidateItemT],
+    ABC,
 ):
     """Cross-module candidate detector whose collector needs configuration."""
 
@@ -1853,11 +2047,10 @@ def _enum_strategy_dispatch_candidates(
             axis_name, case_names = dispatch_family
             if not any("." in case_name for case_name in case_names):
                 continue
-            lineno = int(getattr(subnode, "lineno", 0))
             candidate = EnumStrategyDispatchCandidate(
                 file_path=str(module.path),
                 qualname=qualname,
-                lineno=lineno,
+                lineno=subnode.lineno,
                 dispatch_axis=axis_name,
                 case_names=case_names,
             )
@@ -8823,6 +9016,30 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
     @property
     def witness_name(self) -> str:
         return self.constructor_name
+
+
+@dataclass(frozen=True)
+class DirectBuildFindingRendererCandidate(ClassMethodLineWitnessCandidate):
+    base_name: str
+    positional_arg_count: int
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DerivableDetectorIdCandidate(ClassLineWitnessCandidate):
+    detector_id_value: str
+
+
+@dataclass(frozen=True)
+class DerivableCandidateCollectorCandidate(ClassLineWitnessCandidate):
+    collector_name: str
+
+
+@dataclass(frozen=True)
+class CanonicalFindingSpecBuilderCandidate(ClassLineWitnessCandidate):
+    constructor_name: str
+    builder_name: str
+    keyword_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

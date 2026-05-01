@@ -80,17 +80,13 @@ def _witness_mixin_enforcement_candidate(
     )
 
 class MixinEnforcementDetector(PerModuleIssueDetector):
-    detector_id = "mixin_enforcement"
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.NOMINAL_WITNESS_CARRIER,
-        title="Renamed orthogonal semantic slices should become mixins",
-        why=(
-            "Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. "
-            "One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance."
-        ),
-        capability_gap="one authoritative semantic carrier spine plus reusable semantic-role mixins",
-        relation_context="same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
-        capability_tags=_NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_WITNESS_CARRIER, "Renamed orthogonal semantic slices should become mixins",
+        "Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. "
+            "One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.",
+        "one authoritative semantic carrier spine plus reusable semantic-role mixins",
+        "same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
+        _NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -522,19 +518,15 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
     return "SharedFieldsBase"
 
 class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
-    detector_id = "repeated_field_family"
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Shared field family across sibling classes should move to an ABC base",
-        why=(
-            "The docs treat repeated shared state components the same way as repeated shared algorithms: when the "
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Shared field family across sibling classes should move to an ABC base",
+        "The docs treat repeated shared state components the same way as repeated shared algorithms: when the "
             "same field family is declared across sibling classes at the same structural execution level, the shared "
-            "component should move to one authoritative base rather than being duplicated in each leaf class."
-        ),
-        capability_gap="single authoritative state component for a nominal class family",
-        relation_context="same field family repeats across sibling classes at one structural execution level",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+            "component should move to one authoritative base rather than being duplicated in each leaf class.",
+        "single authoritative state component for a nominal class family",
+        "same field family repeats across sibling classes at one structural execution level",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _candidate_items(
@@ -576,20 +568,15 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]
         )
 
 class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]):
-    detector_id = "prefixed_role_field_bundle"
-    candidate_collector = _prefixed_role_field_bundle_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Role-prefixed field bundle should become nominal subrecords",
-        why=(
-            "A record that repeats the same member family behind role prefixes is encoding nominal role identity "
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA, "Role-prefixed field bundle should become nominal subrecords",
+        "A record that repeats the same member family behind role prefixes is encoding nominal role identity "
             "in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so "
-            "the schema, PyTree behavior, and type-level role identity have one authoritative boundary."
-        ),
-        capability_gap="explicit nominal role records instead of parallel role-prefixed fields",
-        relation_context="same semantic member family repeats under several leading role prefixes in one record",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+            "the schema, PyTree behavior, and type-level role identity have one authoritative boundary.",
+        "explicit nominal role records instead of parallel role-prefixed fields",
+        "same semantic member family repeats under several leading role prefixes in one record",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, bundle_candidate: PrefixedRoleFieldBundleCandidate) -> RefactorFinding:
@@ -630,17 +617,14 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
 class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[PropertyAliasHookGroup]):
     detector_id = "repeated_property_alias_hooks"
     candidate_collector = _property_alias_hook_groups
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Repeated property hook aliases should move into a shared base or mixin",
-        why=(
-            "Several subclasses re-declare the same one-line property hook over the same backing attribute. "
-            "That is non-orthogonal hook duplication and should live once in a shared base or mixin."
-        ),
-        capability_gap="single authoritative hook property implementation for a nominal subclass family",
-        relation_context="same property hook alias repeats across siblings of one base family",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Repeated property hook aliases should move into a shared base or mixin",
+        "Several subclasses re-declare the same one-line property hook over the same backing attribute. "
+            "That is non-orthogonal hook duplication and should live once in a shared base or mixin.",
+        "single authoritative hook property implementation for a nominal subclass family",
+        "same property hook alias repeats across siblings of one base family",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, hook_group: PropertyAliasHookGroup) -> RefactorFinding:
@@ -677,17 +661,14 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[Propert
 class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantPropertyHookGroup]):
     detector_id = "constant_property_hooks"
     candidate_collector = _constant_property_hook_groups
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Constant property hooks should move into classvars or fixed mixins",
-        why=(
-            "Several subclasses implement the same property as a one-line constant return. "
-            "That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin."
-        ),
-        capability_gap="single authoritative constant hook implementation for a nominal subclass family",
-        relation_context="same property hook is re-declared as a constant return across one subclass family",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Constant property hooks should move into classvars or fixed mixins",
+        "Several subclasses implement the same property as a one-line constant return. "
+            "That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.",
+        "single authoritative constant hook implementation for a nominal subclass family",
+        "same property hook is re-declared as a constant return across one subclass family",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, hook_group: ConstantPropertyHookGroup) -> RefactorFinding:
@@ -735,19 +716,15 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantProp
         )
 
 class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]):
-    detector_id = "reflective_self_attribute_escape"
     candidate_collector = _reflective_self_attribute_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.CONFIG_CONTRACTS,
-        title="Reflective self-attribute access hides a nominal contract",
-        why=(
-            "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. "
-            "That keeps the contract partial, stringly, and fail-soft."
-        ),
-        capability_gap="declared fail-loud nominal attribute contract on the carrier family",
-        relation_context="class template probes its own required state through reflective string access",
-        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=_PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.CONFIG_CONTRACTS, "Reflective self-attribute access hides a nominal contract",
+        "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. "
+            "That keeps the contract partial, stringly, and fail-soft.",
+        "declared fail-loud nominal attribute contract on the carrier family",
+        "class template probes its own required state through reflective string access",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+        _PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, reflective_candidate: ReflectiveSelfAttributeCandidate) -> RefactorFinding:
@@ -775,17 +752,13 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
         )
 
 class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
-    detector_id = "helper_backed_observation_spec"
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Helper-backed wrapper classes should use a declarative substrate",
-        why=(
-            "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. "
-            "That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods."
-        ),
-        capability_gap="one declarative helper-backed wrapper family with class-level registration",
-        relation_context="same helper-backed wrapper shape repeats across sibling classes",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Helper-backed wrapper classes should use a declarative substrate",
+        "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. "
+            "That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.",
+        "one declarative helper-backed wrapper family with class-level registration",
+        "same helper-backed wrapper shape repeats across sibling classes",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -842,18 +815,15 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         ]
 
 class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[DeclarativeFamilyBoilerplateGroup]):
-    detector_id = "classvar_only_sibling_leaf"
     candidate_collector = _classvar_only_sibling_leaf_groups
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Classvar-only sibling leaves should come from one metaprogrammed family table",
-        why=(
-            "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should "
-            "collapse into one declarative family table plus metaprogrammed class generation or registration."
-        ),
-        capability_gap="one authoritative declarative family-definition table with class-generation or metaclass support",
-        relation_context="same class-level family declaration boilerplate repeats across sibling family leaves",
-        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Classvar-only sibling leaves should come from one metaprogrammed family table",
+        "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should "
+            "collapse into one declarative family table plus metaprogrammed class generation or registration.",
+        "one authoritative declarative family-definition table with class-generation or metaclass support",
+        "same class-level family declaration boilerplate repeats across sibling family leaves",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, group: DeclarativeFamilyBoilerplateGroup) -> RefactorFinding:
@@ -894,18 +864,15 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[Declarati
         )
 
 class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[TypeIndexedDefinitionBoilerplateGroup]):
-    detector_id = "type_indexed_definition_boilerplate"
     candidate_collector = _type_indexed_definition_boilerplate_groups
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Type-indexed family definitions should derive from one typed declaration table",
-        why=(
-            "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. "
-            "That metadata should live once in a typed declaration table and definition-time materializer."
-        ),
-        capability_gap="one authoritative typed declaration table for family generation and export derivation",
-        relation_context="same type-indexed family definition and alias boilerplate repeats across sibling declarations",
-        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Type-indexed family definitions should derive from one typed declaration table",
+        "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. "
+            "That metadata should live once in a typed declaration table and definition-time materializer.",
+        "one authoritative typed declaration table for family generation and export derivation",
+        "same type-indexed family definition and alias boilerplate repeats across sibling declarations",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, group: TypeIndexedDefinitionBoilerplateGroup) -> RefactorFinding:
@@ -946,18 +913,14 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[
         )
 
 class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExportSurfaceCandidate]):
-    detector_id = "derived_export_surface"
-    candidate_collector = _derived_export_surface_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Manual export surfaces should derive from the authoritative type family",
-        why=(
-            "A module manually enumerates export names even though those exports are derivable from one local nominal class family. "
-            "That creates a second authority for the public surface."
-        ),
-        capability_gap="one derived export surface projected from the authoritative class family",
-        relation_context="manual export tuple/list repeats names already implied by local type families",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Manual export surfaces should derive from the authoritative type family",
+        "A module manually enumerates export names even though those exports are derivable from one local nominal class family. "
+            "That creates a second authority for the public surface.",
+        "one derived export surface projected from the authoritative class family",
+        "manual export tuple/list repeats names already implied by local type families",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, export_candidate: DerivedExportSurfaceCandidate) -> RefactorFinding:
@@ -995,62 +958,31 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
         )
 
 class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector[ManualPublicApiSurfaceCandidate]):
-    detector_id = "manual_public_api_surface"
-    candidate_collector = _manual_public_api_surface_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Manual public API surfaces should derive from the module authority",
-        why=(
-            "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. "
-            "That creates a second authority for the public surface."
-        ),
-        capability_gap="one derived public API surface projected from the module's authoritative declarations",
-        relation_context="manual public export list repeats names already present in module bindings",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA, "Manual public API surfaces should derive from the module authority",
+        "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. "
+            "That creates a second authority for the public surface.",
+        "one derived public API surface projected from the module's authoritative declarations",
+        "manual public export list repeats names already present in module bindings",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, api_candidate: ManualPublicApiSurfaceCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings."
-            ),
-            (
-                SourceLocation(
-                    api_candidate.file_path,
-                    api_candidate.line,
-                    api_candidate.export_symbol,
-                ),
-            ),
-            scaffold=(
-                "def is_public_api_export(name: str, value: object) -> bool:\n"
-                "    return not name.startswith('_') and is_public_binding(value)\n\n"
-                "__all__ = sorted(\n"
-                "    name for name, value in globals().items() if is_public_api_export(name, value)\n"
-                ")"
-            ),
-            codemod_patch=(
-                f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n"
-                "# Derive the public export surface from module bindings instead of restating names in a second manual surface."
-            ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(api_candidate.exported_names),
-                field_count=api_candidate.source_name_count,
-                mapping_name=api_candidate.export_symbol,
-                field_names=("module_public_bindings",),
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[ManualPublicApiSurfaceCandidate](
+        summary=lambda api_candidate: f'`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings.',
+        evidence=lambda api_candidate: (SourceLocation(api_candidate.file_path, api_candidate.line, api_candidate.export_symbol),),
+        scaffold=lambda api_candidate: "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)",
+        codemod_patch=lambda api_candidate: f'# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface.',
+        metrics=lambda api_candidate: MappingMetrics(mapping_site_count=len(api_candidate.exported_names), field_count=api_candidate.source_name_count, mapping_name=api_candidate.export_symbol, field_names=('module_public_bindings',)),
+    )
 
 class ExportPolicyPredicateDetector(IssueDetector):
-    detector_id = "export_policy_predicate"
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Repeated derived-surface policy predicates should collapse into one declarative policy",
-        why=(
-            "Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper."
-        ),
-        capability_gap="one declarative policy substrate for derived module surfaces",
-        relation_context="surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Repeated derived-surface policy predicates should collapse into one declarative policy",
+        "Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper.",
+        "one declarative policy substrate for derived module surfaces",
+        "surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -1114,18 +1046,14 @@ class ExportPolicyPredicateDetector(IssueDetector):
         ]
 
 class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedIndexedSurfaceCandidate]):
-    detector_id = "derived_indexed_surface"
-    candidate_collector = _derived_indexed_surface_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Manual indexed module surfaces should derive from the authoritative type family",
-        why=(
-            "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. "
-            "That splits authority between the family and a second registry projection."
-        ),
-        capability_gap="one derived index projected from the authoritative local type family",
-        relation_context="manual dict index repeats keys and values already implied by local type families",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Manual indexed module surfaces should derive from the authoritative type family",
+        "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. "
+            "That splits authority between the family and a second registry projection.",
+        "one derived index projected from the authoritative local type family",
+        "manual dict index repeats keys and values already implied by local type families",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, index_candidate: DerivedIndexedSurfaceCandidate) -> RefactorFinding:
@@ -1157,62 +1085,31 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
         )
 
 class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector[RegisteredUnionSurfaceCandidate]):
-    detector_id = "registered_union_surface"
-    candidate_collector = _registered_union_surface_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Manual sibling-registry unions should derive from one authoritative query",
-        why=(
-            "A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set."
-        ),
-        capability_gap="one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
-        relation_context="manual union of sibling registry queries repeats information already present in class-time registration",
-        capability_tags=_CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Manual sibling-registry unions should derive from one authoritative query",
+        "A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set.",
+        "one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
+        "manual union of sibling registry queries repeats information already present in class-time registration",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, union_candidate: RegisteredUnionSurfaceCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}."
-            ),
-            (
-                SourceLocation(
-                    union_candidate.file_path,
-                    union_candidate.line,
-                    union_candidate.owner_name,
-                ),
-            ),
-            scaffold=(
-                "from abc import ABC\n"
-                "import re\n"
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                "class UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n"
-                f"{_derived_registry_key_block(union_candidate.root_names)}\n\n"
-                f"def {union_candidate.owner_name}(...):\n"
-                "    return tuple(UnifiedRegistryRoot.__registry__.values())"
-            ),
-            codemod_patch=(
-                f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n"
-                "# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
-            ),
-            metrics=RegistrationMetrics.from_class_names(
-                registration_site_count=len(union_candidate.root_names),
-                registry_name=union_candidate.accessor_name,
-                class_names=union_candidate.root_names,
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[RegisteredUnionSurfaceCandidate](
+        summary=lambda union_candidate: f'`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}.',
+        evidence=lambda union_candidate: (SourceLocation(union_candidate.file_path, union_candidate.line, union_candidate.owner_name),),
+        scaffold=lambda union_candidate: f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())',
+        codemod_patch=lambda union_candidate: f'# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.',
+        metrics=lambda union_candidate: RegistrationMetrics.from_class_names(registration_site_count=len(union_candidate.root_names), registry_name=union_candidate.accessor_name, class_names=union_candidate.root_names),
+    )
 
 class RegistryTraversalSubstrateDetector(IssueDetector):
-    detector_id = "registry_traversal_substrate"
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTO_REGISTER_META,
-        title="Repeated subclass-family traversal should collapse into one discovery substrate",
-        why=(
-            "Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate."
-        ),
-        capability_gap="one authoritative subclass-family discovery substrate with declarative materialization hooks",
-        relation_context="same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
-        capability_tags=_CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Repeated subclass-family traversal should collapse into one discovery substrate",
+        "Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate.",
+        "one authoritative subclass-family discovery substrate with declarative materialization hooks",
+        "same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -2277,18 +2174,15 @@ def _module_constructor_policy_family_candidates(
 
 
 class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[AlternateConstructorFamilyGroup]):
-    detector_id = "alternate_constructor_family"
     candidate_collector = _alternate_constructor_family_groups
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Alternate constructors should collapse into one provenance-dispatched builder",
-        why=(
-            "Several classmethods on one record class rebuild the same keyword schema from different source node types. "
-            "That provenance family should collapse into one authoritative constructor with dispatch over source kind."
-        ),
-        capability_gap="single provenance-aware builder for one record schema",
-        relation_context="same record schema is rebuilt across sibling alternate constructors for different source types",
-        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Alternate constructors should collapse into one provenance-dispatched builder",
+        "Several classmethods on one record class rebuild the same keyword schema from different source node types. "
+            "That provenance family should collapse into one authoritative constructor with dispatch over source kind.",
+        "single provenance-aware builder for one record schema",
+        "same record schema is rebuilt across sibling alternate constructors for different source types",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, group: AlternateConstructorFamilyGroup) -> RefactorFinding:
@@ -2324,271 +2218,134 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[Altern
 
 
 class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[ConstructorVariantFamilyCandidate]):
-    detector_id = "constructor_variant_family"
-    candidate_collector = _constructor_variant_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Constructor variants should derive from one constructor algebra",
-        why=(
-            "Several classmethods on one class are pure constructor vectors over the same target. "
-            "The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog."
-        ),
-        capability_gap="single constructor-variant catalog that derives named class constructors",
-        relation_context="same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA, "Constructor variants should derive from one constructor algebra",
+        "Several classmethods on one class are pure constructor vectors over the same target. "
+            "The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog.",
+        "single constructor-variant catalog that derives named class constructors",
+        "same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, variant_candidate: ConstructorVariantFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}."
-            ),
-            variant_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class ConstructorVariantSpec:\n"
-                "    name: str\n"
-                "    args: tuple[ConstructorArg, ...]\n\n"
-                "class ConstructorVariantMixin:\n"
-                "    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n"
-                "    def __init_subclass__(cls):\n"
-                "        cls.__constructor_variants__.install(cls)"
-            ),
-            codemod_patch=(
-                f"# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n"
-                "# Each method name becomes data; one mixin derives the bound classmethods from the catalog."
-            ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(variant_candidate.method_names),
-                field_count=variant_candidate.coordinate_count,
-                mapping_name=variant_candidate.class_name,
-                field_names=variant_candidate.varying_coordinate_names,
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[ConstructorVariantFamilyCandidate](
+        summary=lambda variant_candidate: f'`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}.',
+        evidence=lambda variant_candidate: variant_candidate.evidence,
+        scaffold=lambda variant_candidate: '@dataclass(frozen=True)\nclass ConstructorVariantSpec:\n    name: str\n    args: tuple[ConstructorArg, ...]\n\nclass ConstructorVariantMixin:\n    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n    def __init_subclass__(cls):\n        cls.__constructor_variants__.install(cls)',
+        codemod_patch=lambda variant_candidate: f'# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n# Each method name becomes data; one mixin derives the bound classmethods from the catalog.',
+        metrics=lambda variant_candidate: MappingMetrics(mapping_site_count=len(variant_candidate.method_names), field_count=variant_candidate.coordinate_count, mapping_name=variant_candidate.class_name, field_names=variant_candidate.varying_coordinate_names),
+    )
 
 
 class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector[AccumulatorFoldFamilyCandidate]):
-    detector_id = "accumulator_fold_family"
-    candidate_collector = _accumulator_fold_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Accumulator folds should derive from one fold algebra",
-        why=(
-            "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. "
-            "The loop skeleton is an algebraic fold and should be one reusable composition primitive."
-        ),
-        capability_gap="single accumulator-fold substrate with declarative step hooks",
-        relation_context="same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Accumulator folds should derive from one fold algebra",
+        "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. "
+            "The loop skeleton is an algebraic fold and should be one reusable composition primitive.",
+        "single accumulator-fold substrate with declarative step hooks",
+        "same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, fold_candidate: AccumulatorFoldFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
-            ),
-            fold_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class AccumulatorFoldSpec:\n"
-                "    name: str\n"
-                "    step_method_name: str\n\n"
-                "class AccumulatorFoldMixin:\n"
-                "    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n"
-                "    def __init_subclass__(cls):\n"
-                "        cls.__accumulator_folds__.install(cls)"
-            ),
-            codemod_patch=(
-                f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n"
-                "# Keep accumulator type and result projection in one authority; each source method only declares its step hook."
-            ),
-            metrics=RepeatedMethodMetrics.from_duplicate_family(
-                duplicate_site_count=len(fold_candidate.method_names),
-                statement_count=3,
-                class_count=1,
-                method_symbols=tuple(
-                    f"{fold_candidate.class_name}.{name}"
-                    for name in fold_candidate.method_names
-                ),
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[AccumulatorFoldFamilyCandidate](
+        summary=lambda fold_candidate: f'`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`.',
+        evidence=lambda fold_candidate: fold_candidate.evidence,
+        scaffold=lambda fold_candidate: '@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)',
+        codemod_patch=lambda fold_candidate: f'# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook.',
+        metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(duplicate_site_count=len(fold_candidate.method_names), statement_count=3, class_count=1, method_symbols=tuple((f'{fold_candidate.class_name}.{name}' for name in fold_candidate.method_names))),
+    )
 
 
 class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector[ExcessiveBlankLineRunCandidate]):
-    detector_id = "excessive_blank_line_run"
-    candidate_collector = _excessive_blank_line_run_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.LOCAL_VALUE_AUTHORITY,
-        title="Nonsemantic blank source regions should be collapsed",
-        why=(
-            "A contiguous run of blank source lines outside docstrings carries no semantic information. "
-            "It inflates the module and hides true structure without adding an abstraction boundary."
-        ),
-        capability_gap="compact source layout with no nonsemantic blank-line payload",
-        relation_context="source contains an empty region larger than a canonical separator",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(ObservationTag.NORMALIZED_AST,),
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY, "Nonsemantic blank source regions should be collapsed",
+        "A contiguous run of blank source lines outside docstrings carries no semantic information. "
+            "It inflates the module and hides true structure without adding an abstraction boundary.",
+        "compact source layout with no nonsemantic blank-line payload",
+        "source contains an empty region larger than a canonical separator",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS, (ObservationTag.NORMALIZED_AST,),
     )
 
-    def _finding_for_candidate(self, blank_candidate: ExcessiveBlankLineRunCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}."
-            ),
-            (blank_candidate.evidence,),
-            scaffold=(
-                "# Delete the nonsemantic blank-line run.\n"
-                "# Keep at most the canonical separator needed by the surrounding declarations."
-            ),
-            codemod_patch=(
-                f"# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`."
-            ),
-            metrics=RepeatedMethodMetrics.from_duplicate_family(
-                duplicate_site_count=blank_candidate.blank_line_count,
-                statement_count=1,
-                class_count=0,
-                method_symbols=("blank-line-run",),
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[ExcessiveBlankLineRunCandidate](
+        summary=lambda blank_candidate: f'`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}.',
+        evidence=lambda blank_candidate: (blank_candidate.evidence,),
+        scaffold=lambda blank_candidate: '# Delete the nonsemantic blank-line run.\n# Keep at most the canonical separator needed by the surrounding declarations.',
+        codemod_patch=lambda blank_candidate: f'# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`.',
+        metrics=lambda blank_candidate: RepeatedMethodMetrics.from_duplicate_family(duplicate_site_count=blank_candidate.blank_line_count, statement_count=1, class_count=0, method_symbols=('blank-line-run',)),
+    )
 
 
 class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector[CatalogInstallingMixinFamilyCandidate]):
-    detector_id = "catalog_installing_mixin_family"
-    candidate_collector = _catalog_installing_mixin_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Catalog-installing mixins should share one subclass hook",
-        why=(
-            "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. "
-            "Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm."
-        ),
-        capability_gap="one reusable catalog-installing subclass hook with declarative catalog attribute residue",
-        relation_context="sibling mixins repeat an identical class-creation hook over different catalog classvars",
-        capability_tags=_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD, "Catalog-installing mixins should share one subclass hook",
+        "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. "
+            "Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.",
+        "one reusable catalog-installing subclass hook with declarative catalog attribute residue",
+        "sibling mixins repeat an identical class-creation hook over different catalog classvars",
+        _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, catalog_candidate: CatalogInstallingMixinFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
-            ),
-            catalog_candidate.evidence,
-            scaffold=(
-                "class CatalogInstallingMixin:\n"
-                "    __catalog_attribute__: ClassVar[str]\n"
-                "    def __init_subclass__(cls):\n"
-                "        super().__init_subclass__()\n"
-                "        getattr(cls, cls.__catalog_attribute__).install(cls)"
-            ),
-            codemod_patch=(
-                "# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n"
-                "# Leave only `__catalog_attribute__` on each concrete catalog mixin."
-            ),
-            metrics=RepeatedMethodMetrics.from_duplicate_family(
-                duplicate_site_count=len(catalog_candidate.class_names),
-                statement_count=2,
-                class_count=len(catalog_candidate.class_names),
-                method_symbols=tuple(
-                    f"{class_name}.__init_subclass__"
-                    for class_name in catalog_candidate.class_names
-                ),
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[CatalogInstallingMixinFamilyCandidate](
+        summary=lambda catalog_candidate: f'Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.',
+        evidence=lambda catalog_candidate: catalog_candidate.evidence,
+        scaffold=lambda catalog_candidate: 'class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)',
+        codemod_patch=lambda catalog_candidate: '# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.',
+        metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(duplicate_site_count=len(catalog_candidate.class_names), statement_count=2, class_count=len(catalog_candidate.class_names), method_symbols=tuple((f'{class_name}.__init_subclass__' for class_name in catalog_candidate.class_names))),
+    )
 
 
 class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector[RegexGroupExtractorFamilyCandidate]):
-    detector_id = "regex_group_extractor_family"
-    candidate_collector = _regex_group_extractor_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Regex group extractor methods should derive from descriptors",
-        why=(
-            "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. "
-            "The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate."
-        ),
-        capability_gap="one regex group extraction descriptor with declared pattern and matcher coordinates",
-        relation_context="same class repeats regex group extractor methods over different pattern fields",
-        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA, "Regex group extractor methods should derive from descriptors",
+        "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. "
+            "The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate.",
+        "one regex group extraction descriptor with declared pattern and matcher coordinates",
+        "same class repeats regex group extractor methods over different pattern fields",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, regex_candidate: RegexGroupExtractorFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
-            ),
-            regex_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class RegexGroupExtractor:\n"
-                "    pattern_attr: str\n"
-                "    matcher_name: str = 'search'\n"
-                "    group_index: int = 1\n"
-                "    def __get__(self, instance, owner): ..."
-            ),
-            codemod_patch=(
-                "# Replace repeated regex extractor methods with descriptor rows.\n"
-                "# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
-            ),
-            metrics=MappingMetrics.from_field_names(
-                mapping_site_count=len(regex_candidate.method_names),
-                mapping_name=regex_candidate.class_name,
-                field_names=regex_candidate.pattern_attribute_names,
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[RegexGroupExtractorFamilyCandidate](
+        summary=lambda regex_candidate: f'`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}.',
+        evidence=lambda regex_candidate: regex_candidate.evidence,
+        scaffold=lambda regex_candidate: "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ...",
+        codemod_patch=lambda regex_candidate: '# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index.',
+        metrics=lambda regex_candidate: MappingMetrics.from_field_names(mapping_site_count=len(regex_candidate.method_names), mapping_name=regex_candidate.class_name, field_names=regex_candidate.pattern_attribute_names),
+    )
 
 
 class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[SparseConstructorVariantFamilyCandidate]):
-    detector_id = "sparse_constructor_variant_family"
-    candidate_collector = _sparse_constructor_variant_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Sparse dataclass constructor variants should derive from one variant catalog",
-        why=(
-            "Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. "
-            "Those sparse overrides are rows in the constructor algebra, not independent methods."
-        ),
-        capability_gap="single sparse constructor-variant catalog over dataclass defaults",
-        relation_context="same dataclass repeats classmethod constructors that override different keyword subsets",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Sparse dataclass constructor variants should derive from one variant catalog",
+        "Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. "
+            "Those sparse overrides are rows in the constructor algebra, not independent methods.",
+        "single sparse constructor-variant catalog over dataclass defaults",
+        "same dataclass repeats classmethod constructors that override different keyword subsets",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, sparse_candidate: SparseConstructorVariantFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}."
-            ),
-            sparse_candidate.evidence,
-            scaffold=(
-                "ConstructorVariantCatalog(\n"
-                "    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n"
-                ")"
-            ),
-            codemod_patch=(
-                f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n"
-                "# Keep dataclass defaults as the base point and declare only each variant's overridden fields."
-            ),
-            metrics=sparse_candidate.mapping_metrics,
-        )
+    finding_renderer = CandidateFindingRenderer[SparseConstructorVariantFamilyCandidate](
+        summary=lambda sparse_candidate: f'`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}.',
+        evidence=lambda sparse_candidate: sparse_candidate.evidence,
+        scaffold=lambda sparse_candidate: "ConstructorVariantCatalog(\n    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n)",
+        codemod_patch=lambda sparse_candidate: f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n# Keep dataclass defaults as the base point and declare only each variant's overridden fields.",
+        metrics=lambda sparse_candidate: sparse_candidate.mapping_metrics,
+    )
 
 
 class SupportPreludeModuleFamilyDetector(IssueDetector):
-    detector_id = "support_prelude_module_family"
-    finding_spec = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Support-prelude module families should have a manifest authority",
-        why=(
-            "Many one-class modules importing the same support prelude form an implicit module family. "
-            "The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape."
-        ),
-        capability_gap="one manifest authority for a support-prelude module family",
-        relation_context="several one-class modules share the same star-import support prelude without a module-family catalog",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=_CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    finding_spec = finding_spec_template(
+        PatternId.AUTHORITATIVE_SCHEMA, "Support-prelude module families should have a manifest authority",
+        "Many one-class modules importing the same support prelude form an implicit module family. "
+            "The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.",
+        "one manifest authority for a support-prelude module family",
+        "several one-class modules share the same star-import support prelude without a module-family catalog",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -2625,117 +2382,58 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
 
 
 class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector[ModuleConstructorPolicyFamilyCandidate]):
-    detector_id = "module_constructor_policy_family"
-    candidate_collector = _module_constructor_policy_family_candidates
-    finding_spec = HighConfidenceCertifiedFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Module constructor policy rows should derive from a semantic catalog",
-        why=(
-            "Several module-level constant rows instantiate the same policy constructor with the same argument schema. "
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA, "Module constructor policy rows should derive from a semantic catalog",
+        "Several module-level constant rows instantiate the same policy constructor with the same argument schema. "
             "Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than "
-            "spell each constructor call by hand."
-        ),
-        capability_gap="one constructor-row catalog keyed by semantic policy role",
-        relation_context="same module has multiple constant rows assigned from the same constructor shape",
-        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        observation_tags=_KEYWORD_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+            "spell each constructor call by hand.",
+        "one constructor-row catalog keyed by semantic policy role",
+        "same module has multiple constant rows assigned from the same constructor shape",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        _KEYWORD_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, policy_candidate: ModuleConstructorPolicyFamilyCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"Module constants {', '.join(policy_candidate.row_names)} repeat "
-                f"`{policy_candidate.constructor_name}` constructor rows with schema "
-                f"{policy_candidate.field_names}."
-            ),
-            policy_candidate.evidence,
-            scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class PolicyRowSpec:\n"
-                "    role_name: str\n"
-                "    constructor_args: tuple[object, ...]\n\n"
-                "class PolicyCatalog:\n"
-                "    def materialize(self) -> dict[str, object]: ..."
-            ),
-            codemod_patch=(
-                "# Replace repeated module-level constructor rows with one semantic policy catalog.\n"
-                "# Keep role names and constructor coordinates as data, then derive the module constants from the catalog."
-            ),
-            metrics=MappingMetrics(
-                mapping_site_count=len(policy_candidate.row_names),
-                field_count=len(policy_candidate.field_names),
-                mapping_name=policy_candidate.constructor_name,
-                field_names=policy_candidate.row_names,
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[ModuleConstructorPolicyFamilyCandidate](
+        summary=lambda policy_candidate: f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}.",
+        evidence=lambda policy_candidate: policy_candidate.evidence,
+        scaffold=lambda policy_candidate: '@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ...',
+        codemod_patch=lambda policy_candidate: '# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog.',
+        metrics=lambda policy_candidate: MappingMetrics(mapping_site_count=len(policy_candidate.row_names), field_count=len(policy_candidate.field_names), mapping_name=policy_candidate.constructor_name, field_names=policy_candidate.row_names),
+    )
 
 
 class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector[DynamicSelfFieldSelectionCandidate]):
-    detector_id = "dynamic_self_field_selection"
-    candidate_collector = _dynamic_self_field_selection_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.CONFIG_CONTRACTS,
-        title="Dynamic self-field selection hides a nominal contract",
-        why=(
-            "A class selects one of its own fields through reflective indirection instead of declaring one fail-loud hook or one canonical field."
-        ),
-        capability_gap="declared nominal count/value hook instead of selector-driven reflective lookup",
-        relation_context="class template selects its own state through dynamic reflective field names",
-        capability_tags=_FAIL_LOUD_CONTRACTS_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+    finding_spec = high_confidence_spec(
+        PatternId.CONFIG_CONTRACTS, "Dynamic self-field selection hides a nominal contract",
+        "A class selects one of its own fields through reflective indirection instead of declaring one fail-loud hook or one canonical field.",
+        "declared nominal count/value hook instead of selector-driven reflective lookup",
+        "class template selects its own state through dynamic reflective field names",
+        _FAIL_LOUD_CONTRACTS_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     )
 
-    def _finding_for_candidate(self, dynamic_candidate: DynamicSelfFieldSelectionCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal hook."
-            ),
-            (dynamic_candidate.evidence,),
-            scaffold=(
-                "class DeclaredCountHook(ABC):\n"
-                "    @property\n"
-                "    @abstractmethod\n    def count_value(self) -> int: ..."
-            ),
-            codemod_patch=(
-                f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n"
-                "# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier."
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[DynamicSelfFieldSelectionCandidate](
+        summary=lambda dynamic_candidate: f'`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal hook.',
+        evidence=lambda dynamic_candidate: (dynamic_candidate.evidence,),
+        scaffold=lambda dynamic_candidate: 'class DeclaredCountHook(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ...',
+        codemod_patch=lambda dynamic_candidate: f'# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier.',
+    )
 
 class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandidateDetector[StringBackedReflectiveNominalLookupCandidate]):
-    detector_id = "string_backed_reflective_nominal_lookup"
-    candidate_collector = _string_backed_reflective_nominal_lookup_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.NOMINAL_BOUNDARY,
-        title="String-backed reflective lookup is simulating nominal identity",
-        why=(
-            "The docs say a class family should not smuggle behavior through string selectors and reflection. "
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY, "String-backed reflective lookup is simulating nominal identity",
+        "The docs say a class family should not smuggle behavior through string selectors and reflection. "
             "When subclasses only supply constant names that are resolved through globals, getattr, or __dict__, "
-            "the boundary should become one declared nominal hook or typed handle."
-        ),
-        capability_gap="declared nominal hook or typed family handle instead of string selector plus reflection",
-        relation_context="class family encodes behavior with constant selector strings and resolves it reflectively",
-        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=_STRING_DISPATCH_SEMANTIC_STRING_LITERAL_CLASS_FAMILY_OBSERVATION_TAGS,
+            "the boundary should become one declared nominal hook or typed handle.",
+        "declared nominal hook or typed family handle instead of string selector plus reflection",
+        "class family encodes behavior with constant selector strings and resolves it reflectively",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+        _STRING_DISPATCH_SEMANTIC_STRING_LITERAL_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, reflective_candidate: StringBackedReflectiveNominalLookupCandidate) -> RefactorFinding:
-        return self.build_finding(
-            (
-                f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes."
-            ),
-            (reflective_candidate.evidence,),
-            scaffold=(
-                "class DeclaredNominalRole(ABC):\n"
-                "    @classmethod\n"
-                "    @abstractmethod\n"
-                "    def declared_handle(cls) -> object: ..."
-            ),
-            codemod_patch=(
-                f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n"
-                "# Move the family boundary to one declared hook, typed handle, or polymorphic method."
-            ),
-            metrics=SentinelSimulationMetrics(
-                class_count=len(reflective_candidate.concrete_class_names),
-                branch_site_count=1,
-            ),
-        )
+    finding_renderer = CandidateFindingRenderer[StringBackedReflectiveNominalLookupCandidate](
+        summary=lambda reflective_candidate: f'`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes.',
+        evidence=lambda reflective_candidate: (reflective_candidate.evidence,),
+        scaffold=lambda reflective_candidate: 'class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ...',
+        codemod_patch=lambda reflective_candidate: f'# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method.',
+        metrics=lambda reflective_candidate: SentinelSimulationMetrics(class_count=len(reflective_candidate.concrete_class_names), branch_site_count=1),
+    )

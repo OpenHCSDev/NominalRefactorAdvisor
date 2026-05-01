@@ -6667,6 +6667,193 @@ def _finding_spec_build_boilerplate_candidates(
     return tuple(candidates)
 
 
+def _self_build_finding_call(node: ast.AST) -> ast.Call | None:
+    call = return_call(node)
+    if call is None:
+        return None
+    function = as_ast(call.func, ast.Attribute)
+    if function is None or function.attr != "build_finding":
+        return None
+    return call if name_id(function.value) == "self" else None
+
+
+def _direct_build_finding_renderer_candidates(
+    module: ParsedModule,
+) -> tuple[DirectBuildFindingRendererCandidate, ...]:
+    candidates: list[DirectBuildFindingRendererCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        base_name = _concrete_detector_base_name(node)
+        if base_name is None:
+            continue
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.FunctionDef)
+                and statement.name == "_finding_for_candidate"
+            ):
+                continue
+            body = _trim_docstring_body(statement.body)
+            call = _self_build_finding_call(single_item(body)) if len(body) == 1 else None
+            if call is None:
+                continue
+            candidates.append(
+                DirectBuildFindingRendererCandidate(
+                    file_path=str(module.path),
+                    line=statement.lineno,
+                    class_name=node.name,
+                    method_name=statement.name,
+                    base_name=base_name,
+                    positional_arg_count=len(call.args),
+                    keyword_names=tuple(
+                        keyword.arg for keyword in call.keywords if keyword.arg
+                    ),
+                )
+            )
+    return tuple(candidates)
+
+
+def _class_detector_id_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(name_id(target) == "detector_id" for target in statement.targets):
+            continue
+        if isinstance(statement.value, ast.Constant) and isinstance(
+            statement.value.value,
+            str,
+        ):
+            return statement.lineno, statement.value.value
+    return None
+
+
+def _class_declares_finding_spec(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(statement, ast.Assign)
+        and any(name_id(target) == "finding_spec" for target in statement.targets)
+        for statement in node.body
+    )
+
+
+def _class_candidate_collector_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
+    for statement in node.body:
+        targets: list[ast.AST]
+        value: ast.AST | None
+        if isinstance(statement, ast.Assign):
+            targets = list(statement.targets)
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        else:
+            continue
+        if not any(name_id(target) == "candidate_collector" for target in targets):
+            continue
+        collector_name = name_id(value) if value is not None else None
+        if collector_name is not None:
+            return statement.lineno, collector_name
+    return None
+
+
+DerivableClassCandidateT = TypeVar("DerivableClassCandidateT")
+ClassAssignmentReader = Callable[[ast.ClassDef], tuple[int, str] | None]
+ClassExpectedValue = Callable[[str], str | None]
+
+def _derivable_class_assignment_candidates(
+    module: ParsedModule,
+    assignment_reader: ClassAssignmentReader,
+    expected_value: ClassExpectedValue,
+    candidate_factory: Callable[[str, int, str, str], DerivableClassCandidateT],
+) -> tuple[DerivableClassCandidateT, ...]:
+    candidates: list[DerivableClassCandidateT] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        assignment = assignment_reader(node)
+        if assignment is None:
+            continue
+        line, assigned_value = assignment
+        if not _class_declares_finding_spec(node):
+            continue
+        if assigned_value != expected_value(node.name):
+            continue
+        candidates.append(candidate_factory(str(module.path), line, node.name, assigned_value))
+    return tuple(candidates)
+
+
+def _derivable_detector_id_candidates(
+    module: ParsedModule,
+) -> tuple[DerivableDetectorIdCandidate, ...]:
+    return _derivable_class_assignment_candidates(
+        module,
+        _class_detector_id_assignment,
+        _detector_id_value_from_class_name,
+        DerivableDetectorIdCandidate,
+    )
+
+
+def _derivable_candidate_collector_candidates(
+    module: ParsedModule,
+) -> tuple[DerivableCandidateCollectorCandidate, ...]:
+    return _derivable_class_assignment_candidates(
+        module,
+        _class_candidate_collector_assignment,
+        _candidate_collector_name_from_class_name,
+        DerivableCandidateCollectorCandidate,
+    )
+
+
+_FINDING_SPEC_BUILDER_BY_CONSTRUCTOR = {
+    "FindingSpec": "finding_spec_template",
+    "HighConfidenceFindingSpec": "high_confidence_spec",
+    "CertifiedFindingSpec": "certified_spec",
+    "HighConfidenceCertifiedFindingSpec": "high_confidence_certified_spec",
+}
+_CANONICAL_FINDING_SPEC_FIELD_NAMES = (
+    "pattern_id",
+    "title",
+    "why",
+    "capability_gap",
+    "relation_context",
+    "capability_tags",
+    "observation_tags",
+)
+
+
+def _canonical_finding_spec_builder_candidates(
+    module: ParsedModule,
+) -> tuple[CanonicalFindingSpecBuilderCandidate, ...]:
+    candidates: list[CanonicalFindingSpecBuilderCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.Assign):
+                continue
+            if not any(name_id(target) == "finding_spec" for target in statement.targets):
+                continue
+            call = as_ast(statement.value, ast.Call)
+            if call is None or call.args:
+                continue
+            constructor_name = name_id(call.func)
+            if constructor_name not in _FINDING_SPEC_BUILDER_BY_CONSTRUCTOR:
+                continue
+            keyword_names = tuple(keyword.arg for keyword in call.keywords if keyword.arg)
+            if not set(_CANONICAL_FINDING_SPEC_FIELD_NAMES[:5]).issubset(keyword_names):
+                continue
+            candidates.append(
+                CanonicalFindingSpecBuilderCandidate(
+                    file_path=str(module.path),
+                    line=statement.lineno,
+                    class_name=node.name,
+                    constructor_name=constructor_name,
+                    builder_name=_FINDING_SPEC_BUILDER_BY_CONSTRUCTOR[constructor_name],
+                    keyword_names=keyword_names,
+                )
+            )
+    return tuple(candidates)
+
+
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
 _SEMANTIC_TAG_CONSTANT_SUFFIX = {
     "capability_tags": "CAPABILITY_TAGS",

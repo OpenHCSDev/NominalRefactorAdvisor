@@ -2944,6 +2944,120 @@ class LocalDetector:
     assert "build_finding" in findings[0].summary
 
 
+def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):
+    detector_id = "local"
+    candidate_collector = local_candidates
+
+    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:
+        return self.build_finding(
+            f"`{candidate.name}` repeats renderer boilerplate.",
+            (candidate.evidence,),
+            scaffold="CandidateFindingRenderer(...)",
+        )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "direct_build_finding_renderer"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalDetector._finding_for_candidate" in findings[0].summary
+    assert "CandidateFindingRenderer" in findings[0].scaffold
+
+
+def test_detects_derivable_detector_id(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalRuleDetector(IssueDetector):
+    detector_id = "local_rule"
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Local rule",
+        why="Local rule",
+        capability_gap="local rule",
+        relation_context="local rule",
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "derivable_detector_id"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalRuleDetector" in findings[0].summary
+    assert "metaclass" in (findings[0].codemod_patch or "")
+
+
+def test_detects_derivable_candidate_collector(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):
+    candidate_collector = _local_rule_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Local rule",
+        why="Local rule",
+        capability_gap="local rule",
+        relation_context="local rule",
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "derivable_candidate_collector"
+    ]
+
+    assert len(findings) == 1
+    assert "_local_rule_candidates" in findings[0].summary
+    assert "collector ABC" in (findings[0].codemod_patch or "")
+
+
+def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalRuleDetector(IssueDetector):
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Local rule",
+        why="Local rule",
+        capability_gap="local rule",
+        relation_context="local rule",
+        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "canonical_finding_spec_builder"
+    ]
+
+    assert len(findings) == 1
+    assert "high_confidence_spec" in findings[0].summary
+    assert "coordinate names" in (findings[0].codemod_patch or "")
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
