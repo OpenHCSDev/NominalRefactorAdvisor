@@ -44,6 +44,20 @@ class EffectCarrier(ABC, Generic[T]):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
+class FirstSuccessfulEffectStep(EffectStep[T, U]):
+    """Choice step: run sibling projections and return the first success."""
+
+    steps: Sequence[EffectStep[T, U]]
+
+    def apply(self, value: T) -> U | None:
+        for step in self.steps:
+            result = step.apply(value)
+            if result is not None:
+                return result
+        return None
+
+
 class RegisteredEffectStep(EffectStep[Any, Any], metaclass=AutoRegisterMeta):
     """Metaclass-registered effect step with declarative sequencing."""
 

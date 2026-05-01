@@ -2727,37 +2727,108 @@ def _is_selected_match_subscript(node: ast.AST, match_var_name: str) -> bool:
         and node.slice.value == 0
     )
 
+
+@dataclass(frozen=True)
+class _SelectionGuardContext:
+    node: ast.AST
+    match_var_name: str
+
+
+class _SelectionGuardKindStep(RegisteredEffectStep):
+    pass
+
+
+class _UnaryEmptySelectionGuardStep(
+    _SelectionGuardKindStep,
+    GuardedEffectStep[_SelectionGuardContext, str],
+):
+    step_id = "unary_empty_selection_guard"
+    registration_order = 10
+
+    def project(self, value: _SelectionGuardContext) -> str | None:
+        return _unary_empty_selection_guard_kind(value)
+
+
+class _LengthCompareSelectionGuardStep(
+    _SelectionGuardKindStep,
+    GuardedEffectStep[_SelectionGuardContext, str],
+):
+    step_id = "length_compare_selection_guard"
+    registration_order = 20
+
+    def project(self, value: _SelectionGuardContext) -> str | None:
+        return _length_compare_selection_guard_kind(value)
+
+
+def _unary_empty_selection_guard_kind(context: _SelectionGuardContext) -> str | None:
+    unary = as_ast(context.node, ast.UnaryOp)
+    if (
+        unary is None
+        or not isinstance(unary.op, ast.Not)
+        or name_id(unary.operand) != context.match_var_name
+    ):
+        return None
+    return "empty"
+
+
+def _selection_len_arg_name(compare: ast.Compare) -> str | None:
+    length_call = as_ast(compare.left, ast.Call)
+    if length_call is None or _ast_terminal_name(length_call.func) != "len":
+        return None
+    return name_id(single_item(length_call.args))
+
+
+def _selection_int_comparator(compare: ast.Compare) -> int | None:
+    comparator = single_ast(compare.comparators, ast.Constant)
+    if comparator is None:
+        return None
+    return comparator.value if isinstance(comparator.value, int) else None
+
+
+def _selection_compare_operator(compare: ast.Compare) -> ast.cmpop | None:
+    return single_item(compare.ops)
+
+
+_SELECTION_LENGTH_GUARD_KINDS: tuple[
+    tuple[type[ast.cmpop], int, str],
+    ...,
+] = (
+    (ast.NotEq, 1, "not_exactly_one"),
+    (ast.Gt, 1, "ambiguous"),
+    (ast.Eq, 0, "empty"),
+)
+
+
+def _length_compare_selection_guard_kind(
+    context: _SelectionGuardContext,
+) -> str | None:
+    compare = as_ast(context.node, ast.Compare)
+    if compare is None or _selection_len_arg_name(compare) != context.match_var_name:
+        return None
+    operator = _selection_compare_operator(compare)
+    comparator_value = _selection_int_comparator(compare)
+    return next(
+        (
+            guard_kind
+            for operator_type, expected_value, guard_kind in _SELECTION_LENGTH_GUARD_KINDS
+            if isinstance(operator, operator_type)
+            and comparator_value == expected_value
+        ),
+        None,
+    )
+
+
 def _selection_guard_kind(node: ast.AST, match_var_name: str) -> str | None:
-    if (
-        isinstance(node, ast.UnaryOp)
-        and isinstance(node.op, ast.Not)
-        and isinstance(node.operand, ast.Name)
-        and node.operand.id == match_var_name
-    ):
-        return "empty"
-    if not isinstance(node, ast.Compare):
-        return None
-    if (
-        not isinstance(node.left, ast.Call)
-        or _ast_terminal_name(node.left.func) != "len"
-        or len(node.left.args) != 1
-        or not isinstance(node.left.args[0], ast.Name)
-        or node.left.args[0].id != match_var_name
-        or len(node.ops) != 1
-        or len(node.comparators) != 1
-        or not isinstance(node.comparators[0], ast.Constant)
-        or not isinstance(node.comparators[0].value, int)
-    ):
-        return None
-    comparator_value = node.comparators[0].value
-    operator = node.ops[0]
-    if isinstance(operator, ast.NotEq) and comparator_value == 1:
-        return "not_exactly_one"
-    if isinstance(operator, ast.Gt) and comparator_value == 1:
-        return "ambiguous"
-    if isinstance(operator, ast.Eq) and comparator_value == 0:
-        return "empty"
-    return None
+    return cast(
+        str | None,
+        Maybe.of(_SelectionGuardContext(node, match_var_name))
+        .bind(
+            FirstSuccessfulEffectStep(
+                registered_effect_steps(_SelectionGuardKindStep)
+            )
+        )
+        .unwrap_or_none(),
+    )
 
 def _predicate_selected_concrete_family_candidates(
     modules: list[ParsedModule], config: DetectorConfig
@@ -3735,45 +3806,67 @@ def _export_policy_root_type_names(node: ast.FunctionDef) -> tuple[str, ...]:
         )
     return tuple(sorted(root_type_names))
 
-def _module_export_policy_predicate_candidate(
-    module: ParsedModule,
-) -> ExportPolicyPredicateCandidate | None:
-    exported_predicate_names: set[str] = set()
-    for statement in _trim_docstring_body(module.module.body):
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target = statement.targets[0]
-        if not (isinstance(target, ast.Name) and target.id == "__all__"):
-            continue
-        value = statement.value
-        if (
-            not isinstance(value, ast.Call)
-            or _ast_terminal_name(value.func) != "sorted"
-        ):
-            continue
-        if len(value.args) != 1 or not isinstance(value.args[0], ast.GeneratorExp):
-            continue
-        generator = value.args[0]
-        if not generator.generators or len(generator.generators[0].ifs) != 1:
-            continue
-        condition = generator.generators[0].ifs[0]
-        if not isinstance(condition, ast.Call) or not isinstance(
-            condition.func, ast.Name
-        ):
-            continue
-        exported_predicate_names.add(condition.func.id)
-    if len(exported_predicate_names) != 1:
-        return None
-    predicate_name = next(iter(exported_predicate_names))
-    predicate_node = next(
+
+def _module_function_named(module: ParsedModule, function_name: str) -> ast.FunctionDef | None:
+    return next(
         (
             statement
             for statement in _trim_docstring_body(module.module.body)
             if isinstance(statement, ast.FunctionDef)
-            and statement.name == predicate_name
+            and statement.name == function_name
         ),
         None,
     )
+
+
+def _export_all_assignment_value(statement: ast.stmt) -> ast.AST | None:
+    assignment = as_ast(statement, ast.Assign)
+    if assignment is None or name_id(single_item(assignment.targets)) != "__all__":
+        return None
+    return assignment.value
+
+
+def _sorted_generator_arg(value: ast.AST) -> ast.GeneratorExp | None:
+    call = as_ast(value, ast.Call)
+    if call is None or _ast_terminal_name(call.func) != "sorted":
+        return None
+    return single_ast(call.args, ast.GeneratorExp)
+
+
+def _single_generator_filter_call(generator: ast.GeneratorExp) -> ast.Call | None:
+    comprehension = single_item(generator.generators)
+    if comprehension is None:
+        return None
+    return as_ast(single_item(comprehension.ifs), ast.Call)
+
+
+def _export_all_predicate_name(statement: ast.stmt) -> str | None:
+    value = _export_all_assignment_value(statement)
+    if value is None:
+        return None
+    generator = _sorted_generator_arg(value)
+    if generator is None:
+        return None
+    condition = _single_generator_filter_call(generator)
+    return name_id(condition.func if condition else None)
+
+
+def _module_exported_predicate_names(module: ParsedModule) -> frozenset[str]:
+    return frozenset(
+        predicate_name
+        for statement in _trim_docstring_body(module.module.body)
+        if (predicate_name := _export_all_predicate_name(statement)) is not None
+    )
+
+
+def _module_export_policy_predicate_candidate(
+    module: ParsedModule,
+) -> ExportPolicyPredicateCandidate | None:
+    exported_predicate_names = _module_exported_predicate_names(module)
+    predicate_name = single_item(tuple(exported_predicate_names))
+    if predicate_name is None:
+        return None
+    predicate_node = _module_function_named(module, predicate_name)
     if predicate_node is None or len(predicate_node.args.args) != 2:
         return None
     role_names = _export_policy_role_names(predicate_node)
@@ -4822,25 +4915,61 @@ def _wrapper_delegate_symbol(
         return f"{class_name}.{node.attr}"
     return None
 
+
+def _call_transport_values(call: ast.Call) -> tuple[ast.AST, ...]:
+    return (*call.args, *(keyword.value for keyword in call.keywords if keyword.arg))
+
+
+def _transported_delegate_symbol(
+    call: ast.Call,
+    *,
+    class_name: str | None,
+    allowed_roots: set[str],
+) -> str | None:
+    delegate_symbol = _wrapper_delegate_symbol(call.func, class_name=class_name)
+    if delegate_symbol is None:
+        return None
+    if not all(
+        _is_transport_expression(value, allowed_roots=allowed_roots)
+        for value in _call_transport_values(call)
+    ):
+        return None
+    return delegate_symbol
+
+
 def _projected_attribute_names(
     node: ast.AST,
     *,
     bound_name: str,
 ) -> tuple[str, ...] | None:
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        if node.value.id == bound_name:
-            return (node.attr,)
+    return _single_projected_attribute_name(
+        node, bound_name=bound_name
+    ) or _tuple_projected_attribute_names(node, bound_name=bound_name)
+
+
+def _single_projected_attribute_name(
+    node: ast.AST,
+    *,
+    bound_name: str,
+) -> tuple[str, ...] | None:
+    projected_name = attribute_name(node, owner_name=bound_name)
+    return None if projected_name is None else (projected_name,)
+
+
+def _tuple_projected_attribute_names(
+    node: ast.AST,
+    *,
+    bound_name: str,
+) -> tuple[str, ...] | None:
+    tuple_node = as_ast(node, ast.Tuple)
+    if tuple_node is None:
         return None
-    if isinstance(node, ast.Tuple):
-        projected: list[str] = []
-        for item in node.elts:
-            if not isinstance(item, ast.Attribute) or not isinstance(item.value, ast.Name):
-                return None
-            if item.value.id != bound_name:
-                return None
-            projected.append(item.attr)
-        return tuple(projected)
-    return None
+    projected_names = tuple(
+        attribute_name(item, owner_name=bound_name) for item in tuple_node.elts
+    )
+    if any(projected_name is None for projected_name in projected_names):
+        return None
+    return cast(tuple[str, ...], projected_names)
 
 def _call_chain_from_outer_call(call: ast.Call) -> tuple[ast.Call, ...]:
     chain = [call]
@@ -5322,87 +5451,154 @@ def _nominal_policy_surface_family_candidates(
         )
     )
 
+@dataclass(frozen=True)
+class _FunctionWrapperContext:
+    module: ParsedModule
+    qualname: str
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+    body: list[ast.stmt]
+    class_name: str | None
+    allowed_roots: set[str]
+
+
+@dataclass(frozen=True)
+class _ProjectionWrapperCall:
+    bound_name: str
+    delegate_call: ast.Call
+    returned_value: ast.AST
+
+
+class _FunctionWrapperStep(RegisteredEffectStep):
+    pass
+
+
+class _DirectFunctionWrapperStep(
+    _FunctionWrapperStep,
+    GuardedEffectStep[_FunctionWrapperContext, FunctionWrapperCandidate],
+):
+    step_id = "direct_function_wrapper"
+    registration_order = 10
+
+    def project(self, value: _FunctionWrapperContext) -> FunctionWrapperCandidate | None:
+        returned_call = _single_returned_wrapper_call(value.body)
+        if returned_call is None:
+            return None
+        delegate_symbol = _transported_delegate_symbol(
+            returned_call,
+            class_name=value.class_name,
+            allowed_roots=value.allowed_roots,
+        )
+        if delegate_symbol is None:
+            return None
+        return _function_wrapper_candidate_from_context(
+            value,
+            delegate_symbol=delegate_symbol,
+            wrapper_kind="direct",
+        )
+
+
+class _ProjectionFunctionWrapperStep(
+    _FunctionWrapperStep,
+    GuardedEffectStep[_FunctionWrapperContext, FunctionWrapperCandidate],
+):
+    step_id = "projection_function_wrapper"
+    registration_order = 20
+
+    def project(self, value: _FunctionWrapperContext) -> FunctionWrapperCandidate | None:
+        projection = _projection_wrapper_call(value.body)
+        if projection is None:
+            return None
+        delegate_symbol = _transported_delegate_symbol(
+            projection.delegate_call,
+            class_name=value.class_name,
+            allowed_roots=value.allowed_roots,
+        )
+        if delegate_symbol is None:
+            return None
+        projected_attributes = _projected_attribute_names(
+            projection.returned_value,
+            bound_name=projection.bound_name,
+        )
+        if projected_attributes is None:
+            return None
+        return _function_wrapper_candidate_from_context(
+            value,
+            delegate_symbol=delegate_symbol,
+            wrapper_kind="projection",
+            projected_attributes=projected_attributes,
+        )
+
+
+def _function_wrapper_context(
+    module: ParsedModule,
+    qualname: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> _FunctionWrapperContext | None:
+    body = _trim_docstring_body(function.body)
+    if not body:
+        return None
+    return _FunctionWrapperContext(
+        module=module,
+        qualname=qualname,
+        function=function,
+        body=body,
+        class_name=qualname.rsplit(".", 1)[0] if "." in qualname else None,
+        allowed_roots=_function_param_names(function) | {"self", "cls"},
+    )
+
+
+def _single_returned_wrapper_call(body: list[ast.stmt]) -> ast.Call | None:
+    returned = single_ast(body, ast.Return)
+    return as_ast(returned.value if returned else None, ast.Call)
+
+
+def _projection_wrapper_call(body: list[ast.stmt]) -> _ProjectionWrapperCall | None:
+    statements = ast_sequence(body, ast.Assign, ast.Return)
+    if statements is None:
+        return None
+    assigned, returned = statements
+    assignment = named_call_assignment(assigned)
+    if assignment is None or returned.value is None:
+        return None
+    return _ProjectionWrapperCall(
+        bound_name=assignment.target_name,
+        delegate_call=assignment.call,
+        returned_value=returned.value,
+    )
+
+
+def _function_wrapper_candidate_from_context(
+    context: _FunctionWrapperContext,
+    *,
+    delegate_symbol: str,
+    wrapper_kind: str,
+    projected_attributes: tuple[str, ...] = (),
+) -> FunctionWrapperCandidate:
+    return FunctionWrapperCandidate(
+        file_path=str(context.module.path),
+        qualname=context.qualname,
+        lineno=context.function.lineno,
+        delegate_symbol=delegate_symbol,
+        wrapper_kind=wrapper_kind,
+        statement_count=len(context.body),
+        projected_attributes=projected_attributes,
+    )
+
+
 def _function_wrapper_candidate(
     module: ParsedModule,
     qualname: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> FunctionWrapperCandidate | None:
-    body = _trim_docstring_body(function.body)
-    if not body:
+    context = _function_wrapper_context(module, qualname, function)
+    if context is None:
         return None
-    class_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-    allowed_roots = _function_param_names(function) | {"self", "cls"}
-
-    if len(body) == 1 and isinstance(body[0], ast.Return) and body[0].value is not None:
-        returned = body[0].value
-        if not isinstance(returned, ast.Call):
-            return None
-        delegate_symbol = _wrapper_delegate_symbol(
-            returned.func,
-            class_name=class_name,
-        )
-        if delegate_symbol is None:
-            return None
-        values = list(returned.args) + [
-            keyword.value for keyword in returned.keywords if keyword.arg is not None
-        ]
-        if not all(
-            _is_transport_expression(value, allowed_roots=allowed_roots)
-            for value in values
-        ):
-            return None
-        return FunctionWrapperCandidate(
-            file_path=str(module.path),
-            qualname=qualname,
-            lineno=function.lineno,
-            delegate_symbol=delegate_symbol,
-            wrapper_kind="direct",
-            statement_count=len(body),
-        )
-
-    if (
-        len(body) == 2
-        and isinstance(body[0], ast.Assign)
-        and len(body[0].targets) == 1
-        and isinstance(body[0].targets[0], ast.Name)
-        and isinstance(body[1], ast.Return)
-        and body[1].value is not None
-        and isinstance(body[0].value, ast.Call)
-    ):
-        bound_name = body[0].targets[0].id
-        delegate_symbol = _wrapper_delegate_symbol(
-            body[0].value.func,
-            class_name=class_name,
-        )
-        if delegate_symbol is None:
-            return None
-        values = list(body[0].value.args) + [
-            keyword.value
-            for keyword in body[0].value.keywords
-            if keyword.arg is not None
-        ]
-        if not all(
-            _is_transport_expression(value, allowed_roots=allowed_roots)
-            for value in values
-        ):
-            return None
-        projected_attributes = _projected_attribute_names(
-            body[1].value,
-            bound_name=bound_name,
-        )
-        if projected_attributes is None:
-            return None
-        return FunctionWrapperCandidate(
-            file_path=str(module.path),
-            qualname=qualname,
-            lineno=function.lineno,
-            delegate_symbol=delegate_symbol,
-            wrapper_kind="projection",
-            statement_count=len(body),
-            projected_attributes=projected_attributes,
-        )
-
-    return None
+    return cast(
+        FunctionWrapperCandidate | None,
+        Maybe.of(context)
+        .bind(FirstSuccessfulEffectStep(registered_effect_steps(_FunctionWrapperStep)))
+        .unwrap_or_none(),
+    )
 
 def _function_wrapper_candidates(
     module: ParsedModule,
