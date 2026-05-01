@@ -23,6 +23,20 @@ from typing import Any, Callable, ClassVar, Sequence, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
+from ..semantic_match import (
+    as_ast,
+    ast_sequence,
+    call_attribute_name,
+    name_id,
+    single_assign_target,
+    single_ast,
+    single_call_arg,
+    single_call_arg_name,
+    single_item,
+    single_return_as,
+    single_return_call,
+    single_return_value,
+)
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -150,6 +164,7 @@ class DetectorConfig:
     min_static_payload_literal_lines: int = 20
     min_unreferenced_private_function_lines: int = 8
     min_repeated_local_regex_literals: int = 3
+    min_effect_guard_stages: int = 5
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
@@ -189,6 +204,9 @@ class DetectorConfig:
             ),
             min_repeated_local_regex_literals=int(
                 namespace_values.get("min_repeated_local_regex_literals", 3)
+            ),
+            min_effect_guard_stages=int(
+                namespace_values.get("min_effect_guard_stages", 5)
             ),
             min_orchestration_function_lines=int(
                 namespace_values.get("min_orchestration_function_lines", 150)
@@ -1530,30 +1548,38 @@ def _enum_member_ref(node: ast.AST) -> tuple[str, str] | None:
 def _enum_subset_guard_from_compare(
     node: ast.Compare,
 ) -> tuple[str, str, tuple[str, ...], str] | None:
-    if len(node.ops) != 1 or len(node.comparators) != 1:
-        return None
-    operator = node.ops[0]
+    operator = single_item(node.ops)
+    comparator = single_item(node.comparators)
     if not isinstance(operator, (ast.In, ast.NotIn)):
         return None
-    comparator = node.comparators[0]
     if not isinstance(comparator, (ast.Set, ast.Tuple, ast.List)):
         return None
+    ref_family = _enum_member_ref_family(comparator.elts)
+    if ref_family is None:
+        return None
+    enum_name, member_names = ref_family
+    return (
+        ast.unparse(node.left),
+        enum_name,
+        member_names,
+        "not in" if isinstance(operator, ast.NotIn) else "in",
+    )
+
+
+def _enum_member_ref_family(
+    elements: Sequence[ast.AST],
+) -> tuple[str, tuple[str, ...]] | None:
     refs = tuple(
         ref
-        for element in comparator.elts
+        for element in elements
         if (ref := _enum_member_ref(element)) is not None
     )
-    if len(refs) != len(comparator.elts) or len(refs) < 2:
+    if len(refs) != len(elements) or len(refs) < 2:
         return None
     enum_names = {enum_name for enum_name, _ in refs}
     if len(enum_names) != 1:
         return None
-    return (
-        ast.unparse(node.left),
-        next(iter(enum_names)),
-        tuple(member_name for _, member_name in refs),
-        "not in" if isinstance(operator, ast.NotIn) else "in",
-    )
+    return next(iter(enum_names)), tuple(member_name for _, member_name in refs)
 
 
 def _inline_enum_subset_guard_candidates(
@@ -2275,89 +2301,25 @@ def _empty_leaf_product_family_candidates(
 
 
 def _self_method_call_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Call):
-        return None
-    if not isinstance(node.func, ast.Attribute):
-        return None
-    if not isinstance(node.func.value, ast.Name) or node.func.value.id != "self":
-        return None
-    return node.func.attr
+    return call_attribute_name(node, owner_name="self")
 
 
 def _transport_shell_template_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, str, str, str, str, str | None] | None:
     body = _trim_docstring_body(list(method.body))
-    if len(body) != 2:
+    body_shape = ast_sequence(body, ast.Assign, ast.Return)
+    if body_shape is None:
         return None
-    assign, tail = body
-    if not (
-        isinstance(assign, ast.Assign)
-        and len(assign.targets) == 1
-        and isinstance(assign.targets[0], ast.Name)
-        and isinstance(assign.value, ast.Call)
-        and len(assign.value.args) >= 2
-    ):
+    assign, returned = body_shape
+    assignment_shape = _transport_shell_assignment_shape(assign, method)
+    if assignment_shape is None:
         return None
-    intermediate_var_name = assign.targets[0].id
-    constructor_name = _call_name(assign.value.func)
-    if constructor_name is None:
+    intermediate_var_name, selector_attr_name, source_param_name, constructor_name, kwargs_helper_name = assignment_shape
+    tail_shape = _transport_shell_tail_shape(returned, intermediate_var_name)
+    if tail_shape is None:
         return None
-    selector_attr_name: str | None = None
-    for arg in assign.value.args:
-        selector_attr_name = _selector_attribute_name(arg)
-        if selector_attr_name is not None:
-            break
-    if selector_attr_name is None:
-        for keyword in assign.value.keywords:
-            selector_attr_name = _selector_attribute_name(keyword.value)
-            if selector_attr_name is not None:
-                break
-    source_param_name: str | None = None
-    for arg in assign.value.args:
-        if isinstance(arg, ast.Name) and arg.id in _parameter_names(method):
-            source_param_name = arg.id
-            break
-    if selector_attr_name is None or source_param_name is None:
-        return None
-    kwargs_helper_name: str | None = None
-    for keyword in assign.value.keywords:
-        if keyword.arg is not None:
-            continue
-        if not isinstance(keyword.value, ast.Call):
-            return None
-        helper_name = _self_method_call_name(keyword.value)
-        if helper_name is None:
-            return None
-        if (
-            len(keyword.value.args) != 1
-            or not isinstance(keyword.value.args[0], ast.Name)
-            or keyword.value.args[0].id != source_param_name
-            or keyword.value.keywords
-        ):
-            return None
-        kwargs_helper_name = helper_name
-    if not isinstance(tail, ast.Return) or tail.value is None:
-        return None
-    outcome_method_name = _self_method_call_name(tail.value)
-    if (
-        outcome_method_name is None
-        or not isinstance(tail.value, ast.Call)
-        or len(tail.value.args) != 1
-        or tail.value.keywords
-    ):
-        return None
-    inner_call = tail.value.args[0]
-    inner_hook_name = _self_method_call_name(inner_call)
-    if (
-        inner_hook_name is None
-        or not isinstance(inner_call, ast.Call)
-        or len(inner_call.args) != 1
-        or inner_call.keywords
-        or not isinstance(inner_call.args[0], ast.Name)
-        or inner_call.args[0].id != intermediate_var_name
-    ):
-        return None
+    inner_hook_name, outcome_method_name = tail_shape
     return (
         selector_attr_name,
         source_param_name,
@@ -2366,6 +2328,102 @@ def _transport_shell_template_shape(
         outcome_method_name,
         kwargs_helper_name,
     )
+
+
+def _transport_shell_assignment_shape(
+    assign: ast.Assign,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str, str, str, str | None] | None:
+    target = as_ast(single_assign_target(assign), ast.Name)
+    call = as_ast(assign.value, ast.Call)
+    if target is None or call is None or len(call.args) < 2:
+        return None
+    constructor_name = _call_name(call.func)
+    selector_attr_name = _transport_shell_selector_attr_name(call)
+    source_param_name = _transport_shell_source_param_name(call, method)
+    if constructor_name is None or selector_attr_name is None or source_param_name is None:
+        return None
+    kwargs_helper_name = _transport_shell_kwargs_helper_name(
+        call, source_param_name
+    )
+    return (
+        target.id,
+        selector_attr_name,
+        source_param_name,
+        constructor_name,
+        kwargs_helper_name,
+    )
+
+
+def _transport_shell_selector_attr_name(call: ast.Call) -> str | None:
+    return next(
+        (
+            selector_attr_name
+            for value in (*call.args, *(keyword.value for keyword in call.keywords))
+            if (selector_attr_name := _selector_attribute_name(value)) is not None
+        ),
+        None,
+    )
+
+
+def _transport_shell_source_param_name(
+    call: ast.Call,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    parameter_names = _parameter_names(method)
+    return next(
+        (
+            arg_name
+            for arg in call.args
+            for arg_name in (name_id(arg),)
+            if arg_name in parameter_names
+        ),
+        None,
+    )
+
+
+def _transport_shell_kwargs_helper_name(
+    call: ast.Call, source_param_name: str
+) -> str | None:
+    helper_names: list[str] = []
+    for keyword in call.keywords:
+        if keyword.arg is not None:
+            continue
+        helper_name = _transport_shell_helper_call_name(keyword.value, source_param_name)
+        if helper_name is None:
+            return None
+        helper_names.append(helper_name)
+    return helper_names[-1] if helper_names else None
+
+
+def _transport_shell_helper_call_name(
+    node: ast.AST, source_param_name: str
+) -> str | None:
+    helper_name = _self_method_call_name(node)
+    if helper_name is None:
+        return None
+    call = cast(ast.Call, node)
+    if single_call_arg_name(call) != source_param_name or call.keywords:
+        return None
+    return helper_name
+
+
+def _transport_shell_tail_shape(
+    tail: ast.Return, intermediate_var_name: str
+) -> tuple[str, str] | None:
+    outcome_call = as_ast(tail.value, ast.Call)
+    outcome_method_name = _self_method_call_name(tail.value) if outcome_call else None
+    inner_call = as_ast(single_call_arg(outcome_call), ast.Call) if outcome_call else None
+    if outcome_call is None or outcome_method_name is None or outcome_call.keywords:
+        return None
+    inner_hook_name = _self_method_call_name(inner_call)
+    if (
+        inner_hook_name is None
+        or inner_call.keywords
+        or single_call_arg_name(inner_call) != intermediate_var_name
+    ):
+        return None
+    return inner_hook_name, outcome_method_name
 
 
 def _class_direct_name_like_assignment(
@@ -3399,16 +3457,23 @@ def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
-    body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
+    returned = single_return_as(_trim_docstring_body(function.body), ast.DictComp)
+    if returned is None:
         return None
-    returned = body[0].value
-    if not isinstance(returned, ast.DictComp) or len(returned.generators) != 1:
+    generator = single_item(returned.generators)
+    if generator is None or generator.ifs or not isinstance(generator.target, ast.Name):
         return None
-    generator = returned.generators[0]
-    if generator.ifs or not isinstance(generator.target, ast.Name):
+    selected_field_name = _selection_dict_value_field(returned, generator.target.id)
+    if selected_field_name is None:
         return None
-    target_name = generator.target.id
+    return _SelectionHelperShape(
+        function_name=function.name,
+        selected_field_name=selected_field_name,
+        line=function.lineno,
+    )
+
+
+def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str | None:
     key = returned.key
     value = returned.value
     if not (
@@ -3424,36 +3489,46 @@ def _selection_helper_shape(
         and value.value.id == target_name
     ):
         return None
-    return _SelectionHelperShape(
-        function_name=function.name,
-        selected_field_name=value.attr,
-        line=function.lineno,
-    )
+    return value.attr
 
 
 def _selection_lookup_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionLookupShape | None:
-    body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Try):
+    try_node = _single_try_statement(function)
+    if try_node is None:
         return None
-    try_node = body[0]
-    if len(try_node.body) != 1 or len(try_node.handlers) != 1:
+    if not _selection_lookup_returns_subscript(try_node):
         return None
-    return_stmt = try_node.body[0]
-    if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
-        return None
-    returned = return_stmt.value
-    if not isinstance(returned, ast.Subscript):
-        return None
-    if not isinstance(returned.value, ast.Name) or not isinstance(returned.slice, ast.Name):
-        return None
-    handler = try_node.handlers[0]
-    if not isinstance(handler.type, ast.Name) or handler.type.id != "KeyError":
-        return None
-    if not handler.body or not isinstance(handler.body[0], ast.Raise):
+    if not _selection_lookup_raises_key_error(try_node):
         return None
     return _SelectionLookupShape(function_name=function.name, line=function.lineno)
+
+
+def _single_try_statement(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ast.Try | None:
+    return single_ast(_trim_docstring_body(function.body), ast.Try)
+
+
+def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool:
+    returned = as_ast(single_return_value(try_node.body), ast.Subscript)
+    return bool(
+        returned is not None
+        and name_id(returned.value) is not None
+        and name_id(returned.slice) is not None
+    )
+
+
+def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool:
+    handler = single_item(try_node.handlers)
+    handler_type_name = name_id(handler.type) if handler is not None else None
+    raised = single_item(handler.body) if handler is not None else None
+    return bool(
+        isinstance(handler, ast.ExceptHandler)
+        and handler_type_name == "KeyError"
+        and isinstance(raised, ast.Raise)
+    )
 
 
 def _module_keyed_selection_helper_candidates(
@@ -4454,42 +4529,59 @@ def _manual_record_registration_shape(
     if not _is_classmethod(method):
         return None
     body = _trim_docstring_body(list(method.body))
-    if len(body) < 2 or not isinstance(body[0], ast.If):
+    key_expr = _manual_record_registration_key_expr(body)
+    if key_expr is None:
         return None
-    membership = _cls_registry_membership_test(body[0].test)
-    if membership is None or membership[0] != "in":
+    constructor = _manual_record_registration_constructor(body[1:], key_expr)
+    if constructor is None:
         return None
-    key_expr = membership[1]
-    assignment = next(
-        (
-            statement
-            for statement in body[1:]
-            if isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and _cls_registry_key_expr(statement.targets[0]) == key_expr
-        ),
-        None,
-    )
-    if assignment is None or not isinstance(assignment.value, ast.Call):
-        return None
-    if _call_name(assignment.value.func) != "cls":
-        return None
-    constructor_field_names = tuple(
-        keyword.arg
-        for keyword in assignment.value.keywords
-        if keyword.arg is not None
-    )
-    key_field_names = tuple(
-        keyword.arg
-        for keyword in assignment.value.keywords
-        if keyword.arg is not None and ast.unparse(keyword.value) == key_expr
-    )
+    constructor_field_names, key_field_names = constructor
     if len(key_field_names) != 1:
         return None
     return ManualRecordRegistrationShape(
         key_expr=key_expr,
         key_field_name=key_field_names[0],
         constructor_field_names=constructor_field_names,
+    )
+
+
+def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
+    first_statement = body[0] if len(body) >= 2 else None
+    if not isinstance(first_statement, ast.If):
+        return None
+    membership = _cls_registry_membership_test(first_statement.test)
+    if membership is None or membership[0] != "in":
+        return None
+    return membership[1]
+
+
+def _manual_record_registration_constructor(
+    body: list[ast.stmt], key_expr: str
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    assignment = next(
+        (
+            statement
+            for statement in body
+            if _cls_registry_key_expr(single_assign_target(statement)) == key_expr
+        ),
+        None,
+    )
+    assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
+    if assignment_call is None:
+        return None
+    if _call_name(assignment_call.func) != "cls":
+        return None
+    return (
+        tuple(
+            keyword.arg
+            for keyword in assignment_call.keywords
+            if keyword.arg is not None
+        ),
+        tuple(
+            keyword.arg
+            for keyword in assignment_call.keywords
+            if keyword.arg is not None and ast.unparse(keyword.value) == key_expr
+        ),
     )
 
 
@@ -5216,15 +5308,10 @@ def _guard_validator_function_candidate(
     *,
     min_guard_count: int,
 ) -> GuardValidatorFunctionCandidate | None:
-    if "." in qualname:
+    subject_param_name = _module_function_single_parameter(qualname, function)
+    if subject_param_name is None:
         return None
-    parameter_names = _parameter_names(function)
-    if len(parameter_names) != 1:
-        return None
-    subject_param_name = parameter_names[0]
     body = _trim_docstring_body(list(function.body))
-    if len(body) < min_guard_count + 1:
-        return None
     alias_name: str | None = None
     alias_source_attr: str | None = None
     if body:
@@ -5232,23 +5319,15 @@ def _guard_validator_function_candidate(
         if alias is not None:
             alias_name, alias_source_attr = alias
             body = body[1:]
-    guard_count = sum(
-        1
-        for statement in body
-        if isinstance(statement, ast.If)
-        and not statement.orelse
-        and _returns_false_only(statement.body)
-    )
-    if guard_count < min_guard_count:
-        return None
-    if not any(_contains_nonfalse_return(statement) for statement in body):
-        return None
     root_names = {subject_param_name}
     if alias_name is not None:
         root_names.add(alias_name)
-    accessed_attr_names = _attribute_names_for_roots(function, root_names=root_names)
-    if len(accessed_attr_names) < min_guard_count:
+    access_profile = _guard_validator_access_profile(
+        function, body, root_names=root_names, min_guard_count=min_guard_count
+    )
+    if access_profile is None:
         return None
+    guard_count, accessed_attr_names = access_profile
     helper_call_names = tuple(
         sorted(
             {
@@ -5270,6 +5349,40 @@ def _guard_validator_function_candidate(
         accessed_attr_names=accessed_attr_names,
         helper_call_names=helper_call_names,
     )
+
+
+def _module_function_single_parameter(
+    qualname: str, function: ast.FunctionDef | ast.AsyncFunctionDef
+) -> str | None:
+    if "." in qualname:
+        return None
+    return single_item(_parameter_names(function))
+
+
+def _guard_validator_access_profile(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    body: list[ast.stmt],
+    *,
+    root_names: set[str],
+    min_guard_count: int,
+) -> tuple[int, tuple[str, ...]] | None:
+    if len(body) < min_guard_count + 1:
+        return None
+    guard_count = sum(
+        1
+        for statement in body
+        if isinstance(statement, ast.If)
+        and not statement.orelse
+        and _returns_false_only(statement.body)
+    )
+    if guard_count < min_guard_count:
+        return None
+    if not any(_contains_nonfalse_return(statement) for statement in body):
+        return None
+    accessed_attr_names = _attribute_names_for_roots(function, root_names=root_names)
+    if len(accessed_attr_names) < min_guard_count:
+        return None
+    return guard_count, accessed_attr_names
 
 
 def _repeated_guard_validator_family_candidates(
@@ -8244,6 +8357,17 @@ class RepeatedResultAssemblyPipelineCandidate:
     file_path: str
     shared_tail: tuple[PipelineAssemblyStage, ...]
     functions: tuple[ResultAssemblyPipelineFunction, ...]
+
+
+@dataclass(frozen=True)
+class FailSoftEffectPipelineCandidate(FunctionLineWitnessCandidate):
+    line_count: int
+    guard_count: int
+    normal_form: str
+    guarded_binding_names: tuple[str, ...]
+    stage_kinds: tuple[str, ...]
+    success_return_kind: str
+    helper_call_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

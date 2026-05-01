@@ -15,10 +15,19 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, ClassVar, TypeAlias, TypeVar, cast
+from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .semantic_match import (
+    EffectStep,
+    Maybe,
+    as_ast,
+    single_assign_target,
+    single_call_arg,
+    single_item,
+    single_return_call,
+)
 from .observation_graph import (
     NominalWitnessGroup,
     ObservationCohort,
@@ -1128,37 +1137,107 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
+class _ProjectionOuterCallStep(EffectStep[Any, Any], metaclass=AutoRegisterMeta):
+    __registry_key__ = "step_id"
+    __skip_if_no_key__ = True
+
+    step_id: ClassVar[str | None] = None
+    registration_order: ClassVar[int] = 0
+
+
+class _SingleReturnCallStep(_ProjectionOuterCallStep):
+    step_id = "single_return_call"
+    registration_order = 10
+
+    def apply(self, value: list[ast.stmt]) -> ast.Call | None:
+        return single_return_call(value)
+
+
+class _SingleArgumentCallStep(_ProjectionOuterCallStep):
+    step_id = "single_argument_call"
+    registration_order = 20
+
+    def apply(self, value: ast.Call) -> ast.Call | None:
+        return value if len(value.args) == 1 else None
+
+
+class _TerminalCalleeFamilyStep(_ProjectionOuterCallStep):
+    step_id = "terminal_callee_family"
+    registration_order = 30
+    terminal_names = frozenset({"tuple", "list", "set"})
+
+    def apply(self, value: ast.Call) -> ast.Call | None:
+        return value if _terminal_name(value.func) in self.terminal_names else None
+
+
+@lru_cache(maxsize=1)
+def _projection_outer_call_steps() -> tuple[_ProjectionOuterCallStep, ...]:
+    registry = cast(
+        dict[str, type[_ProjectionOuterCallStep]], _ProjectionOuterCallStep.__registry__
+    )
+    return tuple(
+        step_type()
+        for step_type in sorted(
+            registry.values(), key=lambda item: item.registration_order
+        )
+    )
+
+
+def _projection_outer_inner_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ast.Call] | None:
+    outer_call = (
+        Maybe.of(_trim_docstring_body(function.body))
+        .bind_all(_projection_outer_call_steps())
+        .unwrap_or_none()
+    )
+    if outer_call is None:
+        return None
+    inner_call = as_ast(single_call_arg(outer_call), ast.Call)
+    if inner_call is not None and len(inner_call.args) != 1:
+        inner_call = None
+    if inner_call is None:
+        return None
+    outer_call_name = _terminal_name(outer_call.func)
+    assert outer_call_name is not None
+    return outer_call_name, inner_call
+
+
+def _projection_generator_attribute(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.GeneratorExp) or len(node.generators) != 1:
+        return None
+    comp = node.generators[0]
+    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
+        return None
+    if not isinstance(node.elt, ast.Attribute) or not isinstance(node.elt.value, ast.Name):
+        return None
+    if node.elt.value.id != comp.target.id:
+        return None
+    return node.elt.attr
+
+
+def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:
+    aggregator_name = _terminal_name(inner_call.func)
+    if aggregator_name is None:
+        return None
+    projected_attribute = _projection_generator_attribute(inner_call.args[0])
+    if projected_attribute is None:
+        return None
+    return aggregator_name, projected_attribute
+
+
 def _projection_helper_shape_from_function(
     parsed_module: ParsedModule,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ProjectionHelperShape | None:
-    body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
+    call_pair = _projection_outer_inner_calls(function)
+    if call_pair is None:
         return None
-    returned = body[0].value
-    if not isinstance(returned, ast.Call) or len(returned.args) != 1:
+    outer_call_name, inner_call = call_pair
+    inner_shape = _projection_inner_shape(inner_call)
+    if inner_shape is None:
         return None
-    outer_call_name = _terminal_name(returned.func)
-    if outer_call_name not in {"tuple", "list", "set"}:
-        return None
-    inner_call = returned.args[0]
-    if not isinstance(inner_call, ast.Call) or len(inner_call.args) != 1:
-        return None
-    aggregator_name = _terminal_name(inner_call.func)
-    if aggregator_name is None:
-        return None
-    generator = inner_call.args[0]
-    if not isinstance(generator, ast.GeneratorExp) or len(generator.generators) != 1:
-        return None
-    comp = generator.generators[0]
-    if comp.is_async or comp.ifs or not isinstance(comp.target, ast.Name):
-        return None
-    if not isinstance(generator.elt, ast.Attribute):
-        return None
-    if not isinstance(generator.elt.value, ast.Name):
-        return None
-    if generator.elt.value.id != comp.target.id:
-        return None
+    aggregator_name, projected_attribute = inner_shape
     return ProjectionHelperShape(
         file_path=str(parsed_module.path),
         function_name=function.name,
@@ -1166,7 +1245,7 @@ def _projection_helper_shape_from_function(
         outer_call_name=outer_call_name,
         aggregator_name=aggregator_name,
         iterable_fingerprint=fingerprint_function(function),
-        projected_attribute=generator.elt.attr,
+        projected_attribute=projected_attribute,
     )
 
 
@@ -1211,41 +1290,52 @@ def _accessor_wrapper_candidate_from_function(
     return None
 
 
+def _scoped_shape_wrapper_node_types(
+    function: ast.FunctionDef,
+    body: list[ast.stmt],
+) -> tuple[str, ...] | None:
+    if len(function.args.args) != 2 or len(body) < 3:
+        return None
+    first_stmt, second_stmt = body[:2]
+    if not _assigns_observation_node(first_stmt, function.args.args[1].arg):
+        return None
+    if not isinstance(second_stmt, ast.If):
+        return None
+    node_types = _guarded_node_types(second_stmt.test, "node")
+    if not node_types or not _if_returns_none(second_stmt):
+        return None
+    return node_types
+
+
+def _assigns_observation_node(statement: ast.stmt, observation_arg_name: str) -> bool:
+    return bool(
+        isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+        and statement.targets[0].id == "node"
+        and isinstance(statement.value, ast.Attribute)
+        and isinstance(statement.value.value, ast.Name)
+        and statement.value.value.id == observation_arg_name
+        and statement.value.attr == "node"
+    )
+
+
+def _if_returns_none(statement: ast.If) -> bool:
+    return bool(
+        len(statement.body) == 1
+        and isinstance(statement.body[0], ast.Return)
+        and isinstance(statement.body[0].value, ast.Constant)
+        and statement.body[0].value.value is None
+    )
+
+
 def _scoped_shape_wrapper_function_from_function(
     parsed_module: ParsedModule,
     function: ast.FunctionDef,
 ) -> ScopedShapeWrapperFunction | None:
-    if len(function.args.args) != 2:
-        return None
     body = _trim_docstring_body(function.body)
-    if len(body) < 3:
-        return None
-    first_stmt = body[0]
-    if not (
-        isinstance(first_stmt, ast.Assign)
-        and len(first_stmt.targets) == 1
-        and isinstance(first_stmt.targets[0], ast.Name)
-        and first_stmt.targets[0].id == "node"
-        and isinstance(first_stmt.value, ast.Attribute)
-        and isinstance(first_stmt.value.value, ast.Name)
-        and first_stmt.value.value.id == function.args.args[1].arg
-        and first_stmt.value.attr == "node"
-    ):
-        return None
-    second_stmt = body[1]
-    if not isinstance(second_stmt, ast.If):
-        return None
-    node_types = _guarded_node_types(second_stmt.test, "node")
-    if not node_types:
-        return None
-    if not (
-        len(second_stmt.body) == 1
-        and isinstance(second_stmt.body[0], ast.Return)
-        and isinstance(second_stmt.body[0].value, ast.Constant)
-        and second_stmt.body[0].value.value is None
-    ):
-        return None
-    if not isinstance(body[-1], ast.Return) or body[-1].value is None:
+    node_types = _scoped_shape_wrapper_node_types(function, body)
+    if node_types is None or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return None
     return ScopedShapeWrapperFunction(
         file_path=str(parsed_module.path),
@@ -1255,31 +1345,44 @@ def _scoped_shape_wrapper_function_from_function(
     )
 
 
-def _scoped_shape_wrapper_spec_from_assign(
-    parsed_module: ParsedModule,
-    node: ast.Assign,
-) -> ScopedShapeWrapperSpec | None:
-    if len(node.targets) != 1:
+def _scoped_shape_spec_call(node: ast.Assign) -> tuple[str, ast.Call] | None:
+    target = as_ast(single_assign_target(node), ast.Name)
+    call = as_ast(node.value, ast.Call)
+    if target is None or call is None:
         return None
-    target = node.targets[0]
-    if not isinstance(target, ast.Name):
+    if _terminal_name(call.func) != "ScopedShapeSpec":
         return None
-    if not isinstance(node.value, ast.Call):
-        return None
-    if _terminal_name(node.value.func) != "ScopedShapeSpec":
-        return None
+    return target.id, call
+
+
+def _scoped_shape_spec_keywords(call: ast.Call) -> tuple[str, tuple[str, ...]] | None:
     node_types: tuple[str, ...] = ()
     function_name = None
-    for keyword in node.value.keywords:
+    for keyword in call.keywords:
         if keyword.arg == "node_types":
             node_types = _type_name_tuple(keyword.value)
         if keyword.arg == "build_shape":
             function_name = _terminal_name(keyword.value)
     if not node_types or function_name is None:
         return None
+    return function_name, node_types
+
+
+def _scoped_shape_wrapper_spec_from_assign(
+    parsed_module: ParsedModule,
+    node: ast.Assign,
+) -> ScopedShapeWrapperSpec | None:
+    spec_call = _scoped_shape_spec_call(node)
+    if spec_call is None:
+        return None
+    spec_name, call = spec_call
+    keywords = _scoped_shape_spec_keywords(call)
+    if keywords is None:
+        return None
+    function_name, node_types = keywords
     return ScopedShapeWrapperSpec(
         file_path=str(parsed_module.path),
-        spec_name=target.id,
+        spec_name=spec_name,
         lineno=node.lineno,
         function_name=function_name,
         node_types=node_types,
@@ -1311,27 +1414,29 @@ def _setter_wrapper_candidate(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     body: list[ast.stmt],
 ) -> tuple[str, str] | None:
-    if len(function.args.args) != 2:
+    if len(function.args.args) != 2 or len(body) != 1:
         return None
-    if len(body) != 1 or not isinstance(body[0], ast.Assign):
+    assignment = _self_attribute_assignment(body[0], function.args.args[1].arg)
+    if assignment is None:
         return None
-    assign = body[0]
-    if len(assign.targets) != 1:
-        return None
-    target = assign.targets[0]
-    value_arg = function.args.args[1].arg
-    if not (
-        isinstance(target, ast.Attribute)
-        and isinstance(target.value, ast.Name)
-        and target.value.id == "self"
-    ):
-        return None
-    if not (isinstance(assign.value, ast.Name) and assign.value.id == value_arg):
-        return None
+    target = assignment
     observed_attribute = _self_attribute_name(target)
     if observed_attribute is None:
         return None
     return ast.unparse(target), observed_attribute
+
+
+def _self_attribute_assignment(statement: ast.stmt, value_arg: str) -> ast.Attribute | None:
+    assignment = as_ast(statement, ast.Assign)
+    if assignment is None:
+        return None
+    target = single_assign_target(assignment)
+    if not _is_self_attribute_expression(target):
+        return None
+    if not (isinstance(assignment.value, ast.Name) and assignment.value.id == value_arg):
+        return None
+    assert isinstance(target, ast.Attribute)
+    return target
 
 
 def _is_self_attribute_expression(node: ast.AST) -> bool:
@@ -1343,11 +1448,11 @@ def _is_self_attribute_expression(node: ast.AST) -> bool:
 
 
 def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
-    if not isinstance(node, ast.Call) or len(node.args) != 1:
+    call = as_ast(node, ast.Call)
+    arg = single_call_arg(node)
+    if call is None or arg is None or not isinstance(call.func, ast.Name):
         return None
-    if not isinstance(node.func, ast.Name):
-        return None
-    if node.func.id not in {
+    if call.func.id not in {
         "tuple",
         "list",
         "set",
@@ -1359,12 +1464,10 @@ def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
         "sorted",
     }:
         return None
-    if not _is_self_attribute_expression(node.args[0]):
-        return None
-    observed_attribute = _self_attribute_name(node.args[0])
+    observed_attribute = _self_attribute_name(arg)
     if observed_attribute is None:
         return None
-    return node.func.id, observed_attribute
+    return call.func.id, observed_attribute
 
 
 def _self_attribute_name(node: ast.AST) -> str | None:
@@ -1572,22 +1675,22 @@ def _sentinel_type_observation(
     parsed_module: ParsedModule,
     node: ast.Assign,
 ) -> SentinelTypeObservation | None:
-    if len(node.targets) != 1:
-        return None
-    target = node.targets[0]
-    if not isinstance(target, ast.Name):
-        return None
-    if not isinstance(node.value, ast.Call):
-        return None
-    if not isinstance(node.value.func, ast.Call):
-        return None
-    if _terminal_name(node.value.func.func) != _TYPE_BUILTIN:
+    target = single_item(node.targets)
+    if not isinstance(target, ast.Name) or not _is_type_call_constructor(node.value):
         return None
     return SentinelTypeObservation(
         file_path=str(parsed_module.path),
         line=node.lineno,
         symbol=target.id,
         sentinel_name=target.id,
+    )
+
+
+def _is_type_call_constructor(node: ast.AST) -> bool:
+    return bool(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Call)
+        and _terminal_name(node.func.func) == _TYPE_BUILTIN
     )
 
 

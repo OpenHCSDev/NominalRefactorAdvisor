@@ -3005,6 +3005,189 @@ class RepeatedResultAssemblyPipelineDetector(CandidateFindingDetector):
         )
 
 
+@dataclass(frozen=True)
+class _NormalFormScaffoldSpec:
+    normal_form: str
+    matcher_name: str
+    method_name: str
+    input_name: str
+    step_base_name: str
+    step_names: tuple[str, ...]
+
+    def render(self) -> str:
+        step_rows = "\n".join(f"        {step_name}()," for step_name in self.step_names)
+        return (
+            f"class {self.step_base_name}(EffectStep, ABC):\n"
+            f"    normal_form = {self.normal_form!r}\n\n"
+            "@dataclass(frozen=True)\n"
+            f"class {self.matcher_name}:\n"
+            f"    steps: tuple[{self.step_base_name}, ...] = (\n"
+            f"{step_rows}\n"
+            "    )\n\n"
+            f"    def {self.method_name}(self, {self.input_name}):\n"
+            f"        return Maybe.of({self.input_name}).bind_all(self.steps)"
+        )
+
+
+_DEFAULT_NORMAL_FORM_SCAFFOLD = (
+    "class CandidateStep(EffectStep, ABC):\n"
+    "    normal_form = 'typed_effect_carrier'\n\n"
+    "@dataclass(frozen=True)\n"
+    "class CandidateMatcher:\n"
+    "    steps: tuple[CandidateStep, ...] = (ExtractFirst(), ExtractSecond(), BuildWitness())\n\n"
+    "    def build_candidate(self, source):\n"
+    "        return Maybe.of(source).bind_all(self.steps)"
+)
+_NORMAL_FORM_SCAFFOLDS = {
+    spec_name: _NormalFormScaffoldSpec(
+        spec_name, matcher_name, method_name, input_name, step_base_name, steps
+    )
+    for spec_name, matcher_name, method_name, input_name, step_base_name, steps in (
+        (
+            "ast_shape_matcher",
+            "AstShapeMatcher",
+            "match_shape",
+            "node",
+            "AstShapeMatcherStep",
+            (
+                "ExpectCall",
+                "ExpectSingleArgument",
+                "ExpectNamedAstShape",
+                "BuildWitness",
+            ),
+        ),
+        (
+            "transport_call_chain_matcher",
+            "TransportChainMatcher",
+            "match_transport_chain",
+            "function",
+            "TransportChainMatcherStep",
+            (
+                "SingleReturnCall",
+                "CallChain",
+                "TransportedValues",
+                "BuildTransportWitness",
+            ),
+        ),
+        (
+            "comparison_guard_matcher",
+            "ComparisonGuardMatcher",
+            "match_comparison_guard",
+            "test",
+            "ComparisonGuardMatcherStep",
+            (
+                "SingleCompare",
+                "EnumMemberPair",
+                "BuildGuardPolicy",
+            ),
+        ),
+        (
+            "loop_fold_matcher",
+            "LoopFoldMatcher",
+            "match_loop_fold",
+            "body",
+            "LoopFoldMatcherStep",
+            (
+                "ExpectAssignment",
+                "ExpectLoop",
+                "ExpectReturnedAccumulator",
+                "BuildFoldWitness",
+            ),
+        ),
+        (
+            "statement_sequence_matcher",
+            "StatementSequenceMatcher",
+            "match_sequence",
+            "function",
+            "StatementSequenceMatcherStep",
+            (
+                "ExpectRoleSequence",
+                "BuildWitness",
+            ),
+        ),
+    )
+}
+
+
+class FailSoftEffectPipelineDetector(CandidateFindingDetector):
+    detector_id = "fail_soft_effect_pipeline"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Fail-soft optional pipeline should use a typed effect carrier",
+        why=(
+            "A function that repeatedly exits through `return None` is manually threading an optional effect "
+            "through every extraction stage. The semantic-compressor normal form is a typed `Maybe`/`Result` "
+            "carrier plus nominal matcher-step objects that own absence/provenance once instead of restating "
+            "the guard at every stage."
+        ),
+        capability_gap="single typed effect carrier with nominal inherited matcher steps for optional extraction, validation, and provenance flow",
+        relation_context="same fail-soft absence effect is manually re-threaded across one extraction pipeline",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+        ),
+        observation_tags=(
+            ObservationTag.PREDICATE_CHAIN,
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    _DEFAULT_NORMAL_FORM_SCAFFOLD = _DEFAULT_NORMAL_FORM_SCAFFOLD
+    _NORMAL_FORM_SCAFFOLDS: ClassVar[dict[str, _NormalFormScaffoldSpec]] = (
+        _NORMAL_FORM_SCAFFOLDS
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _fail_soft_effect_pipeline_candidates(module, config)
+
+    def _normal_form_scaffold(self, normal_form: str) -> str:
+        spec = self._NORMAL_FORM_SCAFFOLDS.get(normal_form)
+        return (
+            spec.render()
+            if spec is not None
+            else self._DEFAULT_NORMAL_FORM_SCAFFOLD
+        )
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        pipeline_candidate = cast(FailSoftEffectPipelineCandidate, candidate)
+        binding_preview = ", ".join(pipeline_candidate.guarded_binding_names[:5])
+        helper_preview = ", ".join(pipeline_candidate.helper_call_names[:5])
+        binding_suffix = (
+            f" over guarded bindings {binding_preview}" if binding_preview else ""
+        )
+        helper_suffix = (
+            f" helper calls include {helper_preview}." if helper_preview else ""
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"`{pipeline_candidate.function_name}` manually threads {pipeline_candidate.guard_count} "
+                f"fail-soft guard stages{binding_suffix} before returning {pipeline_candidate.success_return_kind}; "
+                f"normal form is `{pipeline_candidate.normal_form}`."
+                f"{helper_suffix}"
+            ),
+            (pipeline_candidate.evidence,),
+            scaffold=self._normal_form_scaffold(pipeline_candidate.normal_form),
+            codemod_patch=(
+                f"# Collapse repeated `if value is None: return None` guard stages into `{pipeline_candidate.normal_form}`.\n"
+                "# Keep domain extraction semantics on nominal `EffectStep` subclasses; let the typed carrier own absence and provenance flow."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=pipeline_candidate.line_count,
+                branch_site_count=pipeline_candidate.guard_count,
+                call_site_count=len(pipeline_candidate.helper_call_names),
+                parameter_count=len(pipeline_candidate.guarded_binding_names),
+                callee_family_count=max(1, len(pipeline_candidate.helper_call_names)),
+            ),
+        )
+
+
 class NestedBuilderShellDetector(CandidateFindingDetector):
     detector_id = "nested_builder_shell"
     finding_spec = FindingSpec(

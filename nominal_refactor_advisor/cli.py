@@ -139,6 +139,12 @@ _CLI_ARGUMENT_SPECS = (
         help="Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
     ),
     CliArgumentSpec(
+        flags=("--min-effect-guard-stages",),
+        value_type=int,
+        default=5,
+        help="Minimum fail-soft guard stages before surfacing an effect-pipeline finding.",
+    ),
+    CliArgumentSpec(
         flags=("--exclude-pattern",),
         action="append",
         dest="excluded_pattern_ids",

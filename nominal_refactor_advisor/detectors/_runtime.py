@@ -9,6 +9,70 @@ from __future__ import annotations
 from ._base import *
 from ._helpers import *
 
+
+def _literal_dispatch_authority_name(axis_expression: str) -> str:
+    words = "".join(
+        character if character.isalnum() else "_"
+        for character in axis_expression
+    ).strip("_")
+    return f"dispatch_{words or 'case'}"
+
+
+def _literal_dispatch_spec_table_name(axis_expression: str) -> str:
+    return f"_{_literal_dispatch_authority_name(axis_expression).upper()}_SPECS"
+
+
+def _literal_dispatch_case_class_name(literal_case: str, index: int) -> str:
+    words = "".join(
+        character if character.isalnum() else "_"
+        for character in literal_case.strip("'\"")
+    )
+    return f"{_camel_case(words) or f'Case{index}'}DispatchCase"
+
+
+def _literal_dispatch_authority_scaffold(
+    observation: LiteralDispatchObservation,
+) -> str:
+    dispatch_name = _literal_dispatch_authority_name(observation.axis_expression)
+    table_name = _literal_dispatch_spec_table_name(observation.axis_expression)
+    case_classes = tuple(
+        _literal_dispatch_case_class_name(case, index)
+        for index, case in enumerate(observation.literal_cases, start=1)
+    )
+    case_class_blocks = "\n\n".join(
+        f"class {class_name}(DispatchCase):\n"
+        f"    case = {case}\n\n"
+        "    def apply(self, *args, **kwargs):\n"
+        "        ..."
+        for class_name, case in zip(case_classes, observation.literal_cases)
+    )
+    case_rows = "\n".join(
+        f"    {class_name}.case: {class_name}(),"
+        for class_name in case_classes
+    )
+    return (
+        "class DispatchCase(ABC):\n"
+        "    case: object\n"
+        "    @abstractmethod\n"
+        "    def apply(self, *args, **kwargs): ...\n\n"
+        f"{case_class_blocks}\n\n"
+        f"{table_name} = {{\n"
+        f"{case_rows}\n"
+        "}\n\n"
+        f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
+        f"    return {table_name}[axis_value].apply(*args, **kwargs)"
+    )
+
+
+def _literal_dispatch_authority_patch(
+    observation: LiteralDispatchObservation,
+) -> str:
+    return (
+        f"# Replace the repeated `{observation.axis_expression} == literal` branches with one typed case table.\n"
+        "# Move the shared branch mechanics into the dispatcher/renderer; keep per-case semantics on `DispatchCase` subclasses.\n"
+        "# If each case owns behavior instead of data, promote the rows into AutoRegisterMeta subclasses keyed by the same axis."
+    )
+
 class RepeatedBuilderCallDetector(IssueDetector):
     detector_id = "repeated_builder_calls"
     finding_spec = FindingSpec(
@@ -1409,6 +1473,8 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
                         observation.axis_expression,
                         observation.literal_cases,
                     ),
+                    scaffold=_literal_dispatch_authority_scaffold(observation),
+                    codemod_patch=_literal_dispatch_authority_patch(observation),
                 )
             )
         return findings

@@ -48,16 +48,43 @@ from nominal_refactor_advisor.observation_graph import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
 
 
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
+FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
 REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
 REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
     "repeated_validate_shape_guard_family"
 )
+
+
+class _IncrementStep(EffectStep[int, int]):
+    step_id = "increment"
+
+    def apply(self, value: int) -> int | None:
+        return value + 1
+
+
+class _EvenOnlyStep(EffectStep[int, int]):
+    step_id = "even_only"
+
+    def apply(self, value: int) -> int | None:
+        return value if value % 2 == 0 else None
+
+
+def test_maybe_binds_nominal_effect_steps() -> None:
+    assert (
+        Maybe.of(1).bind_all((_IncrementStep(), _EvenOnlyStep())).unwrap_or_none()
+        == 2
+    )
+    assert (
+        Maybe.of(2).bind_all((_IncrementStep(), _EvenOnlyStep())).unwrap_or_none()
+        is None
+    )
 STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
     "string_backed_reflective_nominal_lookup"
 )
@@ -2645,6 +2672,110 @@ class Sampler:
     assert "sample_biased_rotations" in finding.summary
 
 
+def test_detects_fail_soft_effect_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def build_route(node):
+    head = extract_head(node)
+    if head is None:
+        return None
+    route = parse_route(head)
+    if route is None:
+        return None
+    owner = route_owner(route)
+    if owner is None:
+        return None
+    policy = policy_for(owner)
+    if policy is None:
+        return None
+    payload = build_payload(route, policy)
+    if payload is None:
+        return None
+    return RouteWitness(owner=owner, payload=payload)
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+    )
+
+    assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
+    assert "5 fail-soft guard stages" in finding.summary
+    assert "typed_effect_carrier" in finding.summary
+    assert "Maybe" in (finding.scaffold or "")
+    assert "EffectStep" in (finding.scaffold or "")
+    assert "nominal `EffectStep` subclasses" in (finding.codemod_patch or "")
+
+
+def test_ignores_short_fail_soft_helper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def build_route(node):
+    head = extract_head(node)
+    if head is None:
+        return None
+    route = parse_route(head)
+    if route is None:
+        return None
+    return RouteWitness(route)
+""",
+    )
+
+    assert not any(
+        finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_classifies_fail_soft_call_chain_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def _call_chain_from_outer_call(node):
+    return node
+
+
+def _call_chain_transport_values(node):
+    return node
+
+
+def build_route(node):
+    chain = _call_chain_from_outer_call(node)
+    if chain is None:
+        return None
+    values = _call_chain_transport_values(chain)
+    if values is None:
+        return None
+    root = values[0]
+    if root is None:
+        return None
+    owner = values[1]
+    if owner is None:
+        return None
+    payload = values[2]
+    if payload is None:
+        return None
+    return RouteWitness(root, owner, payload)
+""",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+    )
+
+    assert "transport_call_chain_matcher" in finding.summary
+    assert "match_transport_chain" in (finding.scaffold or "")
+
+
 def test_detects_nested_builder_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3683,7 +3814,16 @@ def walk(node):
     )
 
     findings = analyze_path(tmp_path)
-    assert any(finding.detector_id == "inline_literal_dispatch" for finding in findings)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "inline_literal_dispatch"
+    )
+    assert finding.scaffold is not None
+    assert "DispatchCase(ABC)" in finding.scaffold
+    assert "dispatch_node_kind" in finding.scaffold
+    assert finding.codemod_patch is not None
+    assert "typed case table" in finding.codemod_patch
 
 
 def test_detects_bidirectional_registry(tmp_path: Path) -> None:

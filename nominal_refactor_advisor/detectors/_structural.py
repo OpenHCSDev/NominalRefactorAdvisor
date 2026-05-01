@@ -1720,48 +1720,10 @@ def _accumulator_fold_method(
     method: ast.FunctionDef,
 ) -> _AccumulatorFoldMethod | None:
     body = _trim_docstring_body(method.body)
-    if len(body) != 3:
+    fold_shape = _accumulator_fold_shape(body)
+    if fold_shape is None:
         return None
-    assign, loop, returned = body
-    if not (
-        isinstance(assign, ast.Assign)
-        and len(assign.targets) == 1
-        and isinstance(assign.targets[0], ast.Name)
-        and isinstance(assign.value, ast.Call)
-        and not assign.value.args
-        and not assign.value.keywords
-        and isinstance(loop, ast.For)
-        and isinstance(returned, ast.Return)
-    ):
-        return None
-    accumulator_name = assign.targets[0].id
-    accumulator_type_name = ast.unparse(assign.value.func)
-    if not isinstance(loop.target, ast.Name):
-        return None
-    if len(loop.body) != 1 or not isinstance(loop.body[0], ast.Expr):
-        return None
-    step_call = loop.body[0].value
-    if not (
-        isinstance(step_call, ast.Call)
-        and isinstance(step_call.func, ast.Attribute)
-        and isinstance(step_call.func.value, ast.Name)
-        and step_call.func.value.id == accumulator_name
-        and len(step_call.args) == 1
-        and not step_call.keywords
-        and isinstance(step_call.args[0], ast.Name)
-        and step_call.args[0].id == loop.target.id
-    ):
-        return None
-    if not (
-        returned.value is not None
-        and isinstance(returned.value, ast.Call)
-        and isinstance(returned.value.func, ast.Attribute)
-        and isinstance(returned.value.func.value, ast.Name)
-        and returned.value.func.value.id == accumulator_name
-        and not returned.value.args
-        and not returned.value.keywords
-    ):
-        return None
+    accumulator_name, accumulator_type_name, loop, step_call, result_call = fold_shape
     args = method.args.args
     offset = 1 if args and args[0].arg in {"self", "cls"} else 0
     if len(args) <= offset:
@@ -1775,8 +1737,70 @@ def _accumulator_fold_method(
         source_parameter_name=source_parameter,
         accumulator_type_name=accumulator_type_name,
         step_method_name=step_call.func.attr,
-        result_method_name=returned.value.func.attr,
+        result_method_name=result_call.func.attr,
     )
+
+
+def _accumulator_fold_shape(
+    body: list[ast.stmt],
+) -> tuple[str, str, ast.For, ast.Call, ast.Call] | None:
+    if len(body) != 3:
+        return None
+    assign, loop, returned = body
+    accumulator = _accumulator_initializer(assign)
+    if accumulator is None or not isinstance(loop, ast.For) or not isinstance(returned, ast.Return):
+        return None
+    accumulator_name, accumulator_type_name = accumulator
+    step_call = _accumulator_step_call(loop, accumulator_name)
+    result_call = _accumulator_result_call(returned, accumulator_name)
+    if step_call is None or result_call is None:
+        return None
+    return accumulator_name, accumulator_type_name, loop, step_call, result_call
+
+
+def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:
+    if not isinstance(statement, ast.Assign):
+        return None
+    target = as_ast(single_assign_target(statement), ast.Name)
+    call = as_ast(statement.value, ast.Call)
+    if target is None or call is None or call.args or call.keywords:
+        return None
+    return target.id, ast.unparse(call.func)
+
+
+def _accumulator_step_call(loop: ast.For, accumulator_name: str) -> ast.Call | None:
+    target = as_ast(loop.target, ast.Name)
+    expression = as_ast(single_item(loop.body), ast.Expr)
+    call = as_ast(expression.value if expression is not None else None, ast.Call)
+    arg = single_item(call.args) if call is not None else None
+    if not (
+        target is not None
+        and call is not None
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == accumulator_name
+        and not call.keywords
+        and isinstance(arg, ast.Name)
+        and arg.id == target.id
+    ):
+        return None
+    return call
+
+
+def _accumulator_result_call(
+    returned: ast.Return, accumulator_name: str
+) -> ast.Call | None:
+    call = as_ast(returned.value, ast.Call)
+    if not (
+        call is not None
+        and isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == accumulator_name
+        and not call.args
+        and not call.keywords
+    ):
+        return None
+    return call
 
 
 def _accumulator_fold_family_candidates(

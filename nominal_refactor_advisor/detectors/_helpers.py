@@ -1074,12 +1074,38 @@ def _linear_query_signature(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, tuple[str, ...], str, str] | None:
     body = _trim_docstring_body(node.body)
+    loop = _linear_query_loop(body)
+    if loop is None:
+        return None
+    result_name = cast(ast.Name, loop.target).id
+    return_expr = _linear_query_return_expr(loop, result_name)
+    raised = _linear_query_raised_exception(body)
+    if return_expr is None or raised is None:
+        return None
+    exception_name, exception_names = raised
+    query_key_names = _linear_query_key_names(
+        node, loop, return_expr, exception_names
+    )
+    if not query_key_names:
+        return None
+    return (
+        ast.unparse(loop.iter),
+        query_key_names,
+        ast.unparse(return_expr),
+        exception_name,
+    )
+
+
+def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
     if len(body) < 2:
         return None
     loop = next((statement for statement in body if isinstance(statement, ast.For)), None)
     if loop is None or not isinstance(loop.target, ast.Name):
         return None
-    result_name = loop.target.id
+    return loop
+
+
+def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
     return_exprs = [
         current.value
         for current in _walk_nodes(loop)
@@ -1087,6 +1113,12 @@ def _linear_query_signature(
     ]
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
+    return return_exprs[0]
+
+
+def _linear_query_raised_exception(
+    body: list[ast.stmt],
+) -> tuple[str, tuple[str, ...]] | None:
     raised = next(
         (
             _raised_exception_name(statement)
@@ -1100,6 +1132,15 @@ def _linear_query_signature(
     exception_name, exception_names = raised
     if exception_name not in {"KeyError", "LookupError", "ValueError"}:
         return None
+    return exception_name, exception_names
+
+
+def _linear_query_key_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    loop: ast.For,
+    return_expr: ast.AST,
+    exception_names: tuple[str, ...],
+) -> tuple[str, ...]:
     parameter_names = tuple(
         arg.arg
         for arg in (
@@ -1113,7 +1154,7 @@ def _linear_query_signature(
         sorted(
             name
             for name in parameter_names
-            if any(_name_mentions(current, name) for current in return_exprs)
+            if _name_mentions(return_expr, name)
             or name in exception_names
             or any(
                 isinstance(current, ast.If) and _name_mentions(current.test, name)
@@ -1121,14 +1162,7 @@ def _linear_query_signature(
             )
         )
     )
-    if not query_key_names:
-        return None
-    return (
-        ast.unparse(loop.iter),
-        query_key_names,
-        ast.unparse(return_exprs[0]),
-        exception_name,
-    )
+    return query_key_names
 
 def _derived_query_index_candidates(
     module: ParsedModule,
@@ -2608,60 +2642,81 @@ def _registered_type_match_assignment_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, str, str] | None:
     body = _trim_docstring_body(list(method.body))
+    assignment = _registered_type_list_assignment(body)
+    if assignment is None:
+        return None
+    target_name, list_comp = assignment
+    generator = _registered_type_list_generator(list_comp)
+    if generator is None:
+        return None
+    predicate_shape = _registered_type_predicate_shape(generator, method)
+    if predicate_shape is None:
+        return None
+    return (target_name, *predicate_shape)
+
+
+def _registered_type_list_assignment(
+    body: list[ast.stmt],
+) -> tuple[str, ast.ListComp] | None:
     assignment = next(
         (
             statement
             for statement in body
-            if isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-            and isinstance(statement.value, ast.ListComp)
+            if as_ast(single_assign_target(statement), ast.Name) is not None
+            and as_ast(statement.value if isinstance(statement, ast.Assign) else None, ast.ListComp)
+            is not None
         ),
         None,
     )
+    assignment = as_ast(assignment, ast.Assign)
     if assignment is None:
         return None
-    list_comp = assignment.value
-    if len(list_comp.generators) != 1:
+    target = as_ast(single_assign_target(assignment), ast.Name)
+    list_comp = as_ast(assignment.value, ast.ListComp)
+    if target is None or list_comp is None:
         return None
-    generator = list_comp.generators[0]
-    if (
-        generator.is_async
-        or not isinstance(generator.target, ast.Name)
-        or not isinstance(list_comp.elt, ast.Name)
-        or list_comp.elt.id != generator.target.id
-    ):
+    return target.id, list_comp
+
+
+def _registered_type_list_generator(
+    list_comp: ast.ListComp,
+) -> ast.comprehension | None:
+    generator = single_item(list_comp.generators)
+    if generator is None or generator.is_async:
+        return None
+    target = as_ast(generator.target, ast.Name)
+    element = as_ast(list_comp.elt, ast.Name)
+    if target is None or element is None:
+        return None
+    if element.id != target.id:
         return None
     iter_call = generator.iter
     if not (
         isinstance(iter_call, ast.Call)
         and not iter_call.args
         and not iter_call.keywords
-        and isinstance(iter_call.func, ast.Attribute)
-        and isinstance(iter_call.func.value, ast.Name)
-        and iter_call.func.value.id == "cls"
-        and iter_call.func.attr == "registered_types"
+        and call_attribute_name(iter_call, owner_name="cls") == "registered_types"
     ):
         return None
-    if len(generator.ifs) != 1:
-        return None
-    predicate = generator.ifs[0]
+    return generator
+
+
+def _registered_type_predicate_shape(
+    generator: ast.comprehension,
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str] | None:
+    predicate = as_ast(single_item(generator.ifs), ast.Call)
+    argument = single_item(predicate.args) if predicate is not None else None
+    target_name = name_id(generator.target)
     if not (
-        isinstance(predicate, ast.Call)
-        and len(predicate.args) == 1
+        predicate is not None
         and not predicate.keywords
-        and isinstance(predicate.func, ast.Attribute)
-        and isinstance(predicate.func.value, ast.Name)
-        and predicate.func.value.id == generator.target.id
-        and isinstance(predicate.args[0], ast.Name)
-        and predicate.args[0].id in _parameter_names(method)
+        and target_name is not None
+        and call_attribute_name(predicate, owner_name=target_name) is not None
+        and name_id(argument) in _parameter_names(method)
     ):
         return None
-    return (
-        assignment.targets[0].id,
-        predicate.func.attr,
-        predicate.args[0].id,
-    )
+    return cast(ast.Attribute, predicate.func).attr, cast(ast.Name, argument).id
 
 def _is_selected_match_subscript(node: ast.AST, match_var_name: str) -> bool:
     return (
@@ -3917,8 +3972,25 @@ def _subclass_traversal_site(
         return None
     queue_name, root_expression = seed
     result_name = _returned_sequence_name(node)
-    if result_name is None:
+    loop_profile = _subclass_traversal_loop_profile(node, queue_name)
+    materialization_kind = _subclass_traversal_materialization_kind(node, result_name)
+    if result_name is None or loop_profile is None or materialization_kind is None:
         return None
+    current_name = loop_profile
+    return SubclassTraversalSite(
+        file_path=str(module.path),
+        line=node.lineno,
+        symbol=qualname,
+        root_expression=root_expression,
+        materialization_kind=materialization_kind,
+        registry_attribute_names=_registry_attribute_names(node),
+        filter_names=_subclass_traversal_filter_names(node, current_name),
+    )
+
+
+def _subclass_traversal_loop_profile(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, queue_name: str
+) -> str | None:
     current_name: str | None = None
     extends_queue = False
     for statement in _walk_nodes(node):
@@ -3934,21 +4006,19 @@ def _subclass_traversal_site(
                 extends_queue = True
     if current_name is None or not extends_queue:
         return None
+    return current_name
+
+
+def _subclass_traversal_materialization_kind(
+    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str | None
+) -> str | None:
+    if result_name is None:
+        return None
     materialization_kind = _registry_materialization_kind(node, result_name)
-    if materialization_kind is None:
-        return None
     append_args = _result_append_args(node, result_name)
-    if not append_args:
+    if materialization_kind is None or not append_args:
         return None
-    return SubclassTraversalSite(
-        file_path=str(module.path),
-        line=node.lineno,
-        symbol=qualname,
-        root_expression=root_expression,
-        materialization_kind=materialization_kind,
-        registry_attribute_names=_registry_attribute_names(node),
-        filter_names=_subclass_traversal_filter_names(node, current_name),
-    )
+    return materialization_kind
 
 def _registry_traversal_group(
     modules: Sequence[ParsedModule],
@@ -4934,6 +5004,27 @@ def _matching_external_callsites(
         )
     )
 
+def _transport_call_chain_match(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    min_depth: int = 2,
+    exact_depth: int | None = None,
+) -> tuple[tuple[ast.Call, ...], tuple[ast.AST, ...]] | None:
+    returned = single_return_call(_trim_docstring_body(function.body))
+    if returned is None:
+        return None
+    chain = _call_chain_from_outer_call(returned)
+    if len(chain) < min_depth or (exact_depth is not None and len(chain) != exact_depth):
+        return None
+    allowed_roots = _function_param_names(function) | {"self", "cls"}
+    values = _call_chain_transport_values(chain)
+    if not values or not all(
+        _is_transport_expression(value, allowed_roots=allowed_roots)
+        for value in values
+    ):
+        return None
+    return chain, values
+
 def _trivial_forwarding_wrapper_candidate(
     module: ParsedModule,
     qualname: str,
@@ -4941,22 +5032,11 @@ def _trivial_forwarding_wrapper_candidate(
 ) -> TrivialForwardingWrapperCandidate | None:
     if function.name.startswith("__") and function.name.endswith("__"):
         return None
-    body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+    chain_match = _transport_call_chain_match(function)
+    if chain_match is None:
         return None
-    returned = body[0].value
-    if not isinstance(returned, ast.Call):
-        return None
-    chain = _call_chain_from_outer_call(returned)
-    if len(chain) < 2:
-        return None
+    chain, values = chain_match
     class_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-    allowed_roots = _function_param_names(function) | {"self", "cls"}
-    values = _call_chain_transport_values(chain)
-    if not values:
-        return None
-    if not all(_is_transport_expression(value, allowed_roots=allowed_roots) for value in values):
-        return None
     transported_value_sources = tuple(sorted({ast.unparse(value) for value in values}))
     parameter_names = _function_param_names(function) - {"self", "cls"}
     forwarded_parameter_names = tuple(
@@ -4969,8 +5049,6 @@ def _trivial_forwarding_wrapper_candidate(
             }
         )
     )
-    if not transported_value_sources:
-        return None
     delegate_symbol = _call_chain_delegate_symbol(chain, class_name=class_name)
     return TrivialForwardingWrapperCandidate(
         file_path=str(module.path),
@@ -5133,26 +5211,20 @@ def _policy_selector_source_exprs(
 def _looks_like_self_selector_source(expr: str) -> bool:
     return expr == "self" or expr.startswith("self.") or expr == "cls" or expr.startswith("cls.")
 
-def _nominal_policy_surface_method_candidate(
-    module: ParsedModule,
+def _nominal_policy_method_header(
     qualname: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> NominalPolicySurfaceMethodCandidate | None:
+) -> tuple[str, str] | None:
     if "." not in qualname:
         return None
     owner_class_name, method_name = qualname.rsplit(".", 1)
     if method_name.startswith("_") or (method_name.startswith("__") and method_name.endswith("__")):
         return None
-    body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-        return None
-    returned = body[0].value
-    if not isinstance(returned, ast.Call):
-        return None
-    chain = _call_chain_from_outer_call(returned)
-    if len(chain) != 2:
-        return None
-    outer_call, selector_call = chain
+    return owner_class_name, method_name
+
+def _policy_selector_match(
+    selector_call: ast.Call,
+) -> tuple[str, str, tuple[str, ...]] | None:
     if not isinstance(selector_call.func, ast.Attribute):
         return None
     selector_method_name = selector_call.func.attr
@@ -5166,15 +5238,26 @@ def _nominal_policy_surface_method_candidate(
         _looks_like_self_selector_source(expr) for expr in selector_source_exprs
     ):
         return None
-    allowed_roots = _function_param_names(function) | {"self", "cls"}
-    transported_values = _call_chain_transport_values(chain)
-    if not transported_values:
+    return ".".join(policy_root_parts), selector_method_name, selector_source_exprs
+
+def _nominal_policy_surface_method_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> NominalPolicySurfaceMethodCandidate | None:
+    method_header = _nominal_policy_method_header(qualname, function)
+    if method_header is None:
         return None
-    if not all(
-        _is_transport_expression(value, allowed_roots=allowed_roots)
-        for value in transported_values
-    ):
+    chain_match = _transport_call_chain_match(function, exact_depth=2)
+    if chain_match is None:
         return None
+    owner_class_name, method_name = method_header
+    chain, transported_values = chain_match
+    outer_call, selector_call = chain
+    selector_match = _policy_selector_match(selector_call)
+    if selector_match is None:
+        return None
+    policy_root_symbol, selector_method_name, selector_source_exprs = selector_match
     policy_member_name = _call_name(outer_call.func) or ast.unparse(outer_call.func)
     return NominalPolicySurfaceMethodCandidate(
         file_path=str(module.path),
@@ -5182,7 +5265,7 @@ def _nominal_policy_surface_method_candidate(
         qualname=qualname,
         owner_class_name=owner_class_name,
         method_name=method_name,
-        policy_root_symbol=".".join(policy_root_parts),
+        policy_root_symbol=policy_root_symbol,
         selector_method_name=selector_method_name,
         policy_member_name=policy_member_name,
         selector_source_exprs=selector_source_exprs,
@@ -5427,6 +5510,208 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
             keyword_names=keyword_names,
         )
     return None
+
+def _return_none_statement(statement: ast.stmt) -> bool:
+    return bool(
+        isinstance(statement, ast.Return)
+        and isinstance(statement.value, ast.Constant)
+        and statement.value.value is None
+    )
+
+def _success_return_statement(statement: ast.stmt) -> bool:
+    return isinstance(statement, ast.Return) and not _return_none_statement(statement)
+
+def _none_guard_binding_names(test: ast.AST) -> tuple[str, ...]:
+    if isinstance(test, ast.BoolOp):
+        names: set[str] = set()
+        for value in test.values:
+            names.update(_none_guard_binding_names(value))
+        return tuple(sorted(names))
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        if isinstance(test.operand, ast.Name):
+            return (test.operand.id,)
+        return _none_guard_binding_names(test.operand)
+    if (
+        not isinstance(test, ast.Compare)
+        or len(test.ops) != 1
+        or len(test.comparators) != 1
+        or not isinstance(test.ops[0], (ast.Is, ast.Eq))
+    ):
+        return ()
+    left = test.left
+    right = test.comparators[0]
+    if isinstance(left, ast.Name) and isinstance(right, ast.Constant) and right.value is None:
+        return (left.id,)
+    if isinstance(right, ast.Name) and isinstance(left, ast.Constant) and left.value is None:
+        return (right.id,)
+    return ()
+
+def _effect_stage_kind(statement: ast.stmt) -> str:
+    if isinstance(statement, ast.If) and _if_returns_none_only(statement):
+        return "fail_soft_guard"
+    if isinstance(statement, ast.Assign):
+        return "call_assignment" if isinstance(statement.value, ast.Call) else "assignment"
+    if isinstance(statement, ast.AnnAssign):
+        return "call_assignment" if isinstance(statement.value, ast.Call) else "assignment"
+    if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+        return "loop"
+    if isinstance(statement, ast.Try):
+        return "exception_boundary"
+    if _success_return_statement(statement):
+        return "success_return"
+    if isinstance(statement, ast.If):
+        return "branch"
+    if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
+        return "effect_call"
+    return statement.__class__.__name__
+
+def _return_kind(statement: ast.Return) -> str:
+    value = statement.value
+    if isinstance(value, ast.Call):
+        call_name = _call_display_name(value)
+        return call_name or "call"
+    if isinstance(value, ast.Tuple):
+        return "tuple"
+    if isinstance(value, ast.List):
+        return "list"
+    if isinstance(value, ast.Dict):
+        return "dict"
+    if isinstance(value, ast.Name):
+        return "name"
+    if isinstance(value, ast.Attribute):
+        return "attribute"
+    return value.__class__.__name__ if value is not None else "implicit"
+
+def _statement_call_names(statement: ast.stmt) -> tuple[str, ...]:
+    names: set[str] = set()
+    for node in _walk_nodes(statement):
+        if isinstance(node, ast.Call) and (call_name := _call_display_name(node)):
+            names.add(call_name)
+    return tuple(sorted(names))
+
+def _effect_pipeline_normal_form(
+    *,
+    helper_call_names: tuple[str, ...],
+    stage_kinds: tuple[str, ...],
+    success_return_kind: str,
+) -> str:
+    helper_names = frozenset(helper_call_names)
+    if helper_names & {
+        "_call_chain_delegate_symbol",
+        "_call_chain_from_outer_call",
+        "_call_chain_transport_values",
+    }:
+        return "transport_call_chain_matcher"
+    if helper_names & {"_enum_member_ref", "_enum_member_refs_for_known_key_types"}:
+        return "comparison_guard_matcher"
+    if helper_names & {
+        "_extends_subclasses_queue",
+        "_queue_pop_target_name",
+        "_registry_materialization_kind",
+    }:
+        return "loop_fold_matcher"
+    if helper_names & {
+        "_guarded_node_types",
+        "_self_attribute_name",
+        "_terminal_name",
+        "_type_name_tuple",
+    }:
+        return "ast_shape_matcher"
+    if "loop" in stage_kinds or "exception_boundary" in stage_kinds:
+        return "statement_sequence_matcher"
+    if success_return_kind in {"tuple", "list", "dict"}:
+        return "statement_sequence_matcher"
+    return "typed_effect_carrier"
+
+def _fail_soft_effect_pipeline_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    config: DetectorConfig,
+) -> FailSoftEffectPipelineCandidate | None:
+    body = _trim_docstring_body(function.body)
+    guard_statements = tuple(
+        statement
+        for statement in body
+        if isinstance(statement, ast.If) and _if_returns_none_only(statement)
+    )
+    if len(guard_statements) < config.min_effect_guard_stages:
+        return None
+    success_returns = tuple(
+        statement
+        for statement in body
+        if isinstance(statement, ast.Return) and _success_return_statement(statement)
+    )
+    if not success_returns:
+        return None
+    last_guard_index = max(
+        index for index, statement in enumerate(body) if statement in guard_statements
+    )
+    last_success_index = max(
+        index for index, statement in enumerate(body) if statement in success_returns
+    )
+    if last_success_index <= last_guard_index:
+        return None
+    guarded_binding_names = tuple(
+        sorted(
+            {
+                name
+                for guard_statement in guard_statements
+                for name in _none_guard_binding_names(guard_statement.test)
+            }
+        )
+    )
+    helper_call_names = tuple(
+        sorted(
+            {
+                name
+                for statement in body
+                for name in _statement_call_names(statement)
+            }
+        )
+    )
+    stage_kinds = tuple(_effect_stage_kind(statement) for statement in body)
+    success_return_kind = _return_kind(success_returns[-1])
+    return FailSoftEffectPipelineCandidate(
+        file_path=str(module.path),
+        line=function.lineno,
+        function_name=qualname,
+        line_count=(
+            (function.end_lineno if function.end_lineno is not None else function.lineno)
+            - function.lineno
+            + 1
+        ),
+        guard_count=len(guard_statements),
+        normal_form=_effect_pipeline_normal_form(
+            helper_call_names=helper_call_names,
+            stage_kinds=stage_kinds,
+            success_return_kind=success_return_kind,
+        ),
+        guarded_binding_names=guarded_binding_names,
+        stage_kinds=stage_kinds,
+        success_return_kind=success_return_kind,
+        helper_call_names=helper_call_names,
+    )
+
+def _fail_soft_effect_pipeline_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[FailSoftEffectPipelineCandidate, ...]:
+    candidates = tuple(
+        candidate
+        for qualname, function in _iter_named_functions(module)
+        if (
+            candidate := _fail_soft_effect_pipeline_candidate(
+                module, qualname, function, config
+            )
+        )
+        is not None
+    )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.function_name),
+        )
+    )
 
 def _assignment_target_arity(target: ast.AST) -> int | None:
     if isinstance(target, ast.Name):
