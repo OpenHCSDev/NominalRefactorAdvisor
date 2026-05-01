@@ -6706,32 +6706,101 @@ def _semantic_tag_constant_name(
 def _semantic_tag_tuple_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
-    grouped: dict[
-        tuple[str, str, tuple[str, ...]],
-        list[SourceLocation],
-    ] = defaultdict(list)
+    candidates: list[SemanticTagTupleBoilerplateCandidate] = []
     for node in ast.walk(module.module):
         if not isinstance(node, ast.keyword) or node.arg not in _SEMANTIC_TAG_KEYWORDS:
             continue
         tuple_value = _semantic_tag_tuple_value(node)
         if tuple_value is None:
             continue
-        tuple_expression, tag_names = tuple_value
-        grouped[(node.arg, tuple_expression, tag_names)].append(
-            SourceLocation(str(module.path), node.lineno, node.arg)
-        )
-    candidates: list[SemanticTagTupleBoilerplateCandidate] = []
-    for (keyword_name, _, tag_names), locations in grouped.items():
-        if len(locations) < 2:
-            continue
+        _, tag_names = tuple_value
+        location = SourceLocation(str(module.path), node.lineno, node.arg)
         candidates.append(
             SemanticTagTupleBoilerplateCandidate(
                 file_path=str(module.path),
-                line=locations[0].line,
-                evidence_locations=tuple(locations[:6]),
-                keyword_name=keyword_name,
-                constant_name=_semantic_tag_constant_name(keyword_name, tag_names),
+                line=node.lineno,
+                evidence_locations=(location,),
+                keyword_name=node.arg,
+                constant_name=_semantic_tag_constant_name(node.arg, tag_names),
                 tag_names=tag_names,
+            )
+        )
+    return tuple(candidates)
+
+
+_DERIVED_COUNT_METRIC_SHAPES = {
+    "MappingMetrics": (
+        "from_field_names",
+        (("field_count", "field_names"),),
+    ),
+    "DispatchCountMetrics": (
+        "from_literal_family",
+        (("dispatch_site_count", "literal_cases"),),
+    ),
+    "RegistrationMetrics": (
+        "from_class_names",
+        (("class_count", "class_names"),),
+    ),
+}
+
+
+def _ast_expression_equal(left: ast.AST, right: ast.AST) -> bool:
+    return ast.dump(left, include_attributes=False) == ast.dump(
+        right,
+        include_attributes=False,
+    )
+
+
+def _len_call_argument(node: ast.AST) -> ast.AST | None:
+    call = as_ast(node, ast.Call)
+    if call is None or _call_name(call.func) != "len" or len(call.args) != 1:
+        return None
+    return call.args[0]
+
+
+def _derived_metric_count_pairs(
+    call: ast.Call,
+    pair_shapes: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...]:
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    derived_pairs: list[tuple[str, str]] = []
+    for count_keyword, collection_keyword in pair_shapes:
+        count_value = keywords.get(count_keyword)
+        collection_value = keywords.get(collection_keyword)
+        if count_value is None or collection_value is None:
+            continue
+        counted_expression = _len_call_argument(count_value)
+        if counted_expression is not None and _ast_expression_equal(
+            counted_expression,
+            collection_value,
+        ):
+            derived_pairs.append((count_keyword, collection_keyword))
+    return tuple(derived_pairs)
+
+
+def _derived_metric_count_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[DerivedMetricCountBoilerplateCandidate, ...]:
+    candidates: list[DerivedMetricCountBoilerplateCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.Call):
+            continue
+        metric_class_name = _call_name(node.func)
+        metric_shape = _DERIVED_COUNT_METRIC_SHAPES.get(metric_class_name or "")
+        if metric_shape is None:
+            continue
+        constructor_name, pair_shapes = metric_shape
+        derived_pairs = _derived_metric_count_pairs(node, pair_shapes)
+        if not derived_pairs:
+            continue
+        candidates.append(
+            DerivedMetricCountBoilerplateCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                metric_class_name=cast(str, metric_class_name),
+                recommended_constructor_name=constructor_name,
+                count_keyword_names=tuple(pair[0] for pair in derived_pairs),
+                collection_keyword_names=tuple(pair[1] for pair in derived_pairs),
             )
         )
     return tuple(candidates)

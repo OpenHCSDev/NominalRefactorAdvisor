@@ -2986,8 +2986,37 @@ class Second:
         if item.detector_id == "semantic_tag_tuple_boilerplate"
     ]
 
+    assert len(findings) == 2
+    assert all(
+        "AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS" in finding.summary
+        for finding in findings
+    )
+
+
+def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def build_metrics(field_names):
+    return MappingMetrics(
+        mapping_site_count=3,
+        field_count=len(field_names),
+        mapping_name="example",
+        field_names=field_names,
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "derived_metric_count_boilerplate"
+    ]
+
     assert len(findings) == 1
-    assert "AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS" in findings[0].summary
+    assert "field_count=len(field_names)" in findings[0].summary
+    assert "from_field_names" in findings[0].summary
 
 
 def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:

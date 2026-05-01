@@ -85,11 +85,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
         capability_gap="single authoritative record-builder mapping for a repeated constructor family",
         relation_context="same builder role repeated across sibling functions or methods",
         capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -150,9 +146,8 @@ class RepeatedBuilderCallDetector(IssueDetector):
                     ),
                     scaffold=_builder_scaffold(ordered),
                     codemod_patch=_builder_patch(ordered),
-                    metrics=MappingMetrics(
+                    metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
-                        field_count=len(ordered[0].keyword_names),
                         mapping_name=ordered[0].callee_name,
                         field_names=ordered[0].keyword_names,
                         source_name=ordered[0].source_name,
@@ -206,9 +201,8 @@ class RepeatedBuilderCallDetector(IssueDetector):
                     codemod_patch=_single_owner_builder_family_patch(
                         owner_symbol, callee_name
                     ),
-                    metrics=MappingMetrics(
+                    metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
-                        field_count=len(distinct_keyword_names),
                         mapping_name=callee_name,
                         field_names=distinct_keyword_names,
                         source_name=owner_symbol,
@@ -231,11 +225,7 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
         capability_gap="single authoritative projection schema for a repeated record or kwargs family",
         relation_context="same string-key projection role repeated across sibling functions or methods",
         capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PROJECTION_DICT,
-            ObservationTag.EXPORT_MAPPING,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_PROJECTION_DICT_EXPORT_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
@@ -276,9 +266,8 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
             evidence,
             scaffold=_projection_schema_scaffold(export_shapes),
             codemod_patch=_projection_schema_patch(export_shapes),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(export_shapes),
-                field_count=len(export_shapes[0].key_names),
                 field_names=export_shapes[0].key_names,
                 source_name=export_shapes[0].source_name,
                 identity_field_names=export_shapes[0].identity_field_names,
@@ -298,16 +287,8 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         ),
         capability_gap="single authoritative metaclass-registry class-registration algorithm with nominal class identity",
         relation_context="same registry key family repeated through manual class-level registration assignments",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-        observation_tags=(
-            ObservationTag.REGISTRY_POPULATION,
-            ObservationTag.CLASS_LEVEL_POSITION,
-            ObservationTag.MANUAL_REGISTRATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        observation_tags=_REGISTRY_POPULATION_CLASS_LEVEL_POSITION_MANUAL_REGISTRATION_OBSERVATION_TAGS,
     )
 
     def _collect_shapes(
@@ -379,16 +360,8 @@ class ManualConcreteSubclassRosterDetector(ConfiguredCrossModuleCollectorCandida
         ),
         capability_gap="single authoritative metaclass-registry concrete-subclass registration hook with reusable family discovery",
         relation_context="class family maintains a mutable subclass roster through __init_subclass__ and then queries it manually",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.REGISTRY_POPULATION,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.MANUAL_REGISTRATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_REGISTRY_POPULATION_CLASS_FAMILY_MANUAL_REGISTRATION_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, roster_candidate: ManualConcreteSubclassRosterCandidate) -> RefactorFinding:
@@ -442,9 +415,8 @@ class ManualConcreteSubclassRosterDetector(ConfiguredCrossModuleCollectorCandida
                 f"# Remove manual roster `{roster_candidate.registry_name}` from `{roster_candidate.class_name}`.\n"
                 "# Reuse one metaclass-registry base so descendant discovery and abstract filtering are not rewritten per family."
             ),
-            metrics=RegistrationMetrics(
+            metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(roster_candidate.concrete_class_names),
-                class_count=len(roster_candidate.concrete_class_names),
                 registry_name=roster_candidate.registry_name,
                 class_names=roster_candidate.concrete_class_names,
             ),
@@ -465,16 +437,8 @@ class PredicateSelectedConcreteFamilyDetector(ConfiguredCrossModuleCollectorCand
         ),
         capability_gap="single authoritative metaclass-registry predicate-selected concrete-family substrate",
         relation_context="registered concrete subclasses are manually scanned and cardinality-checked inside a family root",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.PREDICATE_CHAIN,
-            ObservationTag.REGISTRY_POPULATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_PREDICATE_CHAIN_REGISTRY_POPULATION_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, family_candidate: PredicateSelectedConcreteFamilyCandidate) -> RefactorFinding:
@@ -535,16 +499,8 @@ class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidate
         ),
         capability_gap="single authoritative axis-declared family or role-spec table that derives mirrored registered leaves",
         relation_context="two registered abstract roots own mirrored concrete leaf catalogs over the same contract method family",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.REGISTRY_POPULATION,
-            ObservationTag.REPEATED_METHOD_ROLES,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_REGISTRY_POPULATION_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, mirrored_candidate: ParallelMirroredLeafFamilyCandidate) -> RefactorFinding:
@@ -574,12 +530,11 @@ class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidate
                 f"# Replace mirrored roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` with one axis-declared family substrate.\n"
                 "# Move shared role names into one spec table and derive concrete leaf registration from that authority."
             ),
-            metrics=RegistrationMetrics(
+            metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=(
                     len(mirrored_candidate.left.leaf_evidence)
                     + len(mirrored_candidate.right.leaf_evidence)
                 ),
-                class_count=len(class_names),
                 registry_name=(
                     f"{mirrored_candidate.left.root_name}/{mirrored_candidate.right.root_name}"
                 ),
@@ -599,16 +554,8 @@ class SentinelAttributeSimulationDetector(CandidateFindingDetector):
         ),
         capability_gap="enumerable and enforceable nominal role identity",
         relation_context="same class-level sentinel attribute reused as a fake identity boundary",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.SENTINEL_ATTRIBUTE,
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_ENUMERATION_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_SENTINEL_ATTRIBUTE_BRANCH_DISPATCH_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
     def _candidate_items(
@@ -656,15 +603,8 @@ class PredicateFactoryChainDetector(CandidateFindingDetector):
         ),
         capability_gap="exhaustive nominal variant discovery and extension",
         relation_context="same factory role repeated as predicate branches inside one function",
-        capability_tags=(
-            CapabilityTag.ENUMERATION,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.PREDICATE_CHAIN,
-            ObservationTag.FACTORY_DISPATCH,
-        ),
+        capability_tags=_ENUMERATION_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_PREDICATE_CHAIN_FACTORY_DISPATCH_OBSERVATION_TAGS,
     )
 
     def _candidate_items(
@@ -704,10 +644,7 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
         capability_gap="fail-loud polymorphic configuration contracts",
         relation_context="same config-family choice expressed through attribute-level probing",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.ATTRIBUTE_PROBE,
-            ObservationTag.CONFIG_DISPATCH,
-        ),
+        observation_tags=_ATTRIBUTE_PROBE_CONFIG_DISPATCH_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -748,11 +685,7 @@ class ConcreteConfigFieldProbeDetector(ConfiguredModuleCollectorCandidateDetecto
         capability_gap="fail-loud concrete config contract for one backend family",
         relation_context="one concrete backend probes fields that are not declared by its concrete config type",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.ATTRIBUTE_PROBE,
-            ObservationTag.CONFIG_DISPATCH,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        observation_tags=_ATTRIBUTE_PROBE_CONFIG_DISPATCH_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, probe_candidate: ConcreteConfigFieldProbeCandidate) -> RefactorFinding:
@@ -789,15 +722,8 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         capability_gap="exact generated-type lineage and normalization",
         relation_context="same module combines runtime type generation with lineage-sensitive registries",
         certification=SPECULATIVE,
-        capability_tags=(
-            CapabilityTag.TYPE_LINEAGE,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
-        ),
-        observation_tags=(
-            ObservationTag.RUNTIME_TYPE_GENERATION,
-            ObservationTag.LINEAGE_MAPPING,
-        ),
+        capability_tags=_TYPE_LINEAGE_PROVENANCE_BIDIRECTIONAL_NORMALIZATION_CAPABILITY_TAGS,
+        observation_tags=_RUNTIME_TYPE_GENERATION_LINEAGE_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -848,16 +774,8 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         ),
         capability_gap="explicit dual-axis precedence with provenance",
         relation_context="same function combines context hierarchy and type/MRO hierarchy",
-        capability_tags=(
-            CapabilityTag.DUAL_AXIS_RESOLUTION,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.NESTED_PRECEDENCE_WALK,
-            ObservationTag.SCOPE_HIERARCHY,
-            ObservationTag.MRO_HIERARCHY,
-        ),
+        capability_tags=_DUAL_AXIS_RESOLUTION_PROVENANCE_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_NESTED_PRECEDENCE_WALK_SCOPE_HIERARCHY_MRO_HIERARCHY_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -901,14 +819,8 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
         ),
         capability_gap="runtime-checkable virtual membership on nominal class identity",
         relation_context="same membership question repeated through class-marker probing",
-        capability_tags=(
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_MARKER_PROBE,
-            ObservationTag.RUNTIME_MEMBERSHIP,
-        ),
+        capability_tags=_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_MARKER_PROBE_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -951,16 +863,8 @@ class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
         ),
         capability_gap="extension-owned virtual membership registration boundary",
         relation_context="same registry table maps external concrete type identities to capability registration",
-        capability_tags=(
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.REGISTRY_POPULATION,
-            ObservationTag.RUNTIME_MEMBERSHIP,
-            ObservationTag.SEMANTIC_STRING_LITERAL,
-        ),
+        capability_tags=_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_REGISTRY_POPULATION_RUNTIME_MEMBERSHIP_SEMANTIC_STRING_LITERAL_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -1171,15 +1075,8 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
         capability_gap="explicit runtime-generated nominal interface identity",
         relation_context="same module generates interface-like nominal types at runtime",
         certification=SPECULATIVE,
-        capability_tags=(
-            CapabilityTag.GENERATED_INTERFACE_IDENTITY,
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.RUNTIME_TYPE_GENERATION,
-            ObservationTag.INTERFACE_IDENTITY,
-        ),
+        capability_tags=_GENERATED_INTERFACE_IDENTITY_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_RUNTIME_TYPE_GENERATION_INTERFACE_IDENTITY_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -1216,14 +1113,8 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
         ),
         capability_gap="exact capability-marker identity independent of structure",
         relation_context="same module creates or uses unique nominal sentinel markers",
-        capability_tags=(
-            CapabilityTag.CAPABILITY_MARKER_IDENTITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.SENTINEL_TYPE,
-            ObservationTag.CAPABILITY_MARKER,
-        ),
+        capability_tags=_CAPABILITY_MARKER_IDENTITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_SENTINEL_TYPE_CAPABILITY_MARKER_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -1256,14 +1147,8 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
         ),
         capability_gap="shared type-namespace mutation for a nominal family",
         relation_context="same module mutates class behavior through runtime namespace injection",
-        capability_tags=(
-            CapabilityTag.SHARED_TYPE_NAMESPACE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.DYNAMIC_METHOD_INJECTION,
-            ObservationTag.TYPE_NAMESPACE,
-        ),
+        capability_tags=_SHARED_TYPE_NAMESPACE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_DYNAMIC_METHOD_INJECTION_TYPE_NAMESPACE_OBSERVATION_TAGS,
     )
 
     def _module_evidence(
@@ -1299,14 +1184,8 @@ class AttributeProbeDetector(PerModuleIssueDetector):
         ),
         capability_gap="declared semantic role identity and import-time enforcement",
         relation_context="same module-level probing layer across multiple call sites",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
-        observation_tags=(
-            ObservationTag.ATTRIBUTE_PROBE,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
+        observation_tags=_ATTRIBUTE_PROBE_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -1352,10 +1231,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
         capability_gap="single authoritative dispatch representation for a closed local rule family, preferably an auto-registered behavior family when the cases are behavioral",
         relation_context="same branch role repeated inline inside a module block",
         capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.LITERAL_BRANCH_DISPATCH,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_LITERAL_BRANCH_DISPATCH_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -1410,10 +1286,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
         capability_gap="closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         relation_context="same dispatch role repeated through string comparisons or string-key registries",
         capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.STRING_DISPATCH,
-            ObservationTag.CLOSED_FAMILY_CASES,
-        ),
+        observation_tags=_STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -1492,10 +1365,7 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         capability_gap="closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         relation_context="same dispatch role repeated through numeric literal comparisons",
         capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.LITERAL_ID_DISPATCH,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_LITERAL_ID_DISPATCH_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -1549,10 +1419,7 @@ class RepeatedHardcodedStringDetector(CandidateFindingDetector):
         capability_gap="single authoritative semantic-key declaration",
         relation_context="same semantic key duplicated across decision-bearing or declarative sites",
         capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.SEMANTIC_STRING_LITERAL,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_SEMANTIC_STRING_LITERAL_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _candidate_items(
@@ -1862,11 +1729,7 @@ class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetect
         capability_gap="single authoritative template/resource or generated schema for static artifact views",
         relation_context="private unreferenced emitter owns a large embedded static payload independently of call flow",
         capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.EXPORT_MAPPING,
-        ),
+        observation_tags=_NORMALIZED_AST_PARTIAL_VIEW_EXPORT_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -2174,16 +2037,8 @@ class SiblingSmallMethodTemplateDetector(ModuleCollectorCandidateDetector[Siblin
         ),
         capability_gap="one local helper/table for repeated small method templates",
         relation_context="same owner repeats a small private method body template across sibling roles",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-        observation_tags=(
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        observation_tags=_METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, template_candidate: SiblingSmallMethodTemplateCandidate) -> RefactorFinding:
@@ -2461,16 +2316,8 @@ class ConstantBackedDispatchAxisDetector(ConfiguredModuleCollectorCandidateDetec
         ),
         capability_gap="single typed action-family authority deriving choices and dispatch",
         relation_context="same constant family drives branch dispatch across multiple functions",
-        capability_tags=(
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-        observation_tags=(
-            ObservationTag.LITERAL_ID_DISPATCH,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        observation_tags=_LITERAL_ID_DISPATCH_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, axis_candidate: ConstantBackedDispatchAxisCandidate) -> RefactorFinding:
@@ -2624,16 +2471,8 @@ class ManualProcessStepLadderDetector(ModuleCollectorCandidateDetector[ManualPro
         ),
         capability_gap="single typed process-stage plan deriving command lists and execution loops",
         relation_context="local process-step tables are manually executed by repeated loop skeletons",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_NORMALIZED_AST_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, ladder_candidate: ManualProcessStepLadderCandidate) -> RefactorFinding:
@@ -2920,10 +2759,7 @@ class RepeatedLocalRegexBundleDetector(ConfiguredModuleCollectorCandidateDetecto
         ),
         capability_gap="single typed syntax authority deriving all repeated regex recognizers",
         relation_context="substantial regex literals are redeclared inside sibling functions",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
@@ -2945,9 +2781,8 @@ class RepeatedLocalRegexBundleDetector(ConfiguredModuleCollectorCandidateDetecto
                 "# Move repeated local regex grammar into one typed syntax authority.\n"
                 "# Derive parser operations from named recognizers instead of redeclaring patterns in each helper."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(regex_candidate.function_names),
-                field_count=len(regex_candidate.regex_literals),
                 mapping_name="regex syntax authority",
                 field_names=regex_candidate.regex_literals,
                 source_name=regex_candidate.owner_name,
@@ -3095,11 +2930,7 @@ class AlgebraicDuplicateCompoundBlockDetector(ModuleCollectorCandidateDetector[A
         ),
         capability_gap="single derived algorithm authority for an anti-unified compound block",
         relation_context="compound blocks are equal in the AST quotient algebra modulo names and literals",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
@@ -3145,10 +2976,7 @@ class RepeatedProjectionHelperDetector(ModuleCollectorCandidateDetector[tuple[Pr
         capability_gap="single authoritative projection helper for a repeated semantic wrapper family",
         relation_context="same helper wrapper shape repeated across sibling module functions",
         capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PROJECTION_HELPER,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_PROJECTION_HELPER_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, ordered: tuple[ProjectionHelperShape, ...]) -> RefactorFinding:
@@ -3182,14 +3010,8 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         ),
         capability_gap="single authoritative polymorphic wrapper/spec family",
         relation_context="same node-guarded wrapper skeleton repeated across multiple wrapper/spec pairs",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.SCOPED_SHAPE_WRAPPER,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_SCOPED_SHAPE_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -3253,10 +3075,7 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
         ),
         capability_gap="single authoritative indexed family abstraction",
         relation_context="same normalized family scaffold repeated across sibling top-level functions",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
         observation_tags=_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
@@ -3440,16 +3259,8 @@ class FlattenedProjectionPropertyDetector(ModuleCollectorCandidateDetector[tuple
         ),
         capability_gap="direct nested record access instead of flattened compatibility aliases",
         relation_context="class exposes old role-prefixed fields as properties over nested role records",
-        capability_tags=(
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.ACCESSOR_WRAPPER,
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_ACCESSOR_WRAPPER_KEYWORD_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, ordered: tuple[FlattenedProjectionPropertyCandidate, ...]) -> RefactorFinding:
@@ -3715,16 +3526,8 @@ class NominalPolicySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[No
         ),
         capability_gap="single authoritative owner surface or one explicit policy accessor",
         relation_context="public owner surface delegates member-for-member into a policy family",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.INTERFACE_IDENTITY,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_INTERFACE_IDENTITY_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, family_candidate: NominalPolicySurfaceFamilyCandidate) -> RefactorFinding:
@@ -3771,10 +3574,7 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
         capability_gap="single authoritative nominal schema for semantic field bags",
         relation_context="same semantic field family is carried through an ad hoc dict bag instead of a nominal record",
         capability_tags=_UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.SEMANTIC_DICT_BAG,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_SEMANTIC_DICT_BAG_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(
@@ -3832,11 +3632,7 @@ class BidirectionalRegistryDetector(ModuleCollectorCandidateDetector):
         ),
         capability_gap="exact bijection and O(1) reverse lookup on nominal keys",
         relation_context="same class maintains forward and reverse registry state",
-        capability_tags=(
-            CapabilityTag.BIDIRECTIONAL_NORMALIZATION,
-            CapabilityTag.EXACT_LOOKUP,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_BIDIRECTIONAL_NORMALIZATION_EXACT_LOOKUP_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=_MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 

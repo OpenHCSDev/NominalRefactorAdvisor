@@ -20,11 +20,7 @@ class ManualFamilyRosterDetector(IssueDetector):
         ),
         capability_gap="zero-delay metaclass-registry class-family discovery with declarative ordering",
         relation_context="family membership is maintained by a manual roster function or constant",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -70,9 +66,8 @@ class ManualFamilyRosterDetector(IssueDetector):
                             f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
                             f"# Delete the manual {candidate.constructor_style} roster once subclasses are discoverable through `cls.__registry__.values()`."
                         ),
-                        metrics=RegistrationMetrics(
+                        metrics=RegistrationMetrics.from_class_names(
                             registration_site_count=len(candidate.member_names),
-                            class_count=len(candidate.member_names),
                             registry_name=candidate.owner_name,
                             class_names=candidate.member_names,
                         ),
@@ -123,9 +118,8 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[Fragmen
                 f"# Collapse {authority_candidate.mapping_names} into one `{authority_candidate.key_family_name}`-keyed spec table.\n"
                 f"# Move shared keys {authority_candidate.shared_keys} into one authoritative record instead of parallel dicts."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(authority_candidate.mapping_names),
-                field_count=len(authority_candidate.shared_keys),
                 mapping_name=f"{authority_candidate.key_family_name} spec",
                 field_names=authority_candidate.shared_keys,
             ),
@@ -246,10 +240,7 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBag
         ),
         capability_gap="single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
         relation_context="one helper copies several fields from a source record into a transient kwargs dictionary",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, adapter_candidate: KeywordBagAdapterCandidate) -> RefactorFinding:
@@ -274,9 +265,8 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBag
                 f"# Stop routing `{adapter_candidate.source_name}` through standalone helper `{adapter_candidate.function_name}`.\n"
                 "# Put the kwargs projection on the source record itself or make the downstream builder consume the record directly."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=1,
-                field_count=len(adapter_candidate.key_names),
                 mapping_name=adapter_candidate.function_name,
                 field_names=adapter_candidate.key_names,
                 source_name=adapter_candidate.source_name,
@@ -296,11 +286,7 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
         ),
         capability_gap="reuse of an existing authoritative base or mixin instead of duplicating the family",
         relation_context="a concrete class repeats a semantic family already declared by an existing nominal authority",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -368,11 +354,7 @@ class PassThroughNominalWrapperDetector(IssueDetector):
         ),
         capability_gap="direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
         relation_context="a concrete class forwards an existing nominal contract member-for-member without adding new semantics",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -480,9 +462,8 @@ def _keyword_mapping_metrics(
     field_names: tuple[str, ...],
     mapping_name: str,
 ) -> MappingMetrics:
-    return MappingMetrics(
+    return MappingMetrics.from_field_names(
         mapping_site_count=mapping_site_count,
-        field_count=len(field_names),
         mapping_name=mapping_name,
         field_names=field_names,
     )
@@ -500,16 +481,8 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
         ),
         capability_gap="one authoritative projection builder for a repeated record family",
         relation_context="same nominal record is re-projected from overlapping sources at several call sites",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-        observation_tags=(
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        observation_tags=_KEYWORD_BUILDER_CALL_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _findings_for_module(

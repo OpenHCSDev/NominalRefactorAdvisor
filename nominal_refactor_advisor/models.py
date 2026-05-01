@@ -377,6 +377,25 @@ class MappingMetrics(MappingFindingMetrics):
     source_name: str | None = None
     identity_field_names: tuple[str, ...] = ()
 
+    @classmethod
+    def from_field_names(
+        cls,
+        *,
+        mapping_site_count: int,
+        field_names: tuple[str, ...],
+        mapping_name: str | None = None,
+        source_name: str | None = None,
+        identity_field_names: tuple[str, ...] = (),
+    ) -> "MappingMetrics":
+        return cls(
+            mapping_site_count=mapping_site_count,
+            field_count=len(field_names),
+            mapping_name=mapping_name,
+            field_names=field_names,
+            source_name=source_name,
+            identity_field_names=identity_field_names,
+        )
+
     @property
     def mapping_sites(self) -> int:
         return self.mapping_site_count
@@ -428,6 +447,23 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     registry_name: str | None = None
     class_names: tuple[str, ...] = ()
     class_key_pairs: tuple[str, ...] = ()
+
+    @classmethod
+    def from_class_names(
+        cls,
+        *,
+        registration_site_count: int,
+        class_names: tuple[str, ...],
+        registry_name: str | None = None,
+        class_key_pairs: tuple[str, ...] = (),
+    ) -> "RegistrationMetrics":
+        return cls(
+            registration_site_count=registration_site_count,
+            class_count=len(class_names),
+            registry_name=registry_name,
+            class_names=class_names,
+            class_key_pairs=class_key_pairs,
+        )
 
     @property
     def registration_sites(self) -> int:

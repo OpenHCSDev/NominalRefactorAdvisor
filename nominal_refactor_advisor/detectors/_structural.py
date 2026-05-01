@@ -90,11 +90,7 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
         ),
         capability_gap="one authoritative semantic carrier spine plus reusable semantic-role mixins",
         relation_context="same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.MRO_ORDERING,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -751,10 +747,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
         capability_gap="declared fail-loud nominal attribute contract on the carrier family",
         relation_context="class template probes its own required state through reflective string access",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, reflective_candidate: ReflectiveSelfAttributeCandidate) -> RefactorFinding:
@@ -792,11 +785,7 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         ),
         capability_gap="one declarative helper-backed wrapper family with class-level registration",
         relation_context="same helper-backed wrapper shape repeats across sibling classes",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
     )
 
     def _findings_for_module(
@@ -896,9 +885,8 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[Declarati
                 f"# Replace repeated family leaf classes for bases {group.base_names} with one declarative family-definition table.\n"
                 "# Generate or register the concrete family classes from that table instead of re-spelling the same classvars in each class."
             ),
-            metrics=RegistrationMetrics(
+            metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(group.class_names),
-                class_count=len(group.class_names),
                 registry_name=group.base_names[0],
                 class_names=group.class_names,
                 class_key_pairs=group.assigned_names,
@@ -949,9 +937,8 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[
                 f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
                 "# Derive runtime family classes, registry indexes, exported aliases, and `__all__` from the same declarations instead of restating them in classes plus assignments."
             ),
-            metrics=RegistrationMetrics(
+            metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(group.definition_class_names),
-                class_count=len(group.definition_class_names),
                 registry_name=group.base_names[0],
                 class_names=group.definition_class_names,
                 class_key_pairs=group.assigned_names,
@@ -1000,9 +987,8 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
                 f"# Delete `{export_candidate.export_symbol}` as a handwritten export list.\n"
                 "# Derive the public export surface from the authoritative local type family or generated-family registry instead."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(export_candidate.exported_names),
-                field_count=len(export_candidate.derivable_root_names),
                 mapping_name=export_candidate.export_symbol,
                 field_names=export_candidate.derivable_root_names,
             ),
@@ -1163,9 +1149,8 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
                 f"# Delete `{index_candidate.surface_name}` as a handwritten index.\n"
                 "# Derive the key-to-type map from the authoritative local family instead of maintaining a second module-level registry."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(index_candidate.value_names),
-                field_count=len(index_candidate.derivable_root_names),
                 mapping_name=index_candidate.surface_name,
                 field_names=index_candidate.derivable_root_names,
             ),
@@ -1182,11 +1167,7 @@ class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector[Registered
         ),
         capability_gap="one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
         relation_context="manual union of sibling registry queries repeats information already present in class-time registration",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.ENUMERATION,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, union_candidate: RegisteredUnionSurfaceCandidate) -> RefactorFinding:
@@ -1214,9 +1195,8 @@ class RegisteredUnionSurfaceDetector(ModuleCollectorCandidateDetector[Registered
                 f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n"
                 "# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand."
             ),
-            metrics=RegistrationMetrics(
+            metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(union_candidate.root_names),
-                class_count=len(union_candidate.root_names),
                 registry_name=union_candidate.accessor_name,
                 class_names=union_candidate.root_names,
             ),
@@ -1232,11 +1212,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         ),
         capability_gap="one authoritative subclass-family discovery substrate with declarative materialization hooks",
         relation_context="same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
     )
 
     def _collect_findings(
@@ -2312,11 +2288,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[Altern
         ),
         capability_gap="single provenance-aware builder for one record schema",
         relation_context="same record schema is rebuilt across sibling alternate constructors for different source types",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, group: AlternateConstructorFamilyGroup) -> RefactorFinding:
@@ -2364,11 +2336,7 @@ class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[Construc
         capability_gap="single constructor-variant catalog that derives named class constructors",
         relation_context="same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
         capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        observation_tags=_CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, variant_candidate: ConstructorVariantFamilyCandidate) -> RefactorFinding:
@@ -2412,11 +2380,7 @@ class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector[Accumulator
         ),
         capability_gap="single accumulator-fold substrate with declarative step hooks",
         relation_context="same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
@@ -2464,10 +2428,7 @@ class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector[ExcessiveBl
         ),
         capability_gap="compact source layout with no nonsemantic blank-line payload",
         relation_context="source contains an empty region larger than a canonical separator",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS,
         observation_tags=(ObservationTag.NORMALIZED_AST,),
     )
 
@@ -2505,11 +2466,7 @@ class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector[Cata
         ),
         capability_gap="one reusable catalog-installing subclass hook with declarative catalog attribute residue",
         relation_context="sibling mixins repeat an identical class-creation hook over different catalog classvars",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.MRO_ORDERING,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
         observation_tags=_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
@@ -2554,11 +2511,7 @@ class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector[RegexGr
         ),
         capability_gap="one regex group extraction descriptor with declared pattern and matcher coordinates",
         relation_context="same class repeats regex group extractor methods over different pattern fields",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
@@ -2580,9 +2533,8 @@ class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector[RegexGr
                 "# Replace repeated regex extractor methods with descriptor rows.\n"
                 "# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(regex_candidate.method_names),
-                field_count=len(regex_candidate.pattern_attribute_names),
                 mapping_name=regex_candidate.class_name,
                 field_names=regex_candidate.pattern_attribute_names,
             ),
@@ -2636,10 +2588,7 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         capability_gap="one manifest authority for a support-prelude module family",
         relation_context="several one-class modules share the same star-import support prelude without a module-family catalog",
         capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.MANUAL_SYNCHRONIZATION,
-        ),
+        observation_tags=_CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -2665,9 +2614,8 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
                         "# Add one module-family catalog beside the shared support prelude.\n"
                         "# Derive member rows from package structure instead of relying only on repeated star-import shape."
                     ),
-                    metrics=MappingMetrics(
+                    metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(candidate.class_names),
-                        field_count=len(candidate.class_names),
                         mapping_name=candidate.support_module_name,
                         field_names=candidate.class_names,
                     ),
@@ -2689,16 +2637,8 @@ class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector[Mod
         ),
         capability_gap="one constructor-row catalog keyed by semantic policy role",
         relation_context="same module has multiple constant rows assigned from the same constructor shape",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
-        observation_tags=(
-            ObservationTag.KEYWORD_MAPPING,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        observation_tags=_KEYWORD_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, policy_candidate: ModuleConstructorPolicyFamilyCandidate) -> RefactorFinding:
@@ -2741,11 +2681,7 @@ class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector[Dynamic
         ),
         capability_gap="declared nominal count/value hook instead of selector-driven reflective lookup",
         relation_context="class template selects its own state through dynamic reflective field names",
-        capability_tags=(
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_FAIL_LOUD_CONTRACTS_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, dynamic_candidate: DynamicSelfFieldSelectionCandidate) -> RefactorFinding:
@@ -2779,11 +2715,7 @@ class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandi
         capability_gap="declared nominal hook or typed family handle instead of string selector plus reflection",
         relation_context="class family encodes behavior with constant selector strings and resolves it reflectively",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.STRING_DISPATCH,
-            ObservationTag.SEMANTIC_STRING_LITERAL,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        observation_tags=_STRING_DISPATCH_SEMANTIC_STRING_LITERAL_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, reflective_candidate: StringBackedReflectiveNominalLookupCandidate) -> RefactorFinding:

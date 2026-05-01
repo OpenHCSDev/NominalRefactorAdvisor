@@ -77,15 +77,8 @@ class TypingProtocolContractDetector(IssueDetector):
         ),
         capability_gap="nominal runtime contract instead of structural shape membership",
         relation_context="class declares interface identity through structural typing",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.VIRTUAL_MEMBERSHIP,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.RUNTIME_MEMBERSHIP,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -176,11 +169,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
         capability_gap="single authoritative algorithm for a nominal behavior family",
         relation_context="same method role across sibling classes",
         capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.METHOD_ROLE,
-        ),
+        observation_tags=_NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
     )
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
@@ -251,11 +240,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
         capability_gap="single authoritative inheritance hierarchy for a duplicated behavior family",
         relation_context="same class set repeats several method roles across the same family boundary",
         capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.REPEATED_METHOD_ROLES,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_REPEATED_METHOD_ROLES_CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -529,11 +514,7 @@ class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector[ClassRoleQuotie
         capability_gap="composed subsystem authorities derived from the class method-role quotient",
         relation_context="one class contains several nontrivial method-role equivalence classes behind a smaller public facade",
         capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_METHOD_ROLE_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, role_candidate: ClassRoleQuotientCandidate) -> RefactorFinding:
@@ -633,16 +614,8 @@ class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector[Pass
         ),
         capability_gap="generic composite-class derivation for pass-through multiple-inheritance facades",
         relation_context="class body contains no behavior beyond composing several base roles",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_MRO_ORDERING_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, facade_candidate: PassThroughCompositionFacadeCandidate) -> RefactorFinding:
@@ -779,11 +752,7 @@ class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector[Projecti
         capability_gap="single descriptor authority for repeated Path projection properties",
         relation_context="same class repeats Path projection properties over owned base fields",
         capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PROJECTION_HELPER,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_PROJECTION_HELPER_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, projection_candidate: ProjectionPropertyFamilyCandidate) -> RefactorFinding:
@@ -887,11 +856,7 @@ class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector[LiveTem
         capability_gap="single template-method descriptor authority for live text payload families",
         relation_context="same class repeats direct text-template return methods",
         capability_tags=_AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.EXPORT_MAPPING,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_EXPORT_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, template_candidate: LiveTemplatePayloadFamilyCandidate) -> RefactorFinding:
@@ -912,9 +877,8 @@ class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector[LiveTem
                 "# Replace direct template-return methods with TextTemplateMethod descriptors.\n"
                 "# Keep template bodies declarative; derive the bound method API generically."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(template_candidate.method_names),
-                field_count=len(template_candidate.method_names),
                 mapping_name=f"{template_candidate.class_name} templates",
                 field_names=template_candidate.method_names,
             ),
@@ -1020,11 +984,7 @@ class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateD
         capability_gap="single authoritative context/request record instead of repeated suffix-axis adapter surfaces",
         relation_context="same owner repeats an operation family across the same suffix-named axes",
         capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_METHOD_ROLE_PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, surface_candidate: SuffixAxisSurfaceCandidate) -> RefactorFinding:
@@ -1069,16 +1029,8 @@ class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector[Sibling
         ),
         capability_gap="one authoritative local computation instead of parallel role-specific helpers",
         relation_context="same owner has role-token sibling helpers with matching control skeletons",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.PROVENANCE,
-        ),
-        observation_tags=(
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, helper_candidate: SiblingRoleHelperSymmetryCandidate) -> RefactorFinding:
@@ -1122,11 +1074,7 @@ class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[EnumStrategy
         ),
         capability_gap="nominal strategy family with one guaranteed call surface",
         relation_context="one owner branches over a closed enum/member family instead of delegating to implementation classes",
-        capability_tags=(
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
+        capability_tags=_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, dispatch_candidate: EnumStrategyDispatchCandidate) -> RefactorFinding:
@@ -1137,8 +1085,7 @@ class EnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[EnumStrategy
             (dispatch_candidate.evidence,),
             scaffold=_nominal_strategy_scaffold(dispatch_candidate),
             codemod_patch=_nominal_strategy_patch(dispatch_candidate),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(dispatch_candidate.case_names),
+            metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=dispatch_candidate.dispatch_axis,
                 literal_cases=dispatch_candidate.case_names,
             ),
@@ -1160,11 +1107,7 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector[Res
         capability_gap="metaclass-registry-backed nominal strategy family instead of enum table plus residual branching",
         relation_context="same function indexes an enum-keyed table and branches on that enum axis",
         capability_tags=_AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PROJECTION_DICT,
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.CLOSED_FAMILY_CASES,
-        ),
+        observation_tags=_PROJECTION_DICT_BRANCH_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, axis_candidate: ResidualClosedAxisIndirectionCandidate) -> RefactorFinding:
@@ -1201,8 +1144,7 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector[Res
                 f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.axis_expression})`.\n"
                 f"# Move projections ({value_summary}) and per-case behavior into registered `AxisPolicy` subclasses."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(axis_candidate.table_case_names),
+            metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=axis_candidate.enum_name,
                 literal_cases=axis_candidate.table_case_names,
             ),
@@ -1222,11 +1164,7 @@ class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[Repe
         ),
         capability_gap="single authoritative nominal strategy family for a repeated closed dispatch axis",
         relation_context="same closed enum family is re-dispatched across sibling functions or methods",
-        capability_tags=(
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, dispatch_candidate: RepeatedEnumStrategyDispatchCandidate) -> RefactorFinding:
@@ -1266,15 +1204,8 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector[InlineEnumS
         ),
         capability_gap="type-safe enum-owned policy instead of inline enum subset literals",
         relation_context="function branches on a hand-enumerated subset of one closed enum axis",
-        capability_tags=(
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.PROJECTION_DICT,
-        ),
+        capability_tags=_CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_BRANCH_DISPATCH_PROJECTION_DICT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, guard_candidate: InlineEnumSubsetGuardCandidate) -> RefactorFinding:
@@ -1306,8 +1237,7 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector[InlineEnumS
                 f"# Replace inline subset {{{cases}}} with a policy owned by `{guard_candidate.enum_name}`.\n"
                 "# Derive any enum-keyed dict from enum members or typed policy rows, and fail if coverage is incomplete."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(guard_candidate.case_names),
+            metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=guard_candidate.enum_name,
                 literal_cases=guard_candidate.case_names,
             ),
@@ -1328,11 +1258,7 @@ class SplitDispatchAuthorityDetector(ModuleCollectorCandidateDetector[SplitDispa
         capability_gap="single authoritative product-family or request-dispatched policy for cooperating dispatch axes",
         relation_context="one orchestrator combines a strategy-family selector with a separate singledispatch generic",
         capability_tags=_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.FACTORY_DISPATCH,
-            ObservationTag.REPEATED_METHOD_ROLES,
-        ),
+        observation_tags=_CLASS_FAMILY_FACTORY_DISPATCH_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, dispatch_candidate: SplitDispatchAuthorityCandidate) -> RefactorFinding:
@@ -1397,15 +1323,8 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector[EmptyLeafP
         ),
         capability_gap="single authoritative keyed product family instead of empty inheritance combinations",
         relation_context="empty leaf classes encode the full Cartesian product of two reusable inheritance axes",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.REPEATED_METHOD_ROLES,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_REPEATED_METHOD_ROLES_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, product_candidate: EmptyLeafProductFamilyCandidate) -> RefactorFinding:
@@ -1429,8 +1348,7 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector[EmptyLeafP
                 "# Replace the empty Cartesian-product leaf classes with one keyed product table or one nominal selector family.\n"
                 "# Keep only irreducible axis-local behavior on the reusable bases; do not encode the cross product as `pass` subclasses."
             ),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(product_candidate.leaf_class_names),
+            metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=(
                     f"{' | '.join(product_candidate.left_axis_base_names)} x "
                     f"{' | '.join(product_candidate.right_axis_base_names)}"
@@ -1454,11 +1372,7 @@ class ClosedConstantSelectorDetector(ModuleCollectorCandidateDetector[ClosedCons
         capability_gap="single authoritative selector table for a closed constant family",
         relation_context="one function branches over a small predicate family and returns sibling constants or one shared wrapper around them",
         capability_tags=_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PREDICATE_CHAIN,
-        ),
+        observation_tags=_BUILDER_CALL_DATAFLOW_ROOT_PREDICATE_CHAIN_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, selector_candidate: ClosedConstantSelectorCandidate) -> RefactorFinding:
@@ -1522,16 +1436,8 @@ class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector[DerivedW
         ),
         capability_gap="single authoritative spec family carrying wrapper-generation metadata",
         relation_context="secondary spec table references an authoritative spec family entry-by-entry and is only consumed by wrapper generation",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.SCOPED_SHAPE_WRAPPER,
-        ),
+        capability_tags=_AUTHORITATIVE_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        observation_tags=_BUILDER_CALL_DATAFLOW_ROOT_SCOPED_SHAPE_WRAPPER_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, shadow_candidate: DerivedWrapperSpecShadowCandidate) -> RefactorFinding:
@@ -1679,11 +1585,7 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector[
         capability_gap="behavior derived from authoritative keyed family rather than downstream enum branching",
         relation_context="function branches on an enum axis already owned by a keyed nominal family in another module",
         capability_tags=_AUTHORITATIVE_DISPATCH_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.BRANCH_DISPATCH,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_BRANCH_DISPATCH_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, residual_candidate: ResidualClosedAxisBranchingCandidate) -> RefactorFinding:
@@ -1729,12 +1631,7 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector[Para
         ),
         capability_gap="single cross-module keyed-axis authority with module-local adapters derived from it",
         relation_context="same keyed enum axis is modeled by multiple nominal families across modules",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_AUTHORITATIVE_DISPATCH_AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         observation_tags=_CLASS_FAMILY_FACTORY_DISPATCH_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
@@ -1787,11 +1684,7 @@ class ParallelKeyedTableAxisDetector(CrossModuleCollectorCandidateDetector[Paral
         capability_gap="single authoritative enum-keyed row family with derived module-local projections",
         relation_context="same closed enum/key axis is encoded by multiple keyed tables across modules",
         capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PROJECTION_DICT,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.BUILDER_CALL,
-        ),
+        observation_tags=_PROJECTION_DICT_DATAFLOW_ROOT_BUILDER_CALL_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, table_candidate: ParallelKeyedTableAxisCandidate) -> RefactorFinding:
@@ -1840,12 +1733,7 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector[
         ),
         capability_gap="single authoritative metaclass-registry axis family with derived table/view projections",
         relation_context="same enum/key axis is encoded by both a keyed table and a keyed nominal family",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.AUTHORITATIVE_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
+        capability_tags=_AUTHORITATIVE_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         observation_tags=_CLASS_FAMILY_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
@@ -1901,16 +1789,8 @@ class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector[Enu
         ),
         capability_gap="one authoritative metaclass-registry closed-axis owner with derived table/view projections",
         relation_context="module-level enum-keyed table overlaps a class family that already declares the same enum axis",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.CLOSED_FAMILY_DISPATCH,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.PROJECTION_DICT,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        capability_tags=_AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_PROJECTION_DICT_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, axis_candidate: EnumKeyedTableClassAxisShadowCandidate) -> RefactorFinding:
@@ -2058,11 +1938,7 @@ class ParallelRegistryProjectionFamilyDetector(ModuleCollectorCandidateDetector[
         capability_gap="single authoritative registry-projection family",
         relation_context="same registry-authority-to-target projection shape repeated across sibling functions",
         capability_tags=_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.BUILDER_CALL,
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_BUILDER_CALL_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, catalog_candidate: ParallelRegistryProjectionFamilyCandidate) -> RefactorFinding:
@@ -2111,15 +1987,8 @@ class RepeatedKeyedFamilyDetector(ConfiguredCrossModuleCollectorCandidateDetecto
         ),
         capability_gap="single typed metaclass-registry substrate for keyed nominal registries",
         relation_context="same keyed family registration and lookup shell repeated across nominal family roots",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.ENUMERATION,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, family_candidate: RepeatedKeyedFamilyCandidate) -> RefactorFinding:
@@ -2226,17 +2095,8 @@ class ManualStructuralRecordMechanicsDetector(ConfiguredModuleCollectorCandidate
         ),
         capability_gap="single typed structural-record substrate with derived validation, projection, and transform mechanics",
         relation_context="same dataclass record lifecycle mechanics repeated across sibling structural record classes",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.TYPE_LINEAGE,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.BUILDER_CALL,
-        ),
+        capability_tags=_AUTHORITATIVE_FAIL_LOUD_CONTRACTS_PROVENANCE_TYPE_LINEAGE_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_DATAFLOW_ROOT_BUILDER_CALL_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, group_candidate: ManualStructuralRecordMechanicsGroupCandidate) -> RefactorFinding:
@@ -2282,16 +2142,8 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
         ),
         capability_gap="single ABC-backed family for the carried subject, with repeated case recovery moved into nominal properties or hooks",
         relation_context="same attribute-carried family is re-decoded through repeated concrete runtime type checks across several functions",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.MRO_ORDERING,
-        ),
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_MRO_ORDERING_CAPABILITY_TAGS,
+        observation_tags=_CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, case_candidate: RepeatedConcreteTypeCaseAnalysisCandidate) -> RefactorFinding:
@@ -2359,11 +2211,7 @@ class ImplicitSelfContractMixinDetector(ConfiguredCrossModuleCollectorCandidateD
         capability_gap="declared nominal base or policy row for the shared algorithm instead of a hidden mixin self-contract",
         relation_context="concrete mixin methods erase `self` through casts and depend on consumer-owned attributes across several subclasses",
         capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.REPEATED_METHOD_ROLES,
-            ObservationTag.PARTIAL_VIEW,
-        ),
+        observation_tags=_CLASS_FAMILY_REPEATED_METHOD_ROLES_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, mixin_candidate: ImplicitSelfContractMixinCandidate) -> RefactorFinding:
@@ -2407,11 +2255,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
         capability_gap="single authoritative case-policy or rule-table validator",
         relation_context="same subject and subordinate view validated through repeated fail-fast sibling helpers",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.PARTIAL_VIEW,
-            ObservationTag.CLASS_FAMILY,
-        ),
+        observation_tags=_DATAFLOW_ROOT_PARTIAL_VIEW_CLASS_FAMILY_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, family_candidate: RepeatedGuardValidatorFamilyCandidate) -> RefactorFinding:
@@ -2466,11 +2310,7 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
         capability_gap="single authoritative validated-record contract for repeated shape/ndim guards",
         relation_context="same nominal record family repeats fail-loud shape validation scaffolding",
         capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.CLASS_FAMILY,
-            ObservationTag.METHOD_ROLE,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        observation_tags=_CLASS_FAMILY_METHOD_ROLE_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _collect_findings(
@@ -2536,11 +2376,7 @@ class RepeatedResultAssemblyPipelineDetector(ConfiguredModuleCollectorCandidateD
         ),
         capability_gap="single authoritative result-assembly pipeline with one source hook",
         relation_context="same staged assembly tail is repeated across sibling functions or methods",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, pipeline_candidate: RepeatedResultAssemblyPipelineCandidate) -> RefactorFinding:
@@ -2711,16 +2547,8 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector[
         ),
         capability_gap="single typed effect carrier with nominal inherited matcher steps for optional extraction, validation, and provenance flow",
         relation_context="same fail-soft absence effect is manually re-threaded across one extraction pipeline",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
-        observation_tags=(
-            ObservationTag.PREDICATE_CHAIN,
-            ObservationTag.DATAFLOW_ROOT,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
+        observation_tags=_PREDICATE_CHAIN_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     _DEFAULT_NORMAL_FORM_SCAFFOLD = _DEFAULT_NORMAL_FORM_SCAFFOLD
@@ -2799,11 +2627,7 @@ class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector[
         capability_gap="reusable nominal EffectStep family for recurring AST type, cardinality, and optional-exit guards",
         relation_context="same optional AST matcher mechanics are hand-expanded inside one helper",
         capability_tags=_SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        observation_tags=(
-            ObservationTag.PREDICATE_CHAIN,
-            ObservationTag.NORMALIZED_AST,
-            ObservationTag.DATAFLOW_ROOT,
-        ),
+        observation_tags=_PREDICATE_CHAIN_NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, payoff_candidate: EffectStepAmortizationCandidate) -> RefactorFinding:
@@ -2854,15 +2678,8 @@ class EffectStepImplementationLeakDetector(ModuleCollectorCandidateDetector[Effe
         ),
         capability_gap="template-method EffectStep base that owns optional flow, type narrowing, and guard sequencing",
         relation_context="concrete EffectStep leaf repeats mechanics that belong in an ABC/template base",
-        capability_tags=(
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-        observation_tags=(
-            ObservationTag.PREDICATE_CHAIN,
-            ObservationTag.NORMALIZED_AST,
-        ),
+        capability_tags=_FAIL_LOUD_CONTRACTS_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        observation_tags=_PREDICATE_CHAIN_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
     def _finding_for_candidate(self, leak: EffectStepImplementationLeakCandidate) -> RefactorFinding:
@@ -2910,11 +2727,7 @@ class UnderAmortizedInfrastructureDetector(CrossModuleCollectorCandidateDetector
         ),
         capability_gap="public matcher infrastructure whose declaration cost is amortized by multiple consumers",
         relation_context="effect/matcher module public surface has single-consumer declarations",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
@@ -2964,11 +2777,7 @@ class CandidateCollectorBoilerplateDetector(ModuleCollectorCandidateDetector[Can
         ),
         capability_gap="typed metaprogrammed detector base that derives candidate collection from a declared strategy",
         relation_context="detector class repeats collector forwarding method instead of declaring a collector",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
         observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
@@ -3019,11 +2828,7 @@ class TypedCandidateCastBoilerplateDetector(
         ),
         capability_gap="generic typed candidate detector base with no per-detector cast prelude",
         relation_context="candidate-rendering template method starts with a local cast of its only payload parameter",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
         observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
@@ -3104,9 +2909,8 @@ class FindingSpecDefaultFieldBoilerplateDetector(
                 f"`{field_candidate.recommended_constructor_name}` where needed.\n"
                 f"# Delete redundant semantic keywords: {', '.join(field_candidate.redundant_keyword_names)}."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(field_candidate.redundant_keyword_names),
-                field_count=len(field_candidate.redundant_keyword_names),
                 mapping_name=field_candidate.constructor_name,
                 field_names=field_candidate.redundant_keyword_names,
             ),
@@ -3128,11 +2932,7 @@ class FindingSpecBuildBoilerplateDetector(
         ),
         capability_gap="typed detector template method that injects detector identity into finding construction",
         relation_context="finding renderer manually passes detector-owned identity into its own spec builder",
-        capability_tags=(
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_AUTHORITATIVE_CAPABILITY_TAGS,
         observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
@@ -3167,14 +2967,14 @@ class SemanticTagTupleBoilerplateDetector(
     candidate_collector = _semantic_tag_tuple_boilerplate_candidates
     finding_spec = HighConfidenceFindingSpec(
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Repeated semantic tag tuple should become a named authority",
+        title="Semantic tag tuple literal should become a named authority",
         why=(
-            "Repeated capability or observation tag tuples are semantic classifications, not local control flow. "
-            "When the same tuple appears multiple times in one module, a named constant should carry that "
-            "classification so the detector specs reference one authority."
+            "Capability and observation tag tuples are semantic classifications, not local control flow. "
+            "A named constant should carry that classification so detector specs reference one authority "
+            "instead of re-declaring enum tuples inline."
         ),
         capability_gap="named semantic tag tuple authority reused across detector specs",
-        relation_context="same FindingSpec tag tuple literal appears multiple times in one module",
+        relation_context="FindingSpec carries an inline semantic tag tuple literal",
         capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
         observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     )
@@ -3198,11 +2998,64 @@ class SemanticTagTupleBoilerplateDetector(
                 f"# Add `{tag_candidate.constant_name}` for the repeated tag tuple.\n"
                 f"# Replace each repeated `{tag_candidate.keyword_name}=(...)` value with the named constant."
             ),
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(tag_candidate.evidence),
-                field_count=len(tag_candidate.tag_names),
                 mapping_name=tag_candidate.constant_name,
                 field_names=tag_candidate.tag_names,
+            ),
+        )
+
+
+class DerivedMetricCountBoilerplateDetector(
+    ModuleCollectorCandidateDetector[DerivedMetricCountBoilerplateCandidate]
+):
+    detector_id = "derived_metric_count_boilerplate"
+    candidate_collector = _derived_metric_count_boilerplate_candidates
+    finding_spec = HighConfidenceFindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Metric counts should be derived from metric collections",
+        why=(
+            "A metrics object that receives both `*_count=len(values)` and `values=values` is carrying "
+            "the same fact twice. The count is a deterministic projection of the collection and should "
+            "be derived by the typed metrics constructor."
+        ),
+        capability_gap="typed metrics constructors that derive count fields from authoritative collections",
+        relation_context="metrics call passes a count keyword computed from the collection keyword in the same call",
+        capability_tags=_AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        observation_tags=_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, metric_candidate: DerivedMetricCountBoilerplateCandidate
+    ) -> RefactorFinding:
+        derived_summary = ", ".join(
+            f"{count_name}=len({collection_name})"
+            for count_name, collection_name in zip(
+                metric_candidate.count_keyword_names,
+                metric_candidate.collection_keyword_names,
+                strict=True,
+            )
+        )
+        return self.build_finding(
+            (
+                f"`{metric_candidate.metric_class_name}` repeats derived count fields "
+                f"{derived_summary}; use `{metric_candidate.recommended_constructor_name}`."
+            ),
+            (metric_candidate.evidence,),
+            scaffold=(
+                f"{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(\n"
+                "    ...\n"
+                ")"
+            ),
+            codemod_patch=(
+                f"# Replace `{metric_candidate.metric_class_name}(...)` with "
+                f"`{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(...)`.\n"
+                f"# Delete derived count keywords: {', '.join(metric_candidate.count_keyword_names)}."
+            ),
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=len(metric_candidate.count_keyword_names),
+                mapping_name=metric_candidate.metric_class_name,
+                field_names=metric_candidate.collection_keyword_names,
             ),
         )
 
@@ -3266,11 +3119,7 @@ class ManualFiberTagDetector(ModuleCollectorCandidateDetector[ManualFiberTagCand
         ),
         capability_gap="host-native nominal fiber decomposition with one subclass per behavior fiber",
         relation_context="manual instance tag drives behavior while irrelevant coordinates remain constructible on every fiber",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, fiber_candidate: ManualFiberTagCandidate) -> RefactorFinding:
@@ -3292,8 +3141,7 @@ class ManualFiberTagDetector(ModuleCollectorCandidateDetector[ManualFiberTagCand
             ),
             scaffold=_manual_fiber_tag_scaffold(fiber_candidate),
             codemod_patch=_manual_fiber_tag_patch(fiber_candidate),
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=len(fiber_candidate.case_names),
+            metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=f"self.{fiber_candidate.tag_name}",
                 literal_cases=fiber_candidate.case_names,
             ),
@@ -3312,11 +3160,7 @@ class DescriptorDerivedViewDetector(ModuleCollectorCandidateDetector[DescriptorD
         ),
         capability_gap="descriptor- or property-mediated derived views rooted in one authoritative source",
         relation_context="stored derived views must be manually kept coherent with a single source field",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.UNIT_RATE_COHERENCE,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_AUTHORITATIVE_UNIT_RATE_COHERENCE_PROVENANCE_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, view_candidate: DescriptorDerivedViewCandidate) -> RefactorFinding:
@@ -3353,11 +3197,7 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector[ManualR
         ),
         capability_gap="zero-delay metaclass-registry class registration with collision checks and runtime provenance",
         relation_context="class registration is performed as a separate auxiliary step rather than at class creation time",
-        capability_tags=(
-            CapabilityTag.CLASS_LEVEL_REGISTRATION,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
+        capability_tags=_CLASS_LEVEL_REGISTRATION_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, registry_candidate: ManualRegistryCandidate) -> RefactorFinding:
@@ -3402,11 +3242,7 @@ class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector[Structura
         ),
         capability_gap="ABC-backed nominal witness for a structurally confusable implementation family",
         relation_context="consumer depends on a partial structural view shared by several unrelated classes",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.FAIL_LOUD_CONTRACTS,
-            CapabilityTag.PROVENANCE,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, confusability_candidate: StructuralConfusabilityCandidate) -> RefactorFinding:
@@ -3439,11 +3275,7 @@ class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector[WitnessCarr
         ),
         capability_gap="one authoritative nominal base for a semantic metadata carrier family",
         relation_context="same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-        ),
+        capability_tags=_NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(self, witness_candidate: WitnessCarrierFamilyCandidate) -> RefactorFinding:
