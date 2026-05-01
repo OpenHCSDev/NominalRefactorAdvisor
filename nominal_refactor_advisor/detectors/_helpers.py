@@ -657,9 +657,15 @@ def _family_roster_member(
     name = name_id(node)
     if name is not None and name in known_class_names:
         return name, "class_reference"
-    call = zero_argument_named_call(node)
-    if call is not None and call.name in known_class_names:
-        return call.name, "constructor_call"
+    call = as_ast(node, ast.Call)
+    call_name = name_id(call.func if call is not None else None)
+    if (
+        call is not None
+        and call_name in known_class_names
+        and not call.args
+        and not call.keywords
+    ):
+        return cast(str, call_name), "constructor_call"
     return None
 
 def _extract_family_roster_members(
@@ -1665,6 +1671,37 @@ def _forwarded_delegate_call(
         return None
     return call
 
+def _method_forwarded_parameter_names(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        arg.arg
+        for arg in (
+            *method.args.posonlyargs,
+            *method.args.args[1:],
+            *method.args.kwonlyargs,
+        )
+    )
+
+def _call_forwards_parameters(
+    call: ast.Call,
+    parameter_names: tuple[str, ...],
+) -> bool:
+    parameter_set = frozenset(parameter_names)
+
+    def forwards_argument(node: ast.AST) -> bool:
+        name = name_id(node)
+        if name is not None:
+            return name in parameter_set
+        starred = as_ast(node, ast.Starred)
+        return name_id(starred.value if starred else None) in parameter_set
+
+    return all(forwards_argument(argument) for argument in call.args) and all(
+        keyword.arg is None
+        or (keyword.arg in parameter_set and name_id(keyword.value) == keyword.arg)
+        for keyword in call.keywords
+    )
+
 def _forwarded_delegate_member_name(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     delegate_field_name: str,
@@ -1678,8 +1715,8 @@ def _forwarded_delegate_member_name(
             returned, method.name, delegate_field_name
         )
     call = _forwarded_delegate_call(returned, method.name, delegate_field_name)
-    if call is None or not call_forwards_parameters(
-        call, method_forwarded_parameter_names(method)
+    if call is None or not _call_forwards_parameters(
+        call, _method_forwarded_parameter_names(method)
     ):
         return None
     return method.name
@@ -2441,7 +2478,8 @@ def _guarded_defined_attr_name(node: ast.AST) -> str | None:
     comparison = single_compare_match(compare, ast.IsNot) or single_compare_match(
         compare, ast.NotEq
     )
-    if comparison is None or not is_none_constant(comparison.right):
+    none_constant = as_ast(comparison.right if comparison else None, ast.Constant)
+    if comparison is None or none_constant is None or none_constant.value is not None:
         return None
     return _class_dict_get_attr_name(comparison.left)
 
@@ -2658,25 +2696,29 @@ def _registered_type_match_assignment_shape(
 def _registered_type_list_assignment(
     body: list[ast.stmt],
 ) -> tuple[str, ast.ListComp] | None:
-    binding = next(
-        (
-            typed_binding
-            for statement in body
-            if isinstance(statement, ast.Assign)
-            and (typed_binding := named_value_as(statement, ast.ListComp)) is not None
-        ),
-        None,
-    )
-    return None if binding is None else (binding.name, binding.value)
+    for statement in body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        binding = named_value_binding(statement)
+        list_comp = as_ast(binding.value if binding else None, ast.ListComp)
+        if binding is not None and list_comp is not None:
+            return binding.name, list_comp
+    return None
 
 
 def _registered_type_list_generator(
     list_comp: ast.ListComp,
 ) -> ast.comprehension | None:
-    identity = identity_comprehension(list_comp)
-    if identity is None:
+    generator = single_item(list_comp.generators)
+    target_name = name_id(generator.target) if generator is not None else None
+    if (
+        generator is None
+        or generator.is_async
+        or target_name is None
+        or name_id(list_comp.elt) != target_name
+    ):
         return None
-    iter_call = as_ast(identity.iter, ast.Call)
+    iter_call = as_ast(generator.iter, ast.Call)
     if iter_call is None:
         return None
     registered_type_call = attribute_call_match(
@@ -2687,7 +2729,7 @@ def _registered_type_list_generator(
         argument_count=0,
         allow_keywords=False,
     )
-    return identity.generator if registered_type_call is not None else None
+    return generator if registered_type_call is not None else None
 
 
 def _registered_type_predicate_shape(
@@ -3631,8 +3673,19 @@ def _derived_indexed_surface_candidates(
     return tuple(candidates)
 
 def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
-    calls = additive_call_chain(node)
-    if calls is None:
+    calls: list[ast.Call] = []
+
+    def collect_calls(current: ast.AST) -> bool:
+        binary = as_ast(current, ast.BinOp)
+        if binary is not None and isinstance(binary.op, ast.Add):
+            return collect_calls(binary.left) and collect_calls(binary.right)
+        call = as_ast(current, ast.Call)
+        if call is None:
+            return False
+        calls.append(call)
+        return True
+
+    if not collect_calls(node) or len(calls) < 2:
         return None
     accessors = tuple(
         accessor
@@ -5660,7 +5713,9 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     callee_name = _call_name(source.call.func) if source is not None else None
     if source is None or callee_name is None:
         return None
-    keyword_names = call_keyword_names(source.call)
+    keyword_names = tuple(
+        keyword.arg for keyword in source.call.keywords if keyword.arg is not None
+    )
     return PipelineAssemblyStage(
         kind=source.kind,
         callee_name=callee_name,
@@ -5883,7 +5938,6 @@ _SEMANTIC_MATCH_HELPER_NAMES = frozenset(
         "single_call_arg",
         "single_call_arg_name",
         "single_item",
-        "single_return_as",
         "single_return_call",
         "single_return_value",
     }
@@ -5967,7 +6021,7 @@ def _effect_step_normal_form(
 ) -> str:
     ast_type_set = frozenset(ast_type_names)
     helper_set = frozenset(semantic_helper_names)
-    if helper_set & {"single_return_call", "single_return_value", "single_return_as"}:
+    if helper_set & {"single_return_call", "single_return_value"}:
         return "statement_sequence_effect_steps"
     if cardinality_guard_count >= 2 or helper_set & {"single_item", "ast_sequence"}:
         return "cardinality_guard_effect_steps"
@@ -6116,17 +6170,152 @@ def _effect_step_amortization_candidates(
         )
     )
 
+def _public_top_level_declarations(
+    module: ParsedModule,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+    return {
+        node.name: node
+        for node in module.module.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and not node.name.startswith("_")
+    }
+
+def _declares_effect_infrastructure(
+    declarations: dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef],
+) -> bool:
+    return any(
+        name.endswith(("EffectStep", "EffectCarrier"))
+        for name in declarations
+    )
+
+def _local_symbol_reference_sites(
+    modules: Sequence[ParsedModule],
+) -> dict[str, set[SourceLocation]]:
+    references: dict[str, set[SourceLocation]] = defaultdict(set)
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self, module: ParsedModule) -> None:
+            self.module = module
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        def visit_Name(self, node: ast.Name) -> None:
+            references[node.id].add(self._site(node.lineno))
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            references[node.attr].add(self._site(node.lineno))
+            self.generic_visit(node)
+
+        def _site(self, line: int) -> SourceLocation:
+            symbol = ".".join(self.stack) if self.stack else "<module>"
+            return SourceLocation(str(self.module.path), line, symbol)
+
+    for module in modules:
+        Visitor(module).visit(module.module)
+    return references
+
+def _public_declaration_reference_names(
+    declaration: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+    public_names: frozenset[str],
+) -> frozenset[str]:
+    return frozenset(
+        name
+        for item in _walk_nodes(declaration)
+        for name in (
+            (item.id if isinstance(item, ast.Name) else None),
+            (item.attr if isinstance(item, ast.Attribute) else None),
+        )
+        if name in public_names and name != declaration.name
+    )
+
+def _under_amortized_infrastructure_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[UnderAmortizedInfrastructureCandidate, ...]:
+    reference_sites = _local_symbol_reference_sites(modules)
+    candidates: list[UnderAmortizedInfrastructureCandidate] = []
+    for module in modules:
+        declarations = _public_top_level_declarations(module)
+        if not declarations or not _declares_effect_infrastructure(declarations):
+            continue
+        module_path = str(module.path)
+        public_names = frozenset(declarations)
+        external_consumers = {
+            name: frozenset(
+                site.symbol
+                for site in reference_sites.get(name, set())
+                if site.file_path != module_path
+            )
+            for name in public_names
+        }
+        declaration_refs = {
+            name: _public_declaration_reference_names(node, public_names)
+            for name, node in declarations.items()
+        }
+        amortized_support_names = frozenset(
+            support_name
+            for name, refs in declaration_refs.items()
+            if len(external_consumers[name]) > 1
+            for support_name in refs
+        )
+        names = tuple(
+            sorted(
+                name
+                for name in public_names
+                if len(external_consumers[name]) == 1
+                and name not in amortized_support_names
+            )
+        )
+        if not names:
+            continue
+        internal_consumers: dict[str, set[str]] = defaultdict(set)
+        for name, refs in declaration_refs.items():
+            for ref_name in refs:
+                internal_consumers[ref_name].add(name)
+        support_names = tuple(
+            sorted(
+                ref_name
+                for name in names
+                for ref_name in declaration_refs[name]
+                if not external_consumers[ref_name]
+                and internal_consumers[ref_name] <= {name}
+            )
+        )
+        consumers = tuple(
+            sorted({consumer for name in names for consumer in external_consumers[name]})
+        )
+        first_line = min(declarations[name].lineno for name in names)
+        candidates.append(
+            UnderAmortizedInfrastructureCandidate(
+                file_path=module_path,
+                line=first_line,
+                declaration_names=names,
+                consumer_symbols=consumers,
+                support_names=support_names,
+            )
+        )
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line))
+    )
+
 _EFFECT_STEP_BASE_NAMES = frozenset(
     {
-        "AttributeCallProjectionStep",
-        "AttributeOwnerNameProjectionStep",
         "AstTypedEffectStep",
-        "CallArgCountEffectStep",
-        "ComprehensionTargetGuardStep",
         "EffectStep",
         "GuardedEffectStep",
-        "IdentityGuardEffectStep",
-        "OwnerCallGuardStep",
         "RegisteredEffectStep",
         "SingleCompareEffectStep",
     }
@@ -6644,8 +6833,12 @@ def _collect_class_sentinel_attrs(
 def _predicate_factory_chain_branch_count(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int | None:
-    branches = if_elif_chain(function.body[0]) if function.body else None
-    if branches is None or len(branches) < 2:
+    current = as_ast(function.body[0], ast.If) if function.body else None
+    branches: list[ast.If] = []
+    while current is not None:
+        branches.append(current)
+        current = as_ast(single_item(current.orelse), ast.If)
+    if len(branches) < 2:
         return None
     for branch in branches:
         if not _test_has_call(branch.test):

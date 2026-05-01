@@ -29,39 +29,28 @@ from ..semantic_match import (
     Maybe,
     RegisteredEffectStep,
     SingleCompareEffectStep,
-    additive_call_chain,
     as_ast,
     ast_sequence,
     attribute_call_match,
     attribute_name,
-    call_forwards_parameters,
     call_attribute_name,
-    call_keyword_names,
     collection_literal,
     constant_value,
-    identity_comprehension,
-    if_elif_chain,
-    is_none_constant,
-    method_forwarded_parameter_names,
     name_id,
     named_call_assignment,
-    named_value_as,
     named_value_binding,
     registered_effect_steps,
     single_assign_target,
     single_ast,
     single_call_arg,
     single_call_arg_name,
-    single_compare_of,
     single_compare_match,
     single_item,
     single_named_call_argument,
     return_call,
     return_value,
-    single_return_as,
     single_return_call,
     single_return_value,
-    zero_argument_named_call,
 )
 from ..ast_tools import (
     AccessorWrapperCandidate,
@@ -1578,7 +1567,7 @@ def _enum_member_ref(node: ast.AST) -> tuple[str, str] | None:
 def _enum_subset_guard_from_compare(
     node: ast.Compare,
 ) -> tuple[str, str, tuple[str, ...], str] | None:
-    comparison = single_compare_of(node, (ast.In, ast.NotIn))
+    comparison = single_compare_match(node, (ast.In, ast.NotIn))
     if comparison is None:
         return None
     comparator = collection_literal(comparison.right)
@@ -3566,7 +3555,7 @@ def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
-    returned = single_return_as(_trim_docstring_body(function.body), ast.DictComp)
+    returned = as_ast(single_return_value(_trim_docstring_body(function.body)), ast.DictComp)
     if returned is None:
         return None
     generator = single_item(returned.generators)
@@ -8611,6 +8600,17 @@ class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
     none_return_count: int
     raw_guard_count: int
     suggested_base_name: str
+
+
+@dataclass(frozen=True)
+class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
+    declaration_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    support_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return ", ".join(self.declaration_names[:4])
 
 
 @dataclass(frozen=True)

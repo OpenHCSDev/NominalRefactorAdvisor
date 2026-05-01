@@ -3337,6 +3337,73 @@ class EffectStepImplementationLeakDetector(CandidateFindingDetector):
         )
 
 
+class UnderAmortizedInfrastructureDetector(CrossModuleCandidateDetector):
+    detector_id = "under_amortized_infrastructure"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.STAGED_ORCHESTRATION,
+        title="Matcher infrastructure should pay rent through fanout",
+        why=(
+            "A shared matcher/effect infrastructure module should earn its declarations through repeated "
+            "external use. When a public helper or carrier has only one external consumer and is not support "
+            "for a broadly reused declaration, the abstraction is expanding the surface area faster than it "
+            "compresses manual code."
+        ),
+        capability_gap="public matcher infrastructure whose declaration cost is amortized by multiple consumers",
+        relation_context="effect/matcher module public surface has single-consumer declarations",
+        confidence=MEDIUM_CONFIDENCE,
+        certification=STRONG_HEURISTIC,
+        capability_tags=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        observation_tags=(
+            ObservationTag.DATAFLOW_ROOT,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _candidate_items(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> Sequence[object]:
+        del config
+        return _under_amortized_infrastructure_candidates(modules)
+
+    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
+        under_amortized = cast(UnderAmortizedInfrastructureCandidate, candidate)
+        declaration_preview = ", ".join(under_amortized.declaration_names[:8])
+        consumer_preview = ", ".join(under_amortized.consumer_symbols[:4])
+        support_suffix = (
+            f" Single-consumer support declarations: {', '.join(under_amortized.support_names[:8])}."
+            if under_amortized.support_names
+            else ""
+        )
+        return self.finding_spec.build(
+            self.detector_id,
+            (
+                f"{under_amortized.file_path} exposes single-consumer matcher infrastructure "
+                f"{declaration_preview}; consumers: {consumer_preview}.{support_suffix}"
+            ),
+            (under_amortized.evidence,),
+            scaffold=(
+                "# Either inline the single-consumer declaration into its only consumer, or merge it into an "
+                "already-amortized primitive.\n"
+                "# Keep new public matcher infrastructure only when fanout shows more than one external consumer."
+            ),
+            codemod_patch=(
+                "# Collapse the single-consumer public surface before adding more matcher machinery.\n"
+                "# If the declaration represents real reusable semantics, route at least two consumers through it."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=0,
+                branch_site_count=len(under_amortized.declaration_names),
+                call_site_count=len(under_amortized.consumer_symbols),
+                parameter_count=len(under_amortized.support_names),
+                callee_family_count=1,
+            ),
+        )
+
+
 class NestedBuilderShellDetector(CandidateFindingDetector):
     detector_id = "nested_builder_shell"
     finding_spec = FindingSpec(

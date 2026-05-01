@@ -2748,6 +2748,65 @@ def match_projected_attribute(node):
     assert "bind_all" in (finding.codemod_patch or "")
 
 
+def test_detects_under_amortized_effect_infrastructure(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/effects.py",
+        """
+class EffectStep:
+    pass
+
+
+class SingleUseCarrier:
+    pass
+
+
+def single_use_matcher(node):
+    return SingleUseCarrier()
+
+
+def shared_matcher(node):
+    return node
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer_a.py",
+        """
+from pkg.effects import shared_matcher, single_use_matcher
+
+
+def consume_one(node):
+    return single_use_matcher(node)
+
+
+def consume_shared(node):
+    return shared_matcher(node)
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer_b.py",
+        """
+from pkg.effects import shared_matcher
+
+
+def consume_again(node):
+    return shared_matcher(node)
+""",
+    )
+
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "under_amortized_infrastructure"
+    )
+
+    assert "single_use_matcher" in finding.summary
+    assert "SingleUseCarrier" in finding.summary
+    assert "shared_matcher" not in finding.summary
+
+
 def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

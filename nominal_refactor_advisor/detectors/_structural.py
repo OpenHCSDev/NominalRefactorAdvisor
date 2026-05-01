@@ -12,15 +12,11 @@ from collections.abc import Callable
 from typing import ClassVar, Generic, TypeVar
 
 from ..semantic_match import (
-    AttributeCallMatch,
-    AttributeCallProjectionStep,
     AstTypedEffectStep,
     GuardedEffectStep,
     Maybe,
-    OwnerCallGuardStep,
     RegisteredEffectStep,
     attribute_call_match,
-    conditional_return_call,
     constant_value,
     named_call_assignment,
     registered_effect_steps,
@@ -1970,37 +1966,43 @@ class _CatalogInitSubclassBodyStep(
 
 class _CatalogSuperInitSubclassStep(
     _CatalogInstallingMixinStep,
-    OwnerCallGuardStep[_CatalogInstallingMixinShape],
+    GuardedEffectStep[_CatalogInstallingMixinShape, _CatalogInstallingMixinShape],
 ):
     step_id = "catalog_super_init_subclass"
     registration_order = 20
-    method_name = "__init_subclass__"
-    owner_call_name = "super"
 
-    def call_from(self, value: _CatalogInstallingMixinShape) -> ast.Call:
-        return value.first_call
+    def project(
+        self, value: _CatalogInstallingMixinShape
+    ) -> _CatalogInstallingMixinShape | None:
+        match = attribute_call_match(
+            value.first_call,
+            method_name="__init_subclass__",
+            owner_type=ast.Call,
+            argument_count=0,
+            allow_keywords=False,
+        )
+        if match is None or name_id(match.owner.func) != "super":
+            return None
+        return value
 
 
 class _CatalogInstallAttributeStep(
     _CatalogInstallingMixinStep,
-    AttributeCallProjectionStep[_CatalogInstallingMixinShape, ast.Attribute, str],
+    GuardedEffectStep[_CatalogInstallingMixinShape, str],
 ):
     step_id = "catalog_install_attribute"
     registration_order = 30
-    method_name = "install"
-    owner_type = ast.Attribute
-    owner_name = "cls"
-    single_argument_name = "cls"
 
-    def call_from(self, value: _CatalogInstallingMixinShape) -> ast.Call:
-        return value.second_call
-
-    def project_attribute_call(
-        self,
-        value: _CatalogInstallingMixinShape,
-        match: AttributeCallMatch[ast.Attribute],
-    ) -> str:
-        del value
+    def project(self, value: _CatalogInstallingMixinShape) -> str | None:
+        match = attribute_call_match(
+            value.second_call,
+            method_name="install",
+            owner_type=ast.Attribute,
+            owner_name="cls",
+            single_argument_name="cls",
+        )
+        if match is None:
+            return None
         return match.owner.attr
 
 
@@ -2145,6 +2147,23 @@ class _RegexExtractorMatcherCallStep(
         )
 
 
+def _regex_conditional_group_call(
+    value: _RegexExtractorMatcherCall,
+) -> ast.Call | None:
+    ifexp = as_ast(value.returned.value, ast.IfExp)
+    none_orelse = as_ast(ifexp.orelse if ifexp else None, ast.Constant)
+    group_call = as_ast(ifexp.body if ifexp else None, ast.Call)
+    if (
+        ifexp is None
+        or name_id(ifexp.test) != value.match_name
+        or none_orelse is None
+        or none_orelse.value is not None
+        or group_call is None
+    ):
+        return None
+    return group_call
+
+
 class _RegexExtractorConditionalReturnStep(
     _RegexGroupExtractorStep,
     GuardedEffectStep[_RegexExtractorMatcherCall, _RegexExtractorConditionalReturn],
@@ -2155,7 +2174,7 @@ class _RegexExtractorConditionalReturnStep(
     def project(
         self, value: _RegexExtractorMatcherCall
     ) -> _RegexExtractorConditionalReturn | None:
-        group_call = conditional_return_call(value.returned, test_name=value.match_name)
+        group_call = _regex_conditional_group_call(value)
         if group_call is None:
             return None
         return _RegexExtractorConditionalReturn(

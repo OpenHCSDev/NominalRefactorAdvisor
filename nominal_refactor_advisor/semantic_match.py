@@ -17,9 +17,7 @@ AstT = TypeVar("AstT", bound=ast.AST)
 AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
 AstC = TypeVar("AstC", bound=ast.AST)
-CmpOpT = TypeVar("CmpOpT", bound=ast.cmpop)
 OwnerT = TypeVar("OwnerT", bound=ast.AST)
-TargetT = TypeVar("TargetT", bound=ast.AST)
 StepT = TypeVar("StepT", bound="RegisteredEffectStep")
 
 
@@ -86,22 +84,6 @@ class GuardedEffectStep(RegisteredEffectStep, Generic[T, U]):
         raise NotImplementedError
 
 
-class IdentityGuardEffectStep(GuardedEffectStep[T, T]):
-    """Guard-only step: subclasses declare acceptance, base returns the value."""
-
-    def project(self, value: T) -> T | None:
-        return value
-
-
-class CallArgCountEffectStep(IdentityGuardEffectStep[ast.Call]):
-    """Call guard whose leaf classes declare only the accepted arity."""
-
-    required_arg_count: ClassVar[int]
-
-    def accepts(self, value: ast.Call) -> bool:
-        return len(value.args) == self.required_arg_count
-
-
 class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
     """Template-method effect step that owns AST type narrowing."""
 
@@ -121,13 +103,7 @@ class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
 @dataclass(frozen=True)
 class SingleCompareMatch:
     left: ast.AST
-    right: ast.AST
-
-
-@dataclass(frozen=True)
-class SingleOperatorCompareMatch(Generic[CmpOpT]):
-    left: ast.AST
-    operator: CmpOpT
+    operator: ast.cmpop
     right: ast.AST
 
 
@@ -176,29 +152,9 @@ class NamedValueBinding:
 
 
 @dataclass(frozen=True)
-class NamedTypedValueBinding(Generic[AstT]):
-    name: str
-    value: AstT
-    line: int
-
-
-@dataclass(frozen=True)
 class CollectionLiteral:
     node: ast.Tuple | ast.List | ast.Set
     elements: tuple[ast.AST, ...]
-
-
-@dataclass(frozen=True)
-class ZeroArgumentNamedCall:
-    call: ast.Call
-    name: str
-
-
-@dataclass(frozen=True)
-class IdentityComprehension:
-    target_name: str
-    generator: ast.comprehension
-    iter: ast.AST
 
 
 @dataclass(frozen=True)
@@ -276,115 +232,6 @@ class _AttributeCallArgumentStep(
             value.owner,
             argument.argument,
         )
-
-
-class AttributeCallProjectionStep(GuardedEffectStep[T, U], Generic[T, OwnerT, U]):
-    """Attribute-call step whose leaf declares the call shape and residue hook."""
-
-    method_name: ClassVar[str | None] = None
-    method_names: ClassVar[frozenset[str] | None] = None
-    owner_type: ClassVar[type[OwnerT]]
-    owner_name: ClassVar[str | None] = None
-    single_argument_name: ClassVar[str | None] = None
-    single_argument_required: ClassVar[bool] = False
-    argument_count: ClassVar[int | None] = None
-    allow_keywords: ClassVar[bool] = True
-
-    def project(self, value: T) -> U | None:
-        call = self.call_from(value)
-        if call is None:
-            return None
-        match = attribute_call_match(
-            call,
-            method_name=self.method_name,
-            method_names=self.method_names,
-            owner_type=self.owner_type,
-            owner_name=self.owner_name,
-            single_argument_name=self.single_argument_name,
-            single_argument_required=self.single_argument_required,
-            argument_count=self.argument_count,
-            allow_keywords=self.allow_keywords,
-        )
-        if match is None:
-            return None
-        return self.project_attribute_call(value, match)
-
-    @abstractmethod
-    def call_from(self, value: T) -> ast.Call | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def project_attribute_call(
-        self, value: T, match: AttributeCallMatch[OwnerT]
-    ) -> U | None:
-        raise NotImplementedError
-
-
-class ComprehensionTargetGuardStep(IdentityGuardEffectStep[T], Generic[T, TargetT]):
-    """Guard step whose leaf declares a comprehension target shape."""
-
-    target_type: ClassVar[type[TargetT]]
-    allow_async: ClassVar[bool] = False
-    allow_ifs: ClassVar[bool] = False
-
-    def accepts(self, value: T) -> bool:
-        comprehension = self.comprehension_from(value)
-        return (
-            (self.allow_async or not comprehension.is_async)
-            and (self.allow_ifs or not comprehension.ifs)
-            and isinstance(comprehension.target, self.target_type)
-        )
-
-    @abstractmethod
-    def comprehension_from(self, value: T) -> ast.comprehension:
-        raise NotImplementedError
-
-
-class AttributeOwnerNameProjectionStep(GuardedEffectStep[T, str], Generic[T]):
-    """Project an attribute only when its owner name matches derived context."""
-
-    def project(self, value: T) -> str | None:
-        attribute = as_ast(self.attribute_from(value), ast.Attribute)
-        owner_name = self.owner_name_from(value)
-        owner = as_ast(attribute.value if attribute else None, ast.Name)
-        if attribute is None or owner is None or owner.id != owner_name:
-            return None
-        return attribute.attr
-
-    @abstractmethod
-    def attribute_from(self, value: T) -> ast.AST | None:
-        raise NotImplementedError
-
-    @abstractmethod
-    def owner_name_from(self, value: T) -> str:
-        raise NotImplementedError
-
-
-class OwnerCallGuardStep(IdentityGuardEffectStep[T], Generic[T]):
-    """Guard a method call whose owner is itself a named zero-order call."""
-
-    method_name: ClassVar[str]
-    owner_call_name: ClassVar[str]
-    allow_args: ClassVar[bool] = False
-    allow_keywords: ClassVar[bool] = False
-
-    def accepts(self, value: T) -> bool:
-        call = self.call_from(value)
-        if call is None:
-            return False
-        owner_call = call_owner_call(call)
-        if owner_call is None:
-            return False
-        return (
-            call_attribute_name(call) == self.method_name
-            and name_id(owner_call.func) == self.owner_call_name
-            and (self.allow_args or not call.args)
-            and (self.allow_keywords or not call.keywords)
-        )
-
-    @abstractmethod
-    def call_from(self, value: T) -> ast.Call | None:
-        raise NotImplementedError
 
 
 @lru_cache(maxsize=None)
@@ -506,34 +353,14 @@ def named_value_binding(node: ast.stmt) -> NamedValueBinding | None:
     return named_assign_value_binding(node) or named_ann_assign_value_binding(node)
 
 
-def named_value_as(
-    node: ast.stmt, value_type: type[AstT]
-) -> NamedTypedValueBinding[AstT] | None:
-    binding = named_value_binding(node)
-    value = as_ast(binding.value if binding is not None else None, value_type)
-    if binding is None or value is None:
-        return None
-    return NamedTypedValueBinding(binding.name, value, binding.line)
-
-
 def single_compare_match(
-    node: ast.Compare, operator_type: type[ast.cmpop]
+    node: ast.Compare, operator_type: type[ast.cmpop] | tuple[type[ast.cmpop], ...]
 ) -> SingleCompareMatch | None:
     operator = single_item(node.ops)
     comparator = single_item(node.comparators)
     if not isinstance(operator, operator_type) or comparator is None:
         return None
-    return SingleCompareMatch(node.left, comparator)
-
-
-def single_compare_of(
-    node: ast.Compare, operator_types: type[CmpOpT] | tuple[type[CmpOpT], ...]
-) -> SingleOperatorCompareMatch[CmpOpT] | None:
-    operator = single_item(node.ops)
-    comparator = single_item(node.comparators)
-    if not isinstance(operator, operator_types) or comparator is None:
-        return None
-    return SingleOperatorCompareMatch(node.left, operator, comparator)
+    return SingleCompareMatch(node.left, operator, comparator)
 
 
 def single_return_value(body: Sequence[ast.stmt]) -> ast.AST | None:
@@ -554,23 +381,9 @@ def single_return_call(body: Sequence[ast.stmt]) -> ast.Call | None:
     return as_ast(single_return_value(body), ast.Call)
 
 
-def single_return_as(
-    body: Sequence[ast.stmt], node_type: type[AstT]
-) -> AstT | None:
-    return as_ast(single_return_value(body), node_type)
-
-
 def single_call_arg(node: ast.AST) -> ast.AST | None:
     call = as_ast(node, ast.Call)
     return None if call is None else single_item(call.args)
-
-
-def zero_argument_named_call(node: ast.AST) -> ZeroArgumentNamedCall | None:
-    call = as_ast(node, ast.Call)
-    name = name_id(call.func if call is not None else None)
-    if call is None or name is None or call.args or call.keywords:
-        return None
-    return ZeroArgumentNamedCall(call, name)
 
 
 def single_named_call_argument(
@@ -610,50 +423,6 @@ def call_argument_match(
     return CallArgumentMatch(argument, tuple(call.args))
 
 
-def call_keyword_names(call: ast.Call) -> tuple[str, ...]:
-    return tuple(keyword.arg for keyword in call.keywords if keyword.arg is not None)
-
-
-def method_forwarded_parameter_names(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ...]:
-    return tuple(
-        arg.arg
-        for arg in (
-            *method.args.posonlyargs,
-            *method.args.args[1:],
-            *method.args.kwonlyargs,
-        )
-    )
-
-
-def is_forwarded_parameter_reference(
-    node: ast.AST,
-    parameter_names: tuple[str, ...],
-) -> bool:
-    parameters = frozenset(parameter_names)
-    name = name_id(node)
-    if name is not None:
-        return name in parameters
-    starred = as_ast(node, ast.Starred)
-    return name_id(starred.value if starred else None) in parameters
-
-
-def call_forwards_parameters(
-    call: ast.Call,
-    parameter_names: tuple[str, ...],
-) -> bool:
-    parameters = frozenset(parameter_names)
-    return all(
-        is_forwarded_parameter_reference(argument, parameter_names)
-        for argument in call.args
-    ) and all(
-        keyword.arg is None
-        or (keyword.arg in parameters and name_id(keyword.value) == keyword.arg)
-        for keyword in call.keywords
-    )
-
-
 def collection_literal(
     node: ast.AST,
     *,
@@ -668,44 +437,6 @@ def collection_literal(
     return CollectionLiteral(node, tuple(node.elts))
 
 
-def if_elif_chain(statement: ast.stmt) -> tuple[ast.If, ...] | None:
-    current = as_ast(statement, ast.If)
-    branches: list[ast.If] = []
-    while current is not None:
-        branches.append(current)
-        current = as_ast(single_item(current.orelse), ast.If)
-    return tuple(branches) or None
-
-
-def identity_comprehension(list_comp: ast.ListComp) -> IdentityComprehension | None:
-    generator = single_item(list_comp.generators)
-    target_name = name_id(generator.target) if generator is not None else None
-    if (
-        generator is None
-        or generator.is_async
-        or target_name is None
-        or name_id(list_comp.elt) != target_name
-    ):
-        return None
-    return IdentityComprehension(target_name, generator, generator.iter)
-
-
-def additive_call_chain(node: ast.AST) -> tuple[ast.Call, ...] | None:
-    calls: list[ast.Call] = []
-
-    def collect(current: ast.AST) -> bool:
-        binary = as_ast(current, ast.BinOp)
-        if binary is not None and isinstance(binary.op, ast.Add):
-            return collect(binary.left) and collect(binary.right)
-        call = as_ast(current, ast.Call)
-        if call is None:
-            return False
-        calls.append(call)
-        return True
-
-    if not collect(node) or len(calls) < 2:
-        return None
-    return tuple(calls)
 
 
 def name_id(node: ast.AST | None) -> str | None:
@@ -716,11 +447,6 @@ def name_id(node: ast.AST | None) -> str | None:
 def constant_value(node: ast.AST | None) -> object | None:
     constant = as_ast(node, ast.Constant)
     return None if constant is None else constant.value
-
-
-def is_none_constant(node: ast.AST | None) -> bool:
-    constant = as_ast(node, ast.Constant)
-    return constant is not None and constant.value is None
 
 
 def attribute_name(node: ast.AST | None, *, owner_name: str | None = None) -> str | None:
@@ -754,12 +480,6 @@ def call_attribute_name(
     return None if call is None else attribute_name(call.func, owner_name=owner_name)
 
 
-def call_owner_call(node: ast.AST | None) -> ast.Call | None:
-    call = as_ast(node, ast.Call)
-    attribute = as_ast(call.func if call else None, ast.Attribute)
-    return as_ast(attribute.value if attribute else None, ast.Call)
-
-
 def attribute_call_match(
     call: ast.Call,
     *,
@@ -791,15 +511,6 @@ def attribute_call_match(
 def single_call_arg_name(node: ast.AST | None) -> str | None:
     call = as_ast(node, ast.Call)
     return None if call is None else name_id(single_item(call.args))
-
-
-def conditional_return_call(returned: ast.Return, *, test_name: str) -> ast.Call | None:
-    ifexp = as_ast(returned.value, ast.IfExp)
-    if ifexp is None:
-        return None
-    if name_id(ifexp.test) != test_name or not is_none_constant(ifexp.orelse):
-        return None
-    return as_ast(ifexp.body, ast.Call)
 
 
 def single_assign_target(node: ast.stmt) -> ast.AST | None:
