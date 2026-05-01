@@ -2993,6 +2993,35 @@ class Second:
     )
 
 
+def test_detects_derivable_semantic_tag_constant(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (
+    CapabilityTag.AUTHORITATIVE_MAPPING,
+    CapabilityTag.PROVENANCE,
+    CapabilityTag.NOMINAL_IDENTITY,
+)
+
+_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (
+    ObservationTag.DATAFLOW_ROOT,
+    ObservationTag.NORMALIZED_AST,
+)
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "semantic_tag_tuple_boilerplate"
+    ]
+
+    assert len(findings) == 2
+    assert any("1 capability tag constants" in finding.summary for finding in findings)
+    assert any("1 observation tag constants" in finding.summary for finding in findings)
+
+
 def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

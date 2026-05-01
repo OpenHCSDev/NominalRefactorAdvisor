@@ -2982,6 +2982,23 @@ class SemanticTagTupleBoilerplateDetector(
     def _finding_for_candidate(
         self, tag_candidate: SemanticTagTupleBoilerplateCandidate
     ) -> RefactorFinding:
+        if tag_candidate.source_kind == "derived_constant":
+            sample_names = ", ".join(tag_candidate.tag_names[:4])
+            suffix = f", and {len(tag_candidate.tag_names) - 4} more" if len(tag_candidate.tag_names) > 4 else ""
+            return self.build_finding(
+                (
+                    f"{len(tag_candidate.tag_names)} {tag_candidate.keyword_name} tag constants "
+                    f"restate enum tuples already encoded by their names: {sample_names}{suffix}."
+                ),
+                tag_candidate.evidence,
+                scaffold="globals().update({name: _semantic_tag_tuple_from_constant_name(name) for name in names})",
+                codemod_patch="# Delete the manual constants; add one typed derivation helper for capability/observation tag constants.",
+                metrics=MappingMetrics.from_field_names(
+                    mapping_site_count=len(tag_candidate.tag_names),
+                    mapping_name=tag_candidate.constant_name,
+                    field_names=tag_candidate.tag_names,
+                ),
+            )
         return self.build_finding(
             (
                 f"`{tag_candidate.keyword_name}` repeats tag tuple {tag_candidate.tag_names}; "

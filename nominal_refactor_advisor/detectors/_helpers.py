@@ -6725,7 +6725,71 @@ def _semantic_tag_tuple_boilerplate_candidates(
                 tag_names=tag_names,
             )
         )
-    return tuple(candidates)
+    return (*candidates, *_derivable_semantic_tag_constant_candidates(module))
+
+
+_SEMANTIC_TAG_CONSTANT_SUFFIXES = tuple(_SEMANTIC_TAG_CONSTANT_SUFFIX.values())
+_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset({"CapabilityTag", "ObservationTag"})
+
+
+def _semantic_tag_constant_member_names(target_name: str | None) -> tuple[str, ...]:
+    if target_name is None:
+        return ()
+    try:
+        return tuple(tag.name for tag in _semantic_tag_tuple_from_constant_name(target_name))
+    except (StopIteration, ValueError):
+        return ()
+
+
+def _semantic_tag_tuple_member_names(
+    tuple_node: ast.Tuple | None,
+) -> tuple[str, ...]:
+    if tuple_node is None or len(tuple_node.elts) < 2:
+        return ()
+    tag_names = tuple(
+        element.attr
+        for element in tuple_node.elts
+        if isinstance(element, ast.Attribute)
+        and name_id(element.value) in _SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES
+    )
+    return tag_names if len(tag_names) == len(tuple_node.elts) else ()
+
+
+def _derivable_semantic_tag_constant_assignment(
+    statement: ast.stmt,
+) -> tuple[str, str] | None:
+    assignment = as_ast(statement, ast.Assign)
+    target_name = name_id(single_item(assignment.targets)) if assignment else None
+    tuple_node = as_ast(assignment.value, ast.Tuple) if assignment else None
+    assigned_tag_names = _semantic_tag_tuple_member_names(tuple_node)
+    if not assigned_tag_names or assigned_tag_names != _semantic_tag_constant_member_names(target_name):
+        return None
+    suffix = next(suffix for suffix in _SEMANTIC_TAG_CONSTANT_SUFFIXES if cast(str, target_name).endswith(f"_{suffix}"))
+    return suffix.removesuffix("_TAGS").lower(), cast(str, target_name)
+
+
+def _derivable_semantic_tag_constant_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
+    grouped: dict[str, list[tuple[str, SourceLocation]]] = defaultdict(list)
+    for statement in module.module.body:
+        constant = _derivable_semantic_tag_constant_assignment(statement)
+        if constant is None:
+            continue
+        tag_kind, constant_name = constant
+        grouped[tag_kind].append((constant_name, SourceLocation(str(module.path), statement.lineno, constant_name)))
+    return tuple(
+        SemanticTagTupleBoilerplateCandidate(
+            file_path=str(module.path),
+            line=min(location.line for _, location in entries),
+            evidence_locations=tuple(location for _, location in entries),
+            keyword_name=tag_kind,
+            constant_name=f"{tag_kind}_tag_constants",
+            tag_names=tuple(constant_name for constant_name, _ in entries),
+            source_kind="derived_constant",
+        )
+        for tag_kind, entries in sorted(grouped.items())
+    )
 
 
 _DERIVED_COUNT_METRIC_SHAPES = {
