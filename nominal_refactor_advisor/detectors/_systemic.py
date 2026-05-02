@@ -2780,6 +2780,48 @@ class ManualSortedTupleExpressionDetector(
     )
 
 
+class SimplePropertyAliasClassDetector(
+    ModuleCollectorCandidateDetector[SimplePropertyAliasClassCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Property alias class should use descriptor algebra",
+        "A class whose only concrete behavior is returning `self.<field>` from properties is a "
+            "structural alias shell. The alias relation is the semantic object; repeated property "
+            "methods re-declare descriptor mechanics instead of naming that relation directly.",
+        "typed alias-property descriptor derived from declared source and target names",
+        "class repeats property method bodies for direct field projection",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[SimplePropertyAliasClassCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.class_name}` defines {len(candidate.alias_pairs)} direct property "
+            f"alias(es) across {candidate.line_count} line(s): "
+            + ", ".join(
+                f"{target} -> {source}" for target, source in candidate.alias_pairs
+            )
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: (
+            "from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\n"
+            "class Shape:\n"
+            "    target = AliasProperty[ValueType](\"source\")"
+        ),
+        codemod_patch=lambda candidate: (
+            "# Replace direct `@property return self.<source>` alias methods with "
+            "`AliasProperty[...]` descriptors so alias projection is one typed descriptor algebra."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=len(candidate.alias_pairs),
+            mapping_name=candidate.class_name,
+            field_names=tuple(
+                f"{target}->{source}" for target, source in candidate.alias_pairs
+            ),
+        ),
+    )
+
+
 class SemanticTagTupleBoilerplateDetector(
     ModuleCollectorCandidateDetector[SemanticTagTupleBoilerplateCandidate]
 ):

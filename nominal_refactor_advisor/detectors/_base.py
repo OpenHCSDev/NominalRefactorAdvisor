@@ -24,6 +24,7 @@ from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
+from ..descriptor_algebra import AliasProperty
 from ..semantic_match import (
     AstTypedEffectStep,
     FirstSuccessfulEffectStep,
@@ -7143,18 +7144,12 @@ class WitnessNameAliasMixin(ABC):
 
 class ClassNameWitnessNameMixin(WitnessNameAliasMixin):
     class_name: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.class_name
+    witness_name = AliasProperty[str]("class_name")
 
 
 class QualnameWitnessNameMixin(WitnessNameAliasMixin):
     qualname: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
+    witness_name = AliasProperty[str]("qualname")
 
 
 @dataclass(frozen=True)
@@ -7166,10 +7161,7 @@ class EnumCaseFamilyMixin(ABC):
 @dataclass(frozen=True)
 class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
     evidence_locations: tuple[SourceLocation, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_locations
+    evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
 @dataclass(frozen=True)
@@ -7180,10 +7172,7 @@ class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate)
 @dataclass(frozen=True)
 class FunctionLineWitnessCandidate(LineWitnessCandidate):
     function_name: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.function_name
+    witness_name = AliasProperty[str]("function_name")
 
 
 @dataclass(frozen=True)
@@ -7282,10 +7271,7 @@ class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
 class MirroredLeafFamilySide(LineWitnessCandidate):
     root_name: str
     leaf_evidence: tuple[SourceLocation, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.root_name
+    witness_name = AliasProperty[str]("root_name")
 
 
 @dataclass(frozen=True)
@@ -7319,30 +7305,18 @@ class FragmentedFamilyAuthorityCandidate:
 class WitnessCarrierCandidate(LineWitnessCandidate):
     subject_name: str
     name_family: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.subject_name
-
-    @property
-    def class_name(self) -> str:
-        return self.subject_name
+    witness_name = AliasProperty[str]("subject_name")
+    class_name = AliasProperty[str]("subject_name")
 
 
 class NameFamilyClassNamesMixin(ABC):
     name_family: tuple[str, ...]
-
-    @property
-    def class_names(self) -> tuple[str, ...]:
-        return self.name_family
+    class_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 class SubjectNameFunctionNameMixin(ABC):
     subject_name: str
-
-    @property
-    def function_name(self) -> str:
-        return self.subject_name
+    function_name = AliasProperty[str]("subject_name")
 
 
 @dataclass(frozen=True)
@@ -7352,10 +7326,7 @@ class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
     compatible_authority_line: int
     reuse_kind: str
     shared_role_names: tuple[str, ...]
-
-    @property
-    def shared_field_names(self) -> tuple[str, ...]:
-        return self.name_family
+    shared_field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)
@@ -7364,10 +7335,7 @@ class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     delegate_authority_file_path: str
     delegate_authority_name: str
     delegate_authority_line: int
-
-    @property
-    def forwarded_member_names(self) -> tuple[str, ...]:
-        return self.name_family
+    forwarded_member_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)
@@ -7391,10 +7359,7 @@ class GuardedDelegatorCandidate(WitnessCarrierCandidate):
 class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
     property_name: str
     constructor_name: str
-
-    @property
-    def keyword_names(self) -> tuple[str, ...]:
-        return self.name_family
+    keyword_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("name_family")
 
 
 @dataclass(frozen=True)
@@ -7762,10 +7727,7 @@ class SiblingRoleHelperSymmetryCandidate:
 class EnumProjectionTableCandidate(EnumCaseFamilyMixin, LineWitnessCandidate):
     table_name: str
     value_summaries: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.table_name
+    witness_name = AliasProperty[str]("table_name")
 
 
 @dataclass(frozen=True)
@@ -7874,10 +7836,7 @@ class ClosedConstantSelectorCandidate(EvidenceLocationsWitnessCandidate):
     wrapper_name: str | None
     family_suffix: str | None
     common_constructor_name: str | None
-
-    @property
-    def witness_name(self) -> str:
-        return self.qualname
+    witness_name = AliasProperty[str]("qualname")
 
 
 @dataclass(frozen=True)
@@ -7890,10 +7849,7 @@ class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
     primary_constant_names: tuple[str, ...]
     extra_field_names: tuple[str, ...]
     builder_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.derived_family_name
+    witness_name = AliasProperty[str]("derived_family_name")
 
 
 @dataclass(frozen=True)
@@ -7904,19 +7860,13 @@ class ModuleKeyedSelectionHelperCandidate(EvidenceLocationsWitnessCandidate):
     lookup_function_name: str
     rule_table_names: tuple[str, ...]
     index_table_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.rule_class_name
+    witness_name = AliasProperty[str]("rule_class_name")
 
 
 @dataclass(frozen=True)
 class AxisFamilySite(LineWitnessCandidate):
     family_name: str
-
-    @property
-    def witness_name(self) -> str:
-        return self.family_name
+    witness_name = AliasProperty[str]("family_name")
 
 
 @dataclass(frozen=True)
@@ -8075,10 +8025,7 @@ class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
     resolver_table_names: tuple[str, ...]
     selector_field_names: tuple[str, ...]
     evidence_locations: tuple[SourceLocation, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_locations
+    evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
 @dataclass(frozen=True)
@@ -8597,10 +8544,7 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
     recommended_constructor_name: str
     redundant_keyword_names: tuple[str, ...]
     redundant_keyword_values: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.constructor_name
+    witness_name = AliasProperty[str]("constructor_name")
 
 
 @dataclass(frozen=True)
@@ -8641,15 +8585,19 @@ class ManualSortedTupleExpressionCandidate(ManualSortedTupleReturnCandidate):
 
 
 @dataclass(frozen=True)
+class SimplePropertyAliasClassCandidate(ClassLineWitnessCandidate):
+    alias_pairs: tuple[tuple[str, str], ...]
+    declared_field_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
 class SemanticTagTupleBoilerplateCandidate(EvidenceLocationsWitnessCandidate):
     keyword_name: str
     constant_name: str
     tag_names: tuple[str, ...]
     source_kind: str = "literal"
-
-    @property
-    def witness_name(self) -> str:
-        return self.constant_name
+    witness_name = AliasProperty[str]("constant_name")
 
 
 @dataclass(frozen=True)
@@ -8658,10 +8606,7 @@ class DerivedMetricCountBoilerplateCandidate(LineWitnessCandidate):
     recommended_constructor_name: str
     count_keyword_names: tuple[str, ...]
     collection_keyword_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return self.metric_class_name
+    witness_name = AliasProperty[str]("metric_class_name")
 
 
 @dataclass(frozen=True)
@@ -8687,14 +8632,8 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
     method_name: str
     tag_name: str
     assigned_field_names: tuple[str, ...]
-
-    @property
-    def method_line(self) -> int:
-        return self.line
-
-    @property
-    def case_names(self) -> tuple[str, ...]:
-        return self.name_family
+    method_line = AliasProperty[int]("line")
+    case_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)
@@ -8703,24 +8642,15 @@ class DescriptorDerivedViewCandidate(WitnessCarrierCandidate):
     init_line: int
     mutator_name: str
     updated_field_names: tuple[str, ...]
-
-    @property
-    def mutator_line(self) -> int:
-        return self.line
-
-    @property
-    def derived_field_names(self) -> tuple[str, ...]:
-        return self.name_family
+    mutator_line = AliasProperty[int]("line")
+    derived_field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)
 class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin):
     decorator_name: str
     unregistered_class_names: tuple[str, ...]
-
-    @property
-    def registry_name(self) -> str:
-        return self.subject_name
+    registry_name = AliasProperty[str]("subject_name")
 
 
 @dataclass(frozen=True)
@@ -8739,10 +8669,7 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     family_tokens: tuple[str, ...]
     normalized_roles: tuple[str, ...]
     normalized_role_fields: tuple[tuple[str, tuple[str, ...]], ...]
-
-    @property
-    def field_names(self) -> tuple[str, ...]:
-        return self.name_family
+    field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
 @dataclass(frozen=True)

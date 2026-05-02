@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from .constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
+from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
 
 from .observation_graph import (
@@ -110,10 +111,7 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
 
 class ExecutionLevelObservationMixin(ABC):
     execution_level: StructuralExecutionLevel
-
-    @property
-    def observation_execution_level(self) -> StructuralExecutionLevel:
-        return self.execution_level
+    observation_execution_level = AliasProperty[StructuralExecutionLevel]("execution_level")
 
 
 class StaticExecutionLevelMixin(ABC):
@@ -134,18 +132,12 @@ class ModuleBodyExecutionMixin(StaticExecutionLevelMixin):
 
 class LineObservationMixin(ABC):
     line: int
-
-    @property
-    def observation_line(self) -> int:
-        return self.line
+    observation_line = AliasProperty[int]("line")
 
 
 class LinenoObservationMixin(ABC):
     lineno: int
-
-    @property
-    def observation_line(self) -> int:
-        return self.lineno
+    observation_line = AliasProperty[int]("lineno")
 
 
 class SymbolOwnerMixin(ABC):
@@ -186,10 +178,7 @@ class FunctionBodyCallLikeShape(
 
 class FunctionNameOwnerMixin(ABC):
     function_name: str
-
-    @property
-    def owner_symbol(self) -> str:
-        return self.function_name
+    owner_symbol = AliasProperty[str]("function_name")
 
 
 class SymbolNominalWitnessMixin(ABC):
@@ -200,50 +189,32 @@ class SymbolNominalWitnessMixin(ABC):
 
 class ClassNameNominalWitnessMixin(ABC):
     class_name: str
-
-    @property
-    def nominal_witness(self) -> str:
-        return self.class_name
+    nominal_witness = AliasProperty[str]("class_name")
 
 
 class FunctionNameNominalWitnessMixin(ABC):
     function_name: str
-
-    @property
-    def nominal_witness(self) -> str:
-        return self.function_name
+    nominal_witness = AliasProperty[str]("function_name")
 
 
 class FunctionNameObservedNameMixin(ABC):
     function_name: str
-
-    @property
-    def observed_name(self) -> str:
-        return self.function_name
+    observed_name = AliasProperty[str]("function_name")
 
 
 class ObservedAttributeObservedNameMixin(ABC):
     observed_attribute: str
-
-    @property
-    def observed_name(self) -> str:
-        return self.observed_attribute
+    observed_name = AliasProperty[str]("observed_attribute")
 
 
 class GeneratorNameObservedNameMixin(ABC):
     generator_name: str
-
-    @property
-    def observed_name(self) -> str:
-        return self.generator_name
+    observed_name = AliasProperty[str]("generator_name")
 
 
 class GeneratorNameFiberKeyMixin(ABC):
     generator_name: str
-
-    @property
-    def fiber_key(self) -> str:
-        return self.generator_name
+    fiber_key = AliasProperty[str]("generator_name")
 
 
 @dataclass(frozen=True)

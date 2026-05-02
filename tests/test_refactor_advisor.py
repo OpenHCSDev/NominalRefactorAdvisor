@@ -3111,6 +3111,31 @@ def ordered_payload(items):
     assert "expression payloads" in (findings[0].codemod_patch or "")
 
 
+def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalAliasMixin:
+    source_name: str
+
+    @property
+    def public_name(self) -> str:
+        return self.source_name
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "simple_property_alias_class"
+    ]
+
+    assert len(findings) == 1
+    assert "public_name -> source_name" in findings[0].summary
+    assert "AliasProperty" in (findings[0].codemod_patch or "")
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

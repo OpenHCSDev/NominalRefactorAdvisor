@@ -6722,6 +6722,142 @@ def _manual_sorted_tuple_expression_candidates(
     return tuple(candidates)
 
 
+def _decorator_terminal_names(node: ast.FunctionDef) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in (_ast_terminal_name(decorator) for decorator in node.decorator_list)
+        if name is not None
+    )
+
+
+def _single_self_parameter_name(node: ast.FunctionDef) -> str | None:
+    if (
+        node.args.posonlyargs
+        or node.args.vararg is not None
+        or node.args.kwonlyargs
+        or node.args.kwarg is not None
+        or node.args.defaults
+    ):
+        return None
+    parameter = single_item(node.args.args)
+    return None if parameter is None else parameter.arg
+
+
+@dataclass(frozen=True)
+class _PropertyMethodReturn:
+    method_name: str
+    returned: ast.AST
+
+
+class _SimplePropertyAliasPairStep(RegisteredEffectStep):
+    pass
+
+
+class _ConcretePropertyMethodStep(
+    _SimplePropertyAliasPairStep,
+    GuardedEffectStep[ast.FunctionDef, ast.FunctionDef],
+):
+    step_id = "concrete_property_method"
+    registration_order = 10
+
+    def accepts(self, value: ast.FunctionDef) -> bool:
+        decorator_names = _decorator_terminal_names(value)
+        return (
+            "property" in decorator_names
+            and "abstractmethod" not in decorator_names
+            and _single_self_parameter_name(value) == "self"
+        )
+
+    def project(self, value: ast.FunctionDef) -> ast.FunctionDef | None:
+        return value
+
+
+class _SinglePropertyReturnStep(
+    _SimplePropertyAliasPairStep,
+    GuardedEffectStep[ast.FunctionDef, _PropertyMethodReturn],
+):
+    step_id = "single_property_return"
+    registration_order = 20
+
+    def project(self, value: ast.FunctionDef) -> _PropertyMethodReturn | None:
+        returned = single_return_value(_trim_docstring_body(value.body))
+        if returned is None:
+            return None
+        return _PropertyMethodReturn(value.name, returned)
+
+
+class _SelfAttributeReturnStep(
+    _SimplePropertyAliasPairStep,
+    GuardedEffectStep[_PropertyMethodReturn, tuple[str, str]],
+):
+    step_id = "self_attribute_return"
+    registration_order = 30
+
+    def project(self, value: _PropertyMethodReturn) -> tuple[str, str] | None:
+        returned = as_ast(value.returned, ast.Attribute)
+        if returned is None or name_id(returned.value) != "self":
+            return None
+        return value.method_name, returned.attr
+
+
+def _simple_property_alias_pair(
+    node: ast.FunctionDef,
+) -> tuple[str, str] | None:
+    return cast(
+        tuple[str, str] | None,
+        Maybe.of(node)
+        .bind_all(registered_effect_steps(_SimplePropertyAliasPairStep))
+        .unwrap_or_none(),
+    )
+
+
+def _simple_property_alias_class_shape(
+    node: ast.ClassDef,
+) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]] | None:
+    alias_pairs: list[tuple[str, str]] = []
+    declared_field_names: list[str] = []
+    for statement in _trim_docstring_body(node.body):
+        if isinstance(statement, ast.Pass):
+            continue
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            declared_field_names.append(statement.target.id)
+            continue
+        if isinstance(statement, ast.FunctionDef):
+            alias_pair = _simple_property_alias_pair(statement)
+            if alias_pair is None:
+                return None
+            alias_pairs.append(alias_pair)
+            continue
+        return None
+    if not alias_pairs:
+        return None
+    return tuple(alias_pairs), tuple(declared_field_names)
+
+
+def _simple_property_alias_class_candidates(
+    module: ParsedModule,
+) -> tuple[SimplePropertyAliasClassCandidate, ...]:
+    candidates: list[SimplePropertyAliasClassCandidate] = []
+    for node in _walk_nodes(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        shape = _simple_property_alias_class_shape(node)
+        if shape is None:
+            continue
+        alias_pairs, declared_field_names = shape
+        candidates.append(
+            SimplePropertyAliasClassCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                class_name=node.name,
+                alias_pairs=alias_pairs,
+                declared_field_names=declared_field_names,
+                line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+            )
+        )
+    return tuple(candidates)
+
+
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
 _SEMANTIC_TAG_CONSTANT_SUFFIX = {
     "capability_tags": "CAPABILITY_TAGS",

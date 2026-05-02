@@ -13,6 +13,7 @@ from typing import Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
 from .collection_algebra import sorted_tuple
+from .descriptor_algebra import AliasProperty
 from .patterns import PatternId
 
 from .taxonomy import (
@@ -211,10 +212,7 @@ BehaviorFindingMetrics = CompositeClassSpec(
 
 class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
     class_names: tuple[str, ...]
-
-    @property
-    def plan_class_names(self) -> tuple[str, ...]:
-        return self.class_names
+    plan_class_names = AliasProperty[tuple[str, ...]]("class_names")
 
 
 MappingFindingMetrics = CompositeClassSpec(
@@ -313,10 +311,7 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
 class HierarchyCandidateMetrics(BehaviorFindingMetrics):
     duplicate_group_count: int
     class_count: int
-
-    @property
-    def shared_algorithm_sites(self) -> int:
-        return self.duplicate_group_count
+    shared_algorithm_sites = AliasProperty[int]("duplicate_group_count")
 
 
 @dataclass(frozen=True)
@@ -546,10 +541,7 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
 class BranchCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "branch_site_count"
     branch_site_count: int
-
-    @property
-    def count_value(self) -> int:
-        return self.branch_site_count
+    count_value = AliasProperty[int]("branch_site_count")
 
 
 @dataclass(frozen=True)
@@ -561,10 +553,7 @@ class ResolutionAxisMetrics(FindingMetrics):
 class ProbeCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "probe_site_count"
     probe_site_count: int
-
-    @property
-    def count_value(self) -> int:
-        return self.probe_site_count
+    count_value = AliasProperty[int]("probe_site_count")
 
 
 @dataclass(frozen=True)
