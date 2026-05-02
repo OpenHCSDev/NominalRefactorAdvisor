@@ -20,41 +20,25 @@ def _imported_name_aliases(
 ) -> frozenset[str]:
     aliases: set[str] = {imported_name}
     for node in module.body:
-        if not isinstance(node, ast.ImportFrom) or node.module not in module_names:
-            continue
+        if not isinstance(node, ast.ImportFrom) or node.module not in module_names: continue
         for alias in node.names:
-            if alias.name == imported_name:
-                aliases.add(alias.asname or alias.name)
+            if alias.name == imported_name: aliases.add(alias.asname or alias.name)
     return frozenset(aliases)
 
 
 def _module_aliases(module: ast.Module, module_names: frozenset[str]) -> frozenset[str]:
     aliases: set[str] = set()
     for node in module.body:
-        if not isinstance(node, ast.Import):
-            continue
+        if not isinstance(node, ast.Import): continue
         for alias in node.names:
-            if alias.name in module_names:
-                aliases.add(alias.asname or alias.name.split(".", maxsplit=1)[0])
+            if alias.name in module_names: aliases.add(alias.asname or alias.name.split('.', maxsplit=1)[0])
     return frozenset(aliases)
 
 
-def _is_imported_name(expr: ast.AST, aliases: frozenset[str]) -> bool:
-    return isinstance(expr, ast.Name) and expr.id in aliases
+def _is_imported_name(expr: ast.AST, aliases: frozenset[str]) -> bool: return isinstance(expr, ast.Name) and expr.id in aliases
 
 
-def _is_qualified_name(
-    expr: ast.AST,
-    *,
-    module_aliases: frozenset[str],
-    attr_name: str,
-) -> bool:
-    return (
-        isinstance(expr, ast.Attribute)
-        and expr.attr == attr_name
-        and isinstance(expr.value, ast.Name)
-        and expr.value.id in module_aliases
-    )
+def _is_qualified_name(expr: ast.AST, *, module_aliases: frozenset[str], attr_name: str) -> bool: return isinstance(expr, ast.Attribute) and expr.attr == attr_name and isinstance(expr.value, ast.Name) and (expr.value.id in module_aliases)
 
 
 _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(function_line_count=0, branch_site_count=0, call_site_count=1, parameter_count=1, callee_family_count=1)
@@ -76,8 +60,7 @@ class TypingProtocolContractDetector(IssueDetector):
             evidence: list[SourceLocation] = []
             protocol_class_names: list[str] = []
             for node in ast.walk(module.module):
-                if not isinstance(node, ast.ClassDef):
-                    continue
+                if not isinstance(node, ast.ClassDef): continue
                 inherits_protocol = any((_is_imported_name(base, protocol_aliases) or _is_qualified_name(base, module_aliases=typing_aliases, attr_name='Protocol') for base in node.bases))
                 runtime_checkable = any((_is_imported_name(decorator, runtime_checkable_aliases) or _is_qualified_name(decorator, module_aliases=typing_aliases, attr_name='runtime_checkable') for decorator in node.decorator_list))
                 if inherits_protocol:
@@ -85,8 +68,7 @@ class TypingProtocolContractDetector(IssueDetector):
                     evidence.append(SourceLocation(str(module.path), node.lineno, node.name))
                 elif runtime_checkable:
                     evidence.append(SourceLocation(str(module.path), node.lineno, f'{node.name}.runtime_checkable'))
-            if not evidence:
-                continue
+            if not evidence: continue
             class_summary = ", ".join(protocol_class_names) or "runtime-checkable class"
             findings.append(
                 self.build_finding(
@@ -108,24 +90,18 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
     observation_kind = ObservationKind.METHOD_SHAPE
     finding_spec = high_confidence_certified_spec(PatternId.ABC_TEMPLATE_METHOD, 'Repeated non-orthogonal method skeleton across classes', 'Shared orchestration logic is duplicated across a behavior family. The docs say this shared non-orthogonal logic should move into an ABC with a concrete template method, leaving only orthogonal hooks in subclasses.', 'single authoritative algorithm for a nominal behavior family', 'same method role across sibling classes', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS, _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS)
 
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(_collect_typed_family_items(module, MethodShapeFamily, MethodShape))
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]: return tuple(_collect_typed_family_items(module, MethodShapeFamily, MethodShape))
 
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
-        method = _as_method_shape(shape)
-        return bool(method.class_name and method.statement_count >= config.min_duplicate_statements)
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool: method = _as_method_shape(shape); return bool(method.class_name and method.statement_count >= config.min_duplicate_statements)
 
-    def _group_key(self, shape: object) -> object:
-        method = _as_method_shape(shape)
-        return (method.is_private, method.param_count, method.fingerprint)
+    def _group_key(self, shape: object) -> object: method = _as_method_shape(shape); return (method.is_private, method.param_count, method.fingerprint)
 
     def _finding_from_group(
         self, shapes: tuple[object, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         methods = sorted_tuple((_as_method_shape(shape) for shape in shapes), key=lambda item: (item.file_path, item.lineno))
         class_names = {method.class_name for method in methods}
-        if len(methods) < 2 or len(class_names) < 2:
-            return None
+        if len(methods) < 2 or len(class_names) < 2: return None
         evidence = tuple((SourceLocation(method.file_path, method.lineno, method.symbol) for method in methods[:6]))
         relation = (
             "same private helper role across sibling classes"
@@ -151,20 +127,17 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                 tuple((_as_method_shape(item) for item in _materialize_observations(fiber.observations, lookup)))
                 for fiber in cohort.fibers
             ]
-            if not groups:
-                continue
+            if not groups: continue
             class_names = frozenset(cohort.nominal_witnesses)
             method_count_by_class: dict[str, int] = defaultdict(int)
             for methods in groups:
                 for method in methods:
-                    if method.class_name is not None:
-                        method_count_by_class[method.class_name] += 1
+                    if method.class_name is not None: method_count_by_class[method.class_name] += 1
             supports_family = (
                 len(groups) >= 2
                 or sum(1 for count in method_count_by_class.values() if count >= 2) >= 2
             )
-            if not supports_family:
-                continue
+            if not supports_family: continue
             evidence = [
                 SourceLocation(method.file_path, method.lineno, method.symbol)
                 for methods in groups
@@ -177,10 +150,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
 class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
     finding_spec = high_confidence_spec(PatternId.STAGED_ORCHESTRATION, 'Oversized orchestration hub', 'One function is owning too many control branches, helper calls, and phase transitions at once. The architecture wants explicit staged boundaries so the orchestration surface remains nominal and legible.', 'explicit staged orchestration boundaries with named phase contracts', 'one owner centralizes many operational phases and helper families', _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS)
 
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        return tuple((profile for profile in _function_profiles(module) if profile.line_count >= config.min_orchestration_function_lines and profile.branch_count >= config.min_orchestration_branches and (profile.call_count >= config.min_orchestration_calls)))
+    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[object]: return tuple((profile for profile in _function_profiles(module) if profile.line_count >= config.min_orchestration_function_lines and profile.branch_count >= config.min_orchestration_branches and (profile.call_count >= config.min_orchestration_calls)))
 
     finding_renderer = CandidateFindingRenderer[FunctionProfile](summary=lambda profile: f'`{profile.qualname}` concentrates {profile.line_count} lines, {profile.branch_count} branches, and {profile.call_count} calls across {profile.callee_family_count} callee families in one owner.', evidence=lambda profile: (profile.evidence,), scaffold=lambda profile: _orchestration_stage_scaffold(profile), codemod_patch=lambda profile: _orchestration_stage_patch(profile), metrics=lambda profile: OrchestrationMetrics(function_line_count=profile.line_count, branch_site_count=profile.branch_count, call_site_count=profile.call_count, parameter_count=len(profile.parameter_names), callee_family_count=profile.callee_family_count))
 
@@ -197,18 +167,15 @@ class ClassRoleQuotientCandidate(ClassLineWitnessCandidate):
     cross_role_self_call_count: int
 
     @property
-    def role_names(self) -> tuple[str, ...]:
-        return tuple(role for role, _ in self.role_method_counts)
+    def role_names(self) -> tuple[str, ...]: return tuple((role for role, _ in self.role_method_counts))
 
     @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for role, line, method_name in self.role_representatives))
+    def evidence_locations(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for role, line, method_name in self.role_representatives))
 
 
 def _method_role_token(method_name: str) -> str:
     stripped = method_name.strip("_")
-    if not stripped:
-        return ""
+    if not stripped: return ''
     return stripped.split("_", maxsplit=1)[0]
 
 
@@ -220,16 +187,14 @@ def _class_role_quotient_candidates(
         node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
     ):
         methods = tuple((statement for statement in class_node.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and (not (statement.name.startswith('__') and statement.name.endswith('__')))))
-        if not methods:
-            continue
+        if not methods: continue
         role_groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = (
             defaultdict(list)
         )
         method_role: dict[str, str] = {}
         for method in methods:
             role = _method_role_token(method.name)
-            if not role:
-                continue
+            if not role: continue
             role_groups[role].append(method)
             method_role[method.name] = role
         nontrivial_roles = {
@@ -240,12 +205,9 @@ def _class_role_quotient_candidates(
         nontrivial_method_count = sum((len(role_methods) for role_methods in nontrivial_roles.values()))
         private_method_count = sum((1 for method in methods if method.name.startswith('_')))
         public_method_count = len(methods) - private_method_count
-        if len(nontrivial_roles) < 3:
-            continue
-        if private_method_count <= public_method_count:
-            continue
-        if nontrivial_method_count * 2 < len(methods):
-            continue
+        if len(nontrivial_roles) < 3: continue
+        if private_method_count <= public_method_count: continue
+        if nontrivial_method_count * 2 < len(methods): continue
 
         self_state_attributes: set[str] = set()
         self_call_count = 0
@@ -263,8 +225,7 @@ def _class_role_quotient_candidates(
                 ):
                     self_call_count += 1
                     callee_role = method_role.get(child.func.attr, "")
-                    if callee_role and caller_role and callee_role != caller_role:
-                        cross_role_self_call_count += 1
+                    if callee_role and caller_role and (callee_role != caller_role): cross_role_self_call_count += 1
                 elif (
                     isinstance(child, ast.Attribute)
                     and isinstance(child.value, ast.Name)
@@ -318,8 +279,7 @@ PassThroughCompositionFacadeCandidate = product_record('PassThroughCompositionFa
 
 def _is_pass_through_class_body(body: Sequence[ast.stmt]) -> bool:
     trimmed = _trim_docstring_body(list(body))
-    if not trimmed:
-        return True
+    if not trimmed: return True
     return all((isinstance(statement, ast.Pass) or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and (statement.value.value is Ellipsis)) for statement in trimmed))
 
 
@@ -330,10 +290,8 @@ def _pass_through_composition_facade_candidates(
     for class_node in (
         node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
     ):
-        if len(class_node.bases) < 2:
-            continue
-        if not _is_pass_through_class_body(class_node.body):
-            continue
+        if len(class_node.bases) < 2: continue
+        if not _is_pass_through_class_body(class_node.body): continue
         base_names = tuple(ast.unparse(base) for base in class_node.bases)
         candidates.append(PassThroughCompositionFacadeCandidate(file_path=str(module.path), line=class_node.lineno, class_name=class_node.name, base_names=base_names))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
@@ -349,25 +307,17 @@ class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
 
     @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{property_name}') for line, property_name in zip(self.line_numbers, self.property_names, strict=True)))
+    def evidence_locations(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{property_name}') for line, property_name in zip(self.line_numbers, self.property_names, strict=True)))
 
 
 def _is_self_attribute(node: ast.AST) -> str | None:
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-    ):
-        return node.attr
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and (node.value.id == 'self'): return node.attr
     return None
 
 
 def _is_path_projection_part(node: ast.AST) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return True
-    if isinstance(node, ast.JoinedStr):
-        return all((isinstance(value, ast.Constant) or (isinstance(value, ast.FormattedValue) and _is_self_attribute(value.value) is not None) for value in node.values))
+    if isinstance(node, ast.Constant) and isinstance(node.value, str): return True
+    if isinstance(node, ast.JoinedStr): return all((isinstance(value, ast.Constant) or (isinstance(value, ast.FormattedValue) and _is_self_attribute(value.value) is not None) for value in node.values))
     return False
 
 
@@ -375,12 +325,10 @@ def _path_projection_base(returned: ast.AST) -> str | None:
     node = returned
     saw_path_part = False
     while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        if not _is_path_projection_part(node.right):
-            return None
+        if not _is_path_projection_part(node.right): return None
         saw_path_part = True
         node = node.left
-    if not saw_path_part:
-        return None
+    if not saw_path_part: return None
     return _is_self_attribute(node)
 
 
@@ -393,19 +341,14 @@ def _projection_property_family_candidates(
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
         for statement in class_node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if not any((_ast_terminal_name(decorator) == 'property' for decorator in statement.decorator_list)):
-                continue
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)): continue
+            if not any((_ast_terminal_name(decorator) == 'property' for decorator in statement.decorator_list)): continue
             body = _trim_docstring_body(statement.body)
-            if len(body) != 1 or not isinstance(body[0], ast.Return):
-                continue
+            if len(body) != 1 or not isinstance(body[0], ast.Return): continue
             base_name = _path_projection_base(body[0].value)
-            if base_name is None:
-                continue
+            if base_name is None: continue
             properties.append((statement, base_name))
-        if len(properties) < 3:
-            continue
+        if len(properties) < 3: continue
         ordered = sorted_tuple(properties, key=lambda item: item[0].lineno)
         candidates.append(ProjectionPropertyFamilyCandidate(file_path=str(module.path), line=class_node.lineno, class_name=class_node.name, property_names=tuple((function.name for function, _ in ordered)), line_numbers=tuple((function.lineno for function, _ in ordered)), base_names=sorted_tuple({base_name for _, base_name in ordered})))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
@@ -420,16 +363,14 @@ class LiveTemplatePayloadFamilyCandidate(ClassLineWitnessCandidate):
     line_numbers: tuple[int, ...]
 
     @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for line, method_name in zip(self.line_numbers, self.method_names, strict=True)))
+    def evidence_locations(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for line, method_name in zip(self.line_numbers, self.method_names, strict=True)))
 
 
 def _returns_direct_text_template(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
     body = _trim_docstring_body(function.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
-        return False
+    if len(body) != 1 or not isinstance(body[0], ast.Return): return False
     returned = body[0].value
     return (
         isinstance(returned, ast.JoinedStr)
@@ -445,8 +386,7 @@ def _live_template_payload_family_candidates(
         node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
     ):
         template_methods = tuple((statement for statement in class_node.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and _returns_direct_text_template(statement)))
-        if len(template_methods) < 3:
-            continue
+        if len(template_methods) < 3: continue
         ordered = sorted_tuple(template_methods, key=lambda item: item.lineno)
         candidates.append(LiveTemplatePayloadFamilyCandidate(file_path=str(module.path), line=class_node.lineno, class_name=class_node.name, method_names=tuple((method.name for method in ordered)), line_numbers=tuple((method.lineno for method in ordered))))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
@@ -482,9 +422,7 @@ class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDete
 class ParameterThreadFamilyDetector(ConfiguredModuleCollectorCandidateDetector[ParameterThreadFamilyCandidate]):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_CONTEXT, 'Repeated threaded semantic parameter family', 'Several helpers keep re-threading the same semantic parameter bundle instead of carrying one nominal context. That weakens provenance and makes each helper signature a partially duplicated view of the same authority.', 'one authoritative context/request record for a shared semantic parameter family', 'the same semantic parameter bundle is threaded through several sibling helpers', _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS)
 
-    def _finding_for_candidate(self, parameter_family: ParameterThreadFamilyCandidate) -> RefactorFinding:
-        function_names = tuple(item.qualname for item in parameter_family.functions)
-        return self.build_finding(f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(parameter_family.shared_parameter_names)}` across {len(parameter_family.functions)} helpers.", tuple((item.evidence for item in parameter_family.functions[:6])), scaffold=_authoritative_context_scaffold(parameter_family), codemod_patch=_authoritative_context_patch(parameter_family), metrics=ParameterThreadMetrics(function_count=len(parameter_family.functions), shared_parameter_count=len(parameter_family.shared_parameter_names), shared_parameter_names=parameter_family.shared_parameter_names))
+    def _finding_for_candidate(self, parameter_family: ParameterThreadFamilyCandidate) -> RefactorFinding: function_names = tuple((item.qualname for item in parameter_family.functions)); return self.build_finding(f"Functions {', '.join(function_names[:4])} thread the same semantic parameter family `{', '.join(parameter_family.shared_parameter_names)}` across {len(parameter_family.functions)} helpers.", tuple((item.evidence for item in parameter_family.functions[:6])), scaffold=_authoritative_context_scaffold(parameter_family), codemod_patch=_authoritative_context_patch(parameter_family), metrics=ParameterThreadMetrics(function_count=len(parameter_family.functions), shared_parameter_count=len(parameter_family.shared_parameter_names), shared_parameter_names=parameter_family.shared_parameter_names))
 
 
 class SuffixAxisCompatibilitySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[SuffixAxisSurfaceCandidate]):
@@ -579,11 +517,7 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector[Res
 class RepeatedEnumStrategyDispatchDetector(ModuleCollectorCandidateDetector[RepeatedEnumStrategyDispatchCandidate]):
     finding_spec = high_confidence_spec(PatternId.NOMINAL_STRATEGY_FAMILY, 'Repeated closed-strategy dispatch should centralize in one nominal strategy family', 'Several owners re-dispatch the same closed enum family inline. The docs treat that as duplicated strategy orchestration: dispatch should happen once through one authoritative nominal strategy family or one shared strategy substrate.', 'single authoritative nominal strategy family for a repeated closed dispatch axis', 'same closed enum family is re-dispatched across sibling functions or methods', _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS)
 
-    def _finding_for_candidate(self, dispatch_candidate: RepeatedEnumStrategyDispatchCandidate) -> RefactorFinding:
-        evidence = tuple((item.evidence for item in dispatch_candidate.functions[:6]))
-        representative = dispatch_candidate.functions[0]
-        function_names = ', '.join((item.qualname for item in dispatch_candidate.functions[:4]))
-        return self.build_finding(f"Functions {function_names} each re-dispatch `{dispatch_candidate.enum_family}` cases {', '.join(dispatch_candidate.shared_case_names)} inline.", evidence, scaffold=_nominal_strategy_scaffold(representative), codemod_patch=_nominal_strategy_patch(representative), metrics=DispatchCountMetrics(dispatch_site_count=len(dispatch_candidate.functions), dispatch_axis=dispatch_candidate.enum_family, literal_cases=dispatch_candidate.shared_case_names))
+    def _finding_for_candidate(self, dispatch_candidate: RepeatedEnumStrategyDispatchCandidate) -> RefactorFinding: evidence = tuple((item.evidence for item in dispatch_candidate.functions[:6])); representative = dispatch_candidate.functions[0]; function_names = ', '.join((item.qualname for item in dispatch_candidate.functions[:4])); return self.build_finding(f"Functions {function_names} each re-dispatch `{dispatch_candidate.enum_family}` cases {', '.join(dispatch_candidate.shared_case_names)} inline.", evidence, scaffold=_nominal_strategy_scaffold(representative), codemod_patch=_nominal_strategy_patch(representative), metrics=DispatchCountMetrics(dispatch_site_count=len(dispatch_candidate.functions), dispatch_axis=dispatch_candidate.enum_family, literal_cases=dispatch_candidate.shared_case_names))
 
 
 class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector[InlineEnumSubsetGuardCandidate]):
@@ -786,13 +720,7 @@ class ParallelKeyedAxisFamilyDetector(CrossModuleCollectorCandidateDetector[Para
     def _finding_for_candidate(self, family_candidate: ParallelKeyedAxisFamilyCandidate) -> RefactorFinding:
         shared_cases = ", ".join(family_candidate.shared_case_names[:4])
         label_clause = ""
-        if (
-            family_candidate.left.family_label is not None
-            and family_candidate.left.family_label == family_candidate.right.family_label
-        ):
-            label_clause = (
-                f" Both declare family label `{family_candidate.left.family_label}`."
-            )
+        if family_candidate.left.family_label is not None and family_candidate.left.family_label == family_candidate.right.family_label: label_clause = f' Both declare family label `{family_candidate.left.family_label}`.'
         return self.build_finding(
             (
                 f"Axis `{family_candidate.key_type_name}` is owned in parallel by "
@@ -1139,13 +1067,7 @@ class RepeatedGuardValidatorFamilyDetector(ConfiguredModuleCollectorCandidateDet
 class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
     finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Repeated validate() shape guards should collapse into one validated-record authority', 'Sibling nominal records repeat the same fail-fast shape and dimensional guards in `validate()` while differing only in field names or a small residue check. The docs treat that as duplicated contract authority that should move into one shared validated-record base, field-spec table, or mixin hook.', 'single authoritative validated-record contract for repeated shape/ndim guards', 'same nominal record family repeats fail-loud shape validation scaffolding', _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS, _CLASS_FAMILY_METHOD_ROLE_NORMALIZED_AST_OBSERVATION_TAGS)
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _repeated_validate_shape_guard_candidates_for_modules(modules, config)
-        ]
+    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]: return [self._finding_for_candidate(candidate) for candidate in _repeated_validate_shape_guard_candidates_for_modules(modules, config)]
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         family_candidate = cast(RepeatedValidateShapeGuardFamilyCandidate, candidate)
@@ -1221,11 +1143,7 @@ class _NormalFormScaffoldSpec:
     step_base_name: str
     step_names: tuple[str, ...]
 
-    def render(self) -> str:
-        step_rows = "\n".join(f"        {step_name}()," for step_name in self.step_names)
-        return (
-            f'class {self.step_base_name}(EffectStep, ABC):\n    normal_form = {self.normal_form!r}\n\n@dataclass(frozen=True)\nclass {self.matcher_name}:\n    steps: tuple[{self.step_base_name}, ...] = (\n{step_rows}\n    )\n\n    def {self.method_name}(self, {self.input_name}):\n        return Maybe.of({self.input_name}).bind_all(self.steps)'
-        )
+    def render(self) -> str: step_rows = '\n'.join((f'        {step_name}(),' for step_name in self.step_names)); return f'class {self.step_base_name}(EffectStep, ABC):\n    normal_form = {self.normal_form!r}\n\n@dataclass(frozen=True)\nclass {self.matcher_name}:\n    steps: tuple[{self.step_base_name}, ...] = (\n{step_rows}\n    )\n\n    def {self.method_name}(self, {self.input_name}):\n        return Maybe.of({self.input_name}).bind_all(self.steps)'
 
 
 _DEFAULT_NORMAL_FORM_SCAFFOLD = (
@@ -1245,13 +1163,7 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector[
         _NORMAL_FORM_SCAFFOLDS
     )
 
-    def _normal_form_scaffold(self, normal_form: str) -> str:
-        spec = self._NORMAL_FORM_SCAFFOLDS.get(normal_form)
-        return (
-            spec.render()
-            if spec is not None
-            else self._DEFAULT_NORMAL_FORM_SCAFFOLD
-        )
+    def _normal_form_scaffold(self, normal_form: str) -> str: spec = self._NORMAL_FORM_SCAFFOLDS.get(normal_form); return spec.render() if spec is not None else self._DEFAULT_NORMAL_FORM_SCAFFOLD
 
     def _finding_for_candidate(self, pipeline_candidate: FailSoftEffectPipelineCandidate) -> RefactorFinding:
         binding_preview = ", ".join(pipeline_candidate.guarded_binding_names[:5])
@@ -1285,11 +1197,7 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector[
         )
 
 
-def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> str:
-    normal_form_class = _camel_case(candidate.normal_form)
-    return (
-        f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id: ClassVar[str | None] = None\n    registration_order: ClassVar[int] = 0\n\n@dataclass(frozen=True)\nclass {normal_form_class}Matcher:\n    steps: tuple[{normal_form_class}Step, ...]\n\n    def match(self, source):\n        return Maybe.of(source).bind_all(self.steps)"
-    )
+def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> str: normal_form_class = _camel_case(candidate.normal_form); return f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id: ClassVar[str | None] = None\n    registration_order: ClassVar[int] = 0\n\n@dataclass(frozen=True)\nclass {normal_form_class}Matcher:\n    steps: tuple[{normal_form_class}Step, ...]\n\n    def match(self, source):\n        return Maybe.of(source).bind_all(self.steps)"
 
 
 class EffectStepAmortizationDetector(ConfiguredModuleCollectorCandidateDetector[EffectStepAmortizationCandidate]):
@@ -1592,24 +1500,17 @@ class DeferredClassRegistrationDetector(ModuleCollectorCandidateDetector[ManualR
     candidate_collector = _manual_registry_candidates
     finding_spec = high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Class registration is decoupled from class existence', 'Manual decorator- or helper-based registration leaves a reachable state where a class exists but the registry has not been updated. The host already provides zero-delay registration via `metaclass-registry` or another class-time hook.', 'zero-delay metaclass-registry class registration with collision checks and runtime provenance', 'class registration is performed as a separate auxiliary step rather than at class creation time', _CLASS_LEVEL_REGISTRATION_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS)
 
-    def _finding_for_candidate(self, registry_candidate: ManualRegistryCandidate) -> RefactorFinding:
-        evidence = [SourceLocation(registry_candidate.file_path, registry_candidate.line, registry_candidate.decorator_name)]
-        evidence.extend((SourceLocation(registry_candidate.file_path, registry_candidate.line, class_name) for class_name in registry_candidate.class_names[:5]))
-        return self.build_finding(f'Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation.', tuple(evidence), scaffold=_manual_registry_scaffold(registry_candidate), codemod_patch=_manual_registry_patch(registry_candidate), metrics=RegistrationMetrics(registration_site_count=len(registry_candidate.class_names), registry_name=registry_candidate.registry_name))
+    def _finding_for_candidate(self, registry_candidate: ManualRegistryCandidate) -> RefactorFinding: evidence = [SourceLocation(registry_candidate.file_path, registry_candidate.line, registry_candidate.decorator_name)]; evidence.extend((SourceLocation(registry_candidate.file_path, registry_candidate.line, class_name) for class_name in registry_candidate.class_names[:5])); return self.build_finding(f'Registry `{registry_candidate.registry_name}` is updated through manual decorator `{registry_candidate.decorator_name}` for classes {registry_candidate.class_names}, leaving registration structurally decoupled from class creation.', tuple(evidence), scaffold=_manual_registry_scaffold(registry_candidate), codemod_patch=_manual_registry_patch(registry_candidate), metrics=RegistrationMetrics(registration_site_count=len(registry_candidate.class_names), registry_name=registry_candidate.registry_name))
 
 
 class StructuralConfusabilityDetector(ModuleCollectorCandidateDetector[StructuralConfusabilityCandidate]):
     finding_spec = high_confidence_spec(PatternId.NOMINAL_INTERFACE_WITNESS, 'Consumer observes a confusable duck-typed family', 'A consumer only observes a partial structural view, and several unrelated classes are confusable under that view. Without a nominal witness, the distortion floor stays above zero and the family boundary remains implicit.', 'ABC-backed nominal witness for a structurally confusable implementation family', 'consumer depends on a partial structural view shared by several unrelated classes', _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS)
 
-    def _finding_for_candidate(self, confusability_candidate: StructuralConfusabilityCandidate) -> RefactorFinding:
-        evidence = (SourceLocation(confusability_candidate.file_path, confusability_candidate.line, confusability_candidate.function_name),)
-        return self.build_finding(f'`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view.', evidence, scaffold=_structural_confusability_scaffold(confusability_candidate), codemod_patch=_structural_confusability_patch(confusability_candidate))
+    def _finding_for_candidate(self, confusability_candidate: StructuralConfusabilityCandidate) -> RefactorFinding: evidence = (SourceLocation(confusability_candidate.file_path, confusability_candidate.line, confusability_candidate.function_name),); return self.build_finding(f'`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view.', evidence, scaffold=_structural_confusability_scaffold(confusability_candidate), codemod_patch=_structural_confusability_patch(confusability_candidate))
 
 
 class SemanticWitnessFamilyDetector(ModuleCollectorCandidateDetector[WitnessCarrierFamilyCandidate]):
     candidate_collector = _witness_carrier_family_candidates
     finding_spec = high_confidence_spec(PatternId.NOMINAL_WITNESS_CARRIER, 'Semantic carrier family should share one nominal base', 'Several frozen dataclass carriers repeat the same location and naming roles under different field names. That leaves one semantic family structurally expanded instead of giving it one nominal carrier root.', 'one authoritative nominal base for a semantic metadata carrier family', 'same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses', _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS)
 
-    def _finding_for_candidate(self, witness_candidate: WitnessCarrierFamilyCandidate) -> RefactorFinding:
-        evidence = tuple((SourceLocation(witness_candidate.file_path, line, class_name) for class_name, line in zip(witness_candidate.class_names, witness_candidate.line_numbers, strict=True)))
-        return self.build_finding(f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier.", evidence, scaffold=_witness_carrier_family_scaffold(witness_candidate), codemod_patch=_witness_carrier_family_patch(witness_candidate), metrics=WitnessCarrierMetrics(class_count=len(witness_candidate.class_names), shared_role_count=len(witness_candidate.shared_role_names), class_names=witness_candidate.class_names, shared_role_names=witness_candidate.shared_role_names))
+    def _finding_for_candidate(self, witness_candidate: WitnessCarrierFamilyCandidate) -> RefactorFinding: evidence = tuple((SourceLocation(witness_candidate.file_path, line, class_name) for class_name, line in zip(witness_candidate.class_names, witness_candidate.line_numbers, strict=True))); return self.build_finding(f"Frozen carrier classes {', '.join(witness_candidate.class_names)} repeat semantic roles {witness_candidate.shared_role_names} under renamed fields and should inherit one nominal base carrier.", evidence, scaffold=_witness_carrier_family_scaffold(witness_candidate), codemod_patch=_witness_carrier_family_patch(witness_candidate), metrics=WitnessCarrierMetrics(class_count=len(witness_candidate.class_names), shared_role_count=len(witness_candidate.shared_role_names), class_names=witness_candidate.class_names, shared_role_names=witness_candidate.shared_role_names))

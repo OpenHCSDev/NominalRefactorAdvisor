@@ -25,11 +25,7 @@ class LabeledStrEnum(StrEnum):
 
     label: str
 
-    def __new__(cls, value: str, label: str) -> "LabeledStrEnum":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.label = label
-        return member
+    def __new__(cls, value: str, label: str) -> 'LabeledStrEnum': member = str.__new__(cls, value); member._value_ = value; member.label = label; return member
 
 
 class CapabilityTag(LabeledStrEnum):
@@ -37,12 +33,7 @@ class CapabilityTag(LabeledStrEnum):
 
     distinction: str
 
-    def __new__(cls, value: str, label: str, distinction: str) -> "CapabilityTag":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.label = label
-        member.distinction = distinction
-        return member
+    def __new__(cls, value: str, label: str, distinction: str) -> 'CapabilityTag': member = str.__new__(cls, value); member._value_ = value; member.label = label; member.distinction = distinction; return member
 
     AUTHORITATIVE_DISPATCH = ("authoritative_dispatch", "authoritative closed-family dispatch", "which declared rule family owns dispatch")
     AUTHORITATIVE_MAPPING = ("authoritative_mapping", "authoritative mapping ownership", "which mapping is the single writable source")

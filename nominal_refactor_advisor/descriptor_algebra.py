@@ -17,22 +17,13 @@ class AliasProperty(Generic[ValueT]):
     source_name: str
     _project: Callable[[object], ValueT] = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, '_project', cast(Callable[[object], ValueT], attrgetter(self.source_name)))
+    def __post_init__(self) -> None: object.__setattr__(self, '_project', cast(Callable[[object], ValueT], attrgetter(self.source_name)))
 
     @overload
-    def __get__(
-        self,
-        instance: None,
-        owner: type[object] | None = None,
-    ) -> "AliasProperty[ValueT]": ...
+    def __get__(self, instance: None, owner: type[object] | None=None) -> 'AliasProperty[ValueT]': ...
 
     @overload
-    def __get__(
-        self,
-        instance: object,
-        owner: type[object] | None = None,
-    ) -> ValueT: ...
+    def __get__(self, instance: object, owner: type[object] | None=None) -> ValueT: ...
 
     def __get__(
         self,
@@ -40,6 +31,5 @@ class AliasProperty(Generic[ValueT]):
         owner: type[object] | None = None,
     ) -> ValueT | "AliasProperty[ValueT]":
         del owner
-        if instance is None:
-            return self
+        if instance is None: return self
         return self._project(instance)

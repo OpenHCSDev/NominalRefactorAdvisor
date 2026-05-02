@@ -55,18 +55,10 @@ _SEMANTIC_TAG_NAME_ALIASES: dict[SemanticTagEnum, dict[str, str]] = {CapabilityT
 
 
 @lru_cache(maxsize=None)
-def _semantic_tag_token_matchers(
-    tag_enum: SemanticTagEnum,
-) -> tuple[tuple[tuple[str, ...], SemanticTag], ...]:
-    rows = (*((tuple(name.split('_')), member) for name, member in tag_enum.__members__.items()), *((tuple(alias.split('_')), tag_enum[member_name]) for alias, member_name in _SEMANTIC_TAG_NAME_ALIASES.get(tag_enum, {}).items()))
-    return sorted_tuple(rows, key=lambda row: (-len(row[0]), row[0]))
+def _semantic_tag_token_matchers(tag_enum: SemanticTagEnum) -> tuple[tuple[tuple[str, ...], SemanticTag], ...]: rows = (*((tuple(name.split('_')), member) for name, member in tag_enum.__members__.items()), *((tuple(alias.split('_')), tag_enum[member_name]) for alias, member_name in _SEMANTIC_TAG_NAME_ALIASES.get(tag_enum, {}).items())); return sorted_tuple(rows, key=lambda row: (-len(row[0]), row[0]))
 
 
-def _semantic_tag_constant_suffix(
-    constant_name: str,
-) -> tuple[str, SemanticTagEnum]:
-    bare_name = constant_name.removeprefix("_")
-    return next(((suffix, tag_enum) for suffix, tag_enum in _SEMANTIC_TAG_ENUM_BY_CONSTANT_SUFFIX.items() if bare_name.endswith(f'_{suffix}')))
+def _semantic_tag_constant_suffix(constant_name: str) -> tuple[str, SemanticTagEnum]: bare_name = constant_name.removeprefix('_'); return next(((suffix, tag_enum) for suffix, tag_enum in _SEMANTIC_TAG_ENUM_BY_CONSTANT_SUFFIX.items() if bare_name.endswith(f'_{suffix}')))
 
 
 def _semantic_tag_tuple_from_constant_name(constant_name: str) -> tuple[SemanticTag, ...]:
@@ -78,8 +70,7 @@ def _semantic_tag_tuple_from_constant_name(constant_name: str) -> tuple[Semantic
     matchers = _semantic_tag_token_matchers(tag_enum)
     while unresolved_tokens:
         token_match = next(((tokens, tag) for tokens, tag in matchers if tuple(unresolved_tokens[:len(tokens)]) == tokens), None)
-        if token_match is None:
-            raise ValueError(f"Cannot derive semantic tag constant `{constant_name}`")
+        if token_match is None: raise ValueError(f'Cannot derive semantic tag constant `{constant_name}`')
         tokens, tag = token_match
         resolved_tags.append(tag)
         del unresolved_tokens[: len(tokens)]
@@ -87,107 +78,50 @@ def _semantic_tag_tuple_from_constant_name(constant_name: str) -> tuple[Semantic
 
 
 @lru_cache(maxsize=1)
-def _semantic_tag_constant_names_from_detector_sources() -> tuple[str, ...]:
-    detector_source = "\n".join(source_path.read_text() for source_path in Path(__file__).parent.glob("_*.py"))
-    return sorted_tuple(set(_SEMANTIC_TAG_CONSTANT_NAME_RE.findall(detector_source)))
+def _semantic_tag_constant_names_from_detector_sources() -> tuple[str, ...]: detector_source = '\n'.join((source_path.read_text() for source_path in Path(__file__).parent.glob('_*.py'))); return sorted_tuple(set(_SEMANTIC_TAG_CONSTANT_NAME_RE.findall(detector_source)))
 
 
 globals().update({constant_name: _semantic_tag_tuple_from_constant_name(constant_name) for constant_name in _semantic_tag_constant_names_from_detector_sources()})
 
 
 def _detector_id_value_from_class_name(name: str) -> str | None:
-    if not name.endswith("Detector"):
-        return None
+    if not name.endswith('Detector'): return None
     stem = name.removesuffix("Detector")
     return re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower()
 
 
-def _has_finding_spec_contract(cls: type[object]) -> bool:
-    return any("finding_spec" in base.__dict__ for base in cls.__mro__)
+def _has_finding_spec_contract(cls: type[object]) -> bool: return any(('finding_spec' in base.__dict__ for base in cls.__mro__))
 
 
 def _detector_id_from_class_name(name: str, cls: type[object]) -> str | None:
-    if not _has_finding_spec_contract(cls):
-        return None
+    if not _has_finding_spec_contract(cls): return None
     return _detector_id_value_from_class_name(name)
 
 
-def _candidate_collector_name_from_class_name(name: str) -> str | None:
-    detector_id = _detector_id_value_from_class_name(name)
-    return None if detector_id is None else f"_{detector_id}_candidates"
+def _candidate_collector_name_from_class_name(name: str) -> str | None: detector_id = _detector_id_value_from_class_name(name); return None if detector_id is None else f'_{detector_id}_candidates'
 
 
 def _derive_candidate_collector(cls: type[object]) -> None:
-    if "candidate_collector" in cls.__dict__:
-        return
+    if 'candidate_collector' in cls.__dict__: return
     collector_name = _candidate_collector_name_from_class_name(cls.__name__)
-    if collector_name is None:
-        return
+    if collector_name is None: return
     collector = vars(sys.modules[cls.__module__]).get(collector_name)
-    if collector is not None:
-        cls.candidate_collector = collector
+    if collector is not None: cls.candidate_collector = collector
 
 
-def finding_spec_template(
-    pattern_id: PatternId,
-    title: str,
-    why: str,
-    capability_gap: str,
-    relation_context: str,
-    capability_tags: tuple[CapabilityTag, ...] = (),
-    observation_tags: tuple[ObservationTag, ...] = (),
-    *,
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE,
-    certification: CertificationLevel = STRONG_HEURISTIC,
-    scaffold_template: str | None = None,
-) -> FindingSpec:
-    return FindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, confidence=confidence, certification=certification, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
+def finding_spec_template(pattern_id: PatternId, title: str, why: str, capability_gap: str, relation_context: str, capability_tags: tuple[CapabilityTag, ...]=(), observation_tags: tuple[ObservationTag, ...]=(), *, confidence: ConfidenceLevel=MEDIUM_CONFIDENCE, certification: CertificationLevel=STRONG_HEURISTIC, scaffold_template: str | None=None) -> FindingSpec: return FindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, confidence=confidence, certification=certification, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
 
 
-def high_confidence_spec(
-    pattern_id: PatternId,
-    title: str,
-    why: str,
-    capability_gap: str,
-    relation_context: str,
-    capability_tags: tuple[CapabilityTag, ...] = (),
-    observation_tags: tuple[ObservationTag, ...] = (),
-    *,
-    scaffold_template: str | None = None,
-) -> HighConfidenceFindingSpec:
-    return HighConfidenceFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
+def high_confidence_spec(pattern_id: PatternId, title: str, why: str, capability_gap: str, relation_context: str, capability_tags: tuple[CapabilityTag, ...]=(), observation_tags: tuple[ObservationTag, ...]=(), *, scaffold_template: str | None=None) -> HighConfidenceFindingSpec: return HighConfidenceFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
 
 
-def certified_spec(
-    pattern_id: PatternId,
-    title: str,
-    why: str,
-    capability_gap: str,
-    relation_context: str,
-    capability_tags: tuple[CapabilityTag, ...] = (),
-    observation_tags: tuple[ObservationTag, ...] = (),
-    *,
-    scaffold_template: str | None = None,
-) -> CertifiedFindingSpec:
-    return CertifiedFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
+def certified_spec(pattern_id: PatternId, title: str, why: str, capability_gap: str, relation_context: str, capability_tags: tuple[CapabilityTag, ...]=(), observation_tags: tuple[ObservationTag, ...]=(), *, scaffold_template: str | None=None) -> CertifiedFindingSpec: return CertifiedFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
 
 
-def high_confidence_certified_spec(
-    pattern_id: PatternId,
-    title: str,
-    why: str,
-    capability_gap: str,
-    relation_context: str,
-    capability_tags: tuple[CapabilityTag, ...] = (),
-    observation_tags: tuple[ObservationTag, ...] = (),
-    *,
-    scaffold_template: str | None = None,
-) -> HighConfidenceCertifiedFindingSpec:
-    return HighConfidenceCertifiedFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
+def high_confidence_certified_spec(pattern_id: PatternId, title: str, why: str, capability_gap: str, relation_context: str, capability_tags: tuple[CapabilityTag, ...]=(), observation_tags: tuple[ObservationTag, ...]=(), *, scaffold_template: str | None=None) -> HighConfidenceCertifiedFindingSpec: return HighConfidenceCertifiedFindingSpec(pattern_id=pattern_id, title=title, why=why, capability_gap=capability_gap, relation_context=relation_context, capability_tags=capability_tags, observation_tags=observation_tags, scaffold_template=scaffold_template)
 
 
-def detector_config_option(default: object, help_text: str) -> object:
-    return field(default=default, metadata={"cli_help": help_text})
+def detector_config_option(default: object, help_text: str) -> object: return field(default=default, metadata={'cli_help': help_text})
 
 
 @dataclass(frozen=True)
@@ -251,18 +185,13 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     detector_priority: ClassVar[int] = 0
 
     @classmethod
-    def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
-        detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
-        return sorted_tuple(detector_registry.values(), key=lambda item: (item.detector_priority, item.__module__, vars(item).get('__firstlineno__', 0), item.__qualname__))
+    def registered_detector_types(cls) -> tuple[type['IssueDetector'], ...]: detector_registry = cast('dict[str, type[IssueDetector]]', cls.__registry__); return sorted_tuple(detector_registry.values(), key=lambda item: (item.detector_priority, item.__module__, vars(item).get('__firstlineno__', 0), item.__qualname__))
 
     def detect(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings = self._collect_findings(modules, config)
-        if config.excluded_pattern_ids:
-            findings = [
-                f for f in findings if f.pattern_id not in config.excluded_pattern_ids
-            ]
+        if config.excluded_pattern_ids: findings = [f for f in findings if f.pattern_id not in config.excluded_pattern_ids]
         return sorted(findings, key=lambda finding: (finding.pattern_id, finding.title, finding.summary))
 
     def build_finding(
@@ -283,15 +212,11 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         observation_tags: tuple[ObservationTag, ...] | None = None,
     ) -> RefactorFinding:
         detector_id = self.detector_id
-        if detector_id is None:
-            raise TypeError(f"{type(self).__name__} has no detector_id")
+        if detector_id is None: raise TypeError(f'{type(self).__name__} has no detector_id')
         return type(self).finding_spec.build(detector_id, summary, evidence, scaffold=scaffold, codemod_patch=codemod_patch, metrics=metrics, title=title, why=why, capability_gap=capability_gap, confidence=confidence, relation_context=relation_context, certification=certification, capability_tags=capability_tags, observation_tags=observation_tags)
 
     @abstractmethod
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        raise NotImplementedError
+    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]: raise NotImplementedError
 
 
 class PerModuleIssueDetector(IssueDetector):
@@ -301,15 +226,11 @@ class PerModuleIssueDetector(IssueDetector):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for module in modules:
-            findings.extend(self._findings_for_module(module, config))
+        for module in modules: findings.extend(self._findings_for_module(module, config))
         return findings
 
     @abstractmethod
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        raise NotImplementedError
+    def _findings_for_module(self, module: ParsedModule, config: DetectorConfig) -> list[RefactorFinding]: raise NotImplementedError
 
 
 CandidateItemT = TypeVar("CandidateItemT")
@@ -324,19 +245,9 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
     codemod_patch: Callable[[CandidateItemT], str | None] | None = None
     metrics: Callable[[CandidateItemT], FindingMetrics | None] | None = None
 
-    def _optional_value(
-        self,
-        candidate: CandidateItemT,
-        value: Callable[[CandidateItemT], FindingValueT | None] | None,
-    ) -> FindingValueT | None:
-        return None if value is None else value(candidate)
+    def _optional_value(self, candidate: CandidateItemT, value: Callable[[CandidateItemT], FindingValueT | None] | None) -> FindingValueT | None: return None if value is None else value(candidate)
 
-    def build(
-        self,
-        detector: IssueDetector,
-        candidate: CandidateItemT,
-    ) -> RefactorFinding:
-        return detector.build_finding(self.summary(candidate), self.evidence(candidate), scaffold=self._optional_value(candidate, self.scaffold), codemod_patch=self._optional_value(candidate, self.codemod_patch), metrics=self._optional_value(candidate, self.metrics))
+    def build(self, detector: IssueDetector, candidate: CandidateItemT) -> RefactorFinding: return detector.build_finding(self.summary(candidate), self.evidence(candidate), scaffold=self._optional_value(candidate, self.scaffold), codemod_patch=self._optional_value(candidate, self.codemod_patch), metrics=self._optional_value(candidate, self.metrics))
 
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
@@ -344,8 +255,7 @@ class RenderedFindingMixin(Generic[CandidateItemT]):
 
     def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
         renderer = type(self).finding_renderer
-        if renderer is None:
-            raise NotImplementedError
+        if renderer is None: raise NotImplementedError
         return cast(CandidateFindingRenderer[CandidateItemT], renderer).build(cast(IssueDetector, self), candidate)
 
 
@@ -357,19 +267,10 @@ class CandidateFindingDetector(
 ):
     """Detector base for candidate-to-finding pipelines."""
 
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in self._candidate_items(module, config)
-        ]
+    def _findings_for_module(self, module: ParsedModule, config: DetectorConfig) -> list[RefactorFinding]: return [self._finding_for_candidate(candidate) for candidate in self._candidate_items(module, config)]
 
     @abstractmethod
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        raise NotImplementedError
+    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[CandidateItemT]: raise NotImplementedError
 
 
 ModuleCandidateCollector = Callable[[ParsedModule], Sequence[CandidateItemT]]
@@ -387,9 +288,7 @@ ConfiguredCrossModuleCandidateCollector = Callable[
 class DerivedCandidateCollectorMixin:
     candidate_collector: ClassVar[Callable[..., Sequence[Any]]]
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
-        _derive_candidate_collector(cls)
+    def __init_subclass__(cls, **kwargs: Any) -> None: super().__init_subclass__(**kwargs); _derive_candidate_collector(cls)
 
 
 class ModuleCollectorCandidateDetector(
@@ -402,11 +301,7 @@ class ModuleCollectorCandidateDetector(
 
     candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        del config
-        return type(self).candidate_collector(module)
+    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[CandidateItemT]: del config; return type(self).candidate_collector(module)
 
 
 class ConfiguredModuleCollectorCandidateDetector(
@@ -421,10 +316,7 @@ class ConfiguredModuleCollectorCandidateDetector(
         ConfiguredModuleCandidateCollector[CandidateItemT]
     ]
 
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        return type(self).candidate_collector(module, config)
+    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[CandidateItemT]: return type(self).candidate_collector(module, config)
 
 
 class CrossModuleCandidateDetector(
@@ -435,19 +327,10 @@ class CrossModuleCandidateDetector(
 ):
     """Detector base for repository-wide candidate-to-finding pipelines."""
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in self._candidate_items(modules, config)
-        ]
+    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]: return [self._finding_for_candidate(candidate) for candidate in self._candidate_items(modules, config)]
 
     @abstractmethod
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        raise NotImplementedError
+    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig) -> Sequence[CandidateItemT]: raise NotImplementedError
 
 
 class CrossModuleCollectorCandidateDetector(
@@ -460,11 +343,7 @@ class CrossModuleCollectorCandidateDetector(
 
     candidate_collector: ClassVar[CrossModuleCandidateCollector[CandidateItemT]]
 
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        del config
-        return type(self).candidate_collector(modules)
+    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig) -> Sequence[CandidateItemT]: del config; return type(self).candidate_collector(modules)
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
@@ -479,14 +358,10 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
         ConfiguredCrossModuleCandidateCollector[CandidateItemT]
     ]
 
-    def _candidate_items(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> Sequence[CandidateItemT]:
-        return type(self).candidate_collector(modules, config)
+    def _candidate_items(self, modules: list[ParsedModule], config: DetectorConfig) -> Sequence[CandidateItemT]: return type(self).candidate_collector(modules, config)
 
 
-def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
-    return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
+def _detector_name_from_candidate_type(candidate_type: type[object]) -> str: return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
 
 
 def declare_module_detector(
@@ -501,14 +376,11 @@ def declare_module_detector(
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
     caller = None if frame is None else frame.f_back
-    if caller is None:
-        raise RuntimeError("declare_module_detector() requires a caller frame")
+    if caller is None: raise RuntimeError('declare_module_detector() requires a caller frame')
     class_name = detector_name or _detector_name_from_candidate_type(candidate_type)
     namespace: dict[str, object] = {'__module__': caller.f_globals['__name__'], '__firstlineno__': caller.f_lineno, 'finding_spec': finding_spec, 'finding_renderer': finding_renderer}
-    if candidate_collector is not None:
-        namespace["candidate_collector"] = candidate_collector
-    if detector_priority is not None:
-        namespace["detector_priority"] = detector_priority
+    if candidate_collector is not None: namespace['candidate_collector'] = candidate_collector
+    if detector_priority is not None: namespace['detector_priority'] = detector_priority
     detector_type = cast(type[IssueDetector], type(class_name, (detector_base,), namespace))
     caller.f_globals[class_name] = detector_type
     return detector_type
@@ -521,27 +393,16 @@ class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         evidence = self._module_evidence(module, config)
-        if len(evidence) < self._minimum_evidence(config):
-            return []
+        if len(evidence) < self._minimum_evidence(config): return []
         return [self._build_finding(module, evidence, config)]
 
-    def _minimum_evidence(self, config: DetectorConfig) -> int:
-        return 1
+    def _minimum_evidence(self, config: DetectorConfig) -> int: return 1
 
     @abstractmethod
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        raise NotImplementedError
+    def _module_evidence(self, module: ParsedModule, config: DetectorConfig) -> tuple[SourceLocation, ...]: raise NotImplementedError
 
     @abstractmethod
-    def _build_finding(
-        self,
-        module: ParsedModule,
-        evidence: tuple[SourceLocation, ...],
-        config: DetectorConfig,
-    ) -> RefactorFinding:
-        raise NotImplementedError
+    def _build_finding(self, module: ParsedModule, evidence: tuple[SourceLocation, ...], config: DetectorConfig) -> RefactorFinding: raise NotImplementedError
 
 
 class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
@@ -549,24 +410,12 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
 
     finding_spec: FindingSpec
 
-    def _build_finding(
-        self,
-        module: ParsedModule,
-        evidence: tuple[SourceLocation, ...],
-        config: DetectorConfig,
-    ) -> RefactorFinding:
-        return self.build_finding(self._summary(module, evidence), self._evidence_slice(evidence))
+    def _build_finding(self, module: ParsedModule, evidence: tuple[SourceLocation, ...], config: DetectorConfig) -> RefactorFinding: return self.build_finding(self._summary(module, evidence), self._evidence_slice(evidence))
 
-    def _evidence_slice(
-        self, evidence: tuple[SourceLocation, ...]
-    ) -> tuple[SourceLocation, ...]:
-        return evidence[:6]
+    def _evidence_slice(self, evidence: tuple[SourceLocation, ...]) -> tuple[SourceLocation, ...]: return evidence[:6]
 
     @abstractmethod
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        raise NotImplementedError
+    def _summary(self, module: ParsedModule, evidence: tuple[SourceLocation, ...]) -> str: raise NotImplementedError
 
 
 class GroupedShapeIssueDetector(IssueDetector):
@@ -574,51 +423,35 @@ class GroupedShapeIssueDetector(IssueDetector):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         groups: dict[object, list[object]] = defaultdict(list)
-        for shape in self._collect_shapes(modules, config):
-            groups[self._group_key(shape)].append(shape)
+        for shape in self._collect_shapes(modules, config): groups[self._group_key(shape)].append(shape)
 
         findings: list[RefactorFinding] = []
         for shapes in groups.values():
             finding = self._finding_from_group(tuple(shapes), config)
-            if finding is not None:
-                findings.append(finding)
+            if finding is not None: findings.append(finding)
         return findings
 
     @abstractmethod
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
-        raise NotImplementedError
+    def _collect_shapes(self, modules: list[ParsedModule], config: DetectorConfig) -> list[object]: raise NotImplementedError
 
     @abstractmethod
-    def _group_key(self, shape: object) -> object:
-        raise NotImplementedError
+    def _group_key(self, shape: object) -> object: raise NotImplementedError
 
     @abstractmethod
-    def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
-    ) -> RefactorFinding | None:
-        raise NotImplementedError
+    def _finding_from_group(self, shapes: tuple[object, ...], config: DetectorConfig) -> RefactorFinding | None: raise NotImplementedError
 
 
 class FiberCollectedShapeIssueDetector(GroupedShapeIssueDetector, ABC):
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
 
-    def _collect_shapes(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
-        shapes = tuple((shape for module in modules for shape in self._module_shapes(module) if self._include_shape(shape, config)))
-        groups = _fiber_grouped_shapes(modules, shapes, self.observation_kind, self.execution_level)
-        return [shape for group in groups for shape in group]
+    def _collect_shapes(self, modules: list[ParsedModule], config: DetectorConfig) -> list[object]: shapes = tuple((shape for module in modules for shape in self._module_shapes(module) if self._include_shape(shape, config))); groups = _fiber_grouped_shapes(modules, shapes, self.observation_kind, self.execution_level); return [shape for group in groups for shape in group]
 
     @abstractmethod
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        raise NotImplementedError
+    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]: raise NotImplementedError
 
     @abstractmethod
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
-        raise NotImplementedError
+    def _include_shape(self, shape: object, config: DetectorConfig) -> bool: raise NotImplementedError
 
 
 CollectedItemT = TypeVar("CollectedItemT")
@@ -630,21 +463,18 @@ def _collect_typed_family_items(
     item_type: type[CollectedItemT],
 ) -> tuple[CollectedItemT, ...]:
     items = tuple(collect_family_items(module, family))
-    if not all(isinstance(item, item_type) for item in items):
-        raise TypeError(f'Collected items for {family.__name__} did not match {item_type.__name__}')
+    if not all((isinstance(item, item_type) for item in items)): raise TypeError(f'Collected items for {family.__name__} did not match {item_type.__name__}')
     return cast(tuple[CollectedItemT, ...], items)
 
 
 _GENERIC_PARAMETER_NAMES = frozenset({'args', 'cls', 'config', 'configs', 'evidence', 'finding', 'findings', 'group', 'groups', 'item', 'items', 'kwargs', 'module', 'modules', 'node', 'nodes', 'observation', 'observations', 'parsed_module', 'path', 'paths', 'root', 'self', 'shape', 'shapes', 'tmp_path'})
 
 
-def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
-    return tuple((item.arg for item in tuple(node.args.posonlyargs) + tuple(node.args.args) + tuple(node.args.kwonlyargs) if item.arg not in {'self', 'cls'}))
+def _parameter_names(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]: return tuple((item.arg for item in tuple(node.args.posonlyargs) + tuple(node.args.args) + tuple(node.args.kwonlyargs) if item.arg not in {'self', 'cls'}))
 
 
 def _callee_name(node: ast.Call) -> str | None:
-    if isinstance(node.func, ast.Name):
-        return node.func.id
+    if isinstance(node.func, ast.Name): return node.func.id
     if isinstance(node.func, ast.Attribute):
         value_name = ast.unparse(node.func.value)
         return f"{value_name}.{node.func.attr}"
@@ -656,16 +486,11 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
     profiles: list[FunctionProfile] = []
 
     class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
+        def __init__(self) -> None: self.class_stack: list[str] = []
 
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
+        def visit_ClassDef(self, node: ast.ClassDef) -> None: self.class_stack.append(node.name); self.generic_visit(node); self.class_stack.pop()
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            self._record(node)
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None: self._record(node)
 
         visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -675,14 +500,11 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
             branch_count = 0
             call_count = 0
             for subnode in _walk_nodes(node):
-                if isinstance(subnode, ast.If):
-                    branch_count += 1
-                if not isinstance(subnode, ast.Call):
-                    continue
+                if isinstance(subnode, ast.If): branch_count += 1
+                if not isinstance(subnode, ast.Call): continue
                 call_count += 1
                 callee_name = _callee_name(subnode)
-                if callee_name is not None:
-                    callee_name_set.add(callee_name)
+                if callee_name is not None: callee_name_set.add(callee_name)
             profiles.append(FunctionProfile(file_path=str(module.path), qualname='.'.join((*self.class_stack, node.name)), lineno=node.lineno, line_count=end_lineno - node.lineno + 1, branch_count=branch_count, call_count=call_count, callee_names=sorted_tuple(callee_name_set), parameter_names=_parameter_names(node)))
             self.generic_visit(node)
 
@@ -693,12 +515,10 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
 _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS = frozenset({'active', 'base', 'build', 'builder', 'certified', 'collect', 'compute', 'context', 'create', 'data', 'derive', 'detect', 'exact', 'final', 'families', 'family', 'for', 'from', 'get', 'has', 'helper', 'inactive', 'iter', 'keyed', 'load', 'make', 'manager', 'module', 'candidate', 'candidates', 'parallel', 'prepare', 'refresh', 'resolve', 'result', 'run', 'selection', 'select', 'state', 'support', 'update', 'value', 'values', 'with'})
 
 
-def _private_subsystem_name_tokens(symbol_name: str) -> tuple[str, ...]:
-    return tuple((token for token in _ordered_class_name_tokens(symbol_name) if len(token) >= 3 and (not token.isdigit()) and (token not in _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS)))
+def _private_subsystem_name_tokens(symbol_name: str) -> tuple[str, ...]: return tuple((token for token in _ordered_class_name_tokens(symbol_name) if len(token) >= 3 and (not token.isdigit()) and (token not in _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS)))
 
 
-def _module_line_count(module: ParsedModule) -> int:
-    return module.source.count("\n") + 1
+def _module_line_count(module: ParsedModule) -> int: return module.source.count('\n') + 1
 
 
 def _top_level_private_symbol_references(
@@ -711,13 +531,11 @@ def _top_level_private_symbol_references(
 
     class Visitor(ast.NodeVisitor):
         def visit_Name(self, node: ast.Name) -> None:
-            if node.id in top_level_names and node.id != symbol_name:
-                referenced.add(node.id)
+            if node.id in top_level_names and node.id != symbol_name: referenced.add(node.id)
 
         def visit_Attribute(self, node: ast.Attribute) -> None:
             chain = _ast_attribute_chain(node)
-            if chain is not None and chain[0] in top_level_names and chain[0] != symbol_name:
-                referenced.add(chain[0])
+            if chain is not None and chain[0] in top_level_names and (chain[0] != symbol_name): referenced.add(chain[0])
             self.generic_visit(node)
 
     Visitor().visit(node)
@@ -739,13 +557,7 @@ def _top_level_private_symbol_profiles(
     return sorted_tuple(profiles, key=lambda item: (item.line, item.symbol))
 
 
-def _suggest_private_cohort_module_name(
-    candidate: PrivateCohortShouldBeModuleCandidate,
-) -> str:
-    module_tail = candidate.module_name.rsplit(".", 1)[-1]
-    suffix_tokens = tuple((token for token in candidate.shared_tokens if token not in set(module_tail.split('_'))))
-    suffix = "_".join(suffix_tokens[:3]) or "subsystem"
-    return f"{module_tail}_{suffix}"
+def _suggest_private_cohort_module_name(candidate: PrivateCohortShouldBeModuleCandidate) -> str: module_tail = candidate.module_name.rsplit('.', 1)[-1]; suffix_tokens = tuple((token for token in candidate.shared_tokens if token not in set(module_tail.split('_')))); suffix = '_'.join(suffix_tokens[:3]) or 'subsystem'; return f'{module_tail}_{suffix}'
 
 
 def _build_private_cohort_candidate(
@@ -759,21 +571,17 @@ def _build_private_cohort_candidate(
     config: DetectorConfig,
 ) -> PrivateCohortShouldBeModuleCandidate | None:
     min_symbol_count = max(4, config.min_registration_sites + 2)
-    if len(members) < min_symbol_count:
-        return None
+    if len(members) < min_symbol_count: return None
     member_names = {member.symbol for member in members}
     total_cohort_lines = sum(member.line_count for member in members)
-    if total_cohort_lines < max(60, config.min_orchestration_function_lines * 3):
-        return None
+    if total_cohort_lines < max(60, config.min_orchestration_function_lines * 3): return None
     component_reference_edges = sum((1 for left, right in reference_edges if left in member_names and right in member_names))
     component_lexical_edges = sum((1 for left, right in lexical_edges if left in member_names and right in member_names))
-    if component_reference_edges + component_lexical_edges < len(member_names) - 1:
-        return None
+    if component_reference_edges + component_lexical_edges < len(member_names) - 1: return None
     token_counts = Counter(token for member in members for token in member.name_tokens)
     discovered_tokens = tuple((token for token, count in sorted(token_counts.items(), key=lambda item: (-item[1], -len(item[0]), item[0])) if count >= 2))
     ordered_shared_tokens = tuple(dict.fromkeys((*(shared_tokens or ()), *discovered_tokens)))
-    if len(ordered_shared_tokens) < 2 and component_reference_edges < max(2, len(member_names) // 2):
-        return None
+    if len(ordered_shared_tokens) < 2 and component_reference_edges < max(2, len(member_names) // 2): return None
     return PrivateCohortShouldBeModuleCandidate(file_path=str(module.path), module_name=module.module_name, module_line_count=module_line_count, total_cohort_lines=total_cohort_lines, shared_tokens=ordered_shared_tokens[:4], reference_edge_count=component_reference_edges, lexical_edge_count=component_lexical_edges, symbols=members)
 
 
@@ -784,8 +592,7 @@ def _dedupe_private_cohort_candidates(
     accepted_symbol_sets: list[frozenset[str]] = []
     for candidate in sorted(candidates, key=lambda item: (-item.total_cohort_lines, -len(item.symbols), item.symbols[0].line, item.file_path)):
         symbol_names = frozenset(symbol.symbol for symbol in candidate.symbols)
-        if any((len(symbol_names & existing) / min(len(symbol_names), len(existing)) >= 0.85 for existing in accepted_symbol_sets)):
-            continue
+        if any((len(symbol_names & existing) / min(len(symbol_names), len(existing)) >= 0.85 for existing in accepted_symbol_sets)): continue
         accepted.append(candidate)
         accepted_symbol_sets.append(symbol_names)
     return sorted_tuple(accepted, key=lambda item: (item.file_path, item.symbols[0].line, -item.total_cohort_lines))
@@ -797,27 +604,23 @@ def _private_cohort_should_be_module_candidates(
 ) -> tuple[PrivateCohortShouldBeModuleCandidate, ...]:
     min_module_lines = max(240, config.min_orchestration_function_lines * 4)
     module_line_count = _module_line_count(module)
-    if module_line_count < min_module_lines:
-        return ()
+    if module_line_count < min_module_lines: return ()
     profiles = _top_level_private_symbol_profiles(module)
     min_symbol_count = max(4, config.min_registration_sites + 2)
-    if len(profiles) < min_symbol_count:
-        return ()
+    if len(profiles) < min_symbol_count: return ()
     profile_by_name = {profile.symbol: profile for profile in profiles}
     adjacency: dict[str, set[str]] = {profile.symbol: set() for profile in profiles}
     reference_edges: set[tuple[str, str]] = set()
     lexical_edges: set[tuple[str, str]] = set()
     for profile in profiles:
         for referenced_name in profile.referenced_private_symbols:
-            if referenced_name not in profile_by_name:
-                continue
+            if referenced_name not in profile_by_name: continue
             edge = sorted_tuple((profile.symbol, referenced_name))
             reference_edges.add(edge)
             adjacency[edge[0]].add(edge[1])
             adjacency[edge[1]].add(edge[0])
     for left, right in combinations(profiles, 2):
-        if len(set(left.name_tokens) & set(right.name_tokens)) < 2:
-            continue
+        if len(set(left.name_tokens) & set(right.name_tokens)) < 2: continue
         edge = sorted_tuple((left.symbol, right.symbol))
         lexical_edges.add(edge)
         adjacency[edge[0]].add(edge[1])
@@ -827,40 +630,31 @@ def _private_cohort_should_be_module_candidates(
     token_pair_groups: dict[tuple[str, str], set[str]] = defaultdict(set)
     for profile in profiles:
         ordered_tokens = tuple(dict.fromkeys(profile.name_tokens))
-        for token_pair in combinations(ordered_tokens, 2):
-            token_pair_groups[token_pair].add(profile.symbol)
+        for token_pair in combinations(ordered_tokens, 2): token_pair_groups[token_pair].add(profile.symbol)
     for token_pair, symbol_names in token_pair_groups.items():
-        if len(symbol_names) < min_symbol_count:
-            continue
+        if len(symbol_names) < min_symbol_count: continue
         members = sorted_tuple((profile_by_name[name] for name in symbol_names), key=lambda item: (item.line, item.symbol))
         candidate = _build_private_cohort_candidate(module=module, module_line_count=module_line_count, members=members, shared_tokens=token_pair, reference_edges=reference_edges, lexical_edges=lexical_edges, config=config)
-        if candidate is not None:
-            token_pair_candidates.append(candidate)
-    if token_pair_candidates:
-        return _dedupe_private_cohort_candidates(token_pair_candidates)
+        if candidate is not None: token_pair_candidates.append(candidate)
+    if token_pair_candidates: return _dedupe_private_cohort_candidates(token_pair_candidates)
 
     candidates: list[PrivateCohortShouldBeModuleCandidate] = []
     seen: set[str] = set()
     for symbol_name in sorted(adjacency):
-        if symbol_name in seen or not adjacency[symbol_name]:
-            continue
+        if symbol_name in seen or not adjacency[symbol_name]: continue
         stack = [symbol_name]
         component_names: set[str] = set()
         while stack:
             current = stack.pop()
-            if current in component_names:
-                continue
+            if current in component_names: continue
             component_names.add(current)
             stack.extend((neighbor for neighbor in adjacency[current] if neighbor not in component_names))
         seen.update(component_names)
-        if len(component_names) < min_symbol_count:
-            continue
+        if len(component_names) < min_symbol_count: continue
         members = sorted_tuple((profile_by_name[name] for name in component_names), key=lambda item: (item.line, item.symbol))
         candidate = _build_private_cohort_candidate(module=module, module_line_count=module_line_count, members=members, shared_tokens=None, reference_edges=reference_edges, lexical_edges=lexical_edges, config=config)
-        if candidate is None:
-            continue
-        if len(candidate.symbols) > max(24, len(profiles) // 2):
-            continue
+        if candidate is None: continue
+        if len(candidate.symbols) > max(24, len(profiles) // 2): continue
         candidates.append(candidate)
     return _dedupe_private_cohort_candidates(candidates)
 
@@ -876,38 +670,31 @@ def _parameter_thread_family_candidates(
     adjacency: dict[str, set[str]] = defaultdict(set)
     for left, right in combinations(profiles, 2):
         shared_parameter_names = sorted_tuple(set(left.semantic_parameter_names) & set(right.semantic_parameter_names))
-        if len(shared_parameter_names) < config.min_shared_parameters:
-            continue
+        if len(shared_parameter_names) < config.min_shared_parameters: continue
         functions = tuple((profile for profile in profiles if set(shared_parameter_names) <= set(profile.semantic_parameter_names)))
-        if len(functions) < 2:
-            continue
-        if not any((profile.line_count >= config.min_parameter_family_function_lines for profile in functions)):
-            continue
+        if len(functions) < 2: continue
+        if not any((profile.line_count >= config.min_parameter_family_function_lines for profile in functions)): continue
         adjacency[left.qualname].add(right.qualname)
         adjacency[right.qualname].add(left.qualname)
         existing = candidate_map.get(shared_parameter_names)
-        if existing is None or len(functions) > len(existing):
-            candidate_map[shared_parameter_names] = functions
+        if existing is None or len(functions) > len(existing): candidate_map[shared_parameter_names] = functions
 
     candidates = [
         ParameterThreadFamilyCandidate(shared_parameter_names=shared_parameter_names, functions=functions)
         for shared_parameter_names, functions in candidate_map.items()
     ]
-    if not candidates:
-        return ()
+    if not candidates: return ()
 
     profile_lookup = {profile.qualname: profile for profile in profiles}
     component_candidates: list[ParameterThreadFamilyCandidate] = []
     visited: set[str] = set()
     for profile in profiles:
-        if profile.qualname in visited or profile.qualname not in adjacency:
-            continue
+        if profile.qualname in visited or profile.qualname not in adjacency: continue
         stack = [profile.qualname]
         component_names: set[str] = set()
         while stack:
             current = stack.pop()
-            if current in visited:
-                continue
+            if current in visited: continue
             visited.add(current)
             component_names.add(current)
             stack.extend(sorted(adjacency[current] - visited))
@@ -926,8 +713,7 @@ def _suffix_axis_surface_methods(
     for qualname, function in _iter_named_functions(module):
         method_name = qualname.rsplit(".", 1)[-1]
         match = _SUFFIX_AXIS_METHOD_RE.match(method_name)
-        if match is None:
-            continue
+        if match is None: continue
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
         methods.append(SuffixAxisSurfaceMethod(file_path=str(module.path), qualname=qualname, line=function.lineno, owner_name=owner_name, operation_name=match.group('operation'), axis_name=match.group('axis'), parameter_names=_parameter_names(function), statement_count=len(_trim_docstring_body(function.body))))
     return sorted_tuple(methods, key=lambda item: (item.file_path, item.line, item.qualname))
@@ -941,16 +727,14 @@ def _suffix_axis_surface_candidates(
     grouped_by_operation: dict[
         tuple[str, str], list[SuffixAxisSurfaceMethod]
     ] = defaultdict(list)
-    for method in _suffix_axis_surface_methods(module):
-        grouped_by_operation[(method.owner_name, method.operation_name)].append(method)
+    for method in _suffix_axis_surface_methods(module): grouped_by_operation[method.owner_name, method.operation_name].append(method)
 
     grouped_by_axis_set: dict[
         tuple[str, tuple[str, ...]], list[tuple[str, tuple[SuffixAxisSurfaceMethod, ...]]]
     ] = defaultdict(list)
     for (owner_name, operation_name), operation_methods in grouped_by_operation.items():
         axis_names = sorted_tuple({method.axis_name for method in operation_methods})
-        if len(axis_names) < 2:
-            continue
+        if len(axis_names) < 2: continue
         methods_by_axis = {
             method.axis_name: method
             for method in sorted(operation_methods, key=lambda item: item.line)
@@ -960,8 +744,7 @@ def _suffix_axis_surface_candidates(
 
     candidates: list[SuffixAxisSurfaceCandidate] = []
     for (owner_name, axis_names), operation_groups in grouped_by_axis_set.items():
-        if len(operation_groups) < min_operation_count:
-            continue
+        if len(operation_groups) < min_operation_count: continue
         ordered_groups = sorted_tuple(operation_groups, key=lambda item: item[0])
         methods = tuple(method for _, group_methods in ordered_groups for method in group_methods)
         candidates.append(SuffixAxisSurfaceCandidate(file_path=str(module.path), owner_name=owner_name, axis_names=axis_names, operation_names=tuple((operation_name for operation_name, _ in ordered_groups)), methods=methods))
@@ -975,15 +758,12 @@ def _sibling_role_name_key_options(
     method_name: str,
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     tokens = _ordered_class_name_tokens(method_name)
-    if len(tokens) < 3:
-        return ()
+    if len(tokens) < 3: return ()
     options: list[tuple[str, tuple[str, ...]]] = []
     for index, role_token in enumerate(tokens):
         shared_tokens = (*tokens[:index], *tokens[index + 1 :])
-        if len(shared_tokens) < 2:
-            continue
-        if len(role_token) < 3 or role_token in _SIBLING_ROLE_HELPER_STOPWORDS:
-            continue
+        if len(shared_tokens) < 2: continue
+        if len(role_token) < 3 or role_token in _SIBLING_ROLE_HELPER_STOPWORDS: continue
         options.append((role_token, shared_tokens))
     return tuple(options)
 
@@ -996,18 +776,12 @@ def _top_level_control_shape(statement: ast.stmt) -> str:
         )
         else_terminal = "else" if statement.orelse else "noelse"
         return f"if:{branch_terminal}:{else_terminal}"
-    if isinstance(statement, ast.Return):
-        return "return"
-    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-        return "assign"
-    if isinstance(statement, ast.Expr):
-        return "expr"
-    if isinstance(statement, (ast.For, ast.AsyncFor)):
-        return "for"
-    if isinstance(statement, ast.While):
-        return "while"
-    if isinstance(statement, ast.Try):
-        return "try"
+    if isinstance(statement, ast.Return): return 'return'
+    if isinstance(statement, (ast.Assign, ast.AnnAssign)): return 'assign'
+    if isinstance(statement, ast.Expr): return 'expr'
+    if isinstance(statement, (ast.For, ast.AsyncFor)): return 'for'
+    if isinstance(statement, ast.While): return 'while'
+    if isinstance(statement, ast.Try): return 'try'
     return type(statement).__name__.lower()
 
 
@@ -1017,20 +791,17 @@ def _role_helper_control_shape(
     body = _trim_docstring_body(function.body)
     if_count = sum(1 for node in _walk_nodes(function) if isinstance(node, ast.If))
     return_count = sum((1 for node in _walk_nodes(function) if isinstance(node, ast.Return)))
-    if if_count < 2 or return_count < 2:
-        return ()
+    if if_count < 2 or return_count < 2: return ()
     return tuple(_top_level_control_shape(statement) for statement in body)
 
 
 def _sibling_role_parameters_align(
     methods: tuple[SiblingRoleHelperMethod, ...],
 ) -> bool:
-    if len(methods) < 2:
-        return False
+    if len(methods) < 2: return False
     parameter_sets = tuple(set(method.parameter_names) for method in methods)
     common_parameters = set.intersection(*parameter_sets)
-    if len(common_parameters) >= 2:
-        return True
+    if len(common_parameters) >= 2: return True
     first_parameters = methods[0].parameter_names
     return bool(common_parameters) and all((method.parameter_names == first_parameters for method in methods[1:]))
 
@@ -1043,19 +814,16 @@ def _sibling_role_helper_symmetry_candidates(
     ] = defaultdict(dict)
     for qualname, function in _iter_named_functions(module):
         method_name = qualname.rsplit(".", 1)[-1]
-        if not method_name.startswith("_") or method_name.startswith("__"):
-            continue
+        if not method_name.startswith('_') or method_name.startswith('__'): continue
         line_end = (
             function.end_lineno
             if function.end_lineno is not None
             else function.lineno
         )
         line_count = line_end - function.lineno + 1
-        if line_count > 40:
-            continue
+        if line_count > 40: continue
         control_shape = _role_helper_control_shape(function)
-        if not control_shape:
-            continue
+        if not control_shape: continue
         owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else "<module>"
         parameter_names = _parameter_names(function)
         for role_token, shared_tokens in _sibling_role_name_key_options(method_name):
@@ -1066,10 +834,8 @@ def _sibling_role_helper_symmetry_candidates(
     for (owner_name, shared_tokens, _), methods_by_qualname in grouped.items():
         methods = sorted_tuple(methods_by_qualname.values(), key=lambda item: (item.file_path, item.line, item.qualname))
         role_tokens = {method.role_token for method in methods}
-        if len(methods) < 2 or len(role_tokens) < 2:
-            continue
-        if not _sibling_role_parameters_align(methods):
-            continue
+        if len(methods) < 2 or len(role_tokens) < 2: continue
+        if not _sibling_role_parameters_align(methods): continue
         candidates.append(SiblingRoleHelperSymmetryCandidate(file_path=str(module.path), owner_name=owner_name, shared_tokens=shared_tokens, methods=methods))
 
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.owner_name, item.shared_tokens))
@@ -1079,10 +845,8 @@ def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ..
     enum_members: dict[str, tuple[str, ...]] = {}
     enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if not (set(_declared_base_names(node)) & enum_base_names):
-            continue
+        if not isinstance(node, ast.ClassDef): continue
+        if not set(_declared_base_names(node)) & enum_base_names: continue
         members: list[str] = []
         for statement in node.body:
             target: ast.AST | None = None
@@ -1090,39 +854,25 @@ def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ..
                 target = statement.targets[0]
             elif isinstance(statement, ast.AnnAssign):
                 target = statement.target
-            if not isinstance(target, ast.Name) or target.id.startswith("_"):
-                continue
+            if not isinstance(target, ast.Name) or target.id.startswith('_'): continue
             members.append(target.id)
-        if len(members) >= 2:
-            enum_members[node.name] = tuple(members)
+        if len(members) >= 2: enum_members[node.name] = tuple(members)
     return enum_members
 
 
 def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
-    if isinstance(value, ast.Dict):
-        return value
-    if (
-        isinstance(value, ast.Call)
-        and _call_name(value.func) in {"MappingProxyType", "dict"}
-        and len(value.args) == 1
-        and isinstance(value.args[0], ast.Dict)
-    ):
-        return value.args[0]
+    if isinstance(value, ast.Dict): return value
+    if isinstance(value, ast.Call) and _call_name(value.func) in {'MappingProxyType', 'dict'} and (len(value.args) == 1) and isinstance(value.args[0], ast.Dict): return value.args[0]
     return None
 
 
 def _enum_projection_table_value_summary(value: ast.AST) -> str | None:
     if isinstance(value, ast.Lambda):
-        if isinstance(value.body, ast.Attribute):
-            return f"lambda ...: .{value.body.attr}"
-        if isinstance(value.body, ast.Subscript):
-            return "lambda ...: [...]"
-        if isinstance(value.body, ast.Name):
-            return f"lambda ...: {value.body.id}"
-    if isinstance(value, ast.Attribute):
-        return f".{value.attr}"
-    if isinstance(value, ast.Name):
-        return value.id
+        if isinstance(value.body, ast.Attribute): return f'lambda ...: .{value.body.attr}'
+        if isinstance(value.body, ast.Subscript): return 'lambda ...: [...]'
+        if isinstance(value.body, ast.Name): return f'lambda ...: {value.body.id}'
+    if isinstance(value, ast.Attribute): return f'.{value.attr}'
+    if isinstance(value, ast.Name): return value.id
     return None
 
 
@@ -1142,43 +892,33 @@ def _enum_projection_tables(
         elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             target_name = statement.target.id
             value = statement.value
-        if target_name is None:
-            continue
+        if target_name is None: continue
         dict_value = _dict_expr_from_table_value(value)
-        if dict_value is None or len(dict_value.keys) < 2:
-            continue
+        if dict_value is None or len(dict_value.keys) < 2: continue
         key_pairs: list[tuple[str, str]] = []
         value_summaries: list[str] = []
         for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
-            if key is None or item_value is None:
-                break
+            if key is None or item_value is None: break
             key_chain = _ast_attribute_chain(key)
-            if key_chain is None or len(key_chain) != 2:
-                break
+            if key_chain is None or len(key_chain) != 2: break
             summary = _enum_projection_table_value_summary(item_value)
-            if summary is None:
-                break
+            if summary is None: break
             key_pairs.append((key_chain[0], key_chain[1]))
             value_summaries.append(summary)
         else:
             enum_names = {enum_name for enum_name, _ in key_pairs}
-            if len(enum_names) != 1:
-                continue
+            if len(enum_names) != 1: continue
             enum_name = next(iter(enum_names))
-            if enum_name not in enum_members:
-                continue
+            if enum_name not in enum_members: continue
             case_names = tuple(member_name for _, member_name in key_pairs)
-            if len(set(case_names)) < 2:
-                continue
+            if len(set(case_names)) < 2: continue
             tables.append(EnumProjectionTableCandidate(file_path=str(module.path), table_name=target_name, line=statement.lineno, enum_name=enum_name, case_names=case_names, value_summaries=tuple(value_summaries)))
     return sorted_tuple(tables, key=lambda item: (item.file_path, item.line, item.table_name))
 
 
 def _subscript_axis_expr_for_table(node: ast.AST, table_name: str) -> str | None:
-    if not isinstance(node, ast.Subscript):
-        return None
-    if not isinstance(node.value, ast.Name) or node.value.id != table_name:
-        return None
+    if not isinstance(node, ast.Subscript): return None
+    if not isinstance(node.value, ast.Name) or node.value.id != table_name: return None
     return ast.unparse(node.slice)
 
 
@@ -1190,16 +930,13 @@ def _residual_enum_branch_cases(
 ) -> tuple[str, ...]:
     case_names: set[str] = set()
     for node in _walk_nodes(function):
-        if not isinstance(node, ast.Compare):
-            continue
+        if not isinstance(node, ast.Compare): continue
         left_expr = ast.unparse(node.left)
         comparators = tuple(ast.unparse(comparator) for comparator in node.comparators)
         operands = (left_expr, *comparators)
-        if axis_expression not in operands:
-            continue
+        if axis_expression not in operands: continue
         for operand in operands:
-            if operand.startswith(f"{enum_name}."):
-                case_names.add(operand.split(".", 1)[1])
+            if operand.startswith(f'{enum_name}.'): case_names.add(operand.split('.', 1)[1])
     return sorted_tuple(case_names)
 
 
@@ -1207,8 +944,7 @@ def _residual_closed_axis_indirection_candidates(
     module: ParsedModule,
 ) -> tuple[ResidualClosedAxisIndirectionCandidate, ...]:
     tables = _enum_projection_tables(module)
-    if not tables:
-        return ()
+    if not tables: return ()
     table_by_name = {table.table_name: table for table in tables}
     candidates: list[ResidualClosedAxisIndirectionCandidate] = []
     for qualname, function in _iter_named_functions(module):
@@ -1216,15 +952,13 @@ def _residual_closed_axis_indirection_candidates(
         for node in _walk_nodes(function):
             for table_name in table_by_name:
                 axis_expression = _subscript_axis_expr_for_table(node, table_name)
-                if axis_expression is not None:
-                    axis_expressions_by_table[table_name].add(axis_expression)
+                if axis_expression is not None: axis_expressions_by_table[table_name].add(axis_expression)
         for table_name, axis_expressions in axis_expressions_by_table.items():
             table = table_by_name[table_name]
             for axis_expression in sorted(axis_expressions):
                 residual_cases = _residual_enum_branch_cases(function, enum_name=table.enum_name, axis_expression=axis_expression)
                 shared_cases = tuple((case_name for case_name in table.case_names if case_name in set(residual_cases)))
-                if not shared_cases:
-                    continue
+                if not shared_cases: continue
                 candidates.append(ResidualClosedAxisIndirectionCandidate(file_path=str(module.path), qualname=qualname, line=function.lineno, table_name=table.table_name, table_line=table.line, enum_name=table.enum_name, axis_expression=axis_expression, table_case_names=table.case_names, residual_case_names=shared_cases, table_value_summaries=table.value_summaries))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname, item.table_name))
 
@@ -1236,17 +970,11 @@ def _iter_named_functions(
     functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
 
     class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
+        def __init__(self) -> None: self.class_stack: list[str] = []
 
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
+        def visit_ClassDef(self, node: ast.ClassDef) -> None: self.class_stack.append(node.name); self.generic_visit(node); self.class_stack.pop()
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            functions.append((".".join((*self.class_stack, node.name)), node))
-            self.generic_visit(node)
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None: functions.append(('.'.join((*self.class_stack, node.name)), node)); self.generic_visit(node)
 
         visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -1255,12 +983,9 @@ def _iter_named_functions(
 
 
 def _comparison_dispatch_case(test: ast.AST) -> tuple[str, str] | None:
-    if not isinstance(test, ast.Compare):
-        return None
-    if len(test.ops) != 1 or len(test.comparators) != 1:
-        return None
-    if not isinstance(test.ops[0], (ast.Eq, ast.Is)):
-        return None
+    if not isinstance(test, ast.Compare): return None
+    if len(test.ops) != 1 or len(test.comparators) != 1: return None
+    if not isinstance(test.ops[0], (ast.Eq, ast.Is)): return None
     return (ast.unparse(test.left), ast.unparse(test.comparators[0]))
 
 
@@ -1270,8 +995,7 @@ def _enum_dispatch_from_if(node: ast.If) -> tuple[str, tuple[str, ...]] | None:
     current: ast.If | None = node
     while current is not None:
         dispatch_case = _comparison_dispatch_case(current.test)
-        if dispatch_case is None:
-            return None
+        if dispatch_case is None: return None
         current_axis, case_name = dispatch_case
         if axis_name is None:
             axis_name = current_axis
@@ -1282,8 +1006,7 @@ def _enum_dispatch_from_if(node: ast.If) -> tuple[str, tuple[str, ...]] | None:
             current = current.orelse[0]
             continue
         current = None
-    if axis_name is None or len(cases) < 2:
-        return None
+    if axis_name is None or len(cases) < 2: return None
     return (axis_name, tuple(cases))
 
 
@@ -1291,56 +1014,44 @@ def _enum_dispatch_from_body(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, tuple[str, ...]] | None:
     body = _trim_docstring_body(function.body)
-    if len(body) < 2:
-        return None
+    if len(body) < 2: return None
     best_family: tuple[str, tuple[str, ...]] | None = None
     for start in range(len(body)):
-        if not isinstance(body[start], ast.If):
-            continue
+        if not isinstance(body[start], ast.If): continue
         axis_name: str | None = None
         cases: list[str] = []
         for statement in body[start:]:
-            if not isinstance(statement, ast.If) or statement.orelse:
-                break
+            if not isinstance(statement, ast.If) or statement.orelse: break
             dispatch_case = _comparison_dispatch_case(statement.test)
-            if dispatch_case is None:
-                break
+            if dispatch_case is None: break
             current_axis, case_name = dispatch_case
             if axis_name is None:
                 axis_name = current_axis
             elif current_axis != axis_name:
                 break
             cases.append(case_name)
-        if axis_name is None or len(cases) < 2:
-            continue
+        if axis_name is None or len(cases) < 2: continue
         current_family = (axis_name, tuple(cases))
-        if best_family is None or len(current_family[1]) > len(best_family[1]):
-            best_family = current_family
+        if best_family is None or len(current_family[1]) > len(best_family[1]): best_family = current_family
     return best_family
 
 
 def _enum_dispatch_from_match(node: ast.Match) -> tuple[str, tuple[str, ...]] | None:
     cases = []
     for case in node.cases:
-        if isinstance(case.pattern, ast.MatchAs) and case.pattern.name is None:
-            continue
-        if not isinstance(case.pattern, ast.MatchValue):
-            return None
+        if isinstance(case.pattern, ast.MatchAs) and case.pattern.name is None: continue
+        if not isinstance(case.pattern, ast.MatchValue): return None
         cases.append(ast.unparse(case.pattern.value))
-    if len(cases) < 2:
-        return None
+    if len(cases) < 2: return None
     return (ast.unparse(node.subject), tuple(cases))
 
 
 def _enum_member_ref(node: ast.AST) -> tuple[str, str] | None:
-    if not isinstance(node, ast.Attribute):
-        return None
+    if not isinstance(node, ast.Attribute): return None
     enum_expression = ast.unparse(node.value)
-    if not enum_expression:
-        return None
+    if not enum_expression: return None
     enum_name = enum_expression.rsplit(".", 1)[-1]
-    if not enum_name[:1].isupper():
-        return None
+    if not enum_name[:1].isupper(): return None
     return (enum_expression, node.attr)
 
 
@@ -1348,14 +1059,11 @@ def _enum_subset_guard_from_compare(
     node: ast.Compare,
 ) -> tuple[str, str, tuple[str, ...], str] | None:
     comparison = single_compare_match(node, (ast.In, ast.NotIn))
-    if comparison is None:
-        return None
+    if comparison is None: return None
     comparator = collection_literal(comparison.right)
-    if comparator is None:
-        return None
+    if comparator is None: return None
     ref_family = _enum_member_ref_family(comparator.elements)
-    if ref_family is None:
-        return None
+    if ref_family is None: return None
     enum_name, member_names = ref_family
     return (ast.unparse(comparison.left), enum_name, member_names, 'not in' if isinstance(comparison.operator, ast.NotIn) else 'in')
 
@@ -1364,11 +1072,9 @@ def _enum_member_ref_family(
     elements: Sequence[ast.AST],
 ) -> tuple[str, tuple[str, ...]] | None:
     refs = tuple((ref for element in elements if (ref := _enum_member_ref(element)) is not None))
-    if len(refs) != len(elements) or len(refs) < 2:
-        return None
+    if len(refs) != len(elements) or len(refs) < 2: return None
     enum_names = {enum_name for enum_name, _ in refs}
-    if len(enum_names) != 1:
-        return None
+    if len(enum_names) != 1: return None
     return next(iter(enum_names)), tuple(member_name for _, member_name in refs)
 
 
@@ -1379,15 +1085,12 @@ def _inline_enum_subset_guard_candidates(
     seen: set[tuple[str, int, str, tuple[str, ...]]] = set()
     for qualname, function in _iter_named_functions(module):
         for node in _walk_nodes(function):
-            if not isinstance(node, ast.Compare):
-                continue
+            if not isinstance(node, ast.Compare): continue
             guard = _enum_subset_guard_from_compare(node)
-            if guard is None:
-                continue
+            if guard is None: continue
             axis_expression, enum_name, case_names, operator = guard
             key = (qualname, node.lineno, enum_name, case_names)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             candidates.append(InlineEnumSubsetGuardCandidate(file_path=str(module.path), line=node.lineno, function_name=qualname, axis_expression=axis_expression, enum_name=enum_name, case_names=case_names, operator=operator))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.function_name))
@@ -1405,31 +1108,26 @@ def _enum_strategy_dispatch_candidates(
                 candidate = EnumStrategyDispatchCandidate(file_path=str(module.path), qualname=qualname, lineno=function.lineno, dispatch_axis=axis_name, case_names=case_names)
                 key = (qualname, axis_name)
                 existing = candidate_map.get(key)
-                if existing is None or len(candidate.case_names) > len(existing.case_names):
-                    candidate_map[key] = candidate
+                if existing is None or len(candidate.case_names) > len(existing.case_names): candidate_map[key] = candidate
         for subnode in _walk_nodes(function):
             dispatch_family: tuple[str, tuple[str, ...]] | None = None
             if isinstance(subnode, ast.If):
                 dispatch_family = _enum_dispatch_from_if(subnode)
             elif isinstance(subnode, ast.Match):
                 dispatch_family = _enum_dispatch_from_match(subnode)
-            if dispatch_family is None:
-                continue
+            if dispatch_family is None: continue
             axis_name, case_names = dispatch_family
-            if not any("." in case_name for case_name in case_names):
-                continue
+            if not any(('.' in case_name for case_name in case_names)): continue
             candidate = EnumStrategyDispatchCandidate(file_path=str(module.path), qualname=qualname, lineno=subnode.lineno, dispatch_axis=axis_name, case_names=case_names)
             key = (qualname, axis_name)
             existing = candidate_map.get(key)
-            if existing is None or len(candidate.case_names) > len(existing.case_names):
-                candidate_map[key] = candidate
+            if existing is None or len(candidate.case_names) > len(existing.case_names): candidate_map[key] = candidate
     return sorted_tuple(candidate_map.values(), key=lambda item: (item.file_path, item.lineno, item.qualname))
 
 
 def _enum_family_name(case_names: tuple[str, ...]) -> str | None:
     family_names = {case_name.split(".", 1)[0] for case_name in case_names if "." in case_name}
-    if len(family_names) != 1:
-        return None
+    if len(family_names) != 1: return None
     return next(iter(family_names))
 
 
@@ -1439,22 +1137,17 @@ def _repeated_enum_strategy_dispatch_candidates(
     candidates = _enum_strategy_dispatch_candidates(module)
     grouped: dict[tuple[str, tuple[str, ...]], tuple[EnumStrategyDispatchCandidate, ...]] = {}
     for left, right in combinations(candidates, 2):
-        if left.qualname == right.qualname:
-            continue
+        if left.qualname == right.qualname: continue
         left_family = _enum_family_name(left.case_names)
         right_family = _enum_family_name(right.case_names)
-        if left_family is None or left_family != right_family:
-            continue
+        if left_family is None or left_family != right_family: continue
         shared_cases = sorted_tuple(set(left.case_names) & set(right.case_names))
-        if len(shared_cases) < 2:
-            continue
+        if len(shared_cases) < 2: continue
         functions = tuple((candidate for candidate in candidates if _enum_family_name(candidate.case_names) == left_family and set(shared_cases) <= set(candidate.case_names)))
-        if len(functions) < 2:
-            continue
+        if len(functions) < 2: continue
         key = (left_family, shared_cases)
         existing = grouped.get(key)
-        if existing is None or len(functions) > len(existing):
-            grouped[key] = functions
+        if existing is None or len(functions) > len(existing): grouped[key] = functions
     repeated = [
         RepeatedEnumStrategyDispatchCandidate(file_path=str(module.path), enum_family=enum_family, shared_case_names=shared_cases, functions=sorted_tuple(items, key=lambda item: (item.file_path, item.lineno, item.qualname)))
         for (enum_family, shared_cases), items in grouped.items()
@@ -1490,11 +1183,7 @@ class _GuardedReturnCase:
     line: int
 
     @classmethod
-    def from_returned(
-        cls, guard_expression: str | None, returned: tuple[ast.AST, int]
-    ) -> "_GuardedReturnCase":
-        return_value, line = returned
-        return cls(guard_expression=guard_expression, return_value=return_value, line=line)
+    def from_returned(cls, guard_expression: str | None, returned: tuple[ast.AST, int]) -> '_GuardedReturnCase': return_value, line = returned; return cls(guard_expression=guard_expression, return_value=return_value, line=line)
 
 
 _SelectedConstantReturnShape = product_record('_SelectedConstantReturnShape', 'constant_name: str; wrapper_name: str | None; template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]')
@@ -1530,8 +1219,7 @@ def _module_level_dict_literals(
     return dicts
 
 
-def _dict_case_names(node: ast.Dict) -> tuple[str, ...]:
-    return tuple(ast.unparse(key) for key in node.keys if key is not None)
+def _dict_case_names(node: ast.Dict) -> tuple[str, ...]: return tuple((ast.unparse(key) for key in node.keys if key is not None))
 
 
 def _mapping_selector_shape(
@@ -1540,19 +1228,14 @@ def _mapping_selector_shape(
     known_mapping_names: frozenset[str],
 ) -> tuple[str, str] | None:
     parameter_names = set(_parameter_names(method))
-    if not parameter_names:
-        return None
+    if not parameter_names: return None
     for subnode in _walk_nodes(method):
-        if not isinstance(subnode, ast.Subscript):
-            continue
-        if not isinstance(subnode.value, ast.Name):
-            continue
+        if not isinstance(subnode, ast.Subscript): continue
+        if not isinstance(subnode.value, ast.Name): continue
         mapping_name = subnode.value.id
-        if mapping_name not in known_mapping_names:
-            continue
+        if mapping_name not in known_mapping_names: continue
         axis_expression = ast.unparse(subnode.slice)
-        if axis_expression not in parameter_names:
-            continue
+        if axis_expression not in parameter_names: continue
         return (mapping_name, axis_expression)
     return None
 
@@ -1564,14 +1247,11 @@ def _strategy_selector_specs(
     known_mapping_names = frozenset((name for name, (_, node) in dict_literals.items() if len(_dict_case_names(node)) >= 2))
     specs: list[_StrategySelectorSpec] = []
     for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
+        if not isinstance(node, ast.ClassDef): continue
         for method in _iter_class_methods(node):
-            if not _is_classmethod(method) or not method.name.startswith("for_"):
-                continue
+            if not _is_classmethod(method) or not method.name.startswith('for_'): continue
             selector_shape = _mapping_selector_shape(method, known_mapping_names=known_mapping_names)
-            if selector_shape is None:
-                continue
+            if selector_shape is None: continue
             mapping_name, _ = selector_shape
             _, mapping_node = dict_literals[mapping_name]
             specs.append(_StrategySelectorSpec(root_name=node.name, selector_method_name=method.name, mapping_name=mapping_name, case_names=_dict_case_names(mapping_node), line=method.lineno))
@@ -1587,11 +1267,9 @@ def _first_parameter_annotation_name(
         + tuple(function.args.kwonlyargs)
     )
     for parameter in parameters:
-        if parameter.arg in {"self", "cls"}:
-            continue
+        if parameter.arg in {'self', 'cls'}: continue
         annotation_names = _annotation_type_names(parameter.annotation)
-        if annotation_names:
-            return annotation_names[0]
+        if annotation_names: return annotation_names[0]
         return None
     return None
 
@@ -1602,8 +1280,7 @@ def _generic_dispatch_specs(
     root_lines: dict[str, int] = {}
     case_names_by_root: dict[str, list[str]] = defaultdict(list)
     for statement in module.module.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)): continue
         for decorator in statement.decorator_list:
             decorator_name = _ast_terminal_name(decorator)
             if decorator_name == "singledispatch":
@@ -1624,13 +1301,10 @@ def _generic_dispatch_specs(
                 and isinstance(decorator.func.value, ast.Name)
             ):
                 generic_name = decorator.func.value.id
-                if decorator.args:
-                    explicit_case_name = ast.unparse(decorator.args[0])
-            if generic_name is None:
-                continue
+                if decorator.args: explicit_case_name = ast.unparse(decorator.args[0])
+            if generic_name is None: continue
             case_name = explicit_case_name or _first_parameter_annotation_name(statement)
-            if case_name is None:
-                continue
+            if case_name is None: continue
             case_names_by_root[generic_name].append(case_name)
     return tuple((_GenericDispatchSpec(function_name=function_name, case_names=sorted_tuple(set(case_names_by_root[function_name])), line=root_lines[function_name]) for function_name in sorted(root_lines) if len(set(case_names_by_root[function_name])) >= 2))
 
@@ -1641,18 +1315,14 @@ def _non_nested_subnodes(
     nodes: list[ast.AST] = []
 
     class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None: return
 
         visit_AsyncFunctionDef = visit_FunctionDef
 
-        def generic_visit(self, node: ast.AST) -> None:
-            nodes.append(node)
-            super().generic_visit(node)
+        def generic_visit(self, node: ast.AST) -> None: nodes.append(node); super().generic_visit(node)
 
     visitor = Visitor()
-    for statement in statements:
-        visitor.visit(statement)
+    for statement in statements: visitor.visit(statement)
     return tuple(nodes)
 
 
@@ -1668,34 +1338,25 @@ def _selector_assignments_for_function(
         if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
             target = subnode.targets[0]
             value = subnode.value
-            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
-                continue
+            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call): continue
         elif isinstance(subnode, ast.AnnAssign):
             target = subnode.target
             value = subnode.value
-            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
-                continue
+            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call): continue
         else:
             continue
-        if (
-            not isinstance(value.func, ast.Attribute)
-            or not isinstance(value.func.value, ast.Name)
-        ):
-            continue
+        if not isinstance(value.func, ast.Attribute) or not isinstance(value.func.value, ast.Name): continue
         selector_spec = selector_specs_by_name.get((value.func.value.id, value.func.attr))
-        if selector_spec is None:
-            continue
+        if selector_spec is None: continue
         axis_expression = None
         if value.args:
             axis_expression = ast.unparse(value.args[0])
         elif value.keywords:
             for keyword in value.keywords:
-                if keyword.arg is None:
-                    continue
+                if keyword.arg is None: continue
                 axis_expression = ast.unparse(keyword.value)
                 break
-        if axis_expression is None:
-            continue
+        if axis_expression is None: continue
         assignments.append(_SelectorAssignment(variable_name=target.id, selector_spec=selector_spec, axis_expression=axis_expression, line=value.lineno))
     return tuple(assignments)
 
@@ -1707,14 +1368,11 @@ def _nested_generic_usages_for_function(
     generics_by_name = {spec.function_name: spec for spec in generic_specs}
     usages: list[_NestedGenericUsage] = []
     for statement in function.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)): continue
         for subnode in _walk_nodes(statement):
-            if not isinstance(subnode, ast.Call) or not isinstance(subnode.func, ast.Name):
-                continue
+            if not isinstance(subnode, ast.Call) or not isinstance(subnode.func, ast.Name): continue
             generic_spec = generics_by_name.get(subnode.func.id)
-            if generic_spec is None or not subnode.args:
-                continue
+            if generic_spec is None or not subnode.args: continue
             usages.append(_NestedGenericUsage(callback_name=statement.name, generic_spec=generic_spec, axis_expression=ast.unparse(subnode.args[0]), line=subnode.lineno))
             break
     return tuple(usages)
@@ -1727,25 +1385,17 @@ def _strategy_bridge_calls(
 ) -> tuple[ast.Call, ...]:
     calls: list[ast.Call] = []
     for subnode in _non_nested_subnodes(function.body):
-        if not isinstance(subnode, ast.Call):
-            continue
-        if (
-            isinstance(subnode.func, ast.Attribute)
-            and isinstance(subnode.func.value, ast.Name)
-            and subnode.func.value.id == strategy_variable_name
-        ):
-            calls.append(subnode)
+        if not isinstance(subnode, ast.Call): continue
+        if isinstance(subnode.func, ast.Attribute) and isinstance(subnode.func.value, ast.Name) and (subnode.func.value.id == strategy_variable_name): calls.append(subnode)
     return tuple(calls)
 
 
 def _callback_names_referenced(call: ast.Call) -> tuple[str, ...]:
     referenced_names: set[str] = set()
     for arg in call.args:
-        if isinstance(arg, ast.Name):
-            referenced_names.add(arg.id)
+        if isinstance(arg, ast.Name): referenced_names.add(arg.id)
     for keyword in call.keywords:
-        if isinstance(keyword.value, ast.Name):
-            referenced_names.add(keyword.value.id)
+        if isinstance(keyword.value, ast.Name): referenced_names.add(keyword.value.id)
     return sorted_tuple(referenced_names)
 
 
@@ -1754,33 +1404,27 @@ def _split_dispatch_authority_candidates(
 ) -> tuple[SplitDispatchAuthorityCandidate, ...]:
     selector_specs = _strategy_selector_specs(module)
     generic_specs = _generic_dispatch_specs(module)
-    if not selector_specs or not generic_specs:
-        return ()
+    if not selector_specs or not generic_specs: return ()
     candidates: list[SplitDispatchAuthorityCandidate] = []
     candidate_keys: set[tuple[str, str, str, str]] = set()
     for qualname, function in _iter_named_functions(module):
         selector_assignments = _selector_assignments_for_function(function, selector_specs)
-        if not selector_assignments:
-            continue
+        if not selector_assignments: continue
         nested_generic_usages = _nested_generic_usages_for_function(function, generic_specs)
-        if not nested_generic_usages:
-            continue
+        if not nested_generic_usages: continue
         usage_by_callback = {
             usage.callback_name: usage for usage in nested_generic_usages
         }
         for selector_assignment in selector_assignments:
             strategy_calls = _strategy_bridge_calls(function, strategy_variable_name=selector_assignment.variable_name)
-            if not strategy_calls:
-                continue
+            if not strategy_calls: continue
             for strategy_call in strategy_calls:
                 callback_names = _callback_names_referenced(strategy_call)
                 for callback_name in callback_names:
                     generic_usage = usage_by_callback.get(callback_name)
-                    if generic_usage is None:
-                        continue
+                    if generic_usage is None: continue
                     key = (qualname, selector_assignment.selector_spec.root_name, generic_usage.generic_spec.function_name, callback_name)
-                    if key in candidate_keys:
-                        continue
+                    if key in candidate_keys: continue
                     candidate_keys.add(key)
                     strategy_call_method_name = (
                         strategy_call.func.attr
@@ -1793,11 +1437,9 @@ def _split_dispatch_authority_candidates(
 
 def _is_trivial_empty_class(node: ast.ClassDef) -> bool:
     body = _trim_docstring_body(list(node.body))
-    if len(body) != 1:
-        return False
+    if len(body) != 1: return False
     statement = body[0]
-    if isinstance(statement, ast.Pass):
-        return True
+    if isinstance(statement, ast.Pass): return True
     return bool(isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant) and (statement.value.value is Ellipsis))
 
 
@@ -1805,8 +1447,7 @@ def _is_reusable_axis_base(
     class_defs_by_name: dict[str, ast.ClassDef],
     base_name: str,
 ) -> bool:
-    if base_name.endswith("Mixin"):
-        return True
+    if base_name.endswith('Mixin'): return True
     base_node = class_defs_by_name.get(base_name)
     return base_node is not None and _is_abstract_class(base_node)
 
@@ -1820,8 +1461,7 @@ def _bipartition_product_axes(
         adjacency[right_name].add(left_name)
     colors: dict[str, int] = {}
     for node_name in sorted(adjacency):
-        if node_name in colors:
-            continue
+        if node_name in colors: continue
         colors[node_name] = 0
         queue = [node_name]
         while queue:
@@ -1829,15 +1469,13 @@ def _bipartition_product_axes(
             for neighbor in sorted(adjacency[current]):
                 expected = 1 - colors[current]
                 if neighbor in colors:
-                    if colors[neighbor] != expected:
-                        return None
+                    if colors[neighbor] != expected: return None
                     continue
                 colors[neighbor] = expected
                 queue.append(neighbor)
     left_axis = sorted_tuple((name for name, color in colors.items() if color == 0))
     right_axis = sorted_tuple((name for name, color in colors.items() if color == 1))
-    if len(left_axis) < 2 or len(right_axis) < 2:
-        return None
+    if len(left_axis) < 2 or len(right_axis) < 2: return None
     return (left_axis, right_axis)
 
 
@@ -1847,20 +1485,12 @@ def _empty_leaf_product_family_candidates(
     class_defs_by_name = _module_class_defs_by_name(module)
     leaves: list[tuple[str, int, tuple[str, str]]] = []
     for node in _walk_nodes(module.module):
-        if (
-            not isinstance(node, ast.ClassDef)
-            or _is_abstract_class(node)
-            or not _is_trivial_empty_class(node)
-        ):
-            continue
+        if not isinstance(node, ast.ClassDef) or _is_abstract_class(node) or (not _is_trivial_empty_class(node)): continue
         base_names = tuple((name for name in _declared_base_names(node) if name not in _IGNORED_BASE_NAMES))
-        if len(base_names) != 2:
-            continue
-        if not all(_is_reusable_axis_base(class_defs_by_name, name) for name in base_names):
-            continue
+        if len(base_names) != 2: continue
+        if not all((_is_reusable_axis_base(class_defs_by_name, name) for name in base_names)): continue
         leaves.append((node.name, node.lineno, cast(tuple[str, str], base_names)))
-    if len(leaves) < 4:
-        return ()
+    if len(leaves) < 4: return ()
     base_graph_edges = sorted_tuple({leaf[2] for leaf in leaves})
     adjacency: dict[str, set[str]] = defaultdict(set)
     for left_name, right_name in base_graph_edges:
@@ -1869,49 +1499,38 @@ def _empty_leaf_product_family_candidates(
     visited: set[str] = set()
     candidates: list[EmptyLeafProductFamilyCandidate] = []
     for start_name in sorted(adjacency):
-        if start_name in visited:
-            continue
+        if start_name in visited: continue
         component_nodes: set[str] = set()
         queue = [start_name]
         while queue:
             current = queue.pop(0)
-            if current in component_nodes:
-                continue
+            if current in component_nodes: continue
             component_nodes.add(current)
             visited.add(current)
             queue.extend(sorted(adjacency[current] - component_nodes))
         component_edges = sorted_tuple((edge for edge in base_graph_edges if edge[0] in component_nodes and edge[1] in component_nodes))
-        if len(component_edges) < 4:
-            continue
+        if len(component_edges) < 4: continue
         axes = _bipartition_product_axes(component_edges)
-        if axes is None:
-            continue
+        if axes is None: continue
         left_axis, right_axis = axes
-        if len(component_edges) != len(left_axis) * len(right_axis):
-            continue
+        if len(component_edges) != len(left_axis) * len(right_axis): continue
         leaf_map: dict[tuple[str, str], tuple[str, int]] = {}
         for class_name, line, base_names in leaves:
-            if set(base_names) - component_nodes:
-                continue
+            if set(base_names) - component_nodes: continue
             left_name, right_name = base_names
-            if left_name in right_axis and right_name in left_axis:
-                left_name, right_name = right_name, left_name
-            if left_name not in left_axis or right_name not in right_axis:
-                break
+            if left_name in right_axis and right_name in left_axis: left_name, right_name = (right_name, left_name)
+            if left_name not in left_axis or right_name not in right_axis: break
             key = (left_name, right_name)
-            if key in leaf_map:
-                break
+            if key in leaf_map: break
             leaf_map[key] = (class_name, line)
         else:
-            if len(leaf_map) != len(left_axis) * len(right_axis):
-                continue
+            if len(leaf_map) != len(left_axis) * len(right_axis): continue
             ordered_leaves = tuple((leaf_map[left_name, right_name] for left_name in left_axis for right_name in right_axis))
             candidates.append(EmptyLeafProductFamilyCandidate(file_path=str(module.path), left_axis_base_names=left_axis, right_axis_base_names=right_axis, leaf_class_names=tuple((class_name for class_name, _ in ordered_leaves)), leaf_lines=tuple((line for _, line in ordered_leaves))))
     return tuple(candidates)
 
 
-def _self_method_call_name(node: ast.AST) -> str | None:
-    return call_attribute_name(node, owner_name="self")
+def _self_method_call_name(node: ast.AST) -> str | None: return call_attribute_name(node, owner_name='self')
 
 
 def _transport_shell_template_shape(
@@ -1919,16 +1538,13 @@ def _transport_shell_template_shape(
 ) -> tuple[str, str, str, str, str, str | None] | None:
     body = _trim_docstring_body(list(method.body))
     body_shape = ast_sequence(body, ast.Assign, ast.Return)
-    if body_shape is None:
-        return None
+    if body_shape is None: return None
     assign, returned = body_shape
     assignment_shape = _transport_shell_assignment_shape(assign, method)
-    if assignment_shape is None:
-        return None
+    if assignment_shape is None: return None
     intermediate_var_name, selector_attr_name, source_param_name, constructor_name, kwargs_helper_name = assignment_shape
     tail_shape = _transport_shell_tail_shape(returned, intermediate_var_name)
-    if tail_shape is None:
-        return None
+    if tail_shape is None: return None
     inner_hook_name, outcome_method_name = tail_shape
     return (selector_attr_name, source_param_name, constructor_name, inner_hook_name, outcome_method_name, kwargs_helper_name)
 
@@ -1939,27 +1555,19 @@ def _transport_shell_assignment_shape(
 ) -> tuple[str, str, str, str, str | None] | None:
     target = as_ast(single_assign_target(assign), ast.Name)
     call = as_ast(assign.value, ast.Call)
-    if target is None or call is None or len(call.args) < 2:
-        return None
+    if target is None or call is None or len(call.args) < 2: return None
     constructor_name = _call_name(call.func)
     selector_attr_name = _transport_shell_selector_attr_name(call)
     source_param_name = _transport_shell_source_param_name(call, method)
-    if constructor_name is None or selector_attr_name is None or source_param_name is None:
-        return None
+    if constructor_name is None or selector_attr_name is None or source_param_name is None: return None
     kwargs_helper_name = _transport_shell_kwargs_helper_name(call, source_param_name)
     return (target.id, selector_attr_name, source_param_name, constructor_name, kwargs_helper_name)
 
 
-def _transport_shell_selector_attr_name(call: ast.Call) -> str | None:
-    return next((selector_attr_name for value in (*call.args, *(keyword.value for keyword in call.keywords)) if (selector_attr_name := _selector_attribute_name(value)) is not None), None)
+def _transport_shell_selector_attr_name(call: ast.Call) -> str | None: return next((selector_attr_name for value in (*call.args, *(keyword.value for keyword in call.keywords)) if (selector_attr_name := _selector_attribute_name(value)) is not None), None)
 
 
-def _transport_shell_source_param_name(
-    call: ast.Call,
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> str | None:
-    parameter_names = _parameter_names(method)
-    return next((arg_name for arg in call.args for arg_name in (name_id(arg),) if arg_name in parameter_names), None)
+def _transport_shell_source_param_name(call: ast.Call, method: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None: parameter_names = _parameter_names(method); return next((arg_name for arg in call.args for arg_name in (name_id(arg),) if arg_name in parameter_names), None)
 
 
 def _transport_shell_kwargs_helper_name(
@@ -1967,11 +1575,9 @@ def _transport_shell_kwargs_helper_name(
 ) -> str | None:
     helper_names: list[str] = []
     for keyword in call.keywords:
-        if keyword.arg is not None:
-            continue
+        if keyword.arg is not None: continue
         helper_name = _transport_shell_helper_call_name(keyword.value, source_param_name)
-        if helper_name is None:
-            return None
+        if helper_name is None: return None
         helper_names.append(helper_name)
     return helper_names[-1] if helper_names else None
 
@@ -1980,11 +1586,9 @@ def _transport_shell_helper_call_name(
     node: ast.AST, source_param_name: str
 ) -> str | None:
     helper_name = _self_method_call_name(node)
-    if helper_name is None:
-        return None
+    if helper_name is None: return None
     call = cast(ast.Call, node)
-    if single_call_arg_name(call) != source_param_name or call.keywords:
-        return None
+    if single_call_arg_name(call) != source_param_name or call.keywords: return None
     return helper_name
 
 
@@ -1994,15 +1598,9 @@ def _transport_shell_tail_shape(
     outcome_call = as_ast(tail.value, ast.Call)
     outcome_method_name = _self_method_call_name(tail.value) if outcome_call else None
     inner_call = as_ast(single_call_arg(outcome_call), ast.Call) if outcome_call else None
-    if outcome_call is None or outcome_method_name is None or outcome_call.keywords:
-        return None
+    if outcome_call is None or outcome_method_name is None or outcome_call.keywords: return None
     inner_hook_name = _self_method_call_name(inner_call)
-    if (
-        inner_hook_name is None
-        or inner_call.keywords
-        or single_call_arg_name(inner_call) != intermediate_var_name
-    ):
-        return None
+    if inner_hook_name is None or inner_call.keywords or single_call_arg_name(inner_call) != intermediate_var_name: return None
     return inner_hook_name, outcome_method_name
 
 
@@ -2010,8 +1608,7 @@ def _class_direct_name_like_assignment(
     node: ast.ClassDef, attr_name: str
 ) -> str | None:
     value = _class_direct_assignments(node).get(attr_name)
-    if value is None or not isinstance(value, (ast.Name, ast.Attribute)):
-        return None
+    if value is None or not isinstance(value, (ast.Name, ast.Attribute)): return None
     return ast.unparse(value)
 
 
@@ -2021,31 +1618,24 @@ def _transport_shell_template_candidates(
     class_defs_by_name = _module_class_defs_by_name(module)
     candidates: list[TransportShellTemplateCandidate] = []
     for class_name, node in sorted(class_defs_by_name.items()):
-        if not _is_abstract_class(node):
-            continue
+        if not _is_abstract_class(node): continue
         driver_method = next((method for method in _iter_class_methods(node) if not _is_abstract_method(method) and (shape := _transport_shell_template_shape(method)) is not None), None)
-        if driver_method is None:
-            continue
+        if driver_method is None: continue
         shape = _transport_shell_template_shape(driver_method)
-        if shape is None:
-            continue
+        if shape is None: continue
         (selector_attr_name, source_param_name, constructor_name, inner_hook_name, outer_hook_name, kwargs_helper_name) = shape
         inner_hook = _class_method_named(node, inner_hook_name)
         outer_hook = _class_method_named(node, outer_hook_name)
-        if inner_hook is None or outer_hook is None:
-            continue
-        if not (_is_abstract_method(inner_hook) and _is_abstract_method(outer_hook)):
-            continue
+        if inner_hook is None or outer_hook is None: continue
+        if not (_is_abstract_method(inner_hook) and _is_abstract_method(outer_hook)): continue
         descendants = tuple((descendant for descendant in _descendant_class_names(class_defs_by_name, class_name) if not _is_abstract_class(class_defs_by_name[descendant])))
-        if len(descendants) < config.min_registration_sites:
-            continue
+        if len(descendants) < config.min_registration_sites: continue
         selector_value_by_class = {
             descendant: _class_direct_name_like_assignment(class_defs_by_name[descendant], selector_attr_name)
             for descendant in descendants
         }
         concrete_selector_values = sorted_tuple({selector_value_name for selector_value_name in selector_value_by_class.values() if selector_value_name is not None})
-        if len(concrete_selector_values) < config.min_registration_sites:
-            continue
+        if len(concrete_selector_values) < config.min_registration_sites: continue
         concrete_class_names = tuple((descendant for descendant in descendants if selector_value_by_class[descendant] is not None))
         candidates.append(TransportShellTemplateCandidate(file_path=str(module.path), line=driver_method.lineno, class_name=class_name, driver_method_name=driver_method.name, selector_attr_name=selector_attr_name, selector_value_names=concrete_selector_values, concrete_class_names=concrete_class_names, source_param_name=source_param_name, constructor_name=constructor_name, kwargs_helper_name=kwargs_helper_name, inner_hook_name=inner_hook_name, outer_hook_name=outer_hook_name))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
@@ -2064,26 +1654,16 @@ _EXECUTABLE_AXIS_KEYWORDS = frozenset({'builder', 'callback', 'callable', 'execu
 _EXECUTABLE_AXIS_SUFFIXES = ('_builder', '_callback', '_executor', '_factory', '_func', '_function', '_handler', '_hook', '_operation', '_packager', '_processor', '_runner')
 
 
-def _looks_like_type_or_nominal_key(value: str) -> bool:
-    tail = value.rsplit(".", 1)[-1]
-    return bool(tail) and (tail[0].isupper() or "." in value)
+def _looks_like_type_or_nominal_key(value: str) -> bool: tail = value.rsplit('.', 1)[-1]; return bool(tail) and (tail[0].isupper() or '.' in value)
 
 
-def _looks_like_callable_value(value: str) -> bool:
-    tail = value.rsplit(".", 1)[-1]
-    return bool(tail) and (
-        tail.startswith(("build_", "create_", "derive_", "execute_", "handle_", "make_", "run_"))
-        or tail.endswith(("_builder", "_factory", "_handler", "_runner"))
-        or (tail.islower() and "_" in tail)
-    )
+def _looks_like_callable_value(value: str) -> bool: tail = value.rsplit('.', 1)[-1]; return bool(tail) and (tail.startswith(('build_', 'create_', 'derive_', 'execute_', 'handle_', 'make_', 'run_')) or tail.endswith(('_builder', '_factory', '_handler', '_runner')) or (tail.islower() and '_' in tail))
 
 
-def _identity_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
-    return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.IDENTITY].names(keyword_map)
+def _identity_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]: return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.IDENTITY].names(keyword_map)
 
 
-def _executable_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
-    return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.EXECUTABLE].names(keyword_map)
+def _executable_axis_keyword_names(keyword_map: dict[str, ast.AST]) -> tuple[str, ...]: return _AXIS_KEYWORD_POLICIES[AxisKeywordRole.EXECUTABLE].names(keyword_map)
 
 
 class AxisKeywordRole(StrEnum):
@@ -2097,8 +1677,7 @@ class AxisKeywordPolicy:
     keyword_suffixes: tuple[str, ...]
     value_predicate: Callable[[str], bool]
 
-    def names(self, keyword_map: dict[str, ast.AST]) -> tuple[str, ...]:
-        return _axis_keyword_names(keyword_map, keyword_names=self.keyword_names, keyword_suffixes=self.keyword_suffixes, value_predicate=self.value_predicate)
+    def names(self, keyword_map: dict[str, ast.AST]) -> tuple[str, ...]: return _axis_keyword_names(keyword_map, keyword_names=self.keyword_names, keyword_suffixes=self.keyword_suffixes, value_predicate=self.value_predicate)
 
 
 @dataclass(frozen=True)
@@ -2108,16 +1687,14 @@ class AxisKeywordPolicySpec:
     keyword_suffixes: tuple[str, ...]
     value_predicate: Callable[[str], bool]
 
-    def build_policy(self) -> AxisKeywordPolicy:
-        return AxisKeywordPolicy(self.keyword_names, self.keyword_suffixes, self.value_predicate)
+    def build_policy(self) -> AxisKeywordPolicy: return AxisKeywordPolicy(self.keyword_names, self.keyword_suffixes, self.value_predicate)
 
 
 @dataclass(frozen=True)
 class AxisKeywordPolicyCatalog:
     specs: tuple[AxisKeywordPolicySpec, ...]
 
-    def materialize(self) -> dict[AxisKeywordRole, AxisKeywordPolicy]:
-        return {spec.role: spec.build_policy() for spec in self.specs}
+    def materialize(self) -> dict[AxisKeywordRole, AxisKeywordPolicy]: return {spec.role: spec.build_policy() for spec in self.specs}
 
 
 _AXIS_KEYWORD_POLICIES = AxisKeywordPolicyCatalog((AxisKeywordPolicySpec(AxisKeywordRole.IDENTITY, _IDENTITY_AXIS_KEYWORDS, _IDENTITY_AXIS_SUFFIXES, _looks_like_type_or_nominal_key), AxisKeywordPolicySpec(AxisKeywordRole.EXECUTABLE, _EXECUTABLE_AXIS_KEYWORDS, _EXECUTABLE_AXIS_SUFFIXES, _looks_like_callable_value))).materialize()
@@ -2133,12 +1710,7 @@ def _axis_keyword_names(
     names = []
     for name, value in keyword_map.items():
         normalized = name.lower()
-        if (
-            normalized in keyword_names
-            or normalized.endswith(keyword_suffixes)
-            or value_predicate(ast.unparse(value))
-        ):
-            names.append(name)
+        if normalized in keyword_names or normalized.endswith(keyword_suffixes) or value_predicate(ast.unparse(value)): names.append(name)
     return sorted_tuple(names)
 
 
@@ -2151,60 +1723,45 @@ _SpecAxisBinding = product_record('_SpecAxisBinding', 'family_name: str; line: i
 _SpecAxisSource = product_record('_SpecAxisSource', 'family_name: str; line: int; constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]; is_standalone: bool')
 
 
-def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]:
-    return {
-        keyword.arg: keyword.value
-        for keyword in call.keywords
-        if keyword.arg is not None and keyword.value is not None
-    }
+def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]: return {keyword.arg: keyword.value for keyword in call.keywords if keyword.arg is not None and keyword.value is not None}
 
 
 def _spec_axis_entry_from_call(element: ast.AST) -> _SpecAxisEntry | None:
     call = as_ast(element, ast.Call)
-    if call is None or call.args:
-        return None
+    if call is None or call.args: return None
     constructor_name = _call_name(call.func)
-    if constructor_name is None:
-        return None
+    if constructor_name is None: return None
     keyword_map = _call_keyword_map(call)
-    if len(keyword_map) < 2:
-        return None
+    if len(keyword_map) < 2: return None
     identity_names = _identity_axis_keyword_names(keyword_map)
     executable_names = _executable_axis_keyword_names(keyword_map)
     axis_pairs = tuple((((identity_name, executable_name), (ast.unparse(keyword_map[identity_name]), ast.unparse(keyword_map[executable_name]))) for identity_name in identity_names for executable_name in executable_names if identity_name != executable_name))
-    if not axis_pairs:
-        return None
+    if not axis_pairs: return None
     extra_keyword_names = sorted_tuple((name for name in keyword_map if name not in set(identity_names) | set(executable_names)))
     return _SpecAxisEntry(constructor_name=constructor_name, axis_pairs=axis_pairs, extra_keyword_names=extra_keyword_names)
 
 
 def _spec_axis_binding(statement: ast.stmt) -> _SpecAxisBinding | None:
     binding = named_value_binding(statement)
-    if binding is None or binding.value is None:
-        return None
+    if binding is None or binding.value is None: return None
     return _SpecAxisBinding(binding.name, binding.line, binding.value)
 
 
 def _spec_axis_collection_entries(value: ast.AST) -> tuple[_SpecAxisEntry, ...] | None:
     collection = value if isinstance(value, (ast.Tuple, ast.List)) else None
-    if collection is None or len(collection.elts) < 2:
-        return None
+    if collection is None or len(collection.elts) < 2: return None
     entries = tuple(_spec_axis_entry_from_call(element) for element in collection.elts)
-    if any(entry is None for entry in entries):
-        return None
+    if any((entry is None for entry in entries)): return None
     return cast(tuple[_SpecAxisEntry, ...], entries)
 
 
 def _spec_axis_source(binding: _SpecAxisBinding) -> _SpecAxisSource | None:
     entry = _spec_axis_entry_from_call(binding.value)
-    if entry is not None:
-        return _SpecAxisSource(family_name=binding.family_name, line=binding.line, constructor_name=entry.constructor_name, axis_pairs=entry.axis_pairs, extra_keyword_names=entry.extra_keyword_names, is_standalone=True)
+    if entry is not None: return _SpecAxisSource(family_name=binding.family_name, line=binding.line, constructor_name=entry.constructor_name, axis_pairs=entry.axis_pairs, extra_keyword_names=entry.extra_keyword_names, is_standalone=True)
     entries = _spec_axis_collection_entries(binding.value)
-    if entries is None:
-        return None
+    if entries is None: return None
     constructor_names = {entry.constructor_name for entry in entries}
-    if len(constructor_names) != 1:
-        return None
+    if len(constructor_names) != 1: return None
     return _SpecAxisSource(family_name=binding.family_name, line=binding.line, constructor_name=entries[0].constructor_name, axis_pairs=tuple((axis_pair for entry in entries for axis_pair in entry.axis_pairs)), extra_keyword_names=sorted_tuple({extra_keyword_name for entry in entries for extra_keyword_name in entry.extra_keyword_names}), is_standalone=False)
 
 
@@ -2214,16 +1771,11 @@ def _spec_axis_entries_by_axis(
     ],
 ) -> dict[tuple[str, str], list[tuple[str, str]]]:
     grouped: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
-    for axis_field_names, axis_pair in axis_pairs:
-        grouped[axis_field_names].append(axis_pair)
+    for axis_field_names, axis_pair in axis_pairs: grouped[axis_field_names].append(axis_pair)
     return grouped
 
 
-def _spec_axis_family_from_source(
-    module: ParsedModule,
-    source: _SpecAxisSource,
-) -> tuple[SpecAxisFamily, ...]:
-    return tuple((SpecAxisFamily(file_path=str(module.path), line=source.line, family_name=source.family_name, constructor_name=source.constructor_name, axis_field_names=axis_field_names, axis_pairs=tuple(entries), extra_keyword_names=source.extra_keyword_names) for axis_field_names, entries in _spec_axis_entries_by_axis(source.axis_pairs).items() if len(entries) >= 2))
+def _spec_axis_family_from_source(module: ParsedModule, source: _SpecAxisSource) -> tuple[SpecAxisFamily, ...]: return tuple((SpecAxisFamily(file_path=str(module.path), line=source.line, family_name=source.family_name, constructor_name=source.constructor_name, axis_field_names=axis_field_names, axis_pairs=tuple(entries), extra_keyword_names=source.extra_keyword_names) for axis_field_names, entries in _spec_axis_entries_by_axis(source.axis_pairs).items() if len(entries) >= 2))
 
 
 def _standalone_spec_axis_sources(
@@ -2231,29 +1783,16 @@ def _standalone_spec_axis_sources(
 ) -> tuple[_SpecAxisSource, ...]:
     grouped: dict[str, list[_SpecAxisSource]] = defaultdict(list)
     for source in sources:
-        if source.is_standalone:
-            grouped[source.constructor_name].append(source)
+        if source.is_standalone: grouped[source.constructor_name].append(source)
     collapsed_sources: list[_SpecAxisSource] = []
     for constructor_name, items in sorted(grouped.items()):
-        if len(items) < 2:
-            continue
+        if len(items) < 2: continue
         ordered_items = sorted_tuple(items, key=lambda item: (item.line, item.family_name))
         collapsed_sources.append(_SpecAxisSource(family_name=' + '.join((item.family_name for item in ordered_items)), line=ordered_items[0].line, constructor_name=constructor_name, axis_pairs=tuple((axis_pair for item in ordered_items for axis_pair in item.axis_pairs)), extra_keyword_names=sorted_tuple({extra_keyword_name for item in ordered_items for extra_keyword_name in item.extra_keyword_names}), is_standalone=False))
     return tuple(collapsed_sources)
 
 
-def _spec_axis_families(
-    module: ParsedModule,
-) -> tuple[SpecAxisFamily, ...]:
-    sources = tuple((source for statement in _trim_docstring_body(module.module.body) if (binding := _spec_axis_binding(statement)) is not None and (source := _spec_axis_source(binding)) is not None))
-    families = [
-        family
-        for source in sources
-        if not source.is_standalone
-        for family in _spec_axis_family_from_source(module, source)
-    ]
-    families.extend((family for source in _standalone_spec_axis_sources(sources) for family in _spec_axis_family_from_source(module, source)))
-    return sorted_tuple(families, key=lambda item: (item.file_path, item.line, item.family_name))
+def _spec_axis_families(module: ParsedModule) -> tuple[SpecAxisFamily, ...]: sources = tuple((source for statement in _trim_docstring_body(module.module.body) if (binding := _spec_axis_binding(statement)) is not None and (source := _spec_axis_source(binding)) is not None)); families = [family for source in sources if not source.is_standalone for family in _spec_axis_family_from_source(module, source)]; families.extend((family for source in _standalone_spec_axis_sources(sources) for family in _spec_axis_family_from_source(module, source))); return sorted_tuple(families, key=lambda item: (item.file_path, item.line, item.family_name))
 
 
 def _cross_module_spec_axis_authority_candidates(
@@ -2263,19 +1802,11 @@ def _cross_module_spec_axis_authority_candidates(
     families = tuple((family for module in modules for family in _spec_axis_families(module)))
     candidates: list[CrossModuleSpecAxisAuthorityCandidate] = []
     for left, right in combinations(families, 2):
-        if left.file_path == right.file_path:
-            continue
-        if left.axis_field_names != right.axis_field_names:
-            continue
+        if left.file_path == right.file_path: continue
+        if left.axis_field_names != right.axis_field_names: continue
         shared_pairs = sorted_tuple(set(left.axis_pairs) & set(right.axis_pairs))
-        if len(shared_pairs) < 2:
-            continue
-        if (
-            left.constructor_name == right.constructor_name
-            and left.extra_keyword_names == right.extra_keyword_names
-            and left.axis_pairs == right.axis_pairs
-        ):
-            continue
+        if len(shared_pairs) < 2: continue
+        if left.constructor_name == right.constructor_name and left.extra_keyword_names == right.extra_keyword_names and (left.axis_pairs == right.axis_pairs): continue
         candidates.append(CrossModuleSpecAxisAuthorityCandidate(axis_field_names=left.axis_field_names, shared_axis_pairs=shared_pairs, families=sorted_tuple((left, right), key=lambda item: (item.file_path, item.line, item.family_name))))
     deduped: dict[
         tuple[tuple[str, str], tuple[str, str], tuple[str, ...]], CrossModuleSpecAxisAuthorityCandidate
@@ -2293,37 +1824,24 @@ def _registered_catalog_projection_candidates(
     candidates: list[RegisteredCatalogProjectionCandidate] = []
     for qualname, function in _iter_named_functions(module):
         body = _trim_docstring_body(list(function.body))
-        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-            continue
+        if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None: continue
         returned = body[0].value
-        if not isinstance(returned, ast.Call) or returned.args:
-            continue
-        if len(returned.keywords) != 1:
-            continue
+        if not isinstance(returned, ast.Call) or returned.args: continue
+        if len(returned.keywords) != 1: continue
         keyword = returned.keywords[0]
-        if keyword.arg is None or keyword.value is None:
-            continue
-        if not isinstance(keyword.value, ast.Call) or keyword.value.keywords:
-            continue
+        if keyword.arg is None or keyword.value is None: continue
+        if not isinstance(keyword.value, ast.Call) or keyword.value.keywords: continue
         collector_name = ast.unparse(keyword.value.func)
-        if len(keyword.value.args) != 2 or not isinstance(keyword.value.args[0], ast.Name):
-            continue
+        if len(keyword.value.args) != 2 or not isinstance(keyword.value.args[0], ast.Name): continue
         structure_param_name = keyword.value.args[0].id
         registry_call = keyword.value.args[1]
-        if not (
-            isinstance(registry_call, ast.Call)
-            and not registry_call.args
-            and not registry_call.keywords
-            and isinstance(registry_call.func, ast.Attribute)
-        ):
-            continue
+        if not (isinstance(registry_call, ast.Call) and (not registry_call.args) and (not registry_call.keywords) and isinstance(registry_call.func, ast.Attribute)): continue
         extractor_base_name = ast.unparse(registry_call.func.value)
         candidates.append(RegisteredCatalogProjectionCandidate(file_path=str(module.path), line=function.lineno, qualname=qualname, catalog_type_name=ast.unparse(returned.func), collector_name=collector_name, structure_param_name=structure_param_name, extractor_base_name=extractor_base_name, registry_accessor_name=registry_call.func.attr, return_keyword_names=tuple((keyword_item.arg for keyword_item in returned.keywords if keyword_item.arg is not None))))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
-def _is_upper_snake_identifier(name: str) -> bool:
-    return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*", name))
+def _is_upper_snake_identifier(name: str) -> bool: return bool(re.fullmatch('[A-Z][A-Z0-9_]*', name))
 
 
 def _module_constant_bindings(
@@ -2343,8 +1861,7 @@ def _module_constant_bindings(
         elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             target_name = statement.target.id
             value = statement.value
-        if target_name is None or value is None or not _is_upper_snake_identifier(target_name):
-            continue
+        if target_name is None or value is None or (not _is_upper_snake_identifier(target_name)): continue
         constructor_name = (
             ast.unparse(value.func) if isinstance(value, ast.Call) else None
         )
@@ -2369,8 +1886,7 @@ def _module_level_named_sequences(
         elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             target_name = statement.target.id
             value = statement.value
-        if target_name is None or not isinstance(value, (ast.Tuple, ast.List)):
-            continue
+        if target_name is None or not isinstance(value, (ast.Tuple, ast.List)): continue
         sequences[target_name] = (statement.lineno, tuple(value.elts))
     return sequences
 
@@ -2395,44 +1911,27 @@ def _module_level_named_values(
         elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             target_name = statement.target.id
             value = statement.value
-        if target_name is None or value is None:
-            continue
+        if target_name is None or value is None: continue
         values[target_name] = (statement.lineno, value)
     return values
 
 
-def _module_level_named_instances(
-    module: ParsedModule,
-    value_type: type[_AstValueT],
-) -> dict[str, tuple[int, _AstValueT]]:
-    return {
-        name: (line, cast(_AstValueT, value))
-        for name, (line, value) in _module_level_named_values(module).items()
-        if isinstance(value, value_type)
-    }
+def _module_level_named_instances(module: ParsedModule, value_type: type[_AstValueT]) -> dict[str, tuple[int, _AstValueT]]: return {name: (line, cast(_AstValueT, value)) for name, (line, value) in _module_level_named_values(module).items() if isinstance(value, value_type)}
 
 
-def _module_level_named_calls(
-    module: ParsedModule,
-) -> dict[str, tuple[int, ast.Call]]:
-    return _module_level_named_instances(module, ast.Call)
+def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.Call]]: return _module_level_named_instances(module, ast.Call)
 
 
-def _module_level_named_dicts(
-    module: ParsedModule,
-) -> dict[str, tuple[int, ast.Dict]]:
-    return _module_level_named_instances(module, ast.Dict)
+def _module_level_named_dicts(module: ParsedModule) -> dict[str, tuple[int, ast.Dict]]: return _module_level_named_instances(module, ast.Dict)
 
 
 def _single_return_case(
     statements: Sequence[ast.stmt],
 ) -> tuple[ast.AST, int] | None:
     trimmed = _trim_docstring_body(list(statements))
-    if len(trimmed) != 1 or not isinstance(trimmed[0], ast.Return):
-        return None
+    if len(trimmed) != 1 or not isinstance(trimmed[0], ast.Return): return None
     return_value = trimmed[0].value
-    if return_value is None:
-        return None
+    if return_value is None: return None
     return (return_value, trimmed[0].lineno)
 
 
@@ -2441,16 +1940,14 @@ def _guarded_return_cases_from_if(node: ast.If) -> tuple[_GuardedReturnCase, ...
     current: ast.If | None = node
     while current is not None:
         returned = _single_return_case(current.body)
-        if returned is None:
-            return None
+        if returned is None: return None
         cases.append(_GuardedReturnCase.from_returned(ast.unparse(current.test), returned))
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
             current = current.orelse[0]
             continue
         if current.orelse:
             fallback = _single_return_case(current.orelse)
-            if fallback is None:
-                return None
+            if fallback is None: return None
             cases.append(_GuardedReturnCase.from_returned(None, fallback))
         current = None
     return tuple(cases) if len(cases) >= 2 else None
@@ -2460,19 +1957,15 @@ def _guarded_return_cases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[_GuardedReturnCase, ...]:
     body = _trim_docstring_body(function.body)
-    if not body:
-        return ()
-    if len(body) == 1 and isinstance(body[0], ast.If):
-        return _guarded_return_cases_from_if(body[0]) or ()
+    if not body: return ()
+    if len(body) == 1 and isinstance(body[0], ast.If): return _guarded_return_cases_from_if(body[0]) or ()
 
     cases: list[_GuardedReturnCase] = []
     for index, statement in enumerate(body):
         if isinstance(statement, ast.If):
-            if statement.orelse:
-                return ()
+            if statement.orelse: return ()
             returned = _single_return_case(statement.body)
-            if returned is None:
-                return ()
+            if returned is None: return ()
             cases.append(_GuardedReturnCase.from_returned(ast.unparse(statement.test), returned))
             continue
         if (
@@ -2490,10 +1983,8 @@ def _guarded_return_cases(
 def _selected_constant_return_shape(
     node: ast.AST,
 ) -> _SelectedConstantReturnShape | None:
-    if isinstance(node, ast.Name) and _is_upper_snake_identifier(node.id):
-        return _SelectedConstantReturnShape(constant_name=node.id, wrapper_name=None, template_key=('<direct>', ('__SELECTED__',), ()))
-    if not isinstance(node, ast.Call):
-        return None
+    if isinstance(node, ast.Name) and _is_upper_snake_identifier(node.id): return _SelectedConstantReturnShape(constant_name=node.id, wrapper_name=None, template_key=('<direct>', ('__SELECTED__',), ()))
+    if not isinstance(node, ast.Call): return None
 
     positional_template: list[str] = []
     keyword_template: list[tuple[str, str]] = []
@@ -2509,8 +2000,7 @@ def _selected_constant_return_shape(
         positional_template.append(ast.unparse(argument))
 
     for keyword in node.keywords:
-        if keyword.arg is None:
-            return None
+        if keyword.arg is None: return None
         if isinstance(keyword.value, ast.Name) and _is_upper_snake_identifier(keyword.value.id):
             constant_name = keyword.value.id
             constant_slot_count += 1
@@ -2518,17 +2008,14 @@ def _selected_constant_return_shape(
             continue
         keyword_template.append((keyword.arg, ast.unparse(keyword.value)))
 
-    if constant_slot_count != 1 or constant_name is None:
-        return None
+    if constant_slot_count != 1 or constant_name is None: return None
     return _SelectedConstantReturnShape(constant_name=constant_name, wrapper_name=ast.unparse(node.func), template_key=(ast.unparse(node.func), tuple(positional_template), tuple(keyword_template)))
 
 
 def _shared_constant_suffix(names: tuple[str, ...]) -> str | None:
-    if len(names) < 2:
-        return None
+    if len(names) < 2: return None
     suffix = _shared_reversed_token_suffix(tuple(tuple(name.split("_")) for name in names))
-    if not suffix:
-        return None
+    if not suffix: return None
     return "_".join(suffix)
 
 
@@ -2537,8 +2024,7 @@ def _shared_reversed_token_suffix(
 ) -> tuple[str, ...]:
     reversed_suffix: list[str] = []
     for shared_tokens in zip(*(reversed(tokens) for tokens in token_lists), strict=False):
-        if len(set(shared_tokens)) != 1:
-            break
+        if len(set(shared_tokens)) != 1: break
         reversed_suffix.append(shared_tokens[0])
     return tuple(reversed(reversed_suffix))
 
@@ -2550,18 +2036,14 @@ def _closed_constant_selector_candidates(
     candidates: list[ClosedConstantSelectorCandidate] = []
     for qualname, function in _iter_named_functions(module):
         guarded_cases = _guarded_return_cases(function)
-        if len(guarded_cases) < 2:
-            continue
+        if len(guarded_cases) < 2: continue
         return_shapes = tuple((_selected_constant_return_shape(case.return_value) for case in guarded_cases))
-        if any(shape is None for shape in return_shapes):
-            continue
+        if any((shape is None for shape in return_shapes)): continue
         concrete_shapes = cast(tuple[_SelectedConstantReturnShape, ...], return_shapes)
         constant_names = tuple(shape.constant_name for shape in concrete_shapes)
-        if len(set(constant_names)) < 2:
-            continue
+        if len(set(constant_names)) < 2: continue
         template_keys = {shape.template_key for shape in concrete_shapes}
-        if len(template_keys) != 1:
-            continue
+        if len(template_keys) != 1: continue
         family_suffix = _shared_constant_suffix(constant_names)
         constructor_names = {
             binding.constructor_name
@@ -2572,23 +2054,17 @@ def _closed_constant_selector_candidates(
         common_constructor_name = (
             next(iter(constructor_names)) if len(constructor_names) == 1 else None
         )
-        if family_suffix is None and common_constructor_name is None:
-            continue
+        if family_suffix is None and common_constructor_name is None: continue
         evidence: list[SourceLocation] = [SourceLocation(str(module.path), function.lineno, qualname)]
         for constant_name in constant_names:
             binding = constant_bindings.get(constant_name)
-            if binding is None:
-                continue
+            if binding is None: continue
             evidence.append(SourceLocation(str(module.path), binding.line, constant_name))
         candidates.append(ClosedConstantSelectorCandidate(file_path=str(module.path), qualname=qualname, line=function.lineno, guard_expressions=tuple((case.guard_expression for case in guarded_cases if case.guard_expression is not None)), constant_names=tuple(dict.fromkeys(constant_names)), wrapper_name=concrete_shapes[0].wrapper_name, family_suffix=family_suffix, common_constructor_name=common_constructor_name, evidence_locations=tuple(evidence[:6])))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
-def _call_uses_iteration_variable(
-    node: ast.AST,
-    iteration_variable_name: str,
-) -> bool:
-    return any((isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name for subnode in _walk_nodes(node)))
+def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool: return any((isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name for subnode in _walk_nodes(node)))
 
 
 def _comprehension_builder_names(
@@ -2597,15 +2073,11 @@ def _comprehension_builder_names(
 ) -> tuple[str, ...]:
     builder_names: set[str] = set()
     for subnode in _walk_nodes(module.module):
-        if not isinstance(subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
-            continue
-        if len(subnode.generators) != 1:
-            continue
+        if not isinstance(subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)): continue
+        if len(subnode.generators) != 1: continue
         generator = subnode.generators[0]
-        if generator.ifs or not isinstance(generator.iter, ast.Name):
-            continue
-        if generator.iter.id != family_name or not isinstance(generator.target, ast.Name):
-            continue
+        if generator.ifs or not isinstance(generator.iter, ast.Name): continue
+        if generator.iter.id != family_name or not isinstance(generator.target, ast.Name): continue
         iteration_variable_name = generator.target.id
         candidate_calls: list[ast.Call] = []
         if isinstance(subnode, ast.DictComp):
@@ -2613,15 +2085,12 @@ def _comprehension_builder_names(
         else:
             candidate_nodes = (subnode.elt,)
         for candidate_node in candidate_nodes:
-            if candidate_node is None:
-                continue
+            if candidate_node is None: continue
             for nested in _walk_nodes(candidate_node):
-                if isinstance(nested, ast.Call) and _call_uses_iteration_variable(nested, iteration_variable_name):
-                    candidate_calls.append(nested)
+                if isinstance(nested, ast.Call) and _call_uses_iteration_variable(nested, iteration_variable_name): candidate_calls.append(nested)
         for call in candidate_calls:
             call_name = _call_name(call.func)
-            if call_name is not None:
-                builder_names.add(call_name)
+            if call_name is not None: builder_names.add(call_name)
     return sorted_tuple(builder_names)
 
 
@@ -2632,10 +2101,8 @@ def _named_family_for_constants(
     constant_set = set(constant_names)
     for family_name, (_, elements) in sorted(named_sequences.items()):
         element_names = tuple((element.id for element in elements if isinstance(element, ast.Name)))
-        if len(element_names) != len(elements):
-            continue
-        if constant_set <= set(element_names):
-            return family_name
+        if len(element_names) != len(elements): continue
+        if constant_set <= set(element_names): return family_name
     return None
 
 
@@ -2646,12 +2113,10 @@ def _derived_wrapper_spec_shadow_candidates(
     named_sequences = _module_level_named_sequences(module)
     candidates: list[DerivedWrapperSpecShadowCandidate] = []
     for family_name, (family_line, elements) in sorted(named_sequences.items()):
-        if len(elements) < 2 or not all(isinstance(element, ast.Call) for element in elements):
-            continue
+        if len(elements) < 2 or not all((isinstance(element, ast.Call) for element in elements)): continue
         entry_calls = cast(tuple[ast.Call, ...], elements)
         constructor_names = {_call_name(element.func) for element in entry_calls}
-        if len(constructor_names) != 1 or None in constructor_names:
-            continue
+        if len(constructor_names) != 1 or None in constructor_names: continue
         keyword_maps: list[dict[str, ast.AST]] = []
         for element in entry_calls:
             keyword_map = {
@@ -2663,16 +2128,12 @@ def _derived_wrapper_spec_shadow_candidates(
                 keyword_maps = []
                 break
             keyword_maps.append(keyword_map)
-        if not keyword_maps:
-            continue
+        if not keyword_maps: continue
         common_keyword_names = set(keyword_maps[0])
-        for keyword_map in keyword_maps[1:]:
-            common_keyword_names &= set(keyword_map)
-        if not common_keyword_names:
-            continue
+        for keyword_map in keyword_maps[1:]: common_keyword_names &= set(keyword_map)
+        if not common_keyword_names: continue
         builder_names = _comprehension_builder_names(module, family_name)
-        if not builder_names:
-            continue
+        if not builder_names: continue
         for link_field_name in sorted(common_keyword_names):
             referenced_constant_names: list[str] = []
             for keyword_map in keyword_maps:
@@ -2681,16 +2142,14 @@ def _derived_wrapper_spec_shadow_candidates(
                     referenced_constant_names = []
                     break
                 referenced_constant_names.append(referenced.id)
-            if len(set(referenced_constant_names)) < 2:
-                continue
+            if len(set(referenced_constant_names)) < 2: continue
             primary_constructor_names = {
                 binding.constructor_name
                 for constant_name in referenced_constant_names
                 if (binding := constant_bindings.get(constant_name)) is not None
                 and binding.constructor_name is not None
             }
-            if len(primary_constructor_names) != 1:
-                continue
+            if len(primary_constructor_names) != 1: continue
             primary_constant_names = tuple(dict.fromkeys(referenced_constant_names))
             primary_family_name = _named_family_for_constants(named_sequences, primary_constant_names)
             extra_field_names = sorted_tuple((name for name in common_keyword_names if name != link_field_name))
@@ -2704,46 +2163,30 @@ def _derived_wrapper_spec_shadow_candidates(
 def _class_annassign_target_names(node: ast.ClassDef) -> tuple[str, ...]:
     field_names: list[str] = []
     for statement in node.body:
-        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-            field_names.append(statement.target.id)
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name): field_names.append(statement.target.id)
     return tuple(field_names)
 
 
-def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return _class_annassign_target_names(node)
+def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]: return _class_annassign_target_names(node)
 
 
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
     returned = as_ast(single_return_value(_trim_docstring_body(function.body)), ast.DictComp)
-    if returned is None:
-        return None
+    if returned is None: return None
     generator = single_item(returned.generators)
-    if generator is None or generator.ifs or not isinstance(generator.target, ast.Name):
-        return None
+    if generator is None or generator.ifs or (not isinstance(generator.target, ast.Name)): return None
     selected_field_name = _selection_dict_value_field(returned, generator.target.id)
-    if selected_field_name is None:
-        return None
+    if selected_field_name is None: return None
     return _SelectionHelperShape(function_name=function.name, selected_field_name=selected_field_name, line=function.lineno)
 
 
 def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str | None:
     key = returned.key
     value = returned.value
-    if not (
-        isinstance(key, ast.Attribute)
-        and isinstance(key.value, ast.Name)
-        and key.value.id == target_name
-        and key.attr == "key"
-    ):
-        return None
-    if not (
-        isinstance(value, ast.Attribute)
-        and isinstance(value.value, ast.Name)
-        and value.value.id == target_name
-    ):
-        return None
+    if not (isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name) and (key.value.id == target_name) and (key.attr == 'key')): return None
+    if not (isinstance(value, ast.Attribute) and isinstance(value.value, ast.Name) and (value.value.id == target_name)): return None
     return value.attr
 
 
@@ -2751,31 +2194,19 @@ def _selection_lookup_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionLookupShape | None:
     try_node = _single_try_statement(function)
-    if try_node is None:
-        return None
-    if not _selection_lookup_returns_subscript(try_node):
-        return None
-    if not _selection_lookup_raises_key_error(try_node):
-        return None
+    if try_node is None: return None
+    if not _selection_lookup_returns_subscript(try_node): return None
+    if not _selection_lookup_raises_key_error(try_node): return None
     return _SelectionLookupShape(function_name=function.name, line=function.lineno)
 
 
-def _single_try_statement(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> ast.Try | None:
-    return single_ast(_trim_docstring_body(function.body), ast.Try)
+def _single_try_statement(function: ast.FunctionDef | ast.AsyncFunctionDef) -> ast.Try | None: return single_ast(_trim_docstring_body(function.body), ast.Try)
 
 
-def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool:
-    returned = as_ast(single_return_value(try_node.body), ast.Subscript)
-    return bool(returned is not None and name_id(returned.value) is not None and (name_id(returned.slice) is not None))
+def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool: returned = as_ast(single_return_value(try_node.body), ast.Subscript); return bool(returned is not None and name_id(returned.value) is not None and (name_id(returned.slice) is not None))
 
 
-def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool:
-    handler = single_item(try_node.handlers)
-    handler_type_name = name_id(handler.type) if handler is not None else None
-    raised = single_item(handler.body) if handler is not None else None
-    return bool(isinstance(handler, ast.ExceptHandler) and handler_type_name == 'KeyError' and isinstance(raised, ast.Raise))
+def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool: handler = single_item(try_node.handlers); handler_type_name = name_id(handler.type) if handler is not None else None; raised = single_item(handler.body) if handler is not None else None; return bool(isinstance(handler, ast.ExceptHandler) and handler_type_name == 'KeyError' and isinstance(raised, ast.Raise))
 
 
 def _module_keyed_selection_helper_candidates(
@@ -2783,29 +2214,23 @@ def _module_keyed_selection_helper_candidates(
 ) -> tuple[ModuleKeyedSelectionHelperCandidate, ...]:
     helper_shapes = tuple((helper for _, function in _iter_named_functions(module) if '.' not in _ and (helper := _selection_helper_shape(function)) is not None))
     lookup_shapes = tuple((lookup for _, function in _iter_named_functions(module) if '.' not in _ and (lookup := _selection_lookup_shape(function)) is not None))
-    if not helper_shapes or not lookup_shapes:
-        return ()
+    if not helper_shapes or not lookup_shapes: return ()
     named_sequences = _module_level_named_sequences(module)
     named_calls = _module_level_named_calls(module)
     candidates: list[ModuleKeyedSelectionHelperCandidate] = []
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or not _is_dataclass_class(node):
-            continue
+        if not isinstance(node, ast.ClassDef) or not _is_dataclass_class(node): continue
         field_names = _dataclass_field_names(node)
-        if len(field_names) != 2 or field_names[0] != "key":
-            continue
+        if len(field_names) != 2 or field_names[0] != 'key': continue
         selected_field_name = field_names[1]
         matching_helpers = tuple((helper for helper in helper_shapes if helper.selected_field_name == selected_field_name))
-        if not matching_helpers:
-            continue
+        if not matching_helpers: continue
         rule_table_names: list[str] = []
         indexed_table_names: list[str] = []
         evidence: list[SourceLocation] = [SourceLocation(str(module.path), node.lineno, node.name)]
         for family_name, (line, elements) in sorted(named_sequences.items()):
-            if len(elements) < 2:
-                continue
-            if not all((isinstance(element, ast.Call) and _call_name(element.func) == node.name for element in elements)):
-                continue
+            if len(elements) < 2: continue
+            if not all((isinstance(element, ast.Call) and _call_name(element.func) == node.name for element in elements)): continue
             keyword_maps = [
                 {
                     keyword.arg: keyword.value
@@ -2814,22 +2239,18 @@ def _module_keyed_selection_helper_candidates(
                 }
                 for element in cast(tuple[ast.Call, ...], elements)
             ]
-            if not all(('key' in keyword_map and selected_field_name in keyword_map for keyword_map in keyword_maps)):
-                continue
+            if not all(('key' in keyword_map and selected_field_name in keyword_map for keyword_map in keyword_maps)): continue
             rule_table_names.append(family_name)
             evidence.append(SourceLocation(str(module.path), line, family_name))
-        if len(rule_table_names) < 2:
-            continue
+        if len(rule_table_names) < 2: continue
         helper_names = {helper.function_name for helper in matching_helpers}
         for call_name, (line, call) in sorted(named_calls.items()):
-            if _call_name(call.func) not in helper_names or not call.args:
-                continue
+            if _call_name(call.func) not in helper_names or not call.args: continue
             argument = call.args[0]
             if isinstance(argument, ast.Name) and argument.id in rule_table_names:
                 indexed_table_names.append(call_name)
                 evidence.append(SourceLocation(str(module.path), line, call_name))
-        if len(indexed_table_names) < 2:
-            continue
+        if len(indexed_table_names) < 2: continue
         candidates.append(ModuleKeyedSelectionHelperCandidate(file_path=str(module.path), line=node.lineno, rule_class_name=node.name, selected_field_name=selected_field_name, helper_function_name=matching_helpers[0].function_name, lookup_function_name=lookup_shapes[0].function_name, rule_table_names=tuple(rule_table_names), index_table_names=tuple(indexed_table_names), evidence_locations=tuple(evidence[:6])))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name))
 
@@ -2854,13 +2275,10 @@ _ClassAssignedEnumAxisSpec = product_record('_ClassAssignedEnumAxisSpec', 'file_
 
 def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
     for base in node.bases:
-        if not isinstance(base, ast.Subscript):
-            continue
-        if _call_name(base.value) != "KeyedNominalFamily":
-            continue
+        if not isinstance(base, ast.Subscript): continue
+        if _call_name(base.value) != 'KeyedNominalFamily': continue
         type_names = _annotation_type_names(base.slice)
-        if type_names:
-            return type_names[0]
+        if type_names: return type_names[0]
     return None
 
 
@@ -2872,14 +2290,11 @@ def _keyed_family_axis_specs(
     for indexed_class in sorted(class_index.classes_by_symbol.values(), key=lambda item: item.symbol):
         node = indexed_class.node
         key_type_name = _keyed_family_key_type_name(node)
-        if key_type_name is None:
-            continue
+        if key_type_name is None: continue
         registry_key_attr_name = _constant_string(_class_direct_assignments(node).get('registry_key_attr'))
-        if registry_key_attr_name is None:
-            continue
+        if registry_key_attr_name is None: continue
         case_names = sorted_tuple({ast.unparse(assignment) for descendant in _indexed_descendant_classes(class_index, indexed_class.symbol) if (assignment := _class_direct_assignments(descendant.node).get(registry_key_attr_name)) is not None})
-        if len(case_names) < 2:
-            continue
+        if len(case_names) < 2: continue
         specs.append(_KeyedFamilyAxisSpec(file_path=indexed_class.file_path, line=indexed_class.line, family_name=_indexed_class_display_name(indexed_class, class_index), key_type_name=key_type_name, family_label=_constant_string(_class_direct_assignments(node).get('family_label')), registry_key_attr_name=registry_key_attr_name, case_names=case_names))
     return tuple(specs)
 
@@ -2888,8 +2303,7 @@ def _case_overlap_ratio(
     left_case_names: tuple[str, ...],
     right_case_names: tuple[str, ...],
 ) -> float:
-    if not left_case_names or not right_case_names:
-        return 0.0
+    if not left_case_names or not right_case_names: return 0.0
     shared_case_count = len(set(left_case_names) & set(right_case_names))
     return shared_case_count / float(min(len(left_case_names), len(right_case_names)))
 
@@ -2900,16 +2314,14 @@ def _parallel_keyed_family_name_overlap(
 ) -> float:
     left_tokens = _class_name_tokens(left_family_name)
     right_tokens = _class_name_tokens(right_family_name)
-    if not left_tokens or not right_tokens:
-        return 0.0
+    if not left_tokens or not right_tokens: return 0.0
     return len(left_tokens & right_tokens) / float(min(len(left_tokens), len(right_tokens)))
 
 
 def _identifier_name_overlap(left_name: str, right_name: str) -> float:
     left_tokens = _class_name_tokens(left_name)
     right_tokens = _class_name_tokens(right_name)
-    if not left_tokens or not right_tokens:
-        return 0.0
+    if not left_tokens or not right_tokens: return 0.0
     return len(left_tokens & right_tokens) / float(min(len(left_tokens), len(right_tokens)))
 
 
@@ -2918,12 +2330,10 @@ def _module_keyed_table_axis_specs(
 ) -> tuple[_KeyedTableAxisSpec, ...]:
     specs: list[_KeyedTableAxisSpec] = []
     for table_name, (line, mapping) in sorted(_module_level_named_dicts(module).items()):
-        if len(mapping.keys) < 2 or any(key is None for key in mapping.keys):
-            continue
+        if len(mapping.keys) < 2 or any((key is None for key in mapping.keys)): continue
         case_names = tuple(ast.unparse(key) for key in mapping.keys if key is not None)
         key_type_name = _enum_family_name(case_names)
-        if key_type_name is None:
-            continue
+        if key_type_name is None: continue
         value_shape_name: str | None = None
         all_values_are_calls = all(isinstance(value, ast.Call) for value in mapping.values)
         value_constructor_names = {
@@ -2931,8 +2341,7 @@ def _module_keyed_table_axis_specs(
             for value in mapping.values
             if isinstance(value, ast.Call)
         }
-        if all_values_are_calls and len(value_constructor_names) == 1:
-            value_shape_name = next(iter(value_constructor_names))
+        if all_values_are_calls and len(value_constructor_names) == 1: value_shape_name = next(iter(value_constructor_names))
         specs.append(_KeyedTableAxisSpec(file_path=str(module.path), line=line, table_name=table_name, key_type_name=key_type_name, case_names=sorted_tuple(case_names), value_shape_name=value_shape_name))
     return tuple(specs)
 
@@ -2942,16 +2351,13 @@ def _module_class_assigned_enum_axis_specs(
 ) -> tuple[_ClassAssignedEnumAxisSpec, ...]:
     specs: list[_ClassAssignedEnumAxisSpec] = []
     for statement in _trim_docstring_body(module.module.body):
-        if not isinstance(statement, ast.ClassDef):
-            continue
+        if not isinstance(statement, ast.ClassDef): continue
         assignments = _class_direct_assignments(statement)
         for key_attr_name, value in assignments.items():
-            if value is None:
-                continue
+            if value is None: continue
             case_name = ast.unparse(value)
             key_type_name = _enum_family_name((case_name,))
-            if key_type_name is None:
-                continue
+            if key_type_name is None: continue
             specs.append(_ClassAssignedEnumAxisSpec(file_path=str(module.path), line=statement.lineno, class_name=statement.name, key_attr_name=key_attr_name, key_type_name=key_type_name, case_name=case_name))
     return tuple(specs)
 
@@ -2960,43 +2366,32 @@ def _enum_keyed_table_class_axis_shadow_candidates(
     module: ParsedModule,
 ) -> tuple["EnumKeyedTableClassAxisShadowCandidate", ...]:
     class_axis_specs = _module_class_assigned_enum_axis_specs(module)
-    if not class_axis_specs:
-        return ()
+    if not class_axis_specs: return ()
     axis_specs_by_key: dict[tuple[str, str], list[_ClassAssignedEnumAxisSpec]] = (
         defaultdict(list)
     )
-    for axis_spec in class_axis_specs:
-        axis_specs_by_key[axis_spec.key_type_name, axis_spec.key_attr_name].append(axis_spec)
+    for axis_spec in class_axis_specs: axis_specs_by_key[axis_spec.key_type_name, axis_spec.key_attr_name].append(axis_spec)
     candidates: list[EnumKeyedTableClassAxisShadowCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for table_name, (line, mapping) in sorted(_module_level_named_dicts(module).items()):
-        if len(mapping.keys) < 2 or any(key is None for key in mapping.keys):
-            continue
+        if len(mapping.keys) < 2 or any((key is None for key in mapping.keys)): continue
         table_case_names = tuple(ast.unparse(key) for key in mapping.keys if key is not None)
         key_type_name = _enum_family_name(table_case_names)
-        if key_type_name is None:
-            continue
-        if not all(isinstance(value, (ast.Name, ast.Attribute)) for value in mapping.values):
-            continue
+        if key_type_name is None: continue
+        if not all((isinstance(value, (ast.Name, ast.Attribute)) for value in mapping.values)): continue
         value_type_names = tuple(ast.unparse(value) for value in mapping.values)
-        if not value_type_names or not all((_looks_like_type_or_nominal_key(value_name) for value_name in value_type_names)):
-            continue
+        if not value_type_names or not all((_looks_like_type_or_nominal_key(value_name) for value_name in value_type_names)): continue
         for (axis_key_type_name, key_attr_name), axis_specs in sorted(axis_specs_by_key.items()):
-            if axis_key_type_name != key_type_name:
-                continue
+            if axis_key_type_name != key_type_name: continue
             class_sites = sorted_tuple({(axis_spec.class_name, axis_spec.line) for axis_spec in axis_specs}, key=lambda item: (item[1], item[0]))
-            if len(class_sites) < 2:
-                continue
+            if len(class_sites) < 2: continue
             class_case_names = sorted_tuple({axis_spec.case_name for axis_spec in axis_specs})
             shared_case_names = sorted_tuple(set(class_case_names) & set(table_case_names))
-            if len(shared_case_names) < 2:
-                continue
+            if len(shared_case_names) < 2: continue
             case_overlap_ratio = _case_overlap_ratio(sorted_tuple(table_case_names), class_case_names)
-            if case_overlap_ratio < 0.8:
-                continue
+            if case_overlap_ratio < 0.8: continue
             key = (str(module.path), table_name, key_attr_name)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             candidates.append(EnumKeyedTableClassAxisShadowCandidate(file_path=str(module.path), line=line, table_name=table_name, key_type_name=key_type_name, key_attr_name=key_attr_name, class_sites=class_sites, shared_case_names=shared_case_names, value_type_names=sorted_tuple(set(value_type_names))))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.key_type_name, item.table_name, item.key_attr_name))
@@ -3006,8 +2401,7 @@ def _parallel_keyed_table_and_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
     family_specs_by_file: dict[str, list[_KeyedFamilyAxisSpec]] = {}
-    for family_spec in _keyed_family_axis_specs(modules):
-        family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
+    for family_spec in _keyed_family_axis_specs(modules): family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
     candidates: list[ParallelKeyedTableAndFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for module in modules:
@@ -3015,25 +2409,20 @@ def _parallel_keyed_table_and_family_candidates(
         family_specs = family_specs_by_file.get(str(module.path), ())
         for table_spec in table_specs:
             for family_spec in family_specs:
-                if table_spec.key_type_name != family_spec.key_type_name:
-                    continue
+                if table_spec.key_type_name != family_spec.key_type_name: continue
                 shared_case_names = sorted_tuple(set(table_spec.case_names) & set(family_spec.case_names))
-                if len(shared_case_names) < 2:
-                    continue
+                if len(shared_case_names) < 2: continue
                 case_overlap_ratio = _case_overlap_ratio(table_spec.case_names, family_spec.case_names)
-                if case_overlap_ratio < 0.8:
-                    continue
+                if case_overlap_ratio < 0.8: continue
                 table_overlap = _identifier_name_overlap(table_spec.table_name, family_spec.family_name)
                 value_overlap = (
                     0.0
                     if table_spec.value_shape_name is None
                     else _identifier_name_overlap(table_spec.value_shape_name, family_spec.family_name)
                 )
-                if max(table_overlap, value_overlap) < 0.5:
-                    continue
+                if max(table_overlap, value_overlap) < 0.5: continue
                 key = (table_spec.file_path, table_spec.table_name, family_spec.family_name)
-                if key in seen:
-                    continue
+                if key in seen: continue
                 seen.add(key)
                 candidates.append(ParallelKeyedTableAndFamilyCandidate(table=table_spec, family_name=family_spec.family_name, family_line=family_spec.line, shared_case_names=shared_case_names))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.key_type_name, item.table_name, item.family_name))
@@ -3047,26 +2436,19 @@ def _parallel_keyed_table_axis_candidates(
     seen: set[tuple[str, str, str]] = set()
     for index, left_spec in enumerate(specs):
         for right_spec in specs[index + 1 :]:
-            if left_spec.file_path == right_spec.file_path:
-                continue
-            if left_spec.key_type_name != right_spec.key_type_name:
-                continue
+            if left_spec.file_path == right_spec.file_path: continue
+            if left_spec.key_type_name != right_spec.key_type_name: continue
             shared_case_names = sorted_tuple(set(left_spec.case_names) & set(right_spec.case_names))
-            if len(shared_case_names) < 2:
-                continue
+            if len(shared_case_names) < 2: continue
             case_overlap_ratio = _case_overlap_ratio(left_spec.case_names, right_spec.case_names)
-            if case_overlap_ratio < 0.8:
-                continue
+            if case_overlap_ratio < 0.8: continue
             table_overlap = _identifier_name_overlap(left_spec.table_name, right_spec.table_name)
             value_overlap = 0.0
-            if left_spec.value_shape_name is not None and right_spec.value_shape_name is not None:
-                value_overlap = _identifier_name_overlap(left_spec.value_shape_name, right_spec.value_shape_name)
+            if left_spec.value_shape_name is not None and right_spec.value_shape_name is not None: value_overlap = _identifier_name_overlap(left_spec.value_shape_name, right_spec.value_shape_name)
             name_overlap_ratio = max(table_overlap, value_overlap)
-            if name_overlap_ratio < 0.5:
-                continue
+            if name_overlap_ratio < 0.5: continue
             key = sorted_tuple((left_spec.table_name, right_spec.table_name)) + (left_spec.key_type_name,)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             candidates.append(ParallelKeyedTableAxisCandidate(key_type_name=left_spec.key_type_name, left=left_spec, right=right_spec, shared_case_names=shared_case_names, case_overlap_ratio=case_overlap_ratio, name_overlap_ratio=name_overlap_ratio))
     return sorted_tuple(candidates, key=lambda item: (item.key_type_name, item.left.file_path, item.left.table_name, item.right.file_path, item.right.table_name))
@@ -3080,28 +2462,20 @@ def _parallel_keyed_axis_family_candidates(
     seen: set[tuple[str, str, str]] = set()
     for index, left_spec in enumerate(specs):
         for right_spec in specs[index + 1 :]:
-            if left_spec.file_path == right_spec.file_path:
-                continue
-            if left_spec.key_type_name != right_spec.key_type_name:
-                continue
-            if left_spec.registry_key_attr_name != right_spec.registry_key_attr_name:
-                continue
+            if left_spec.file_path == right_spec.file_path: continue
+            if left_spec.key_type_name != right_spec.key_type_name: continue
+            if left_spec.registry_key_attr_name != right_spec.registry_key_attr_name: continue
             shared_case_names = sorted_tuple(set(left_spec.case_names) & set(right_spec.case_names))
-            if len(shared_case_names) < 2:
-                continue
+            if len(shared_case_names) < 2: continue
             family_label_match = (
                 left_spec.family_label is not None
                 and left_spec.family_label == right_spec.family_label
             )
             case_overlap_ratio = _case_overlap_ratio(left_spec.case_names, right_spec.case_names)
             name_overlap_ratio = _parallel_keyed_family_name_overlap(left_spec.family_name, right_spec.family_name)
-            if not family_label_match and (
-                case_overlap_ratio < 0.8 or name_overlap_ratio < 0.6
-            ):
-                continue
+            if not family_label_match and (case_overlap_ratio < 0.8 or name_overlap_ratio < 0.6): continue
             key = sorted_tuple((left_spec.family_name, right_spec.family_name)) + (left_spec.key_type_name,)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             candidates.append(ParallelKeyedAxisFamilyCandidate(key_type_name=left_spec.key_type_name, left=KeyedAxisFamilySite(file_path=left_spec.file_path, line=left_spec.line, family_name=left_spec.family_name, family_label=left_spec.family_label), right=KeyedAxisFamilySite(file_path=right_spec.file_path, line=right_spec.line, family_name=right_spec.family_name, family_label=right_spec.family_label), shared_case_names=shared_case_names, case_overlap_ratio=case_overlap_ratio, name_overlap_ratio=name_overlap_ratio))
     return sorted_tuple(candidates, key=lambda item: (item.key_type_name, item.left.file_path, item.left.family_name, item.right.file_path, item.right.family_name))
@@ -3114,8 +2488,7 @@ def _manual_selector_axis_specs(
     for module in modules:
         for selector_spec in _strategy_selector_specs(module):
             key_type_name = _enum_family_name(selector_spec.case_names)
-            if key_type_name is None:
-                continue
+            if key_type_name is None: continue
             specs.append(_ManualSelectorAxisSpec(file_path=str(module.path), line=selector_spec.line, family_name=selector_spec.root_name, selector_method_name=selector_spec.selector_method_name, key_type_name=key_type_name, case_names=selector_spec.case_names))
     return tuple(specs)
 
@@ -3129,16 +2502,12 @@ def _cross_module_axis_shadow_family_candidates(
     seen: set[tuple[str, str, str]] = set()
     for authoritative_spec in authoritative_specs:
         for shadow_spec in shadow_specs:
-            if authoritative_spec.file_path == shadow_spec.file_path:
-                continue
-            if authoritative_spec.key_type_name != shadow_spec.key_type_name:
-                continue
+            if authoritative_spec.file_path == shadow_spec.file_path: continue
+            if authoritative_spec.key_type_name != shadow_spec.key_type_name: continue
             shared_case_names = sorted_tuple(set(authoritative_spec.case_names) & set(shadow_spec.case_names))
-            if len(shared_case_names) < 2:
-                continue
+            if len(shared_case_names) < 2: continue
             key = (authoritative_spec.family_name, shadow_spec.family_name, authoritative_spec.key_type_name)
-            if key in seen:
-                continue
+            if key in seen: continue
             seen.add(key)
             candidates.append(CrossModuleAxisShadowFamilyCandidate(key_type_name=authoritative_spec.key_type_name, authoritative=AxisFamilySite(file_path=authoritative_spec.file_path, line=authoritative_spec.line, family_name=authoritative_spec.family_name), shadow=AxisFamilySite(file_path=shadow_spec.file_path, line=shadow_spec.line, family_name=shadow_spec.family_name), selector_method_name=shadow_spec.selector_method_name, shared_case_names=shared_case_names))
     return sorted_tuple(candidates, key=lambda item: (item.key_type_name, item.authoritative.file_path, item.shadow.file_path))
@@ -3152,11 +2521,9 @@ def _enum_member_refs_for_known_key_types(
     refs: dict[str, set[str]] = defaultdict(set)
     for subnode in _walk_nodes(node):
         parts = _ast_attribute_chain(subnode)
-        if parts is None or len(parts) < 2:
-            continue
+        if parts is None or len(parts) < 2: continue
         key_type_name = parts[-2]
-        if key_type_name not in key_type_names:
-            continue
+        if key_type_name not in key_type_names: continue
         refs[key_type_name].add(f"{key_type_name}.{parts[-1]}")
     return {
         key_type_name: sorted_tuple(case_names)
@@ -3168,17 +2535,14 @@ def _residual_closed_axis_branching_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
     authoritative_specs_by_key: dict[str, list[_KeyedFamilyAxisSpec]] = defaultdict(list)
-    for spec in _keyed_family_axis_specs(modules):
-        authoritative_specs_by_key[spec.key_type_name].append(spec)
-    if not authoritative_specs_by_key:
-        return ()
+    for spec in _keyed_family_axis_specs(modules): authoritative_specs_by_key[spec.key_type_name].append(spec)
+    if not authoritative_specs_by_key: return ()
     key_type_names = frozenset(authoritative_specs_by_key)
     candidates: list[ResidualClosedAxisBranchingCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for module in modules:
         file_path = str(module.path)
-        if "/tests/" in file_path:
-            continue
+        if '/tests/' in file_path: continue
         for qualname, function in _iter_named_functions(module):
             branch_site_count: Counter[str] = Counter()
             case_names_by_key: dict[str, set[str]] = defaultdict(set)
@@ -3193,34 +2557,27 @@ def _residual_closed_axis_branching_candidates(
                     refs_by_key: dict[str, set[str]] = defaultdict(set)
                     for case in subnode.cases:
                         pattern_refs = _enum_member_refs_for_known_key_types(case.pattern, key_type_names=key_type_names)
-                        for key_type_name, case_names in pattern_refs.items():
-                            refs_by_key[key_type_name].update(case_names)
+                        for key_type_name, case_names in pattern_refs.items(): refs_by_key[key_type_name].update(case_names)
                         if case.guard is not None:
                             guard_refs = _enum_member_refs_for_known_key_types(case.guard, key_type_names=key_type_names)
-                            for key_type_name, case_names in guard_refs.items():
-                                refs_by_key[key_type_name].update(case_names)
+                            for key_type_name, case_names in guard_refs.items(): refs_by_key[key_type_name].update(case_names)
                     for key_type_name, case_names in refs_by_key.items():
                         branch_site_count[key_type_name] += 1
                         case_names_by_key[key_type_name].update(case_names)
             for key_type_name, branch_count in sorted(branch_site_count.items()):
-                if branch_count <= 0:
-                    continue
+                if branch_count <= 0: continue
                 specs = authoritative_specs_by_key.get(key_type_name, ())
-                if not specs:
-                    continue
-                if any(spec.file_path == file_path for spec in specs):
-                    continue
+                if not specs: continue
+                if any((spec.file_path == file_path for spec in specs)): continue
                 authoritative_case_names = {
                     case_name
                     for spec in specs
                     for case_name in spec.case_names
                 }
                 shared_case_names = sorted_tuple(case_names_by_key[key_type_name] & authoritative_case_names)
-                if not shared_case_names:
-                    continue
+                if not shared_case_names: continue
                 key = (file_path, qualname, key_type_name)
-                if key in seen:
-                    continue
+                if key in seen: continue
                 seen.add(key)
                 authoritative_families = sorted_tuple(((spec.family_name, spec.file_path, spec.line) for spec in specs))
                 candidates.append(ResidualClosedAxisBranchingCandidate(key_type_name=key_type_name, file_path=file_path, line=function.lineno, qualname=qualname, branch_site_count=branch_count, case_names=shared_case_names, authoritative_families=authoritative_families))
@@ -3234,30 +2591,19 @@ def _parallel_registry_projection_family_candidates(
     grouped: dict[
         (tuple[str, str, tuple[str, ...]], list[RegisteredCatalogProjectionCandidate])
     ] = defaultdict(list)
-    for candidate in candidates:
-        grouped[candidate.collector_name, candidate.registry_accessor_name, candidate.return_keyword_names].append(candidate)
+    for candidate in candidates: grouped[candidate.collector_name, candidate.registry_accessor_name, candidate.return_keyword_names].append(candidate)
     return tuple((ParallelRegistryProjectionFamilyCandidate(file_path=str(module.path), collector_name=collector_name, registry_accessor_name=registry_accessor_name, return_keyword_names=return_keyword_names, functions=sorted_tuple(functions, key=lambda item: (item.line, item.qualname))) for (collector_name, registry_accessor_name, return_keyword_names), functions in sorted(grouped.items()) if len(functions) >= 2 and len({item.catalog_type_name for item in functions}) >= 2 and (len({item.extractor_base_name for item in functions}) >= 2)))
 
 
-def _is_classmethod(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return any((_ast_terminal_name(decorator) == 'classmethod' for decorator in node.decorator_list))
+def _is_classmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool: return any((_ast_terminal_name(decorator) == 'classmethod' for decorator in node.decorator_list))
 
 
-def _is_cls_registry_attribute(node: ast.AST | None) -> bool:
-    attribute = as_ast(node, ast.Attribute)
-    return (
-        attribute is not None
-        and attribute.attr == "_registry"
-        and name_id(attribute.value) == "cls"
-    )
+def _is_cls_registry_attribute(node: ast.AST | None) -> bool: attribute = as_ast(node, ast.Attribute); return attribute is not None and attribute.attr == '_registry' and (name_id(attribute.value) == 'cls')
 
 
 def _cls_registry_key_expr(node: ast.AST) -> str | None:
     subscript = as_ast(node, ast.Subscript)
-    if subscript is None or not _is_cls_registry_attribute(subscript.value):
-        return None
+    if subscript is None or not _is_cls_registry_attribute(subscript.value): return None
     return ast.unparse(subscript.slice)
 
 
@@ -3272,8 +2618,7 @@ class _ClsRegistryMembershipCompareStep(
     operator_label: ClassVar[str]
 
     def project_compare(self, left: ast.AST, right: ast.AST) -> tuple[str, str] | None:
-        if not _is_cls_registry_attribute(right):
-            return None
+        if not _is_cls_registry_attribute(right): return None
         return self.operator_label, ast.unparse(left)
 
 
@@ -3291,15 +2636,12 @@ class _ClsRegistryNotInMembershipStep(_ClsRegistryMembershipCompareStep):
     operator_label = "not_in"
 
 
-def _cls_registry_membership_test(node: ast.AST) -> tuple[str, str] | None:
-    return cast(tuple[str, str] | None, Maybe.of(node).bind(FirstSuccessfulEffectStep(registered_effect_steps(_ClsRegistryMembershipStep))).unwrap_or_none())
+def _cls_registry_membership_test(node: ast.AST) -> tuple[str, str] | None: return cast(tuple[str, str] | None, Maybe.of(node).bind(FirstSuccessfulEffectStep(registered_effect_steps(_ClsRegistryMembershipStep))).unwrap_or_none())
 
 
 def _raise_exception_type_name(node: ast.Raise) -> str | None:
-    if node.exc is None:
-        return None
-    if isinstance(node.exc, ast.Call):
-        return _call_name(node.exc.func)
+    if node.exc is None: return None
+    if isinstance(node.exc, ast.Call): return _call_name(node.exc.func)
     return _call_name(node.exc)
 
 
@@ -3325,10 +2667,7 @@ class _TryExceptRegistryLookupStep(
     step_id = "try_except_registry_lookup"
     registration_order = 10
 
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> RegistryLookupShape | None:
-        return _try_except_registry_lookup_shape(value)
+    def project(self, value: ast.FunctionDef | ast.AsyncFunctionDef) -> RegistryLookupShape | None: return _try_except_registry_lookup_shape(value)
 
 
 class _MembershipGuardRegistryLookupStep(
@@ -3340,31 +2679,17 @@ class _MembershipGuardRegistryLookupStep(
     step_id = "membership_guard_registry_lookup"
     registration_order = 20
 
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> RegistryLookupShape | None:
-        return _membership_guard_registry_lookup_shape(value)
+    def project(self, value: ast.FunctionDef | ast.AsyncFunctionDef) -> RegistryLookupShape | None: return _membership_guard_registry_lookup_shape(value)
 
 
 def _single_try_registry_lookup_body(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _TryRegistryLookupBody | None:
     try_node = single_ast(_trim_docstring_body(list(method.body)), ast.Try)
-    if (
-        try_node is None
-        or try_node.orelse
-        or try_node.finalbody
-        or len(try_node.handlers) != 1
-    ):
-        return None
+    if try_node is None or try_node.orelse or try_node.finalbody or (len(try_node.handlers) != 1): return None
     returned = single_ast(try_node.body, ast.Return)
     handler = try_node.handlers[0]
-    if (
-        returned is None
-        or returned.value is None
-        or _ast_terminal_name(handler.type) != "KeyError"
-    ):
-        return None
+    if returned is None or returned.value is None or _ast_terminal_name(handler.type) != 'KeyError': return None
     return _TryRegistryLookupBody(returned, handler)
 
 
@@ -3372,11 +2697,9 @@ def _try_except_registry_lookup_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> RegistryLookupShape | None:
     lookup_body = _single_try_registry_lookup_body(method)
-    if lookup_body is None:
-        return None
+    if lookup_body is None: return None
     key_expr = _cls_registry_key_expr(lookup_body.returned.value)
-    if key_expr is None:
-        return None
+    if key_expr is None: return None
     raise_stmt = next((stmt for stmt in lookup_body.handler.body if isinstance(stmt, ast.Raise)), None)
     return RegistryLookupShape(key_expr=key_expr, error_type_name=None if raise_stmt is None else _raise_exception_type_name(raise_stmt), style='try_except')
 
@@ -3385,15 +2708,12 @@ def _guarded_registry_lookup_body(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _GuardedRegistryLookupBody | None:
     body = _trim_docstring_body(list(method.body))
-    if len(body) < 2:
-        return None
+    if len(body) < 2: return None
     guard = as_ast(body[0], ast.If)
     returned = as_ast(body[-1], ast.Return)
-    if guard is None or returned is None or returned.value is None:
-        return None
+    if guard is None or returned is None or returned.value is None: return None
     membership = _cls_registry_membership_test(guard.test)
-    if membership is None or membership[0] != "not_in":
-        return None
+    if membership is None or membership[0] != 'not_in': return None
     return _GuardedRegistryLookupBody(guard, returned, membership[1])
 
 
@@ -3401,19 +2721,14 @@ def _membership_guard_registry_lookup_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> RegistryLookupShape | None:
     lookup_body = _guarded_registry_lookup_body(method)
-    if lookup_body is None:
-        return None
+    if lookup_body is None: return None
     returned_key = _cls_registry_key_expr(lookup_body.returned.value)
-    if returned_key != lookup_body.key_expr:
-        return None
+    if returned_key != lookup_body.key_expr: return None
     raise_stmt = next((stmt for stmt in lookup_body.guard.body if isinstance(stmt, ast.Raise)), None)
     return RegistryLookupShape(key_expr=lookup_body.key_expr, error_type_name=None if raise_stmt is None else _raise_exception_type_name(raise_stmt), style='membership_guard')
 
 
-def _registry_lookup_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> RegistryLookupShape | None:
-    return cast(RegistryLookupShape | None, Maybe.of(method).bind(FirstSuccessfulEffectStep(registered_effect_steps(_RegistryLookupShapeStep))).unwrap_or_none())
+def _registry_lookup_shape(method: ast.FunctionDef | ast.AsyncFunctionDef) -> RegistryLookupShape | None: return cast(RegistryLookupShape | None, Maybe.of(method).bind(FirstSuccessfulEffectStep(registered_effect_steps(_RegistryLookupShapeStep))).unwrap_or_none())
 
 
 def _repeated_keyed_family_candidates(
@@ -3427,14 +2742,11 @@ def _repeated_keyed_family_candidates(
             if isinstance(class_node, ast.ClassDef)
         ):
             base_names = _declared_base_names(node)
-            if "AutoRegisterByClassVar" not in base_names:
-                continue
+            if 'AutoRegisterByClassVar' not in base_names: continue
             assignments = _class_direct_assignments(node)
             registry_key_attr_name = _constant_string(assignments.get('registry_key_attr'))
-            if registry_key_attr_name is None:
-                continue
-            if not _is_empty_dict_expr(assignments.get("_registry")):
-                continue
+            if registry_key_attr_name is None: continue
+            if not _is_empty_dict_expr(assignments.get('_registry')): continue
             lookup_methods = [
                 (method, shape)
                 for method in _iter_class_methods(node)
@@ -3442,42 +2754,34 @@ def _repeated_keyed_family_candidates(
                 and method.name.startswith("for_")
                 and (shape := _registry_lookup_shape(method)) is not None
             ]
-            if len(lookup_methods) != 1:
-                continue
+            if len(lookup_methods) != 1: continue
             lookup_method, lookup_shape = lookup_methods[0]
             roots.append(KeyedFamilyRootCandidate(file_path=str(module.path), line=node.lineno, class_name=node.name, family_base_name='AutoRegisterByClassVar', registry_key_attr_name=registry_key_attr_name, lookup_method_name=lookup_method.name, lookup_style=lookup_shape.style, error_type_name=lookup_shape.error_type_name, abstract_hook_names=tuple((method.name for method in _iter_class_methods(node) if _is_abstract_method(method)))))
     min_roots = max(3, config.min_registration_sites)
     grouped: dict[tuple[str, str], list[KeyedFamilyRootCandidate]] = defaultdict(list)
-    for root in roots:
-        grouped[(root.family_base_name, root.lookup_style)].append(root)
+    for root in roots: grouped[root.family_base_name, root.lookup_style].append(root)
     return tuple((RepeatedKeyedFamilyCandidate(family_base_name=family_base_name, lookup_style=lookup_style, roots=sorted_tuple(items, key=lambda item: (item.file_path, item.line, item.class_name))) for (family_base_name, lookup_style), items in sorted(grouped.items()) if len(items) >= min_roots))
 
 
 def _manual_record_registration_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ManualRecordRegistrationShape | None:
-    if not _is_classmethod(method):
-        return None
+    if not _is_classmethod(method): return None
     body = _trim_docstring_body(list(method.body))
     key_expr = _manual_record_registration_key_expr(body)
-    if key_expr is None:
-        return None
+    if key_expr is None: return None
     constructor = _manual_record_registration_constructor(body[1:], key_expr)
-    if constructor is None:
-        return None
+    if constructor is None: return None
     constructor_field_names, key_field_names = constructor
-    if len(key_field_names) != 1:
-        return None
+    if len(key_field_names) != 1: return None
     return ManualRecordRegistrationShape(key_expr=key_expr, key_field_name=key_field_names[0], constructor_field_names=constructor_field_names)
 
 
 def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
     first_statement = body[0] if len(body) >= 2 else None
-    if not isinstance(first_statement, ast.If):
-        return None
+    if not isinstance(first_statement, ast.If): return None
     membership = _cls_registry_membership_test(first_statement.test)
-    if membership is None or membership[0] != "in":
-        return None
+    if membership is None or membership[0] != 'in': return None
     return membership[1]
 
 
@@ -3486,10 +2790,8 @@ def _manual_record_registration_constructor(
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     assignment = next((statement for statement in body if _cls_registry_key_expr(single_assign_target(statement)) == key_expr), None)
     assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
-    if assignment_call is None:
-        return None
-    if _call_name(assignment_call.func) != "cls":
-        return None
+    if assignment_call is None: return None
+    if _call_name(assignment_call.func) != 'cls': return None
     return (tuple((keyword.arg for keyword in assignment_call.keywords if keyword.arg is not None)), tuple((keyword.arg for keyword in assignment_call.keywords if keyword.arg is not None and ast.unparse(keyword.value) == key_expr)))
 
 
@@ -3502,16 +2804,12 @@ def _manual_keyed_record_table_group_candidates(
         for class_node in module.module.body
         if isinstance(class_node, ast.ClassDef)
     ):
-        if not _is_dataclass_class(node):
-            continue
-        if not _is_empty_dict_expr(_class_direct_assignments(node).get("_registry")):
-            continue
+        if not _is_dataclass_class(node): continue
+        if not _is_empty_dict_expr(_class_direct_assignments(node).get('_registry')): continue
         register_method = _class_method_named(node, "register")
-        if register_method is None:
-            continue
+        if register_method is None: continue
         registration_shape = _manual_record_registration_shape(register_method)
-        if registration_shape is None:
-            continue
+        if registration_shape is None: continue
         lookup_methods = [
             (method, shape)
             for method in _iter_class_methods(node)
@@ -3519,17 +2817,14 @@ def _manual_keyed_record_table_group_candidates(
             and method.name.startswith("for_")
             and (shape := _registry_lookup_shape(method)) is not None
         ]
-        if len(lookup_methods) != 1:
-            continue
+        if len(lookup_methods) != 1: continue
         lookup_method, lookup_shape = lookup_methods[0]
         classes.append(ManualKeyedRecordTableClassCandidate(file_path=str(module.path), line=node.lineno, class_name=node.name, register_method_name='register', lookup_method_name=lookup_method.name, lookup_style=lookup_shape.style, key_field_name=registration_shape.key_field_name, key_expr=registration_shape.key_expr, constructor_field_names=registration_shape.constructor_field_names))
-    if len(classes) < config.min_registration_sites:
-        return ()
+    if len(classes) < config.min_registration_sites: return ()
     grouped: dict[tuple[str, str], list[ManualKeyedRecordTableClassCandidate]] = (
         defaultdict(list)
     )
-    for candidate in classes:
-        grouped[candidate.register_method_name, candidate.lookup_style].append(candidate)
+    for candidate in classes: grouped[candidate.register_method_name, candidate.lookup_style].append(candidate)
     return tuple((ManualKeyedRecordTableGroupCandidate(file_path=str(module.path), classes=sorted_tuple(items, key=lambda item: (item.line, item.class_name))) for _, items in sorted(grouped.items()) if len(items) >= config.min_registration_sites))
 
 
@@ -3537,8 +2832,7 @@ def _returns_tuple_of_self_attributes(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
     returned = _single_return_case(method.body)
-    if returned is None:
-        return False
+    if returned is None: return False
     return_value, _ = returned
     return isinstance(return_value, ast.Tuple) and all((isinstance(item, ast.Attribute) and isinstance(item.value, ast.Name) and (item.value.id == 'self') for item in return_value.elts))
 
@@ -3549,11 +2843,9 @@ def _returns_constructor_call(
     accepted_names: tuple[str, ...],
 ) -> bool:
     returned = _single_return_case(method.body)
-    if returned is None:
-        return False
+    if returned is None: return False
     return_value, _ = returned
-    if not isinstance(return_value, ast.Call):
-        return False
+    if not isinstance(return_value, ast.Call): return False
     call_name = _call_name(return_value.func)
     return call_name in accepted_names
 
@@ -3563,10 +2855,8 @@ def _validation_guard_count(
 ) -> int:
     count = 0
     for node in _walk_nodes(method):
-        if isinstance(node, ast.Attribute) and node.attr in {"ndim", "shape"}:
-            count += 1
-        if isinstance(node, ast.Compare) and any((isinstance(operator, (ast.Lt, ast.LtE, ast.NotEq)) for operator in node.ops)):
-            count += 1
+        if isinstance(node, ast.Attribute) and node.attr in {'ndim', 'shape'}: count += 1
+        if isinstance(node, ast.Compare) and any((isinstance(operator, (ast.Lt, ast.LtE, ast.NotEq)) for operator in node.ops)): count += 1
     return count
 
 
@@ -3581,30 +2871,16 @@ def _same_type_constructor_method_names(
     names: list[str] = []
     for method in _iter_class_methods(node):
         if _is_classmethod(method):
-            if (
-                include_classmethods
-                and _returns_constructor_call(method, accepted_names=accepted_class_names)
-            ):
-                names.append(method.name)
+            if include_classmethods and _returns_constructor_call(method, accepted_names=accepted_class_names): names.append(method.name)
             continue
-        if (
-            include_instance_methods
-            and _returns_constructor_call(method, accepted_names=accepted_instance_names)
-        ):
-            names.append(method.name)
+        if include_instance_methods and _returns_constructor_call(method, accepted_names=accepted_instance_names): names.append(method.name)
     return sorted_tuple(set(names))
 
 
-def _shared_record_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple((name for name in _declared_base_names(node) if name not in _IGNORED_ANCESTOR_NAMES))
+def _shared_record_base_names(node: ast.ClassDef) -> tuple[str, ...]: return tuple((name for name in _declared_base_names(node) if name not in _IGNORED_ANCESTOR_NAMES))
 
 
-def _shared_record_mechanics_method_names(
-    candidates: Sequence["ManualStructuralRecordMechanicsClassCandidate"],
-) -> tuple[str, ...]:
-    shared_projection_method_names = set.intersection(*(set(candidate.projection_method_names) for candidate in candidates))
-    shared_roundtrip_method_names = set.intersection(*(set(candidate.roundtrip_method_names) for candidate in candidates))
-    return sorted_tuple({'validate'} | shared_projection_method_names | shared_roundtrip_method_names)
+def _shared_record_mechanics_method_names(candidates: Sequence['ManualStructuralRecordMechanicsClassCandidate']) -> tuple[str, ...]: shared_projection_method_names = set.intersection(*(set(candidate.projection_method_names) for candidate in candidates)); shared_roundtrip_method_names = set.intersection(*(set(candidate.roundtrip_method_names) for candidate in candidates)); return sorted_tuple({'validate'} | shared_projection_method_names | shared_roundtrip_method_names)
 
 
 def _manual_structural_record_mechanics_group_candidates(
@@ -3618,31 +2894,23 @@ def _manual_structural_record_mechanics_group_candidates(
         for class_node in module.module.body
         if isinstance(class_node, ast.ClassDef)
     ):
-        if not _is_dataclass_class(node) or _is_abstract_class(node):
-            continue
+        if not _is_dataclass_class(node) or _is_abstract_class(node): continue
         base_names = _shared_record_base_names(node)
-        if not base_names:
-            continue
+        if not base_names: continue
         validate_method = _class_method_named(node, "validate")
-        if validate_method is None or _validation_guard_count(validate_method) < 3:
-            continue
+        if validate_method is None or _validation_guard_count(validate_method) < 3: continue
         projection_method_names = sorted_tuple((method.name for method in _iter_class_methods(node) if _returns_tuple_of_self_attributes(method)))
-        if not projection_method_names:
-            continue
+        if not projection_method_names: continue
         roundtrip_method_names = _same_type_constructor_method_names(node, include_classmethods=True, include_instance_methods=False)
-        if not roundtrip_method_names:
-            continue
+        if not roundtrip_method_names: continue
         transform_method_names = tuple((method_name for method_name in _same_type_constructor_method_names(node, include_classmethods=False, include_instance_methods=True) if method_name != 'validate'))
-        if not transform_method_names:
-            continue
+        if not transform_method_names: continue
         classes.append(ManualStructuralRecordMechanicsClassCandidate(file_path=str(module.path), line=node.lineno, class_name=node.name, base_names=base_names, validation_method_name=validate_method.name, projection_method_names=projection_method_names, roundtrip_method_names=roundtrip_method_names, transform_method_names=transform_method_names))
-    if len(classes) < threshold:
-        return ()
+    if len(classes) < threshold: return ()
     grouped: dict[
         tuple[str, ...], list[ManualStructuralRecordMechanicsClassCandidate]
     ] = defaultdict(list)
-    for candidate in classes:
-        grouped[candidate.base_names].append(candidate)
+    for candidate in classes: grouped[candidate.base_names].append(candidate)
     return tuple((ManualStructuralRecordMechanicsGroupCandidate(file_path=str(module.path), base_names=base_names, classes=sorted_tuple(items, key=lambda item: (item.line, item.class_name))) for base_names, items in sorted(grouped.items()) if len(items) >= threshold if set.intersection(*(set(item.projection_method_names) for item in items)) if set.intersection(*(set(item.roundtrip_method_names) for item in items))))
 
 
@@ -3651,25 +2919,15 @@ def _simple_param_alias_from_attr(
     *,
     param_name: str,
 ) -> tuple[str, str] | None:
-    if (
-        not isinstance(statement, ast.Assign)
-        or len(statement.targets) != 1
-        or not isinstance(statement.targets[0], ast.Name)
-        or not isinstance(statement.value, ast.Attribute)
-        or not isinstance(statement.value.value, ast.Name)
-        or statement.value.value.id != param_name
-    ):
-        return None
+    if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or (not isinstance(statement.targets[0], ast.Name)) or (not isinstance(statement.value, ast.Attribute)) or (not isinstance(statement.value.value, ast.Name)) or (statement.value.value.id != param_name): return None
     return (statement.targets[0].id, statement.value.attr)
 
 
 def _simple_name_or_attr_expression(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
+    if isinstance(node, ast.Name): return node.id
     if isinstance(node, ast.Attribute):
         parent = _simple_name_or_attr_expression(node.value)
-        if parent is None:
-            return None
+        if parent is None: return None
         return f"{parent}.{node.attr}"
     return None
 
@@ -3679,15 +2937,9 @@ def _top_level_attribute_aliases(
 ) -> dict[str, str]:
     aliases: dict[str, str] = {}
     for statement in _trim_docstring_body(list(function.body)):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or not isinstance(statement.targets[0], ast.Name)
-        ):
-            continue
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or (not isinstance(statement.targets[0], ast.Name)): continue
         value_expression = _simple_name_or_attr_expression(statement.value)
-        if value_expression is None or "." not in value_expression:
-            continue
+        if value_expression is None or '.' not in value_expression: continue
         aliases[statement.targets[0].id] = value_expression
     return aliases
 
@@ -3699,24 +2951,17 @@ def _attribute_family_subject_expression(
 ) -> str | None:
     if isinstance(node, ast.Name):
         aliased = alias_sources.get(node.id)
-        if aliased is None or "." not in aliased:
-            return None
+        if aliased is None or '.' not in aliased: return None
         return aliased
     subject_expression = _simple_name_or_attr_expression(node)
-    if subject_expression is None or "." not in subject_expression:
-        return None
+    if subject_expression is None or '.' not in subject_expression: return None
     return subject_expression
 
 
 def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return (
-            _flatten_union_member_type_names(node.left)
-            + _flatten_union_member_type_names(node.right)
-        )
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr): return _flatten_union_member_type_names(node.left) + _flatten_union_member_type_names(node.right)
     type_name = _ast_terminal_name(node)
-    if type_name in {None, "None", "NoneType"}:
-        return ()
+    if type_name in {None, 'None', 'NoneType'}: return ()
     return (type_name,)
 
 
@@ -3725,15 +2970,9 @@ def _module_union_type_aliases(
 ) -> dict[str, tuple[str, ...]]:
     aliases: dict[str, tuple[str, ...]] = {}
     for statement in module.module.body:
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or not isinstance(statement.targets[0], ast.Name)
-        ):
-            continue
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or (not isinstance(statement.targets[0], ast.Name)): continue
         member_names = sorted_tuple(set(_flatten_union_member_type_names(statement.value)))
-        if len(member_names) < 2:
-            continue
+        if len(member_names) < 2: continue
         aliases[statement.targets[0].id] = member_names
     return aliases
 
@@ -3745,11 +2984,9 @@ def _indexed_class_for_simple_name(
 ) -> IndexedClass | None:
     module_local_symbol = f"{module.module_name}.{class_name}"
     indexed_class = class_index.class_for(module_local_symbol)
-    if indexed_class is not None:
-        return indexed_class
+    if indexed_class is not None: return indexed_class
     symbols = class_index.symbols_by_simple_name.get(class_name, ())
-    if len(symbols) != 1:
-        return None
+    if len(symbols) != 1: return None
     return class_index.class_for(symbols[0])
 
 
@@ -3767,11 +3004,9 @@ def _resolved_isinstance_type_names(
     abstract_names: list[str] = []
     for item in items:
         type_name = _ast_terminal_name(item)
-        if type_name in {None, "None", "NoneType"}:
-            continue
+        if type_name in {None, 'None', 'NoneType'}: continue
         indexed_class = _indexed_class_for_simple_name(module, class_index, type_name)
-        if indexed_class is None:
-            continue
+        if indexed_class is None: continue
         display_name = _indexed_class_display_name(indexed_class, class_index)
         if _is_abstract_class(indexed_class.node):
             abstract_names.append(display_name)
@@ -3789,13 +3024,11 @@ def _indexed_ancestor_symbols(
     queue = list(class_index.class_for(symbol).resolved_base_symbols if class_index.class_for(symbol) is not None else ())
     while queue:
         current = queue.pop(0)
-        if current in seen:
-            continue
+        if current in seen: continue
         seen.add(current)
         ancestors.append(current)
         indexed_class = class_index.class_for(current)
-        if indexed_class is None:
-            continue
+        if indexed_class is None: continue
         queue.extend(indexed_class.resolved_base_symbols)
     return tuple(ancestors)
 
@@ -3806,11 +3039,9 @@ def _common_abstract_base_names(
     class_names: tuple[str, ...],
 ) -> tuple[str, ...]:
     indexed_classes = tuple((indexed_class for class_name in class_names if (indexed_class := _indexed_class_for_simple_name(module, class_index, class_name)) is not None))
-    if len(indexed_classes) < 2:
-        return ()
+    if len(indexed_classes) < 2: return ()
     common_symbols = set(_indexed_ancestor_symbols(class_index, indexed_classes[0].symbol))
-    for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(_indexed_ancestor_symbols(class_index, indexed_class.symbol))
+    for indexed_class in indexed_classes[1:]: common_symbols &= set(_indexed_ancestor_symbols(class_index, indexed_class.symbol))
     abstract_bases = sorted_tuple((indexed_class for symbol in common_symbols if (indexed_class := class_index.class_for(symbol)) is not None and _is_abstract_class(indexed_class.node)), key=lambda item: item.symbol)
     return _indexed_class_display_names(abstract_bases, class_index)
 
@@ -3828,24 +3059,15 @@ def _concrete_type_case_function_candidates(
             defaultdict(list)
         )
         for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and not subnode.keywords
-                and _ast_terminal_name(subnode.func) == "isinstance"
-            ):
-                continue
+            if not (isinstance(subnode, ast.Call) and len(subnode.args) == 2 and (not subnode.keywords) and (_ast_terminal_name(subnode.func) == 'isinstance')): continue
             subject_expression = _attribute_family_subject_expression(subnode.args[0], alias_sources=alias_sources)
-            if subject_expression is None:
-                continue
+            if subject_expression is None: continue
             concrete_names, abstract_names = _resolved_isinstance_type_names(subnode.args[1], module=module, class_index=class_index)
-            if not concrete_names:
-                continue
+            if not concrete_names: continue
             grouped_checks[subject_expression].append((concrete_names, abstract_names))
         for subject_expression, checks in sorted(grouped_checks.items()):
             concrete_class_names = sorted_tuple({name for concrete_names, _ in checks for name in concrete_names})
-            if len(concrete_class_names) < 2:
-                continue
+            if len(concrete_class_names) < 2: continue
             subject_role = subject_expression.rsplit(".", 1)[-1]
             union_alias_names = sorted_tuple((alias_name for alias_name, member_names in union_aliases.items() if set(concrete_class_names) <= set(member_names)))
             candidates.append(ConcreteTypeCaseFunctionCandidate(file_path=str(module.path), line=function.lineno, function_name=qualname, subject_expression=subject_expression, subject_role=subject_role, concrete_class_names=concrete_class_names, abstract_class_names=sorted_tuple({name for _, abstract_names in checks for name in abstract_names}), union_alias_names=union_alias_names, case_site_count=len(checks)))
@@ -3862,41 +3084,24 @@ def _repeated_concrete_type_case_analysis_candidates(
     candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
     for module in modules:
         grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
-        for function_candidate in _concrete_type_case_function_candidates(module, class_index=class_index):
-            grouped[function_candidate.subject_role].append(function_candidate)
+        for function_candidate in _concrete_type_case_function_candidates(module, class_index=class_index): grouped[function_candidate.subject_role].append(function_candidate)
         for subject_role, functions in sorted(grouped.items()):
-            if len(functions) < min_function_count:
-                continue
+            if len(functions) < min_function_count: continue
             concrete_class_names = sorted_tuple({class_name for function in functions for class_name in function.concrete_class_names})
-            if len(concrete_class_names) < min_class_count:
-                continue
+            if len(concrete_class_names) < min_class_count: continue
             abstract_base_names = _common_abstract_base_names(module, class_index, concrete_class_names)
             union_alias_names = sorted_tuple({alias_name for function in functions for alias_name in function.union_alias_names})
             shared_suffix = _longest_common_suffix(concrete_class_names)
             shared_prefix = _longest_common_prefix(concrete_class_names)
-            if (
-                not abstract_base_names
-                and not union_alias_names
-                and max(len(shared_suffix), len(shared_prefix)) < 6
-            ):
-                continue
+            if not abstract_base_names and (not union_alias_names) and (max(len(shared_suffix), len(shared_prefix)) < 6): continue
             candidates.append(RepeatedConcreteTypeCaseAnalysisCandidate(file_path=str(module.path), functions=sorted_tuple(functions, key=lambda item: (item.line, item.function_name)), abstract_base_names=abstract_base_names))
     return tuple(candidates)
 
 
 def _self_cast_type_name(node: ast.AST) -> str | None:
-    if not (
-        isinstance(node, ast.Call)
-        and _ast_terminal_name(node.func) == "cast"
-        and len(node.args) == 2
-        and not node.keywords
-        and isinstance(node.args[1], ast.Name)
-        and node.args[1].id == "self"
-    ):
-        return None
+    if not (isinstance(node, ast.Call) and _ast_terminal_name(node.func) == 'cast' and (len(node.args) == 2) and (not node.keywords) and isinstance(node.args[1], ast.Name) and (node.args[1].id == 'self')): return None
     type_name = ast.unparse(node.args[0])
-    if not type_name:
-        return None
+    if not type_name: return None
     return type_name
 
 
@@ -3906,15 +3111,9 @@ def _self_cast_alias_names(
     aliases: set[str] = set()
     cast_type_names: set[str] = set()
     for statement in _walk_nodes(method):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or not isinstance(statement.targets[0], ast.Name)
-        ):
-            continue
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1 or (not isinstance(statement.targets[0], ast.Name)): continue
         cast_type_name = _self_cast_type_name(statement.value)
-        if cast_type_name is None:
-            continue
+        if cast_type_name is None: continue
         aliases.add(statement.targets[0].id)
         cast_type_names.add(cast_type_name)
     return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
@@ -3928,57 +3127,43 @@ def _implicit_self_contract_mixin_candidates(
     min_consumer_count = max(2, config.min_registration_sites)
     candidates: list[ImplicitSelfContractMixinCandidate] = []
     for indexed_class in sorted(class_index.classes_by_symbol.values(), key=lambda item: item.symbol):
-        if not indexed_class.simple_name.endswith("Mixin"):
-            continue
-        if _is_abstract_class(indexed_class.node):
-            continue
+        if not indexed_class.simple_name.endswith('Mixin'): continue
+        if _is_abstract_class(indexed_class.node): continue
         consumer_classes = tuple((descendant for descendant in _indexed_descendant_classes(class_index, indexed_class.symbol) if not _is_abstract_class(descendant.node)))
-        if len(consumer_classes) < min_consumer_count:
-            continue
+        if len(consumer_classes) < min_consumer_count: continue
         method_names: list[str] = []
         method_lines: list[int] = []
         cast_type_names: set[str] = set()
         accessed_attr_names: set[str] = set()
         for method in _iter_class_methods(indexed_class.node):
-            if _is_abstract_method(method):
-                continue
+            if _is_abstract_method(method): continue
             alias_names, method_cast_type_names = _self_cast_alias_names(method)
-            if not alias_names:
-                continue
+            if not alias_names: continue
             method_names.append(method.name)
             method_lines.append(method.lineno)
             cast_type_names.update(method_cast_type_names)
             accessed_attr_names.update(_attribute_names_for_roots(method, root_names=set(alias_names)))
-        if not method_names:
-            continue
+        if not method_names: continue
         candidates.append(ImplicitSelfContractMixinCandidate(file_path=indexed_class.file_path, line=indexed_class.line, mixin_name=_indexed_class_display_name(indexed_class, class_index), method_names=tuple(method_names), method_lines=tuple(method_lines), cast_type_names=sorted_tuple(cast_type_names), consumer_class_names=_indexed_class_display_names(consumer_classes, class_index), consumer_lines=tuple((consumer_class.line for consumer_class in consumer_classes)), accessed_attribute_names=sorted_tuple(accessed_attr_names)))
     return tuple(candidates)
 
 
 def _returns_false_only(statements: Sequence[ast.stmt]) -> bool:
     returned = _single_return_case(statements)
-    if returned is None:
-        return False
+    if returned is None: return False
     return_value, _ = returned
     return isinstance(return_value, ast.Constant) and return_value.value is False
 
 
 def _contains_nonfalse_return(node: ast.AST) -> bool:
     for subnode in _walk_nodes(node):
-        if not isinstance(subnode, ast.Return) or subnode.value is None:
-            continue
-        if isinstance(subnode.value, ast.Constant) and subnode.value.value is False:
-            continue
+        if not isinstance(subnode, ast.Return) or subnode.value is None: continue
+        if isinstance(subnode.value, ast.Constant) and subnode.value.value is False: continue
         return True
     return False
 
 
-def _attribute_names_for_roots(
-    node: ast.AST,
-    *,
-    root_names: set[str],
-) -> tuple[str, ...]:
-    return sorted_tuple({subnode.attr for subnode in _walk_nodes(node) if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name) and (subnode.value.id in root_names)})
+def _attribute_names_for_roots(node: ast.AST, *, root_names: set[str]) -> tuple[str, ...]: return sorted_tuple({subnode.attr for subnode in _walk_nodes(node) if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name) and (subnode.value.id in root_names)})
 
 
 def _guard_validator_function_candidate(
@@ -3989,8 +3174,7 @@ def _guard_validator_function_candidate(
     min_guard_count: int,
 ) -> GuardValidatorFunctionCandidate | None:
     subject_param_name = _module_function_single_parameter(qualname, function)
-    if subject_param_name is None:
-        return None
+    if subject_param_name is None: return None
     body = _trim_docstring_body(list(function.body))
     alias_name: str | None = None
     alias_source_attr: str | None = None
@@ -4000,11 +3184,9 @@ def _guard_validator_function_candidate(
             alias_name, alias_source_attr = alias
             body = body[1:]
     root_names = {subject_param_name}
-    if alias_name is not None:
-        root_names.add(alias_name)
+    if alias_name is not None: root_names.add(alias_name)
     access_profile = _guard_validator_access_profile(function, body, root_names=root_names, min_guard_count=min_guard_count)
-    if access_profile is None:
-        return None
+    if access_profile is None: return None
     guard_count, accessed_attr_names = access_profile
     helper_call_names = sorted_tuple({call_name for subnode in _walk_nodes(function) if isinstance(subnode, ast.Call) for call_name in (_call_name(subnode.func),) if call_name is not None})
     return GuardValidatorFunctionCandidate(file_path=str(module.path), line=function.lineno, function_name=qualname, subject_param_name=subject_param_name, alias_source_attr=alias_source_attr, guard_count=guard_count, accessed_attr_names=accessed_attr_names, helper_call_names=helper_call_names)
@@ -4013,8 +3195,7 @@ def _guard_validator_function_candidate(
 def _module_function_single_parameter(
     qualname: str, function: ast.FunctionDef | ast.AsyncFunctionDef
 ) -> str | None:
-    if "." in qualname:
-        return None
+    if '.' in qualname: return None
     return single_item(_parameter_names(function))
 
 
@@ -4025,16 +3206,12 @@ def _guard_validator_access_profile(
     root_names: set[str],
     min_guard_count: int,
 ) -> tuple[int, tuple[str, ...]] | None:
-    if len(body) < min_guard_count + 1:
-        return None
+    if len(body) < min_guard_count + 1: return None
     guard_count = sum((1 for statement in body if isinstance(statement, ast.If) and (not statement.orelse) and _returns_false_only(statement.body)))
-    if guard_count < min_guard_count:
-        return None
-    if not any(_contains_nonfalse_return(statement) for statement in body):
-        return None
+    if guard_count < min_guard_count: return None
+    if not any((_contains_nonfalse_return(statement) for statement in body)): return None
     accessed_attr_names = _attribute_names_for_roots(function, root_names=root_names)
-    if len(accessed_attr_names) < min_guard_count:
-        return None
+    if len(accessed_attr_names) < min_guard_count: return None
     return guard_count, accessed_attr_names
 
 
@@ -4055,15 +3232,12 @@ def _repeated_guard_validator_family_candidates(
     grouped: dict[tuple[str, str | None], list[GuardValidatorFunctionCandidate]] = (
         defaultdict(list)
     )
-    for candidate in functions:
-        grouped[candidate.subject_param_name, candidate.alias_source_attr].append(candidate)
+    for candidate in functions: grouped[candidate.subject_param_name, candidate.alias_source_attr].append(candidate)
     families: list[RepeatedGuardValidatorFamilyCandidate] = []
     for (subject_param_name, alias_source_attr), items in sorted(grouped.items()):
-        if len(items) < min_family_size:
-            continue
+        if len(items) < min_family_size: continue
         shared_attr_names = sorted_tuple(set.intersection(*(set(item.accessed_attr_names) for item in items)))
-        if len(shared_attr_names) < min_guard_count:
-            continue
+        if len(shared_attr_names) < min_guard_count: continue
         shared_helper_call_names = sorted_tuple(set.intersection(*(set(item.helper_call_names) for item in items)))
         ordered = sorted_tuple(items, key=lambda item: (item.line, item.function_name))
         families.append(RepeatedGuardValidatorFamilyCandidate(file_path=str(module.path), subject_param_name=subject_param_name, alias_source_attr=alias_source_attr, functions=ordered, shared_attr_names=shared_attr_names, shared_helper_call_names=shared_helper_call_names))
@@ -4071,8 +3245,7 @@ def _repeated_guard_validator_family_candidates(
 
 
 def _is_fail_loud_guard_raise(statement: ast.stmt) -> bool:
-    if not isinstance(statement, ast.Raise) or statement.exc is None:
-        return False
+    if not isinstance(statement, ast.Raise) or statement.exc is None: return False
     exc = statement.exc
     if isinstance(exc, ast.Call):
         error_name = _call_name(exc.func)
@@ -4101,16 +3274,13 @@ def _normalized_shape_guard_signature(test: ast.AST) -> str:
     return re.sub(r"_S\\d+", "_S", signature)
 
 
-def _is_shape_guard_signature(signature: str) -> bool:
-    return any(token in signature for token in (".shape", ".ndim", "len("))
+def _is_shape_guard_signature(signature: str) -> bool: return any((token in signature for token in ('.shape', '.ndim', 'len(')))
 
 
 def _shape_guard_signatures(test: ast.AST) -> tuple[str, ...]:
-    if isinstance(test, ast.BoolOp):
-        return tuple((signature for value in test.values for signature in _shape_guard_signatures(value)))
+    if isinstance(test, ast.BoolOp): return tuple((signature for value in test.values for signature in _shape_guard_signatures(value)))
     signature = _normalized_shape_guard_signature(test)
-    if not _is_shape_guard_signature(signature):
-        return ()
+    if not _is_shape_guard_signature(signature): return ()
     return (signature,)
 
 
@@ -4121,33 +3291,20 @@ def _validate_shape_guard_method_candidate(
     *,
     min_guard_count: int,
 ) -> ValidateShapeGuardMethodCandidate | None:
-    if method.name != "validate":
-        return None
-    if not method.args.args or method.args.args[0].arg != "self":
-        return None
+    if method.name != 'validate': return None
+    if not method.args.args or method.args.args[0].arg != 'self': return None
     body = _trim_docstring_body(list(method.body))
     guard_statements = tuple((statement for statement in body if isinstance(statement, ast.If) and (not statement.orelse) and statement.body and all((_is_fail_loud_guard_raise(item) for item in statement.body))))
-    if len(guard_statements) < min_guard_count:
-        return None
+    if len(guard_statements) < min_guard_count: return None
     shape_guard_signatures = sorted_tuple((signature for statement in guard_statements for signature in _shape_guard_signatures(statement.test)))
-    if len(set(shape_guard_signatures)) < min_guard_count:
-        return None
+    if len(set(shape_guard_signatures)) < min_guard_count: return None
     return ValidateShapeGuardMethodCandidate(file_path=str(module.path), line=method.lineno, class_name=class_node.name, method_name=method.name, guard_count=len(guard_statements), shape_guard_count=len(set(shape_guard_signatures)), shape_guard_signatures=shape_guard_signatures)
 
 
-def _shared_shape_guard_signature_count(
-    left: ValidateShapeGuardMethodCandidate,
-    right: ValidateShapeGuardMethodCandidate,
-) -> int:
-    return len(set(left.shape_guard_signatures) & set(right.shape_guard_signatures))
+def _shared_shape_guard_signature_count(left: ValidateShapeGuardMethodCandidate, right: ValidateShapeGuardMethodCandidate) -> int: return len(set(left.shape_guard_signatures) & set(right.shape_guard_signatures))
 
 
-def _validate_shape_guard_method_candidates(
-    modules: Sequence[ParsedModule],
-    *,
-    min_guard_count: int,
-) -> tuple[ValidateShapeGuardMethodCandidate, ...]:
-    return tuple((candidate for module in modules for class_node in _walk_nodes(module.module) if isinstance(class_node, ast.ClassDef) for statement in class_node.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) for candidate in (_validate_shape_guard_method_candidate(module, class_node, statement, min_guard_count=min_guard_count),) if candidate is not None))
+def _validate_shape_guard_method_candidates(modules: Sequence[ParsedModule], *, min_guard_count: int) -> tuple[ValidateShapeGuardMethodCandidate, ...]: return tuple((candidate for module in modules for class_node in _walk_nodes(module.module) if isinstance(class_node, ast.ClassDef) for statement in class_node.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) for candidate in (_validate_shape_guard_method_candidate(module, class_node, statement, min_guard_count=min_guard_count),) if candidate is not None))
 
 
 def _group_repeated_validate_shape_guard_candidates(
@@ -4157,17 +3314,12 @@ def _group_repeated_validate_shape_guard_candidates(
     min_guard_count = max(2, config.min_duplicate_statements - 1)
     min_family_size = max(2, config.min_registration_sites)
     min_shared_shape_guards = max(2, min_guard_count)
-    if len(method_candidates) < min_family_size:
-        return ()
+    if len(method_candidates) < min_family_size: return ()
     adjacency: dict[int, set[int]] = defaultdict(set)
     for left_index, left in enumerate(method_candidates):
         for right_index in range(left_index + 1, len(method_candidates)):
             right = method_candidates[right_index]
-            if (
-                _shared_shape_guard_signature_count(left, right)
-                < min_shared_shape_guards
-            ):
-                continue
+            if _shared_shape_guard_signature_count(left, right) < min_shared_shape_guards: continue
             adjacency[left_index].add(right_index)
             adjacency[right_index].add(left_index)
     groups: list[RepeatedValidateShapeGuardFamilyCandidate] = []
@@ -4196,19 +3348,12 @@ def _group_repeated_validate_shape_guard_candidates(
         ordered_methods = sorted_tuple((method_candidates[item] for item in clique), key=lambda candidate: (candidate.file_path, candidate.line, candidate.symbol))
         signature_support = Counter((signature for method in ordered_methods for signature in set(method.shape_guard_signatures)))
         shared_shape_guard_signatures = sorted_tuple((signature for signature, count in signature_support.items() if count >= 2))
-        if len(shared_shape_guard_signatures) < min_shared_shape_guards:
-            continue
+        if len(shared_shape_guard_signatures) < min_shared_shape_guards: continue
         groups.append(RepeatedValidateShapeGuardFamilyCandidate(file_path=ordered_methods[0].file_path, methods=ordered_methods, shared_shape_guard_signatures=shared_shape_guard_signatures))
     return sorted_tuple(groups, key=lambda candidate: (candidate.methods[0].file_path, candidate.methods[0].line, candidate.methods[0].symbol))
 
 
-def _repeated_validate_shape_guard_candidates_for_modules(
-    modules: Sequence[ParsedModule],
-    config: DetectorConfig,
-) -> tuple[RepeatedValidateShapeGuardFamilyCandidate, ...]:
-    min_guard_count = max(2, config.min_duplicate_statements - 1)
-    method_candidates = _validate_shape_guard_method_candidates(modules, min_guard_count=min_guard_count)
-    return _group_repeated_validate_shape_guard_candidates(method_candidates, config)
+def _repeated_validate_shape_guard_candidates_for_modules(modules: Sequence[ParsedModule], config: DetectorConfig) -> tuple[RepeatedValidateShapeGuardFamilyCandidate, ...]: min_guard_count = max(2, config.min_duplicate_statements - 1); method_candidates = _validate_shape_guard_method_candidates(modules, min_guard_count=min_guard_count); return _group_repeated_validate_shape_guard_candidates(method_candidates, config)
 
 
 def _nominal_strategy_scaffold(candidate: EnumStrategyDispatchCandidate) -> str:
@@ -4239,8 +3384,7 @@ def _nominal_strategy_patch(candidate: EnumStrategyDispatchCandidate) -> str:
 
 def _self_attr_name(target: ast.AST) -> str | None:
     if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name):
-        if target.value.id == "self":
-            return target.attr
+        if target.value.id == 'self': return target.attr
     return None
 
 
@@ -4252,12 +3396,10 @@ def _assigned_self_attrs(
         if isinstance(subnode, ast.Assign):
             for target in subnode.targets:
                 attr_name = _self_attr_name(target)
-                if attr_name is not None:
-                    assigned.append(attr_name)
+                if attr_name is not None: assigned.append(attr_name)
         elif isinstance(subnode, ast.AnnAssign):
             attr_name = _self_attr_name(subnode.target)
-            if attr_name is not None:
-                assigned.append(attr_name)
+            if attr_name is not None: assigned.append(attr_name)
     return tuple(dict.fromkeys(assigned))
 
 
@@ -4269,15 +3411,11 @@ def _assigned_self_attr_from_param(
     }
     assigned: dict[str, str] = {}
     for subnode in _walk_nodes(node):
-        if not isinstance(subnode, ast.Assign):
-            continue
-        if len(subnode.targets) != 1:
-            continue
+        if not isinstance(subnode, ast.Assign): continue
+        if len(subnode.targets) != 1: continue
         attr_name = _self_attr_name(subnode.targets[0])
-        if attr_name is None:
-            continue
-        if isinstance(subnode.value, ast.Name) and subnode.value.id in param_names:
-            assigned[attr_name] = subnode.value.id
+        if attr_name is None: continue
+        if isinstance(subnode.value, ast.Name) and subnode.value.id in param_names: assigned[attr_name] = subnode.value.id
     return assigned
 
 
@@ -4286,18 +3424,14 @@ def _string_dispatch_cases_from_body(
     axis_expression: str,
 ) -> tuple[str, ...]:
     cases: list[str] = []
-    if not body:
-        return ()
+    if not body: return ()
     current = body[0]
     while isinstance(current, ast.If):
         dispatch_case = _comparison_dispatch_case(current.test)
-        if dispatch_case is None:
-            return ()
+        if dispatch_case is None: return ()
         current_axis, case_name = dispatch_case
-        if current_axis != axis_expression:
-            return ()
-        if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
-            return ()
+        if current_axis != axis_expression: return ()
+        if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None: return ()
         cases.append(case_name)
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
             current = current.orelse[0]
@@ -4314,32 +3448,25 @@ def _manual_fiber_tag_candidates(
 ) -> tuple[ManualFiberTagCandidate, ...]:
     candidates: list[ManualFiberTagCandidate] = []
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
+        if not isinstance(node, ast.ClassDef): continue
         methods = {
             item.name: item
             for item in node.body
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         }
         init_method = methods.get("__init__")
-        if init_method is None:
-            continue
+        if init_method is None: continue
         assigned_from_param = _assigned_self_attr_from_param(init_method)
         tag_names = tuple((attr_name for attr_name, param_name in assigned_from_param.items() if param_name in _TAG_PARAM_NAMES))
-        if not tag_names:
-            continue
+        if not tag_names: continue
         assigned_field_names = _assigned_self_attrs(init_method)
         for method_name, method in methods.items():
-            if method_name == "__init__":
-                continue
-            if not method.body:
-                continue
+            if method_name == '__init__': continue
+            if not method.body: continue
             for tag_name in tag_names:
                 case_names = _string_dispatch_cases_from_body(method.body, f'self.{tag_name}')
-                if len(case_names) < 2:
-                    continue
-                if len(assigned_field_names) <= len(case_names) + 1:
-                    continue
+                if len(case_names) < 2: continue
+                if len(assigned_field_names) <= len(case_names) + 1: continue
                 candidates.append(ManualFiberTagCandidate(file_path=str(module.path), line=method.lineno, subject_name=node.name, name_family=case_names, init_line=init_method.lineno, method_name=method_name, tag_name=tag_name, assigned_field_names=assigned_field_names))
     return tuple(candidates)
 
@@ -4347,10 +3474,8 @@ def _manual_fiber_tag_candidates(
 def _expr_mentions_self_attr(expr: ast.AST, attr_name: str) -> bool:
     for subnode in _walk_nodes(expr):
         if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name):
-            if subnode.value.id == "self" and subnode.attr == attr_name:
-                return True
-        if isinstance(subnode, ast.Name) and subnode.id == attr_name:
-            return True
+            if subnode.value.id == 'self' and subnode.attr == attr_name: return True
+        if isinstance(subnode, ast.Name) and subnode.id == attr_name: return True
     return False
 
 
@@ -4359,50 +3484,37 @@ def _descriptor_derived_view_candidates(
 ) -> tuple[DescriptorDerivedViewCandidate, ...]:
     candidates: list[DescriptorDerivedViewCandidate] = []
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
+        if not isinstance(node, ast.ClassDef): continue
         methods = [
             item
             for item in node.body
             if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         init_method = next((item for item in methods if item.name == "__init__"), None)
-        if init_method is None:
-            continue
+        if init_method is None: continue
         source_assignments = _assigned_self_attr_from_param(init_method)
         for source_attr in source_assignments:
             derived_field_names = []
             for subnode in _walk_nodes(init_method):
-                if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
-                    continue
+                if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1: continue
                 target_name = _self_attr_name(subnode.targets[0])
-                if target_name is None or target_name == source_attr:
-                    continue
-                if _expr_mentions_self_attr(subnode.value, source_attr):
-                    derived_field_names.append(target_name)
+                if target_name is None or target_name == source_attr: continue
+                if _expr_mentions_self_attr(subnode.value, source_attr): derived_field_names.append(target_name)
             derived_field_names = cast(tuple[str, ...], tuple(dict.fromkeys(derived_field_names)))
-            if len(derived_field_names) < 2:
-                continue
+            if len(derived_field_names) < 2: continue
             for method in methods:
-                if method.name == "__init__":
-                    continue
+                if method.name == '__init__': continue
                 updated_field_names = []
                 rewrites_source = False
                 for subnode in _walk_nodes(method):
-                    if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1:
-                        continue
+                    if not isinstance(subnode, ast.Assign) or len(subnode.targets) != 1: continue
                     target_name = _self_attr_name(subnode.targets[0])
-                    if target_name is None:
-                        continue
-                    if target_name == source_attr:
-                        rewrites_source = True
-                    if target_name in derived_field_names:
-                        updated_field_names.append(target_name)
+                    if target_name is None: continue
+                    if target_name == source_attr: rewrites_source = True
+                    if target_name in derived_field_names: updated_field_names.append(target_name)
                 updated_field_names = cast(tuple[str, ...], tuple(dict.fromkeys(updated_field_names)))
-                if not rewrites_source:
-                    continue
-                if not updated_field_names or set(updated_field_names) >= set(derived_field_names):
-                    continue
+                if not rewrites_source: continue
+                if not updated_field_names or set(updated_field_names) >= set(derived_field_names): continue
                 candidate_derived_field_names: tuple[str, ...] = tuple(derived_field_names)
                 candidate_updated_field_names: tuple[str, ...] = tuple(updated_field_names)
                 candidates.append(DescriptorDerivedViewCandidate(file_path=str(module.path), line=method.lineno, subject_name=node.name, name_family=candidate_derived_field_names, source_attr=source_attr, init_line=init_method.lineno, mutator_name=method.name, updated_field_names=candidate_updated_field_names))
@@ -4410,8 +3522,7 @@ def _descriptor_derived_view_candidates(
 
 
 def _is_empty_dict_expr(node: ast.AST | None) -> bool:
-    if isinstance(node, ast.Dict):
-        return not node.keys and not node.values
+    if isinstance(node, ast.Dict): return not node.keys and (not node.values)
     return (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
@@ -4424,11 +3535,9 @@ def _module_registry_names(module: ParsedModule) -> tuple[str, ...]:
     for node in module.module.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1:
             target = node.targets[0]
-            if isinstance(target, ast.Name) and _is_empty_dict_expr(node.value):
-                names.append(target.id)
+            if isinstance(target, ast.Name) and _is_empty_dict_expr(node.value): names.append(target.id)
         elif isinstance(node, ast.AnnAssign):
-            if isinstance(node.target, ast.Name) and _is_empty_dict_expr(node.value):
-                names.append(node.target.id)
+            if isinstance(node.target, ast.Name) and _is_empty_dict_expr(node.value): names.append(node.target.id)
     return tuple(names)
 
 
@@ -4436,45 +3545,33 @@ def _manual_registry_candidates(
     module: ParsedModule,
 ) -> tuple[ManualRegistryCandidate, ...]:
     registry_names = set(_module_registry_names(module))
-    if not registry_names:
-        return ()
+    if not registry_names: return ()
     candidates: list[ManualRegistryCandidate] = []
     module_classes = [
         node for node in module.module.body if isinstance(node, ast.ClassDef)
     ]
     handler_classes = tuple((node.name for node in module_classes if node.name.endswith('Handler') or any((isinstance(item, ast.FunctionDef) and item.name == 'handle' for item in node.body))))
     for node in module.module.body:
-        if not isinstance(node, ast.FunctionDef):
-            continue
+        if not isinstance(node, ast.FunctionDef): continue
         for subnode in node.body:
-            if not isinstance(subnode, ast.FunctionDef):
-                continue
+            if not isinstance(subnode, ast.FunctionDef): continue
             registry_name: str | None = None
             for inner_node in _walk_nodes(subnode):
                 if isinstance(inner_node, ast.Assign):
                     for target in inner_node.targets:
                         if isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name):
-                            if target.value.id in registry_names:
-                                registry_name = target.value.id
+                            if target.value.id in registry_names: registry_name = target.value.id
                 elif isinstance(inner_node, ast.Return) and isinstance(inner_node.value, ast.Name):
-                    if (
-                        inner_node.value.id == subnode.args.args[0].arg
-                        if subnode.args.args
-                        else False
-                    ):
-                        continue
-            if registry_name is None:
-                continue
+                    if inner_node.value.id == subnode.args.args[0].arg if subnode.args.args else False: continue
+            if registry_name is None: continue
             decorated_class_names = tuple((class_node.name for class_node in module_classes if any((isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Name) and (decorator.func.id == node.name) for decorator in class_node.decorator_list))))
-            if len(decorated_class_names) < 2:
-                continue
+            if len(decorated_class_names) < 2: continue
             unregistered_class_names = sorted_tuple(set(handler_classes) - set(decorated_class_names))
             candidates.append(ManualRegistryCandidate(file_path=str(module.path), line=node.lineno, subject_name=registry_name, name_family=decorated_class_names, decorator_name=node.name, unregistered_class_names=unregistered_class_names))
     return tuple(candidates)
 
 
-def _method_names(node: ast.ClassDef) -> frozenset[str]:
-    return frozenset((item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))))
+def _method_names(node: ast.ClassDef) -> frozenset[str]: return frozenset((item.name for item in node.body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))))
 
 
 def _shared_abstract_nominal_authority(
@@ -4488,20 +3585,16 @@ def _shared_abstract_nominal_authority(
         stack = [node.name]
         while stack:
             current_name = stack.pop()
-            if current_name in seen or current_name in _IGNORED_ANCESTOR_NAMES:
-                continue
+            if current_name in seen or current_name in _IGNORED_ANCESTOR_NAMES: continue
             seen.add(current_name)
             current_node = class_lookup.get(current_name)
-            if current_node is None:
-                continue
-            if _is_abstract_class(current_node):
-                lineage.add(current_name)
+            if current_node is None: continue
+            if _is_abstract_class(current_node): lineage.add(current_name)
             stack.extend((base_name for base_name in _declared_base_names(current_node) if base_name not in seen))
         return lineage
 
     lineage_sets = [abstract_lineage_names(node) for node in classes]
-    if not lineage_sets or any(not lineage for lineage in lineage_sets):
-        return False
+    if not lineage_sets or any((not lineage for lineage in lineage_sets)): return False
     return bool(set.intersection(*lineage_sets))
 
 
@@ -4516,24 +3609,18 @@ def _structural_confusability_candidates(
     for qualname, function in _iter_named_functions(module):
         for parameter_name in _parameter_names(function):
             observed_method_names = sorted_tuple({subnode.func.attr for subnode in _walk_nodes(function) if isinstance(subnode, ast.Call) and isinstance(subnode.func, ast.Attribute) and isinstance(subnode.func.value, ast.Name) and (subnode.func.value.id == parameter_name)})
-            if len(observed_method_names) < 2:
-                continue
+            if len(observed_method_names) < 2: continue
             confusable_classes = tuple((node for node in class_nodes if set(observed_method_names) <= _method_names(node)))
-            if len(confusable_classes) < 2:
-                continue
-            if _shared_abstract_nominal_authority(confusable_classes, class_lookup=class_lookup):
-                continue
+            if len(confusable_classes) < 2: continue
+            if _shared_abstract_nominal_authority(confusable_classes, class_lookup=class_lookup): continue
             candidates.append(StructuralConfusabilityCandidate(file_path=str(module.path), line=function.lineno, subject_name=qualname, name_family=tuple((node.name for node in confusable_classes)), parameter_name=parameter_name, observed_method_names=observed_method_names))
     return tuple(candidates)
 
 
 def _is_dataclass_decorator(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "dataclass"
-    if isinstance(node, ast.Call):
-        return _is_dataclass_decorator(node.func)
-    if isinstance(node, ast.Attribute):
-        return node.attr == "dataclass"
+    if isinstance(node, ast.Name): return node.id == 'dataclass'
+    if isinstance(node, ast.Call): return _is_dataclass_decorator(node.func)
+    if isinstance(node, ast.Attribute): return node.attr == 'dataclass'
     return False
 
 
@@ -4541,35 +3628,25 @@ def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
     for decorator in node.decorator_list:
         if isinstance(decorator, ast.Call) and _is_dataclass_decorator(decorator.func):
             for keyword in decorator.keywords:
-                if keyword.arg == "frozen":
-                    return isinstance(keyword.value, ast.Constant) and bool(keyword.value.value)
+                if keyword.arg == 'frozen': return isinstance(keyword.value, ast.Constant) and bool(keyword.value.value)
             return False
-        if _is_dataclass_decorator(decorator):
-            return False
+        if _is_dataclass_decorator(decorator): return False
     return False
 
 
-def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return _class_annassign_target_names(node)
+def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]: return _class_annassign_target_names(node)
 
 
 
 def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
     roles: list[str] = []
-    if field_name == "file_path" or field_name.endswith("_path"):
-        roles.append("source_path")
-    if field_name in {"line", "lineno"} or field_name.endswith("_line"):
-        roles.append("source_line")
-    if field_name in {_SUBJECT_NAME_FIELD, "class_name", "function_name"}:
-        roles.append(_SUBJECT_NAME_FIELD)
-    if field_name in {"observed_name", "method_name", "builder_name", "export_name"}:
-        roles.append("observed_name")
-    if field_name == _NAME_LITERAL or field_name == _SUBJECT_NAME_FIELD or field_name.endswith('_name'):
-        roles.append("name_payload")
-    if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
-        roles.append(_NAME_FAMILY_FIELD)
-    if field_name in {"owner_symbol", "symbol"} or field_name.endswith("_symbol"):
-        roles.append("owner_symbol")
+    if field_name == 'file_path' or field_name.endswith('_path'): roles.append('source_path')
+    if field_name in {'line', 'lineno'} or field_name.endswith('_line'): roles.append('source_line')
+    if field_name in {_SUBJECT_NAME_FIELD, 'class_name', 'function_name'}: roles.append(_SUBJECT_NAME_FIELD)
+    if field_name in {'observed_name', 'method_name', 'builder_name', 'export_name'}: roles.append('observed_name')
+    if field_name == _NAME_LITERAL or field_name == _SUBJECT_NAME_FIELD or field_name.endswith('_name'): roles.append('name_payload')
+    if field_name == _NAME_FAMILY_FIELD or field_name.endswith('_names'): roles.append(_NAME_FAMILY_FIELD)
+    if field_name in {'owner_symbol', 'symbol'} or field_name.endswith('_symbol'): roles.append('owner_symbol')
     return tuple(dict.fromkeys(roles))
 
 
@@ -4578,8 +3655,7 @@ def _normalized_semantic_role_fields(
 ) -> tuple[tuple[str, tuple[str, ...]], ...]:
     role_to_fields: dict[str, set[str]] = defaultdict(set)
     for field_name in field_names:
-        for role_name in _normalize_semantic_field_roles(field_name):
-            role_to_fields[role_name].add(field_name)
+        for role_name in _normalize_semantic_field_roles(field_name): role_to_fields[role_name].add(field_name)
     return tuple(((role_name, sorted_tuple(field_names)) for role_name, field_names in sorted(role_to_fields.items())))
 
 
@@ -4588,8 +3664,7 @@ _GENERIC_FAMILY_CLASS_TOKENS = frozenset({'candidate', 'data', 'entry', 'group',
 
 def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
     tokens = tuple((token.lower() for token in re.findall('[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+', class_name) if token.lower() not in _GENERIC_FAMILY_CLASS_TOKENS))
-    if not tokens:
-        return ()
+    if not tokens: return ()
     return (tokens[-1],)
 
 
@@ -4598,24 +3673,17 @@ def _witness_carrier_class_candidates(
 ) -> tuple[WitnessCarrierClassCandidate, ...]:
     candidates: list[WitnessCarrierClassCandidate] = []
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if not _is_frozen_dataclass(node):
-            continue
-        if _is_abstract_class(node):
-            continue
+        if not isinstance(node, ast.ClassDef): continue
+        if not _is_frozen_dataclass(node): continue
+        if _is_abstract_class(node): continue
         field_names = _annassign_field_names(node)
         normalized_role_fields = _normalized_semantic_role_fields(field_names)
         normalized_roles = tuple(role_name for role_name, _ in normalized_role_fields)
         family_tokens = _carrier_family_tokens(node.name)
-        if not family_tokens:
-            continue
-        if len(normalized_roles) < 3:
-            continue
-        if {"source_path", "source_line"} - set(normalized_roles):
-            continue
-        if not {'name_payload', _NAME_FAMILY_FIELD, _SUBJECT_NAME_FIELD, 'observed_name'} & set(normalized_roles):
-            continue
+        if not family_tokens: continue
+        if len(normalized_roles) < 3: continue
+        if {'source_path', 'source_line'} - set(normalized_roles): continue
+        if not {'name_payload', _NAME_FAMILY_FIELD, _SUBJECT_NAME_FIELD, 'observed_name'} & set(normalized_roles): continue
         candidates.append(WitnessCarrierClassCandidate(file_path=str(module.path), line=node.lineno, subject_name=node.name, name_family=field_names, base_names=_shared_record_base_names(node), family_tokens=family_tokens, normalized_roles=normalized_roles, normalized_role_fields=normalized_role_fields))
     return tuple(candidates)
 
@@ -4624,41 +3692,26 @@ def _witness_carrier_family_candidates(
     module: ParsedModule,
 ) -> tuple[WitnessCarrierFamilyCandidate, ...]:
     classes = _witness_carrier_class_candidates(module)
-    if len(classes) < 2:
-        return ()
+    if len(classes) < 2: return ()
     grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
     for candidate in classes:
-        for token in candidate.family_tokens:
-            grouped[token].append(candidate)
+        for token in candidate.family_tokens: grouped[token].append(candidate)
     seen_class_names: set[tuple[str, ...]] = set()
     findings: list[WitnessCarrierFamilyCandidate] = []
     for token, items in sorted(grouped.items()):
-        if len(items) < 3:
-            continue
+        if len(items) < 3: continue
         ordered_items = sorted_tuple(items, key=lambda item: (item.line, item.class_name))
         class_names = tuple(item.class_name for item in ordered_items)
-        if class_names in seen_class_names:
-            continue
+        if class_names in seen_class_names: continue
         shared_role_names = cast(tuple[str, ...], sorted_tuple(set.intersection(*(set(candidate.normalized_roles) for candidate in ordered_items))))
-        if len(shared_role_names) < 3:
-            continue
-        if set.intersection(*(set(candidate.base_names) for candidate in ordered_items)):
-            continue
+        if len(shared_role_names) < 3: continue
+        if set.intersection(*(set(candidate.base_names) for candidate in ordered_items)): continue
         seen_class_names.add(class_names)
         findings.append(WitnessCarrierFamilyCandidate(file_path=str(module.path), class_names=class_names, line_numbers=tuple((candidate.line for candidate in ordered_items)), shared_role_names=shared_role_names))
     return tuple(findings)
 
 
-def _manual_fiber_tag_scaffold(candidate: ManualFiberTagCandidate) -> str:
-    root_name = candidate.class_name
-    first_case = _camel_case(candidate.case_names[0].strip("'\""))
-    second_case = _camel_case(candidate.case_names[1].strip("'\""))
-    return (
-        f"class {root_name}(ABC):\n"
-        f"    @abstractmethod\n    def {candidate.method_name}(self): ...\n\n"
-        f"class {first_case}{root_name}({root_name}): ...\n"
-        f"class {second_case}{root_name}({root_name}): ..."
-    )
+def _manual_fiber_tag_scaffold(candidate: ManualFiberTagCandidate) -> str: root_name = candidate.class_name; first_case = _camel_case(candidate.case_names[0].strip('\'"')); second_case = _camel_case(candidate.case_names[1].strip('\'"')); return f'class {root_name}(ABC):\n    @abstractmethod\n    def {candidate.method_name}(self): ...\n\nclass {first_case}{root_name}({root_name}): ...\nclass {second_case}{root_name}({root_name}): ...'
 
 
 def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
@@ -4669,10 +3722,7 @@ def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
     )
 
 
-def _descriptor_derived_view_scaffold(candidate: DescriptorDerivedViewCandidate) -> str:
-    return (
-        'class DerivedField:\n    def __init__(self, template):\n        self.template = template\n    def __set_name__(self, owner, name): ...\n    def __get__(self, obj, objtype=None): ...'
-    )
+def _descriptor_derived_view_scaffold(candidate: DescriptorDerivedViewCandidate) -> str: return 'class DerivedField:\n    def __init__(self, template):\n        self.template = template\n    def __set_name__(self, owner, name): ...\n    def __get__(self, obj, objtype=None): ...'
 
 
 def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) -> str:
@@ -4683,10 +3733,7 @@ def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) ->
     )
 
 
-def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
-    return (
-        'from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass EventHandler(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "event_type"\n    __skip_if_no_key__ = True\n    event_type = None\n\n    @classmethod\n    def type_for_event_type(cls, event_type):\n        return cls.__registry__[event_type]'
-    )
+def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str: return 'from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass EventHandler(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "event_type"\n    __skip_if_no_key__ = True\n    event_type = None\n\n    @classmethod\n    def type_for_event_type(cls, event_type):\n        return cls.__registry__[event_type]'
 
 
 def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
@@ -4722,28 +3769,22 @@ def _normalized_registry_key_from_class_name(
         else class_name
     )
     tokens = _ordered_class_name_tokens(source_name)
-    if tokens:
-        return "_".join(tokens)
+    if tokens: return '_'.join(tokens)
     return source_name.lower()
 
 
-def _raw_class_name_tokens(name: str) -> tuple[str, ...]:
-    return tuple(re.findall(_CLASS_NAME_TOKEN_PATTERN, name.lstrip("_")))
+def _raw_class_name_tokens(name: str) -> tuple[str, ...]: return tuple(re.findall(_CLASS_NAME_TOKEN_PATTERN, name.lstrip('_')))
 
 
 def _shared_registry_key_suffix(class_names: Sequence[str]) -> str | None:
-    if len(class_names) < 2:
-        return None
+    if len(class_names) < 2: return None
     raw_token_lists = tuple(_raw_class_name_tokens(name) for name in class_names)
     lower_token_lists = tuple((tuple((token.lower() for token in token_list)) for token_list in raw_token_lists))
-    if not all(token_list for token_list in lower_token_lists):
-        return None
+    if not all((token_list for token_list in lower_token_lists)): return None
     shared_suffix = _shared_reversed_token_suffix(lower_token_lists)
-    if not shared_suffix:
-        return None
+    if not shared_suffix: return None
     shared_count = len(shared_suffix)
-    if len(lower_token_lists[0]) <= shared_count:
-        return None
+    if len(lower_token_lists[0]) <= shared_count: return None
     return "".join(raw_token_lists[0][-shared_count:])
 
 
@@ -4751,21 +3792,17 @@ def _derivable_registry_key_suffix(
     class_names: Sequence[str],
     explicit_key_values: Sequence[str] | None = None,
 ) -> str | None:
-    if not class_names:
-        return None
+    if not class_names: return None
     normalized_names = tuple(class_names)
     suffix_candidates = []
     shared_suffix = _shared_registry_key_suffix(normalized_names)
-    if shared_suffix and all((name.removesuffix(shared_suffix) for name in normalized_names)):
-        suffix_candidates.append(shared_suffix)
+    if shared_suffix and all((name.removesuffix(shared_suffix) for name in normalized_names)): suffix_candidates.append(shared_suffix)
     suffix_candidates.append("")
-    if explicit_key_values is None:
-        return suffix_candidates[0]
+    if explicit_key_values is None: return suffix_candidates[0]
     for suffix in suffix_candidates:
         stripped_suffix = suffix or None
         derived_values = tuple((_normalized_registry_key_from_class_name(class_name, stripped_suffix=stripped_suffix) for class_name in normalized_names))
-        if tuple(explicit_key_values) == derived_values:
-            return stripped_suffix
+        if tuple(explicit_key_values) == derived_values: return stripped_suffix
     return None
 
 
@@ -4776,18 +3813,11 @@ def _derived_registry_key_block(
 ) -> str:
     stripped_suffix = _derivable_registry_key_suffix(class_names)
     source_name = _NAME_LITERAL
-    if stripped_suffix:
-        source_name = f'name.removesuffix("{stripped_suffix}")'
+    if stripped_suffix: source_name = f'name.removesuffix("{stripped_suffix}")'
     return '\n'.join((f'    __registry_key__ = "{registry_key_attr_name}"', '    __skip_if_no_key__ = True', '', '    @staticmethod', '    def _registry_key(name: str, cls):', '        del cls', f'        tokens = re.findall(r"{_CLASS_NAME_TOKEN_PATTERN}", {source_name})', '        return "_".join(token.lower() for token in tokens)', '', '    __key_extractor__ = _registry_key'))
 
 
-def _declared_registry_key_block(
-    key_attr_name: str,
-    *,
-    key_type_name: str | None = None,
-) -> str:
-    type_suffix = f": ClassVar[{key_type_name} | None]" if key_type_name else ""
-    return '\n'.join((f'    __registry_key__ = "{key_attr_name}"', '    __skip_if_no_key__ = True', f'    {key_attr_name}{type_suffix} = None'))
+def _declared_registry_key_block(key_attr_name: str, *, key_type_name: str | None=None) -> str: type_suffix = f': ClassVar[{key_type_name} | None]' if key_type_name else ''; return '\n'.join((f'    __registry_key__ = "{key_attr_name}"', '    __skip_if_no_key__ = True', f'    {key_attr_name}{type_suffix} = None'))
 
 
 def _metaclass_registry_keyed_family_scaffold(
@@ -4799,24 +3829,16 @@ def _metaclass_registry_keyed_family_scaffold(
     returns_instance: bool = True,
 ) -> str:
     registry_lookup = "cls.__registry__[key]()"
-    if not returns_instance:
-        registry_lookup = "cls.__registry__[key]"
+    if not returns_instance: registry_lookup = 'cls.__registry__[key]'
     lines = ['from abc import ABC, abstractmethod', 'from metaclass_registry import AutoRegisterMeta', 'from typing import ClassVar', '', f'class {root_name}(ABC, metaclass=AutoRegisterMeta):', _declared_registry_key_block(key_attr_name, key_type_name=key_type_name), '', '    @classmethod', f'    def for_key(cls, key: {key_type_name}):', f'        return {registry_lookup}']
-    for method_def in method_defs:
-        lines.extend(('', '    @abstractmethod', f'    def {method_def}: ...'))
+    for method_def in method_defs: lines.extend(('', '    @abstractmethod', f'    def {method_def}: ...'))
     return "\n".join(lines)
 
 
-def _axis_policy_registry_scaffold(*method_defs: str) -> str:
-    return _metaclass_registry_keyed_family_scaffold(root_name=_AXIS_POLICY_ROOT_NAME, key_type_name=_AXIS_POLICY_KEY_TYPE_NAME, key_attr_name=_AXIS_POLICY_KEY_ATTR_NAME, method_defs=method_defs)
+def _axis_policy_registry_scaffold(*method_defs: str) -> str: return _metaclass_registry_keyed_family_scaffold(root_name=_AXIS_POLICY_ROOT_NAME, key_type_name=_AXIS_POLICY_KEY_TYPE_NAME, key_attr_name=_AXIS_POLICY_KEY_ATTR_NAME, method_defs=method_defs)
 
 
-def _structural_confusability_scaffold(
-    candidate: StructuralConfusabilityCandidate,
-) -> str:
-    root_name = f"{_camel_case(candidate.parameter_name)}Interface"
-    method_block = '\n'.join((f'    @abstractmethod\n    def {name}(self, *args, **kwargs): ...' for name in candidate.observed_method_names))
-    return f"class {root_name}(ABC):\n{method_block}"
+def _structural_confusability_scaffold(candidate: StructuralConfusabilityCandidate) -> str: root_name = f'{_camel_case(candidate.parameter_name)}Interface'; method_block = '\n'.join((f'    @abstractmethod\n    def {name}(self, *args, **kwargs): ...' for name in candidate.observed_method_names)); return f'class {root_name}(ABC):\n{method_block}'
 
 
 def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate) -> str:
@@ -4826,11 +3848,7 @@ def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate)
     )
 
 
-def _witness_carrier_family_scaffold(
-    candidate: WitnessCarrierFamilyCandidate,
-) -> str:
-    lines = ['@dataclass(frozen=True)', 'class SemanticCarrier(ABC):', '    source_path: str', '    source_line: int', '    primary_name: str | None', '', '@dataclass(frozen=True)', f'class {candidate.class_names[0]}(SemanticCarrier): ...']
-    return "\n".join(lines)
+def _witness_carrier_family_scaffold(candidate: WitnessCarrierFamilyCandidate) -> str: lines = ['@dataclass(frozen=True)', 'class SemanticCarrier(ABC):', '    source_path: str', '    source_line: int', '    primary_name: str | None', '', '@dataclass(frozen=True)', f'class {candidate.class_names[0]}(SemanticCarrier): ...']; return '\n'.join(lines)
 
 
 def _witness_carrier_family_patch(
@@ -4862,22 +3880,13 @@ def _witness_mixin_role_spec(role_name: str) -> WitnessMixinRoleSpec:
         raise ValueError(f"Unsupported semantic mixin role: {role_name}") from exc
 
 
-def _witness_role_mixin_name(role_name: str) -> str:
-    return _witness_mixin_role_spec(role_name).mixin_name
+def _witness_role_mixin_name(role_name: str) -> str: return _witness_mixin_role_spec(role_name).mixin_name
 
 
-def _witness_role_mixin_scaffold(role_name: str) -> str:
-    return _witness_mixin_role_spec(role_name).scaffold
+def _witness_role_mixin_scaffold(role_name: str) -> str: return _witness_mixin_role_spec(role_name).scaffold
 
 
-def _witness_mixin_enforcement_scaffold(
-    candidate: WitnessMixinEnforcementCandidate,
-) -> str:
-    role_names = tuple(role_name for role_name, _ in candidate.role_field_names)
-    blocks = [_witness_role_mixin_scaffold(role_name) for role_name in role_names]
-    mixin_names = ', '.join((_witness_role_mixin_name(role_name) for role_name in role_names))
-    blocks.append('\n'.join(('@dataclass(frozen=True)', f'class {candidate.class_names[0]}(SemanticCarrier, {mixin_names}): ...')))
-    return "\n\n".join(blocks)
+def _witness_mixin_enforcement_scaffold(candidate: WitnessMixinEnforcementCandidate) -> str: role_names = tuple((role_name for role_name, _ in candidate.role_field_names)); blocks = [_witness_role_mixin_scaffold(role_name) for role_name in role_names]; mixin_names = ', '.join((_witness_role_mixin_name(role_name) for role_name in role_names)); blocks.append('\n'.join(('@dataclass(frozen=True)', f'class {candidate.class_names[0]}(SemanticCarrier, {mixin_names}): ...'))); return '\n\n'.join(blocks)
 
 
 def _witness_mixin_enforcement_patch(
@@ -4889,13 +3898,7 @@ def _witness_mixin_enforcement_patch(
     )
 
 
-def _orchestration_stage_scaffold(profile: FunctionProfile) -> str:
-    stage_context_name = (
-        f"{profile.qualname.split('.')[-1].title().replace('_', '')}StageContext"
-    )
-    return (
-        f"@dataclass(frozen=True)\nclass {stage_context_name}:\n    ...\n\ndef prepare_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef execute_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef finalize_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ..."
-    )
+def _orchestration_stage_scaffold(profile: FunctionProfile) -> str: stage_context_name = f"{profile.qualname.split('.')[-1].title().replace('_', '')}StageContext"; return f"@dataclass(frozen=True)\nclass {stage_context_name}:\n    ...\n\ndef prepare_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef execute_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef finalize_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ..."
 
 
 def _orchestration_stage_patch(profile: FunctionProfile) -> str:
@@ -4917,8 +3920,7 @@ def _authoritative_context_scaffold(
     context_name = "SharedContext"
     lines = ["@dataclass(frozen=True)", f"class {context_name}:"]
     lines.extend(f"    {name}: object" for name in shared_names)
-    if not shared_names:
-        lines.append("    ...")
+    if not shared_names: lines.append('    ...')
     lines.append("")
     lines.append(f"def helper(ctx: {context_name}, ...): ...")
     return "\n".join(lines)
@@ -4937,56 +3939,44 @@ def _authoritative_context_patch(
 
 
 def _as_method_shape(shape: object) -> MethodShape:
-    if not isinstance(shape, MethodShape):
-        raise TypeError(f"Expected MethodShape, got {type(shape)!r}")
+    if not isinstance(shape, MethodShape): raise TypeError(f'Expected MethodShape, got {type(shape)!r}')
     return shape
 
 
 def _as_builder_shape(shape: object) -> BuilderCallShape:
-    if not isinstance(shape, BuilderCallShape):
-        raise TypeError(f"Expected BuilderCallShape, got {type(shape)!r}")
+    if not isinstance(shape, BuilderCallShape): raise TypeError(f'Expected BuilderCallShape, got {type(shape)!r}')
     return shape
 
 
 def _as_registration_shape(shape: object) -> RegistrationShape:
-    if not isinstance(shape, RegistrationShape):
-        raise TypeError(f"Expected RegistrationShape, got {type(shape)!r}")
+    if not isinstance(shape, RegistrationShape): raise TypeError(f'Expected RegistrationShape, got {type(shape)!r}')
     return shape
 
 
 def _as_export_shape(shape: object) -> ExportDictShape:
-    if not isinstance(shape, ExportDictShape):
-        raise TypeError(f"Expected ExportDictShape, got {type(shape)!r}")
+    if not isinstance(shape, ExportDictShape): raise TypeError(f'Expected ExportDictShape, got {type(shape)!r}')
     return shape
 
 
 def _as_projection_helper_shape(shape: object) -> ProjectionHelperShape:
-    if not isinstance(shape, ProjectionHelperShape):
-        raise TypeError(f"Expected ProjectionHelperShape, got {type(shape)!r}")
+    if not isinstance(shape, ProjectionHelperShape): raise TypeError(f'Expected ProjectionHelperShape, got {type(shape)!r}')
     return shape
 
 
 def _as_accessor_wrapper_candidate(shape: object) -> AccessorWrapperCandidate:
-    if not isinstance(shape, AccessorWrapperCandidate):
-        raise TypeError(f"Expected AccessorWrapperCandidate, got {type(shape)!r}")
+    if not isinstance(shape, AccessorWrapperCandidate): raise TypeError(f'Expected AccessorWrapperCandidate, got {type(shape)!r}')
     return shape
 
 
 def _carrier_identity(carrier: object) -> tuple[str, int, str]:
-    if not isinstance(carrier, StructuralObservationCarrier):
-        raise TypeError(f"Unsupported structural carrier: {type(carrier)!r}")
+    if not isinstance(carrier, StructuralObservationCarrier): raise TypeError(f'Unsupported structural carrier: {type(carrier)!r}')
     return carrier.structural_observation.structural_identity
 
 
-def _carrier_lookup(items: tuple[object, ...]) -> dict[tuple[str, int, str], object]:
-    return {_carrier_identity(item): item for item in items}
+def _carrier_lookup(items: tuple[object, ...]) -> dict[tuple[str, int, str], object]: return {_carrier_identity(item): item for item in items}
 
 
-def _materialize_observations(
-    observations: tuple[StructuralObservation, ...],
-    lookup: dict[tuple[str, int, str], object],
-) -> tuple[object, ...]:
-    return sorted_tuple((lookup[item.structural_identity] for item in observations if item.structural_identity in lookup), key=_carrier_identity)
+def _materialize_observations(observations: tuple[StructuralObservation, ...], lookup: dict[tuple[str, int, str], object]) -> tuple[object, ...]: return sorted_tuple((lookup[item.structural_identity] for item in observations if item.structural_identity in lookup), key=_carrier_identity)
 
 
 def _fiber_grouped_shapes(
@@ -5001,40 +3991,18 @@ def _fiber_grouped_shapes(
     graph = ObservationGraph(tuple((shape.structural_observation for shape in shapes if isinstance(shape, (MethodShape, BuilderCallShape, ExportDictShape)))))
     for fiber in graph.fibers_for(observation_kind, execution_level):
         grouped_items = _materialize_observations(fiber.observations, lookup)
-        if len(grouped_items) < 2:
-            continue
+        if len(grouped_items) < 2: continue
         groups.append(grouped_items)
     return groups
 
 
-def _semantic_dataclass_recommendation_fields(
-    class_name: str,
-    base_class_name: str,
-    matched_schema_name: str | None,
-    rationale: str,
-    scaffold: str,
-    certification: CertificationLevel,
-) -> dict[str, object]:
-    return {'class_name': class_name, 'base_class_name': base_class_name, 'matched_schema_name': matched_schema_name, 'rationale': rationale, 'scaffold': scaffold, 'certification': certification}
+def _semantic_dataclass_recommendation_fields(class_name: str, base_class_name: str, matched_schema_name: str | None, rationale: str, scaffold: str, certification: CertificationLevel) -> dict[str, object]: return {'class_name': class_name, 'base_class_name': base_class_name, 'matched_schema_name': matched_schema_name, 'rationale': rationale, 'scaffold': scaffold, 'certification': certification}
 
 
-def _existing_semantic_dataclass_recommendation_fields(
-    class_name: str,
-    base_class_name: str,
-    rationale: str,
-    scaffold: str,
-) -> dict[str, object]:
-    return _semantic_dataclass_recommendation_fields(class_name, base_class_name, class_name, rationale, scaffold, CERTIFIED)
+def _existing_semantic_dataclass_recommendation_fields(class_name: str, base_class_name: str, rationale: str, scaffold: str) -> dict[str, object]: return _semantic_dataclass_recommendation_fields(class_name, base_class_name, class_name, rationale, scaffold, CERTIFIED)
 
 
-def _proposed_semantic_dataclass_recommendation_fields(
-    class_name: str,
-    base_class_name: str,
-    matched_schema_name: str | None,
-    rationale: str,
-    scaffold: str,
-) -> dict[str, object]:
-    return _semantic_dataclass_recommendation_fields(class_name, base_class_name, matched_schema_name, rationale, scaffold, STRONG_HEURISTIC)
+def _proposed_semantic_dataclass_recommendation_fields(class_name: str, base_class_name: str, matched_schema_name: str | None, rationale: str, scaffold: str) -> dict[str, object]: return _semantic_dataclass_recommendation_fields(class_name, base_class_name, matched_schema_name, rationale, scaffold, STRONG_HEURISTIC)
 
 
 _SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS = ConstructorVariantCatalog((ConstructorVariantSpec('existing_schema', _existing_semantic_dataclass_recommendation_fields), ConstructorVariantSpec('proposed_schema', _proposed_semantic_dataclass_recommendation_fields)))
@@ -5064,19 +4032,16 @@ class LineWitnessCandidate(ABC):
     line: int
 
     @property
-    def witness_name(self) -> str:
-        return type(self).__name__
+    def witness_name(self) -> str: return type(self).__name__
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.witness_name)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.witness_name)
 
 
 class WitnessNameAliasMixin(ABC):
     @property
     @abstractmethod
-    def witness_name(self) -> str:
-        raise NotImplementedError
+    def witness_name(self) -> str: raise NotImplementedError
 
 
 class ClassNameWitnessNameMixin(WitnessNameAliasMixin):
@@ -5113,8 +4078,7 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
     method_name: str
 
     @property
-    def symbol(self) -> str:
-        return f"{self.class_name}.{self.method_name}"
+    def symbol(self) -> str: return f'{self.class_name}.{self.method_name}'
     witness_name: ClassVar[AliasProperty[str]] = AliasProperty("symbol")
 
 
@@ -5129,12 +4093,10 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
     observations: tuple[FieldObservation, ...]
 
     @property
-    def field_names(self) -> tuple[str, ...]:
-        return tuple((field_name for _, field_names in self.role_field_map for field_name in field_names))
+    def field_names(self) -> tuple[str, ...]: return tuple((field_name for _, field_names in self.role_field_map for field_name in field_names))
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (super().evidence, *tuple((SourceLocation(item.file_path, item.lineno, item.symbol) for item in self.observations[:7])))
+    def evidence(self) -> tuple[SourceLocation, ...]: return (super().evidence, *tuple((SourceLocation(item.file_path, item.lineno, item.symbol) for item in self.observations[:7])))
 
 
 NominalAuthorityShape = product_record('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool')
@@ -5150,16 +4112,13 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
     concrete_class_names: tuple[str, ...]
 
     @property
-    def registry_name(self) -> str:
-        return self.registration_site.registry_name
+    def registry_name(self) -> str: return self.registration_site.registry_name
 
     @property
-    def guard_summary(self) -> str | None:
-        return self.registration_site.guard_summary
+    def guard_summary(self) -> str | None: return self.registration_site.guard_summary
 
     @property
-    def consumer_names(self) -> tuple[str, ...]:
-        return tuple(location.symbol for location in self.consumer_locations)
+    def consumer_names(self) -> tuple[str, ...]: return tuple((location.symbol for location in self.consumer_locations))
 
 
 PredicateSelectedConcreteFamilyCandidate = product_record('PredicateSelectedConcreteFamilyCandidate', 'selector_method_name: str; predicate_method_name: str; context_param_name: str; concrete_class_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
@@ -5180,8 +4139,7 @@ class ParallelMirroredLeafFamilyCandidate:
     shared_leaf_family_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.left.evidence, self.right.evidence, *self.left.leaf_evidence[:2], *self.right.leaf_evidence[:2])
+    def evidence(self) -> tuple[SourceLocation, ...]: return (self.left.evidence, self.right.evidence, *self.left.leaf_evidence[:2], *self.right.leaf_evidence[:2])
 
 
 FragmentedFamilyAuthorityCandidate = product_record('FragmentedFamilyAuthorityCandidate', 'file_path: str; mapping_names: tuple[str, ...]; line_numbers: tuple[int, ...]; key_family_name: str; shared_keys: tuple[str, ...]; total_keys: tuple[str, ...]')
@@ -5238,8 +4196,7 @@ class ClassNameLineNumbersGroup(ABC):
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
-    def evidence_for_file(self, file_path: str) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(file_path, line, class_name) for class_name, line in zip(self.class_names, self.line_numbers, strict=True)))
+    def evidence_for_file(self, file_path: str) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(file_path, line, class_name) for class_name, line in zip(self.class_names, self.line_numbers, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -5247,8 +4204,7 @@ class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
     file_path: str
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_for_file(self.file_path)
+    def evidence(self) -> tuple[SourceLocation, ...]: return self.evidence_for_file(self.file_path)
 
 
 @dataclass(frozen=True)
@@ -5256,8 +4212,7 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
     file_paths: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(file_path, line, class_name) for file_path, line, class_name in zip(self.file_paths, self.line_numbers, self.class_names, strict=True)))
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(file_path, line, class_name) for file_path, line, class_name in zip(self.file_paths, self.line_numbers, self.class_names, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -5268,8 +4223,7 @@ class ClassMethodFamilyCandidate(ABC):
     line_numbers: tuple[int, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for method_name, line in zip(self.method_names, self.line_numbers, strict=True)))
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, f'{self.class_name}.{method_name}') for method_name, line in zip(self.method_names, self.line_numbers, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -5277,8 +4231,7 @@ class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
     keyword_names: tuple[str, ...]
 
     @property
-    def mapping_metrics(self) -> MappingMetrics:
-        return MappingMetrics.from_field_names(mapping_site_count=len(self.method_names), mapping_name=self.class_name, field_names=self.keyword_names)
+    def mapping_metrics(self) -> MappingMetrics: return MappingMetrics.from_field_names(mapping_site_count=len(self.method_names), mapping_name=self.class_name, field_names=self.keyword_names)
 
 
 PropertyHookGroup = product_record('PropertyHookGroup', 'base_name: str; property_name: str', bases=(ClassLineNumbersGroup,))
@@ -5340,8 +4293,7 @@ class SubclassTraversalSite:
     filter_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.symbol)
 
 
 SubclassTraversalGroup = product_record('SubclassTraversalGroup', 'symbols: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; root_expressions: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]; filter_names: tuple[str, ...]')
@@ -5383,16 +4335,13 @@ class FunctionProfile:
     parameter_names: tuple[str, ...]
 
     @property
-    def callee_family_count(self) -> int:
-        return len(self.callee_names)
+    def callee_family_count(self) -> int: return len(self.callee_names)
 
     @property
-    def semantic_parameter_names(self) -> tuple[str, ...]:
-        return tuple((name for name in self.parameter_names if name not in _GENERIC_PARAMETER_NAMES and (not name.startswith('_'))))
+    def semantic_parameter_names(self) -> tuple[str, ...]: return tuple((name for name in self.parameter_names if name not in _GENERIC_PARAMETER_NAMES and (not name.startswith('_'))))
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
 QualnameLineWitnessCandidate = product_record('QualnameLineWitnessCandidate', 'qualname: str', bases=(QualnameWitnessNameMixin, LineWitnessCandidate))
@@ -5413,8 +4362,7 @@ class SuffixAxisSurfaceCandidate:
     methods: tuple[SuffixAxisSurfaceMethod, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(method.evidence for method in self.methods[:8])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((method.evidence for method in self.methods[:8]))
 
 
 SiblingRoleHelperMethod = product_record('SiblingRoleHelperMethod', 'owner_name: str; method_name: str; role_token: str; shared_tokens: tuple[str, ...]; parameter_names: tuple[str, ...]; control_shape: tuple[str, ...]; line_count: int', bases=(QualnameLineWitnessCandidate,))
@@ -5428,16 +4376,13 @@ class SiblingRoleHelperSymmetryCandidate:
     methods: tuple[SiblingRoleHelperMethod, ...]
 
     @property
-    def role_tokens(self) -> tuple[str, ...]:
-        return tuple(method.role_token for method in self.methods)
+    def role_tokens(self) -> tuple[str, ...]: return tuple((method.role_token for method in self.methods))
 
     @property
-    def method_names(self) -> tuple[str, ...]:
-        return tuple(method.method_name for method in self.methods)
+    def method_names(self) -> tuple[str, ...]: return tuple((method.method_name for method in self.methods))
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(method.evidence for method in self.methods[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((method.evidence for method in self.methods[:6]))
 
 
 @dataclass(frozen=True)
@@ -5459,8 +4404,7 @@ class ResidualClosedAxisIndirectionCandidate(LineWitnessCandidate):
     table_value_summaries: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (SourceLocation(self.file_path, self.table_line, self.table_name), SourceLocation(self.file_path, self.line, self.qualname))
+    def evidence(self) -> tuple[SourceLocation, ...]: return (SourceLocation(self.file_path, self.table_line, self.table_name), SourceLocation(self.file_path, self.line, self.qualname))
 
 
 @dataclass(frozen=True)
@@ -5475,8 +4419,7 @@ class PrivateTopLevelSymbolProfile:
     referenced_private_symbols: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.symbol)
 
 
 @dataclass(frozen=True)
@@ -5491,8 +4434,7 @@ class PrivateCohortShouldBeModuleCandidate:
     symbols: tuple[PrivateTopLevelSymbolProfile, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(symbol.evidence for symbol in self.symbols[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((symbol.evidence for symbol in self.symbols[:6]))
 
 
 @dataclass(frozen=True)
@@ -5504,8 +4446,7 @@ class EnumStrategyDispatchCandidate:
     case_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
 RepeatedEnumStrategyDispatchCandidate = product_record('RepeatedEnumStrategyDispatchCandidate', 'file_path: str; enum_family: str; shared_case_names: tuple[str, ...]; functions: tuple[EnumStrategyDispatchCandidate, ...]')
@@ -5530,8 +4471,7 @@ class SplitDispatchAuthorityCandidate(LineWitnessCandidate):
     generic_line: int
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.qualname)
 
 
 @dataclass(frozen=True)
@@ -5587,8 +4527,7 @@ class CrossModuleAxisShadowFamilyCandidate:
     shared_case_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.authoritative.evidence, self.shadow.evidence)
+    def evidence(self) -> tuple[SourceLocation, ...]: return (self.authoritative.evidence, self.shadow.evidence)
 
 
 @dataclass(frozen=True)
@@ -5600,10 +4539,7 @@ class ResidualClosedAxisBranchingCandidate(LineWitnessCandidate):
     authoritative_families: tuple[tuple[str, str, int], ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [SourceLocation(self.file_path, self.line, self.qualname)]
-        evidence.extend((SourceLocation(file_path, line, family_name) for family_name, file_path, line in self.authoritative_families))
-        return tuple(evidence[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: evidence = [SourceLocation(self.file_path, self.line, self.qualname)]; evidence.extend((SourceLocation(file_path, line, family_name) for family_name, file_path, line in self.authoritative_families)); return tuple(evidence[:6])
 
 
 @dataclass(frozen=True)
@@ -5616,8 +4552,7 @@ class ParallelKeyedAxisFamilyCandidate:
     name_overlap_ratio: float
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.left.evidence, self.right.evidence)
+    def evidence(self) -> tuple[SourceLocation, ...]: return (self.left.evidence, self.right.evidence)
 
 
 @dataclass(frozen=True)
@@ -5628,28 +4563,22 @@ class ParallelKeyedTableAndFamilyCandidate:
     shared_case_names: tuple[str, ...]
 
     @property
-    def file_path(self) -> str:
-        return self.table.file_path
+    def file_path(self) -> str: return self.table.file_path
 
     @property
-    def key_type_name(self) -> str:
-        return self.table.key_type_name
+    def key_type_name(self) -> str: return self.table.key_type_name
 
     @property
-    def table_name(self) -> str:
-        return self.table.table_name
+    def table_name(self) -> str: return self.table.table_name
 
     @property
-    def table_line(self) -> int:
-        return self.table.line
+    def table_line(self) -> int: return self.table.line
 
     @property
-    def value_shape_name(self) -> str | None:
-        return self.table.value_shape_name
+    def value_shape_name(self) -> str | None: return self.table.value_shape_name
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (SourceLocation(self.file_path, self.table_line, self.table_name), SourceLocation(self.file_path, self.family_line, self.family_name))
+    def evidence(self) -> tuple[SourceLocation, ...]: return (SourceLocation(self.file_path, self.table_line, self.table_name), SourceLocation(self.file_path, self.family_line, self.family_name))
 
 
 @dataclass(frozen=True)
@@ -5662,8 +4591,7 @@ class ParallelKeyedTableAxisCandidate:
     name_overlap_ratio: float
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (SourceLocation(self.left.file_path, self.left.line, self.left.table_name), SourceLocation(self.right.file_path, self.right.line, self.right.table_name))
+    def evidence(self) -> tuple[SourceLocation, ...]: return (SourceLocation(self.left.file_path, self.left.line, self.left.table_name), SourceLocation(self.right.file_path, self.right.line, self.right.table_name))
 
 
 @dataclass(frozen=True)
@@ -5676,14 +4604,10 @@ class EnumKeyedTableClassAxisShadowCandidate(LineWitnessCandidate):
     value_type_names: tuple[str, ...]
 
     @property
-    def class_names(self) -> tuple[str, ...]:
-        return tuple(class_name for class_name, _ in self.class_sites)
+    def class_names(self) -> tuple[str, ...]: return tuple((class_name for class_name, _ in self.class_sites))
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [SourceLocation(self.file_path, self.line, self.table_name)]
-        evidence.extend((SourceLocation(self.file_path, line, class_name) for class_name, line in self.class_sites))
-        return tuple(evidence[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: evidence = [SourceLocation(self.file_path, self.line, self.table_name)]; evidence.extend((SourceLocation(self.file_path, line, class_name) for class_name, line in self.class_sites)); return tuple(evidence[:6])
 
 
 @dataclass(frozen=True)
@@ -5697,8 +4621,7 @@ class DerivedQueryIndexCandidate:
     exception_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, function_name) for function_name, line in zip(self.function_names, self.line_numbers, strict=True)))
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, function_name) for function_name, line in zip(self.function_names, self.line_numbers, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -5730,8 +4653,7 @@ class SpecAxisFamily:
     extra_keyword_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.family_name)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.family_name)
 
 
 CrossModuleSpecAxisAuthorityCandidate = product_record('CrossModuleSpecAxisAuthorityCandidate', 'axis_field_names: tuple[str, str]; shared_axis_pairs: tuple[tuple[str, str], ...]; families: tuple[SpecAxisFamily, ...]')
@@ -5748,8 +4670,7 @@ class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
     return_keyword_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.qualname)
 
 
 ParallelRegistryProjectionFamilyCandidate = product_record('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]')
@@ -5779,8 +4700,7 @@ class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
     transform_method_names: tuple[str, ...]
 
     @property
-    def method_names(self) -> tuple[str, ...]:
-        return (self.validation_method_name, *self.projection_method_names, *self.roundtrip_method_names, *self.transform_method_names)
+    def method_names(self) -> tuple[str, ...]: return (self.validation_method_name, *self.projection_method_names, *self.roundtrip_method_names, *self.transform_method_names)
 
 
 @dataclass(frozen=True)
@@ -5790,12 +4710,10 @@ class ManualStructuralRecordMechanicsGroupCandidate:
     classes: tuple[ManualStructuralRecordMechanicsClassCandidate, ...]
 
     @property
-    def shared_method_names(self) -> tuple[str, ...]:
-        return _shared_record_mechanics_method_names(self.classes)
+    def shared_method_names(self) -> tuple[str, ...]: return _shared_record_mechanics_method_names(self.classes)
 
     @property
-    def transform_method_names(self) -> tuple[str, ...]:
-        return sorted_tuple({method_name for candidate in self.classes for method_name in candidate.transform_method_names})
+    def transform_method_names(self) -> tuple[str, ...]: return sorted_tuple({method_name for candidate in self.classes for method_name in candidate.transform_method_names})
 
 
 ConcreteTypeCaseFunctionCandidate = product_record('ConcreteTypeCaseFunctionCandidate', 'subject_expression: str; subject_role: str; concrete_class_names: tuple[str, ...]; abstract_class_names: tuple[str, ...]; union_alias_names: tuple[str, ...]; case_site_count: int', bases=(FunctionLineWitnessCandidate,))
@@ -5808,20 +4726,16 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
     abstract_base_names: tuple[str, ...]
 
     @property
-    def subject_role(self) -> str:
-        return self.functions[0].subject_role
+    def subject_role(self) -> str: return self.functions[0].subject_role
 
     @property
-    def concrete_class_names(self) -> tuple[str, ...]:
-        return sorted_tuple({class_name for function in self.functions for class_name in function.concrete_class_names})
+    def concrete_class_names(self) -> tuple[str, ...]: return sorted_tuple({class_name for function in self.functions for class_name in function.concrete_class_names})
 
     @property
-    def union_alias_names(self) -> tuple[str, ...]:
-        return sorted_tuple({alias_name for function in self.functions for alias_name in function.union_alias_names})
+    def union_alias_names(self) -> tuple[str, ...]: return sorted_tuple({alias_name for function in self.functions for alias_name in function.union_alias_names})
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(function.evidence for function in self.functions[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((function.evidence for function in self.functions[:6]))
 
 
 GuardValidatorFunctionCandidate = product_record('GuardValidatorFunctionCandidate', 'subject_param_name: str; alias_source_attr: str | None; guard_count: int; accessed_attr_names: tuple[str, ...]; helper_call_names: tuple[str, ...]', bases=(FunctionLineWitnessCandidate,))
@@ -5837,8 +4751,7 @@ class RepeatedGuardValidatorFamilyCandidate:
     shared_helper_call_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(function.evidence for function in self.functions[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((function.evidence for function in self.functions[:6]))
 
 
 ValidateShapeGuardMethodCandidate = product_record('ValidateShapeGuardMethodCandidate', 'guard_count: int; shape_guard_count: int; shape_guard_signatures: tuple[str, ...]', bases=(ClassMethodLineWitnessCandidate,))
@@ -5851,8 +4764,7 @@ class RepeatedValidateShapeGuardFamilyCandidate:
     shared_shape_guard_signatures: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(method.evidence for method in self.methods[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((method.evidence for method in self.methods[:6]))
 
 
 @dataclass(frozen=True)
@@ -5866,9 +4778,7 @@ class ImplicitSelfContractMixinCandidate(LineWitnessCandidate):
     accessed_attribute_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [SourceLocation(self.file_path, self.line, self.mixin_name), *(SourceLocation(self.file_path, line, f'{self.mixin_name}.{name}') for name, line in zip(self.method_names, self.method_lines, strict=True)), *(SourceLocation(self.file_path, line, class_name) for class_name, line in zip(self.consumer_class_names, self.consumer_lines, strict=True))]
-        return tuple(evidence[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: evidence = [SourceLocation(self.file_path, self.line, self.mixin_name), *(SourceLocation(self.file_path, line, f'{self.mixin_name}.{name}') for name, line in zip(self.method_names, self.method_lines, strict=True)), *(SourceLocation(self.file_path, line, class_name) for class_name, line in zip(self.consumer_class_names, self.consumer_lines, strict=True))]; return tuple(evidence[:6])
 
 
 @dataclass(frozen=True)
@@ -5880,8 +4790,7 @@ class EmptyLeafProductFamilyCandidate:
     leaf_lines: tuple[int, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, class_name) for class_name, line in zip(self.leaf_class_names, self.leaf_lines, strict=True)))
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, class_name) for class_name, line in zip(self.leaf_class_names, self.leaf_lines, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -5895,8 +4804,7 @@ class FunctionWrapperCandidate:
     projected_attributes: tuple[str, ...] = ()
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
 @dataclass(frozen=True)
@@ -5908,8 +4816,7 @@ class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
     transported_value_sources: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.qualname)
 
 
 ResolvedExternalCallsite = product_record('ResolvedExternalCallsite', 'module_name: str; location: SourceLocation')
@@ -5923,8 +4830,7 @@ class PublicApiPrivateDelegateSurface(ABC):
     external_callsites: tuple[ResolvedExternalCallsite, ...]
 
     @property
-    def external_module_names(self) -> tuple[str, ...]:
-        return sorted_tuple({site.module_name for site in self.external_callsites})
+    def external_module_names(self) -> tuple[str, ...]: return sorted_tuple({site.module_name for site in self.external_callsites})
 
 
 @dataclass(frozen=True)
@@ -5932,14 +4838,12 @@ class PublicApiPrivateDelegateShellCandidate(PublicApiPrivateDelegateSurface):
     wrapper: TrivialForwardingWrapperCandidate
 
     @property
-    def wrapper_symbol(self) -> str:
-        return f"{self.module_name}.{self.wrapper.qualname}"
+    def wrapper_symbol(self) -> str: return f'{self.module_name}.{self.wrapper.qualname}'
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         evidence = [self.wrapper.evidence]
-        if self.delegate_root_line is not None:
-            evidence.append(SourceLocation(self.wrapper.file_path, self.delegate_root_line, self.delegate_root_symbol))
+        if self.delegate_root_line is not None: evidence.append(SourceLocation(self.wrapper.file_path, self.delegate_root_line, self.delegate_root_symbol))
         evidence.extend(site.location for site in self.external_callsites[:4])
         return tuple(evidence[:6])
 
@@ -5950,14 +4854,12 @@ class PublicApiPrivateDelegateFamilyCandidate(PublicApiPrivateDelegateSurface):
     wrappers: tuple[TrivialForwardingWrapperCandidate, ...]
 
     @property
-    def wrapper_names(self) -> tuple[str, ...]:
-        return tuple(wrapper.qualname for wrapper in self.wrappers)
+    def wrapper_names(self) -> tuple[str, ...]: return tuple((wrapper.qualname for wrapper in self.wrappers))
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         evidence = [wrapper.evidence for wrapper in self.wrappers[:3]]
-        if self.delegate_root_line is not None:
-            evidence.append(SourceLocation(self.file_path, self.delegate_root_line, self.delegate_root_symbol))
+        if self.delegate_root_line is not None: evidence.append(SourceLocation(self.file_path, self.delegate_root_line, self.delegate_root_symbol))
         evidence.extend(site.location for site in self.external_callsites[:2])
         return tuple(evidence[:6])
 
@@ -5974,8 +4876,7 @@ class NominalPolicySurfaceMethodCandidate(LineWitnessCandidate):
     transported_value_sources: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.line, self.qualname)
 
 
 @dataclass(frozen=True)
@@ -5983,28 +4884,22 @@ class NominalPolicySurfaceFamilyCandidate:
     methods: tuple[NominalPolicySurfaceMethodCandidate, ...]
 
     @property
-    def file_path(self) -> str:
-        return self.methods[0].file_path
+    def file_path(self) -> str: return self.methods[0].file_path
 
     @property
-    def owner_class_name(self) -> str:
-        return self.methods[0].owner_class_name
+    def owner_class_name(self) -> str: return self.methods[0].owner_class_name
 
     @property
-    def policy_root_symbol(self) -> str:
-        return self.methods[0].policy_root_symbol
+    def policy_root_symbol(self) -> str: return self.methods[0].policy_root_symbol
 
     @property
-    def selector_method_name(self) -> str:
-        return self.methods[0].selector_method_name
+    def selector_method_name(self) -> str: return self.methods[0].selector_method_name
 
     @property
-    def selector_source_exprs(self) -> tuple[str, ...]:
-        return self.methods[0].selector_source_exprs
+    def selector_source_exprs(self) -> tuple[str, ...]: return self.methods[0].selector_source_exprs
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(method.evidence for method in self.methods[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((method.evidence for method in self.methods[:6]))
 
 
 WrapperChainCandidate = product_record('WrapperChainCandidate', 'file_path: str; wrappers: tuple[FunctionWrapperCandidate, ...]; leaf_delegate_symbol: str')
@@ -6019,8 +4914,7 @@ class PipelineAssemblyStage:
     keyword_names: tuple[str, ...] = ()
 
     @property
-    def shape_key(self) -> tuple[object, ...]:
-        return (self.kind, self.callee_name, self.output_arity, self.arg_count, self.keyword_names)
+    def shape_key(self) -> tuple[object, ...]: return (self.kind, self.callee_name, self.output_arity, self.arg_count, self.keyword_names)
 
 
 @dataclass(frozen=True)
@@ -6031,8 +4925,7 @@ class ResultAssemblyPipelineFunction:
     stages: tuple[PipelineAssemblyStage, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
 RepeatedResultAssemblyPipelineCandidate = product_record('RepeatedResultAssemblyPipelineCandidate', 'file_path: str; shared_tail: tuple[PipelineAssemblyStage, ...]; functions: tuple[ResultAssemblyPipelineFunction, ...]')
@@ -6054,8 +4947,7 @@ class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
     support_names: tuple[str, ...]
 
     @property
-    def witness_name(self) -> str:
-        return ", ".join(self.declaration_names[:4])
+    def witness_name(self) -> str: return ', '.join(self.declaration_names[:4])
 
 
 CandidateCollectorBoilerplateCandidate = product_record('CandidateCollectorBoilerplateCandidate', 'collector_name: str; scope_kind: str; uses_config: bool; recommended_base_name: str', bases=(ClassMethodLineWitnessCandidate,))
@@ -6124,6 +5016,12 @@ MultilineContainerLiteralCandidate = product_record('MultilineContainerLiteralCa
 MultilineCallExpressionCandidate = product_record('MultilineCallExpressionCandidate', 'end_line: int; line_count: int; callee_name: str; argument_count: int', bases=(LineWitnessCandidate,))
 
 
+StraightlineSimpleFunctionCandidate = product_record('StraightlineSimpleFunctionCandidate', 'end_line: int; line_count: int; function_name: str; statement_count: int; statement_kinds: tuple[str, ...]', bases=(LineWitnessCandidate,))
+
+
+SingleStatementControlSuiteCandidate = product_record('SingleStatementControlSuiteCandidate', 'end_line: int; line_count: int; control_kind: str; statement_kind: str', bases=(LineWitnessCandidate,))
+
+
 DataclassNamespaceCliMirrorCandidate = product_record('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', bases=(ClassLineWitnessCandidate,))
 
 
@@ -6158,8 +5056,7 @@ class NestedBuilderShellCandidate:
     residue_source_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
 @dataclass(frozen=True)
@@ -6212,8 +5109,7 @@ def _axis_dispatch_metrics(
     dispatch_axis: str,
     dispatch_site_count: int | None = None,
 ) -> DispatchCountMetrics:
-    if dispatch_site_count is None:
-        dispatch_site_count = len(literal_cases)
+    if dispatch_site_count is None: dispatch_site_count = len(literal_cases)
     return DispatchCountMetrics(dispatch_site_count=dispatch_site_count, dispatch_axis=dispatch_axis, literal_cases=literal_cases)
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

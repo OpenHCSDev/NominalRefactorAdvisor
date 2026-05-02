@@ -197,8 +197,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         del config
         candidates = _finding_assembly_pipeline_candidates(module)
-        if len(candidates) < 3:
-            return []
+        if len(candidates) < 3: return []
         evidence = tuple((SourceLocation(candidate.file_path, candidate.line, f'{candidate.class_name}.{candidate.method_name}') for candidate in candidates[:6]))
         collector_names = sorted_tuple({candidate.candidate_source_name for candidate in candidates})
         return [
@@ -226,12 +225,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         ]
 
 
-def _keyword_mapping_metrics(
-    mapping_site_count: int,
-    field_names: tuple[str, ...],
-    mapping_name: str,
-) -> MappingMetrics:
-    return MappingMetrics.from_field_names(mapping_site_count=mapping_site_count, mapping_name=mapping_name, field_names=field_names)
+def _keyword_mapping_metrics(mapping_site_count: int, field_names: tuple[str, ...], mapping_name: str) -> MappingMetrics: return MappingMetrics.from_field_names(mapping_site_count=mapping_site_count, mapping_name=mapping_name, field_names=field_names)
 
 
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
@@ -275,8 +269,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         del config
         candidates = _guarded_delegator_candidates(module)
-        if len(candidates) < 2:
-            return []
+        if len(candidates) < 2: return []
         evidence = tuple((SourceLocation(candidate.file_path, candidate.line, f'{candidate.class_name}.{candidate.method_name}') for candidate in candidates[:6]))
         scope_roles = sorted_tuple({candidate.scope_role for candidate in candidates})
         return [
@@ -314,8 +307,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         grouped: dict[
             (tuple[str, str, tuple[str, ...]], list[StructuralObservationPropertyCandidate])
         ] = defaultdict(list)
-        for candidate in _structural_observation_property_candidates(module):
-            grouped[candidate.property_name, candidate.constructor_name, candidate.keyword_names].append(candidate)
+        for candidate in _structural_observation_property_candidates(module): grouped[candidate.property_name, candidate.constructor_name, candidate.keyword_names].append(candidate)
         return tuple(((group_key, tuple(candidates)) for group_key, candidates in grouped.items() if len(candidates) >= 3))
 
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:

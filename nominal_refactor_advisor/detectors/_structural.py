@@ -24,24 +24,20 @@ def _witness_mixin_enforcement_candidate(
     all_classes = _witness_carrier_class_candidates(module)
     grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
     for candidate in all_classes:
-        for token in candidate.family_tokens:
-            grouped[token].append(candidate)
+        for token in candidate.family_tokens: grouped[token].append(candidate)
     classes = max((sorted_tuple(items, key=lambda item: (item.line, item.class_name)) for items in grouped.values() if len(items) >= 3), key=len, default=())
-    if len(classes) < 2:
-        return None
+    if len(classes) < 2: return None
     role_to_classes: dict[str, dict[str, WitnessCarrierClassCandidate]] = defaultdict(dict)
     role_to_fields: dict[str, set[str]] = defaultdict(set)
     line_by_class: dict[str, int] = {}
     for candidate in classes:
         line_by_class[candidate.class_name] = candidate.line
         for role_name, field_names in candidate.normalized_role_fields:
-            if role_name not in _WITNESS_MIXIN_ROLE_NAMES:
-                continue
+            if role_name not in _WITNESS_MIXIN_ROLE_NAMES: continue
             role_to_classes[role_name][candidate.class_name] = candidate
             role_to_fields[role_name].update(field_names)
     role_field_names = tuple(((role_name, sorted_tuple(role_to_fields[role_name])) for role_name in _WITNESS_MIXIN_ROLE_NAMES if len(role_to_classes[role_name]) >= 2 and len(role_to_fields[role_name]) >= 2))
-    if not role_field_names:
-        return None
+    if not role_field_names: return None
     class_names = sorted_tuple({class_name for role_name, _ in role_field_names for class_name in role_to_classes[role_name]})
     return WitnessMixinEnforcementCandidate(file_path=str(module.path), class_names=class_names, line_numbers=tuple((line_by_class[class_name] for class_name in class_names)), role_field_names=role_field_names)
 
@@ -53,8 +49,7 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         del config
         candidate = _witness_mixin_enforcement_candidate(module)
-        if candidate is None:
-            return []
+        if candidate is None: return []
         evidence = tuple((SourceLocation(candidate.file_path, line, class_name) for class_name, line in zip(candidate.class_names, candidate.line_numbers, strict=True)))
         role_summary = '; '.join((f'{role_name} via {field_names}' for role_name, field_names in candidate.role_field_names))
         return [self.build_finding(f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance.", evidence, scaffold=_witness_mixin_enforcement_scaffold(candidate), codemod_patch=_witness_mixin_enforcement_patch(candidate), metrics=WitnessCarrierMetrics(class_count=len(candidate.class_names), shared_role_count=len(candidate.role_field_names), class_names=candidate.class_names, shared_role_names=tuple((role_name for role_name, _ in candidate.role_field_names))))]
@@ -69,12 +64,10 @@ def _shared_field_type_map(
             for item in observations
             if item.field_name == field_name and item.annotation_fingerprint is not None
         }
-        if len({fingerprint for fingerprint, _ in annotations}) > 1:
-            return None
+        if len({fingerprint for fingerprint, _ in annotations}) > 1: return None
         if annotations:
             _, annotation_text = next(iter(annotations))
-            if annotation_text is not None:
-                typed_fields.append((field_name, annotation_text))
+            if annotation_text is not None: typed_fields.append((field_name, annotation_text))
     return tuple(typed_fields)
 
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
@@ -90,20 +83,16 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
             field_names = sorted_tuple(cohort.observed_names)
             supporting_classes = cohort.nominal_witnesses
             shared_field_set = set(field_names)
-            if any((len(shared_field_set) / max(len(grouped_by_level[class_name]), 1) < 0.5 for class_name in supporting_classes)):
-                continue
-            if any((not grouped_by_level[class_name] - shared_field_set for class_name in supporting_classes)):
-                continue
+            if any((len(shared_field_set) / max(len(grouped_by_level[class_name]), 1) < 0.5 for class_name in supporting_classes)): continue
+            if any((not grouped_by_level[class_name] - shared_field_set for class_name in supporting_classes)): continue
             supporting_observations: tuple[FieldObservation, ...] = sorted_tuple((item for item in observations if item.execution_level == execution_level and item.class_name in supporting_classes and (item.field_name in field_names)), key=lambda item: (item.file_path, item.lineno, item.symbol))
             field_type_map = _shared_field_type_map(supporting_observations, field_names)
-            if field_type_map is None:
-                continue
+            if field_type_map is None: continue
             candidates.append(FieldFamilyCandidate(class_names=supporting_classes, field_names=field_names, execution_level=execution_level, observations=supporting_observations, dataclass_count=sum((1 for class_name in supporting_classes if any((item.class_name == class_name and item.is_dataclass_family for item in supporting_observations)))), field_type_map=field_type_map))
 
     maximal_candidates: list[FieldFamilyCandidate] = []
     for candidate in sorted(candidates, key=lambda item: (item.execution_level, len(item.class_names), len(item.field_names)), reverse=True):
-        if any((candidate.execution_level == other.execution_level and set(candidate.class_names) == set(other.class_names) and (set(candidate.field_names) < set(other.field_names)) for other in maximal_candidates)):
-            continue
+        if any((candidate.execution_level == other.execution_level and set(candidate.class_names) == set(other.class_names) and (set(candidate.field_names) < set(other.field_names)) for other in maximal_candidates)): continue
         maximal_candidates.append(candidate)
     return sorted_tuple(maximal_candidates, key=lambda item: (item.execution_level, item.class_names, item.field_names))
 
@@ -126,11 +115,9 @@ def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
 
 _PYTREE_TRANSPORT_METHOD_NAMES = frozenset({'_tree_children', '_tree_aux_data', 'tree_flatten', 'tree_unflatten'})
 
-def _role_member_name(tokens: tuple[str, ...]) -> str:
-    return "_".join(tokens)
+def _role_member_name(tokens: tuple[str, ...]) -> str: return '_'.join(tokens)
 
-def _is_numeric_role_member_name(name: str) -> bool:
-    return all(token.isdigit() for token in name.split("_"))
+def _is_numeric_role_member_name(name: str) -> bool: return all((token.isdigit() for token in name.split('_')))
 
 def _prefixed_role_field_groups(
     observations: tuple[FieldObservation, ...],
@@ -140,20 +127,16 @@ def _prefixed_role_field_groups(
     groups: dict[str, dict[str, FieldObservation]] = defaultdict(dict)
     for observation in observations:
         tokens = _ordered_class_name_tokens(observation.field_name)
-        if len(tokens) <= prefix_token_count:
-            continue
+        if len(tokens) <= prefix_token_count: continue
         role_name = _role_member_name(tokens[:prefix_token_count])
         member_name = _role_member_name(tokens[prefix_token_count:])
-        if not role_name or not member_name:
-            continue
+        if not role_name or not member_name: continue
         groups[role_name].setdefault(member_name, observation)
     return groups
 
-def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple((base_name for base_name in _declared_base_names(node) if 'pytree' in base_name.lower()))
+def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]: return tuple((base_name for base_name in _declared_base_names(node) if 'pytree' in base_name.lower()))
 
-def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
+def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]: return sorted_tuple(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
 
 def _connected_role_components(
     role_to_members: dict[str, dict[str, FieldObservation]],
@@ -166,22 +149,19 @@ def _connected_role_components(
         left_members = set(role_to_members[left_role])
         for right_role in roles[left_index + 1 :]:
             shared_members = left_members & set(role_to_members[right_role])
-            if len(shared_members) < min_shared_members:
-                continue
+            if len(shared_members) < min_shared_members: continue
             adjacency[left_role].add(right_role)
             adjacency[right_role].add(left_role)
 
     components: list[tuple[str, ...]] = []
     seen: set[str] = set()
     for role in roles:
-        if role in seen or not adjacency[role]:
-            continue
+        if role in seen or not adjacency[role]: continue
         stack = [role]
         component: set[str] = set()
         while stack:
             current = stack.pop()
-            if current in component:
-                continue
+            if current in component: continue
             component.add(current)
             stack.extend(sorted(adjacency[current] - component))
         seen.update(component)
@@ -194,13 +174,11 @@ def _prefixed_role_bundle_candidate_for_class(
     observations: tuple[FieldObservation, ...],
     config: DetectorConfig,
 ) -> PrefixedRoleFieldBundleCandidate | None:
-    if len(observations) < config.min_prefixed_role_shared_fields * 2:
-        return None
+    if len(observations) < config.min_prefixed_role_shared_fields * 2: return None
     manual_transport_methods = _class_manual_transport_methods(class_node)
     pytree_base_names = _class_pytree_base_names(class_node)
     is_dataclass_family = any(item.is_dataclass_family for item in observations)
-    if not (is_dataclass_family or manual_transport_methods or pytree_base_names):
-        return None
+    if not (is_dataclass_family or manual_transport_methods or pytree_base_names): return None
 
     candidates: list[PrefixedRoleFieldBundleCandidate] = []
     for prefix_token_count in (1, 2):
@@ -212,15 +190,9 @@ def _prefixed_role_bundle_candidate_for_class(
         }
         for role_names in _connected_role_components(role_to_members, min_shared_members=config.min_prefixed_role_shared_fields):
             shared_member_names = sorted_tuple((member_name for member_name in {member_name for role_name in role_names for member_name in role_to_members[role_name]} if sum((member_name in role_to_members[role_name] for role_name in role_names)) >= 2))
-            if len(shared_member_names) < config.min_prefixed_role_shared_fields:
-                continue
-            if all((_is_numeric_role_member_name(member_name) for member_name in shared_member_names)):
-                continue
-            if (
-                len(shared_member_names) < config.min_prefixed_role_bundle_fields
-                and not (manual_transport_methods or pytree_base_names)
-            ):
-                continue
+            if len(shared_member_names) < config.min_prefixed_role_shared_fields: continue
+            if all((_is_numeric_role_member_name(member_name) for member_name in shared_member_names)): continue
+            if len(shared_member_names) < config.min_prefixed_role_bundle_fields and (not (manual_transport_methods or pytree_base_names)): continue
             role_field_map = tuple(((role_name, tuple((role_to_members[role_name][member_name].field_name for member_name in shared_member_names if member_name in role_to_members[role_name]))) for role_name in role_names))
             candidate_field_names = {
                 field_name
@@ -230,8 +202,7 @@ def _prefixed_role_bundle_candidate_for_class(
             candidate_observations = sorted_tuple((observation for observation in observations if observation.field_name in candidate_field_names), key=lambda item: (item.lineno, item.field_name))
             candidates.append(PrefixedRoleFieldBundleCandidate(file_path=str(module.path), class_name=class_node.name, line=class_node.lineno, role_names=role_names, shared_member_names=shared_member_names, role_field_map=role_field_map, manual_transport_methods=manual_transport_methods, pytree_base_names=pytree_base_names, is_dataclass_family=is_dataclass_family, observations=candidate_observations))
 
-    if not candidates:
-        return None
+    if not candidates: return None
     return max(candidates, key=lambda item: (len(item.shared_member_names), len(item.role_names), sum((len(field_names) for _, field_names in item.role_field_map))))
 
 def _prefixed_role_field_bundle_candidates(
@@ -240,8 +211,7 @@ def _prefixed_role_field_bundle_candidates(
     observations: tuple[FieldObservation, ...] = _collect_typed_family_items(module, FieldObservationFamily, FieldObservation)
     observations_by_class: dict[str, list[FieldObservation]] = defaultdict(list)
     for observation in observations:
-        if not observation.execution_level.allows_prefixed_role_field_bundle:
-            continue
+        if not observation.execution_level.allows_prefixed_role_field_bundle: continue
         observations_by_class[observation.class_name].append(observation)
 
     candidates: list[PrefixedRoleFieldBundleCandidate] = []
@@ -250,8 +220,7 @@ def _prefixed_role_field_bundle_candidates(
     ):
         class_observations = tuple(observations_by_class.get(class_node.name, ()))
         candidate = _prefixed_role_bundle_candidate_for_class(module, class_node, class_observations, config)
-        if candidate is not None:
-            candidates.append(candidate)
+        if candidate is not None: candidates.append(candidate)
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 def _prefixed_role_bundle_scaffold(
@@ -264,30 +233,21 @@ def _prefixed_role_bundle_scaffold(
         f'from abc import ABC\n\n@dataclass(frozen=True)\nclass {base_name}(ABC):\n{member_block}\n\n{role_classes}\n\n# Replace role-prefixed fields on `{candidate.class_name}` with explicit role records.'
     )
 
-def _public_class_name(name: str) -> str:
-    return "".join(token.capitalize() for token in _ordered_class_name_tokens(name))
+def _public_class_name(name: str) -> str: return ''.join((token.capitalize() for token in _ordered_class_name_tokens(name)))
 
 def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
     suffix = _longest_common_suffix(class_names)
-    if suffix:
-        return suffix if suffix.endswith("Base") else f"{suffix}Base"
+    if suffix: return suffix if suffix.endswith('Base') else f'{suffix}Base'
     prefix = _longest_common_prefix(class_names)
-    if prefix:
-        return prefix if prefix.endswith("Base") else f"{prefix}Base"
+    if prefix: return prefix if prefix.endswith('Base') else f'{prefix}Base'
     return "SharedFieldsBase"
 
 class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(PatternId.ABC_TEMPLATE_METHOD, 'Shared field family across sibling classes should move to an ABC base', 'The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative base rather than being duplicated in each leaf class.', 'single authoritative state component for a nominal class family', 'same field family repeats across sibling classes at one structural execution level', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS)
 
-    def _candidate_items(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
-        del config
-        return tuple((candidate for candidate in _field_family_candidates(module) if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2))
+    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[object]: del config; return tuple((candidate for candidate in _field_family_candidates(module) if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2))
 
-    def _finding_for_candidate(self, field_candidate: FieldFamilyCandidate) -> RefactorFinding:
-        evidence = tuple((SourceLocation(item.file_path, item.lineno, item.symbol) for item in field_candidate.observations[:8]))
-        return self.build_finding(f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`.", evidence, relation_context=f'same field family repeats across sibling classes at `{field_candidate.execution_level}`', scaffold=_field_family_scaffold(field_candidate), metrics=FieldFamilyMetrics(class_count=len(field_candidate.class_names), field_count=len(field_candidate.field_names), class_names=field_candidate.class_names, field_names=field_candidate.field_names, execution_level=field_candidate.execution_level, dataclass_count=field_candidate.dataclass_count))
+    def _finding_for_candidate(self, field_candidate: FieldFamilyCandidate) -> RefactorFinding: evidence = tuple((SourceLocation(item.file_path, item.lineno, item.symbol) for item in field_candidate.observations[:8])); return self.build_finding(f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`.", evidence, relation_context=f'same field family repeats across sibling classes at `{field_candidate.execution_level}`', scaffold=_field_family_scaffold(field_candidate), metrics=FieldFamilyMetrics(class_count=len(field_candidate.class_names), field_count=len(field_candidate.field_names), class_names=field_candidate.class_names, field_names=field_candidate.field_names, execution_level=field_candidate.execution_level, dataclass_count=field_candidate.dataclass_count))
 
 class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Role-prefixed field bundle should become nominal subrecords', 'A record that repeats the same member family behind role prefixes is encoding nominal role identity in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so the schema, PyTree behavior, and type-level role identity have one authoritative boundary.', 'explicit nominal role records instead of parallel role-prefixed fields', 'same semantic member family repeats under several leading role prefixes in one record', _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS, _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS)
@@ -407,8 +367,7 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         del config
         group = _helper_backed_observation_spec_group(module)
-        if group is None:
-            return []
+        if group is None: return []
         evidence = tuple((SourceLocation(group.file_path, line, class_name) for class_name, line in zip(group.class_names, group.line_numbers, strict=True)))
         helper_names = tuple(dict.fromkeys(group.helper_names))
         wrapper_kinds = tuple(dict.fromkeys(group.wrapper_kinds))
@@ -527,8 +486,7 @@ class ExportPolicyPredicateDetector(IssueDetector):
     ) -> list[RefactorFinding]:
         del config
         candidates = tuple((candidate for module in modules if (candidate := _module_export_policy_predicate_candidate(module)) is not None))
-        if len(candidates) < 2:
-            return []
+        if len(candidates) < 2: return []
         evidence = tuple((SourceLocation(candidate.file_path, candidate.line, candidate.function_name) for candidate in candidates[:6]))
         all_roles = sorted_tuple({role for candidate in candidates for role in candidate.role_names})
         root_type_names = sorted_tuple({type_name for candidate in candidates for type_name in candidate.root_type_names})
@@ -589,8 +547,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
     ) -> list[RefactorFinding]:
         del config
         group = _registry_traversal_group(modules)
-        if group is None:
-            return []
+        if group is None: return []
         evidence = tuple((SourceLocation(file_path, line, symbol) for file_path, line, symbol in zip(group.file_paths, group.line_numbers, group.symbols, strict=True)))
         registry_clause = (
             ""
@@ -644,8 +601,7 @@ class ExcessiveBlankLineRunCandidate:
     blank_line_count: int
 
     @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.start_line, f'blank-lines:{self.blank_line_count}')
+    def evidence(self) -> SourceLocation: return SourceLocation(self.file_path, self.start_line, f'blank-lines:{self.blank_line_count}')
 
 
 CatalogInstallingMixinFamilyCandidate = product_record('CatalogInstallingMixinFamilyCandidate', 'catalog_attribute_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
@@ -671,8 +627,7 @@ class ModuleConstructorPolicyFamilyCandidate:
     field_names: tuple[str, ...]
 
     @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((SourceLocation(self.file_path, line, row_name) for row_name, line in zip(self.row_names, self.line_numbers, strict=True)))
+    def evidence(self) -> tuple[SourceLocation, ...]: return tuple((SourceLocation(self.file_path, line, row_name) for row_name, line in zip(self.row_names, self.line_numbers, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -685,8 +640,7 @@ class _ConstructorVariantMethod:
     coordinate_fingerprints: tuple[str, ...]
 
     @property
-    def shape_key(self) -> tuple[object, ...]:
-        return (self.callee_name, self.positional_count, self.keyword_names)
+    def shape_key(self) -> tuple[object, ...]: return (self.callee_name, self.positional_count, self.keyword_names)
 
 
 @dataclass(frozen=True)
@@ -699,39 +653,28 @@ class _AccumulatorFoldMethod:
     result_method_name: str
 
     @property
-    def shape_key(self) -> tuple[str, str]:
-        return (self.accumulator_type_name, self.result_method_name)
+    def shape_key(self) -> tuple[str, str]: return (self.accumulator_type_name, self.result_method_name)
 
 
 def _simple_classmethod_return_call(
     node: ast.FunctionDef,
 ) -> ast.Call | None:
-    if not _is_classmethod(node):
-        return None
+    if not _is_classmethod(node): return None
     body = _trim_docstring_body(node.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
-        return None
+    if len(body) != 1 or not isinstance(body[0], ast.Return): return None
     returned = body[0].value
-    if not isinstance(returned, ast.Call):
-        return None
+    if not isinstance(returned, ast.Call): return None
     return returned
 
 
 def _classmethod_constructor_callee_name(call: ast.Call) -> str | None:
-    if isinstance(call.func, ast.Name) and call.func.id == "cls":
-        return "cls"
-    if (
-        isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == "cls"
-    ):
-        return f"cls.{call.func.attr}"
+    if isinstance(call.func, ast.Name) and call.func.id == 'cls': return 'cls'
+    if isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and (call.func.value.id == 'cls'): return f'cls.{call.func.attr}'
     return None
 
 
 def _call_coordinate_fingerprints(call: ast.Call) -> tuple[str, ...] | None:
-    if any(keyword.arg is None for keyword in call.keywords):
-        return None
+    if any((keyword.arg is None for keyword in call.keywords)): return None
     positional = tuple(ast.dump(arg, annotate_fields=False) for arg in call.args)
     keywords = tuple((ast.dump(keyword.value, annotate_fields=False) for keyword in sorted(call.keywords, key=lambda item: item.arg or '')))
     return positional + keywords
@@ -741,14 +684,11 @@ def _constructor_variant_method(
     method: ast.FunctionDef,
 ) -> _ConstructorVariantMethod | None:
     call = _simple_classmethod_return_call(method)
-    if call is None:
-        return None
+    if call is None: return None
     callee_name = _classmethod_constructor_callee_name(call)
-    if callee_name is None:
-        return None
+    if callee_name is None: return None
     coordinate_fingerprints = _call_coordinate_fingerprints(call)
-    if coordinate_fingerprints is None:
-        return None
+    if coordinate_fingerprints is None: return None
     return _ConstructorVariantMethod(method_name=method.name, line=method.lineno, callee_name=callee_name, positional_count=len(call.args), keyword_names=tuple((keyword.arg or '' for keyword in sorted(call.keywords, key=lambda item: item.arg or ''))), coordinate_fingerprints=coordinate_fingerprints)
 
 
@@ -761,8 +701,7 @@ def _varying_coordinate_names(
     keyword_names = methods[0].keyword_names
     for index in range(coordinate_count):
         values = {method.coordinate_fingerprints[index] for method in methods}
-        if len(values) < 2:
-            continue
+        if len(values) < 2: continue
         if index < positional_count:
             varying.append(f"arg{index}")
         else:
@@ -784,14 +723,11 @@ def _class_method_shape_groups(
     ):
         grouped: dict[object, list[_ParsedFamilyMethod]] = defaultdict(list)
         for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
+            if not isinstance(statement, ast.FunctionDef): continue
             method = method_parser(statement)
-            if method is not None:
-                grouped[shape_key(method)].append(method)
+            if method is not None: grouped[shape_key(method)].append(method)
         for methods in grouped.values():
-            if len(methods) < 2:
-                continue
+            if len(methods) < 2: continue
             groups.append((class_node, sorted_tuple(methods, key=lambda item: (item.line, item.method_name))))
     return tuple(groups)
 
@@ -802,8 +738,7 @@ def _constructor_variant_family_candidates(
     candidates: list[ConstructorVariantFamilyCandidate] = []
     for class_node, ordered in _class_method_shape_groups(module, _constructor_variant_method, lambda method: method.shape_key):
         varying_coordinates = _varying_coordinate_names(ordered)
-        if not varying_coordinates:
-            continue
+        if not varying_coordinates: continue
         candidates.append(ConstructorVariantFamilyCandidate(file_path=str(module.path), class_name=class_node.name, callee_name=ordered[0].callee_name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), coordinate_count=len(ordered[0].coordinate_fingerprints), varying_coordinate_names=varying_coordinates))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
@@ -813,43 +748,35 @@ def _accumulator_fold_method(
 ) -> _AccumulatorFoldMethod | None:
     body = _trim_docstring_body(method.body)
     fold_shape = _accumulator_fold_shape(body)
-    if fold_shape is None:
-        return None
+    if fold_shape is None: return None
     accumulator_name, accumulator_type_name, loop, step_call, result_call = fold_shape
     args = method.args.args
     offset = 1 if args and args[0].arg in {"self", "cls"} else 0
-    if len(args) <= offset:
-        return None
+    if len(args) <= offset: return None
     source_parameter = args[offset].arg
-    if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter):
-        return None
+    if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter): return None
     return _AccumulatorFoldMethod(method_name=method.name, line=method.lineno, source_parameter_name=source_parameter, accumulator_type_name=accumulator_type_name, step_method_name=step_call.func.attr, result_method_name=result_call.func.attr)
 
 
 def _accumulator_fold_shape(
     body: list[ast.stmt],
 ) -> tuple[str, str, ast.For, ast.Call, ast.Call] | None:
-    if len(body) != 3:
-        return None
+    if len(body) != 3: return None
     assign, loop, returned = body
     accumulator = _accumulator_initializer(assign)
-    if accumulator is None or not isinstance(loop, ast.For) or not isinstance(returned, ast.Return):
-        return None
+    if accumulator is None or not isinstance(loop, ast.For) or (not isinstance(returned, ast.Return)): return None
     accumulator_name, accumulator_type_name = accumulator
     step_call = _accumulator_step_call(loop, accumulator_name)
     result_call = _accumulator_result_call(returned, accumulator_name)
-    if step_call is None or result_call is None:
-        return None
+    if step_call is None or result_call is None: return None
     return accumulator_name, accumulator_type_name, loop, step_call, result_call
 
 
 def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:
-    if not isinstance(statement, ast.Assign):
-        return None
+    if not isinstance(statement, ast.Assign): return None
     target = as_ast(single_assign_target(statement), ast.Name)
     call = as_ast(statement.value, ast.Call)
-    if target is None or call is None or call.args or call.keywords:
-        return None
+    if target is None or call is None or call.args or call.keywords: return None
     return target.id, ast.unparse(call.func)
 
 
@@ -858,17 +785,7 @@ def _accumulator_step_call(loop: ast.For, accumulator_name: str) -> ast.Call | N
     expression = as_ast(single_item(loop.body), ast.Expr)
     call = as_ast(expression.value if expression is not None else None, ast.Call)
     arg = single_item(call.args) if call is not None else None
-    if not (
-        target is not None
-        and call is not None
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == accumulator_name
-        and not call.keywords
-        and isinstance(arg, ast.Name)
-        and arg.id == target.id
-    ):
-        return None
+    if not (target is not None and call is not None and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and (call.func.value.id == accumulator_name) and (not call.keywords) and isinstance(arg, ast.Name) and (arg.id == target.id)): return None
     return call
 
 
@@ -876,15 +793,7 @@ def _accumulator_result_call(
     returned: ast.Return, accumulator_name: str
 ) -> ast.Call | None:
     call = as_ast(returned.value, ast.Call)
-    if not (
-        call is not None
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and call.func.value.id == accumulator_name
-        and not call.args
-        and not call.keywords
-    ):
-        return None
+    if not (call is not None and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name) and (call.func.value.id == accumulator_name) and (not call.args) and (not call.keywords)): return None
     return call
 
 
@@ -893,8 +802,7 @@ def _accumulator_fold_family_candidates(
 ) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
     candidates: list[AccumulatorFoldFamilyCandidate] = []
     for class_node, ordered in _class_method_shape_groups(module, _accumulator_fold_method, lambda method: method.shape_key):
-        if len({method.step_method_name for method in ordered}) < 2:
-            continue
+        if len({method.step_method_name for method in ordered}) < 2: continue
         candidates.append(AccumulatorFoldFamilyCandidate(file_path=str(module.path), class_name=class_node.name, accumulator_type_name=ordered[0].accumulator_type_name, result_method_name=ordered[0].result_method_name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), source_parameter_names=tuple((method.source_parameter_name for method in ordered)), step_method_names=tuple((method.step_method_name for method in ordered))))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
@@ -903,15 +811,12 @@ def _docstring_line_ranges(root: ast.AST) -> set[int]:
     protected: set[int] = set()
 
     for node in _walk_nodes(root):
-        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)): continue
         body = getattr(node, "body", ())
-        if not body or not _is_docstring_expr(body[0]):
-            continue
+        if not body or not _is_docstring_expr(body[0]): continue
         start = getattr(body[0], "lineno", None)
         end = getattr(body[0], "end_lineno", start)
-        if start is None or end is None:
-            continue
+        if start is None or end is None: continue
         protected.update(range(start, end + 1))
     return protected
 
@@ -927,14 +832,7 @@ def _excessive_blank_line_run_candidates(
 
     def flush(end_line: int) -> None:
         nonlocal run_start, run_length
-        if run_start is not None and (
-            run_length > 4
-            or (
-                run_length > 1
-                and _line_range_is_nested_in(run_start, end_line, class_body_ranges)
-            )
-        ):
-            candidates.append(ExcessiveBlankLineRunCandidate(file_path=str(module.path), start_line=run_start, end_line=end_line, blank_line_count=run_length))
+        if run_start is not None and (run_length > 4 or (run_length > 1 and _line_range_is_nested_in(run_start, end_line, class_body_ranges))): candidates.append(ExcessiveBlankLineRunCandidate(file_path=str(module.path), start_line=run_start, end_line=end_line, blank_line_count=run_length))
         run_start = None
         run_length = 0
 
@@ -942,27 +840,19 @@ def _excessive_blank_line_run_candidates(
         if line_number in protected_lines or line.strip():
             flush(line_number - 1)
             continue
-        if run_start is None:
-            run_start = line_number
+        if run_start is None: run_start = line_number
         run_length += 1
     flush(line_number if "line_number" in locals() else 0)
     return tuple(candidates)
 
 
-def _class_body_line_ranges(module: ast.Module) -> tuple[range, ...]:
-    return tuple((range(node.body[0].lineno, (node.end_lineno or node.body[-1].lineno) + 1) for node in _walk_nodes(module) if isinstance(node, ast.ClassDef) and node.body))
+def _class_body_line_ranges(module: ast.Module) -> tuple[range, ...]: return tuple((range(node.body[0].lineno, (node.end_lineno or node.body[-1].lineno) + 1) for node in _walk_nodes(module) if isinstance(node, ast.ClassDef) and node.body))
 
 
-def _line_range_is_nested_in(
-    start_line: int, end_line: int, ranges: tuple[range, ...]
-) -> bool:
-    return any((start_line in line_range and end_line in line_range for line_range in ranges))
+def _line_range_is_nested_in(start_line: int, end_line: int, ranges: tuple[range, ...]) -> bool: return any((start_line in line_range and end_line in line_range for line_range in ranges))
 
 
-def _catalog_installing_mixin_candidate(
-    method: ast.FunctionDef,
-) -> str | None:
-    return cast(str | None, Maybe.of(method).bind_all(registered_effect_steps(_CatalogInstallingMixinStep)).unwrap_or_none())
+def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None: return cast(str | None, Maybe.of(method).bind_all(registered_effect_steps(_CatalogInstallingMixinStep)).unwrap_or_none())
 
 
 _CatalogInstallingMixinShape = product_record('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call')
@@ -983,24 +873,18 @@ class _NamedFunctionExprCallPairStep(
     function_name: ClassVar[str]
 
     def project_ast(self, value: ast.FunctionDef) -> _FunctionCallPairResult | None:
-        if value.name != self.function_name:
-            return None
+        if value.name != self.function_name: return None
         body = _trim_docstring_body(value.body)
         statements = ast_sequence(body, ast.Expr, ast.Expr)
-        if statements is None:
-            return None
+        if statements is None: return None
         first, second = statements
         first_call = as_ast(first.value, ast.Call)
         second_call = as_ast(second.value, ast.Call)
-        if first_call is None or second_call is None:
-            return None
+        if first_call is None or second_call is None: return None
         return self.project_call_pair(first_call, second_call)
 
     @abstractmethod
-    def project_call_pair(
-        self, first_call: ast.Call, second_call: ast.Call
-    ) -> _FunctionCallPairResult | None:
-        raise NotImplementedError
+    def project_call_pair(self, first_call: ast.Call, second_call: ast.Call) -> _FunctionCallPairResult | None: raise NotImplementedError
 
 
 class _CatalogInitSubclassBodyStep(
@@ -1011,10 +895,7 @@ class _CatalogInitSubclassBodyStep(
     registration_order = 10
     function_name = "__init_subclass__"
 
-    def project_call_pair(
-        self, first_call: ast.Call, second_call: ast.Call
-    ) -> _CatalogInstallingMixinShape:
-        return _CatalogInstallingMixinShape(first_call, second_call)
+    def project_call_pair(self, first_call: ast.Call, second_call: ast.Call) -> _CatalogInstallingMixinShape: return _CatalogInstallingMixinShape(first_call, second_call)
 
 
 class _CatalogSuperInitSubclassStep(
@@ -1028,8 +909,7 @@ class _CatalogSuperInitSubclassStep(
         self, value: _CatalogInstallingMixinShape
     ) -> _CatalogInstallingMixinShape | None:
         match = attribute_call_match(value.first_call, method_name='__init_subclass__', owner_type=ast.Call, argument_count=0, allow_keywords=False)
-        if match is None or name_id(match.owner.func) != "super":
-            return None
+        if match is None or name_id(match.owner.func) != 'super': return None
         return value
 
 
@@ -1042,8 +922,7 @@ class _CatalogInstallAttributeStep(
 
     def project(self, value: _CatalogInstallingMixinShape) -> str | None:
         match = attribute_call_match(value.second_call, method_name='install', owner_type=ast.Attribute, owner_name='cls', single_argument_name='cls')
-        if match is None:
-            return None
+        if match is None: return None
         return match.owner.attr
 
 
@@ -1055,13 +934,10 @@ def _catalog_installing_mixin_family_candidates(
         node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
+            if not isinstance(statement, ast.FunctionDef): continue
             catalog_attribute = _catalog_installing_mixin_candidate(statement)
-            if catalog_attribute is not None:
-                items.append((class_node.name, catalog_attribute, statement.lineno))
-    if len(items) < 2:
-        return ()
+            if catalog_attribute is not None: items.append((class_node.name, catalog_attribute, statement.lineno))
+    if len(items) < 2: return ()
     ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
     return (CatalogInstallingMixinFamilyCandidate(file_path=str(module.path), class_names=tuple((item[0] for item in ordered)), catalog_attribute_names=tuple((item[1] for item in ordered)), line_numbers=tuple((item[2] for item in ordered))),)
 
@@ -1104,8 +980,7 @@ class _RegexExtractorBodyStep(
 
     def project_ast(self, value: ast.FunctionDef) -> _RegexExtractorBody | None:
         statements = ast_sequence(_trim_docstring_body(value.body), ast.Assign, ast.Return)
-        if statements is None:
-            return None
+        if statements is None: return None
         assign, returned = statements
         return _RegexExtractorBody(value, assign, returned)
 
@@ -1119,8 +994,7 @@ class _RegexExtractorAssignmentStep(
 
     def project(self, value: _RegexExtractorBody) -> _RegexExtractorAssignment | None:
         assignment = named_call_assignment(value.assign)
-        if assignment is None:
-            return None
+        if assignment is None: return None
         return _RegexExtractorAssignment(method=value.method, match_name=assignment.target_name, returned=value.returned, call=assignment.call)
 
 
@@ -1135,8 +1009,7 @@ class _RegexExtractorMatcherCallStep(
         self, value: _RegexExtractorAssignment
     ) -> _RegexExtractorMatcherCall | None:
         match = attribute_call_match(value.call, method_names=_REGEX_MATCHER_NAMES, owner_type=ast.Attribute, owner_name='self', single_argument_required=True)
-        if match is None:
-            return None
+        if match is None: return None
         return _RegexExtractorMatcherCall(method=value.method, match_name=value.match_name, returned=value.returned, pattern_attribute_name=match.owner.attr, matcher_name=match.attribute.attr)
 
 
@@ -1146,14 +1019,7 @@ def _regex_conditional_group_call(
     ifexp = as_ast(value.returned.value, ast.IfExp)
     none_orelse = as_ast(ifexp.orelse if ifexp else None, ast.Constant)
     group_call = as_ast(ifexp.body if ifexp else None, ast.Call)
-    if (
-        ifexp is None
-        or name_id(ifexp.test) != value.match_name
-        or none_orelse is None
-        or none_orelse.value is not None
-        or group_call is None
-    ):
-        return None
+    if ifexp is None or name_id(ifexp.test) != value.match_name or none_orelse is None or (none_orelse.value is not None) or (group_call is None): return None
     return group_call
 
 
@@ -1168,8 +1034,7 @@ class _RegexExtractorConditionalReturnStep(
         self, value: _RegexExtractorMatcherCall
     ) -> _RegexExtractorConditionalReturn | None:
         group_call = _regex_conditional_group_call(value)
-        if group_call is None:
-            return None
+        if group_call is None: return None
         return _RegexExtractorConditionalReturn(method=value.method, match_name=value.match_name, returned=value.returned, pattern_attribute_name=value.pattern_attribute_name, matcher_name=value.matcher_name, group_call=group_call)
 
 
@@ -1185,15 +1050,11 @@ class _RegexExtractorGroupCallStep(
     ) -> _RegexGroupExtractorMethod | None:
         match = attribute_call_match(value.group_call, method_name='group', owner_type=ast.Name, owner_name=value.match_name, single_argument_required=True)
         group_index = constant_value(match.single_argument) if match else None
-        if not isinstance(group_index, int):
-            return None
+        if not isinstance(group_index, int): return None
         return _RegexGroupExtractorMethod(method_name=value.method.name, line=value.method.lineno, pattern_attribute_name=value.pattern_attribute_name, matcher_name=value.matcher_name, group_index=group_index)
 
 
-def _regex_group_extractor_method(
-    method: ast.FunctionDef,
-) -> _RegexGroupExtractorMethod | None:
-    return cast(_RegexGroupExtractorMethod | None, Maybe.of(method).bind_all(registered_effect_steps(_RegexGroupExtractorStep)).unwrap_or_none())
+def _regex_group_extractor_method(method: ast.FunctionDef) -> _RegexGroupExtractorMethod | None: return cast(_RegexGroupExtractorMethod | None, Maybe.of(method).bind_all(registered_effect_steps(_RegexGroupExtractorStep)).unwrap_or_none())
 
 
 def _regex_group_extractor_family_candidates(
@@ -1205,18 +1066,15 @@ def _regex_group_extractor_family_candidates(
     ):
         methods = tuple((extractor for statement in class_node.body if isinstance(statement, ast.FunctionDef) for extractor in (_regex_group_extractor_method(statement),) if extractor is not None))
         grouped: dict[int, list[_RegexGroupExtractorMethod]] = defaultdict(list)
-        for method in methods:
-            grouped[method.group_index].append(method)
+        for method in methods: grouped[method.group_index].append(method)
         for group_index, grouped_methods in grouped.items():
-            if len(grouped_methods) < 2:
-                continue
+            if len(grouped_methods) < 2: continue
             ordered = sorted_tuple(grouped_methods, key=lambda item: (item.line, item.method_name))
             candidates.append(RegexGroupExtractorFamilyCandidate(file_path=str(module.path), class_name=class_node.name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), pattern_attribute_names=tuple((method.pattern_attribute_name for method in ordered)), matcher_names=tuple((method.matcher_name for method in ordered)), group_index=group_index))
     return tuple(candidates)
 
 
-def _class_has_constructor_variant_mixin(node: ast.ClassDef) -> bool:
-    return any(_ast_terminal_name(base) == "ConstructorVariantMixin" for base in node.bases)
+def _class_has_constructor_variant_mixin(node: ast.ClassDef) -> bool: return any((_ast_terminal_name(base) == 'ConstructorVariantMixin' for base in node.bases))
 
 
 def _sparse_constructor_variant_family_candidates(
@@ -1226,25 +1084,19 @@ def _sparse_constructor_variant_family_candidates(
     for class_node in (
         node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
-        if not _is_dataclass_class(class_node) or _class_has_constructor_variant_mixin(class_node):
-            continue
+        if not _is_dataclass_class(class_node) or _class_has_constructor_variant_mixin(class_node): continue
         field_names = set(_dataclass_field_names(class_node))
         methods: list[tuple[ast.FunctionDef, tuple[str, ...]]] = []
         for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef) or not _is_classmethod(statement):
-                continue
+            if not isinstance(statement, ast.FunctionDef) or not _is_classmethod(statement): continue
             call = _constructor_return_call(statement)
-            if call is None or call.args:
-                continue
+            if call is None or call.args: continue
             keyword_names = tuple((keyword.arg or '' for keyword in call.keywords if keyword.arg is not None))
-            if not keyword_names or not set(keyword_names) <= field_names:
-                continue
+            if not keyword_names or not set(keyword_names) <= field_names: continue
             methods.append((statement, keyword_names))
-        if len(methods) < 2:
-            continue
+        if len(methods) < 2: continue
         union_keywords = sorted_tuple({name for _, names in methods for name in names})
-        if not union_keywords:
-            continue
+        if not union_keywords: continue
         ordered = sorted_tuple(methods, key=lambda item: (item[0].lineno, item[0].name))
         candidates.append(SparseConstructorVariantFamilyCandidate(file_path=str(module.path), class_name=class_node.name, method_names=tuple((method.name for method, _ in ordered)), line_numbers=tuple((method.lineno for method, _ in ordered)), keyword_names=union_keywords))
     return tuple(candidates)
@@ -1252,38 +1104,30 @@ def _sparse_constructor_variant_family_candidates(
 
 def _support_prelude_import_name(module_node: ast.Module) -> str | None:
     for statement in module_node.body:
-        if not isinstance(statement, ast.ImportFrom):
-            continue
-        if len(statement.names) != 1 or statement.names[0].name != "*":
-            continue
+        if not isinstance(statement, ast.ImportFrom): continue
+        if len(statement.names) != 1 or statement.names[0].name != '*': continue
         imported_module = statement.module or ""
-        if "support" not in imported_module.lower():
-            continue
+        if 'support' not in imported_module.lower(): continue
         return "." * statement.level + imported_module
     return None
 
 
 def _module_has_family_catalog(module_path: Path) -> bool:
-    if not module_path.exists():
-        return False
+    if not module_path.exists(): return False
     try:
         tree = ast.parse(module_path.read_text(encoding="utf-8"))
     except SyntaxError:
         return False
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any((isinstance(target, ast.Name) and 'MODULE' in target.id and ('CATALOG' in target.id or 'MANIFEST' in target.id) for target in node.targets)):
-            continue
-        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Call)):
-            return True
+        if not isinstance(node, ast.Assign): continue
+        if not any((isinstance(target, ast.Name) and 'MODULE' in target.id and ('CATALOG' in target.id or 'MANIFEST' in target.id) for target in node.targets)): continue
+        if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Call)): return True
     return False
 
 
 def _support_module_path(module: ParsedModule, import_name: str) -> Path | None:
     stripped = import_name.lstrip(".")
-    if not stripped:
-        return None
+    if not stripped: return None
     return module.path.parent / f"{stripped.split('.')[-1]}.py"
 
 
@@ -1300,30 +1144,24 @@ def _support_prelude_module_family_candidates(
             for node in module.module.body
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
-        if len(top_level_classes) != 1 or top_level_functions:
-            continue
+        if len(top_level_classes) != 1 or top_level_functions: continue
         support_import = _support_prelude_import_name(module.module)
-        if support_import is None:
-            continue
+        if support_import is None: continue
         support_path = _support_module_path(module, support_import)
-        if support_path is not None and _module_has_family_catalog(support_path):
-            continue
+        if support_path is not None and _module_has_family_catalog(support_path): continue
         grouped[str(module.path.parent), support_import].append((module, top_level_classes[0]))
     candidates: list[SupportPreludeModuleFamilyCandidate] = []
     for (_, support_import), items in grouped.items():
-        if len(items) < 3:
-            continue
+        if len(items) < 3: continue
         ordered = sorted_tuple(items, key=lambda item: str(item[0].path))
         candidates.append(SupportPreludeModuleFamilyCandidate(support_module_name=support_import, file_paths=tuple((str(item[0].path) for item in ordered)), class_names=tuple((item[1].name for item in ordered)), line_numbers=tuple((item[1].lineno for item in ordered))))
     return tuple(candidates)
 
 
-def _is_module_policy_row_name(name: str) -> bool:
-    return name.isupper() and "_" in name
+def _is_module_policy_row_name(name: str) -> bool: return name.isupper() and '_' in name
 
 
-def _constructor_call_schema(call: ast.Call) -> tuple[str, ...]:
-    return (*(f'arg{index}' for index, _arg in enumerate(call.args)), *(keyword.arg or '**' for keyword in call.keywords))
+def _constructor_call_schema(call: ast.Call) -> tuple[str, ...]: return (*(f'arg{index}' for index, _arg in enumerate(call.args)), *(keyword.arg or '**' for keyword in call.keywords))
 
 
 def _module_constructor_policy_family_candidates(
@@ -1331,17 +1169,14 @@ def _module_constructor_policy_family_candidates(
 ) -> tuple[ModuleConstructorPolicyFamilyCandidate, ...]:
     grouped: dict[tuple[str, tuple[str, ...]], list[tuple[str, int]]] = defaultdict(list)
     for row_name, (line, call) in _module_level_named_calls(module).items():
-        if not _is_module_policy_row_name(row_name):
-            continue
+        if not _is_module_policy_row_name(row_name): continue
         schema = _constructor_call_schema(call)
-        if len(schema) < 2:
-            continue
+        if len(schema) < 2: continue
         grouped[(ast.unparse(call.func), schema)].append((row_name, line))
 
     candidates: list[ModuleConstructorPolicyFamilyCandidate] = []
     for (constructor_name, field_names), rows in grouped.items():
-        if len(rows) < 2:
-            continue
+        if len(rows) < 2: continue
         ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
         candidates.append(ModuleConstructorPolicyFamilyCandidate(file_path=str(module.path), constructor_name=constructor_name, row_names=tuple((row_name for row_name, _line in ordered)), line_numbers=tuple((line for _row_name, line in ordered)), field_names=field_names))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.constructor_name))
@@ -1389,6 +1224,12 @@ declare_module_detector(MultilineContainerLiteralCandidate, high_confidence_cert
 
 
 declare_module_detector(MultilineCallExpressionCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Split call expression should collapse into one call authority', 'A comment-free multi-line call expression is one runtime operation. The physical line split is not a semantic boundary; the call should be represented by one expression authority unless comments carry extra information.', 'single source call expression for one runtime operation', 'one call expression is split across multiple physical source lines without comments', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[MultilineCallExpressionCandidate](summary=lambda call_candidate: f'`{call_candidate.file_path}` has a {call_candidate.line_count}-line `{call_candidate.callee_name}` call at {call_candidate.line}-{call_candidate.end_line} with {call_candidate.argument_count} argument(s).', evidence=lambda call_candidate: (call_candidate.evidence,), scaffold=lambda call_candidate: 'result = operation(argument_a, argument_b, option=value)', codemod_patch=lambda call_candidate: f'# Replace the comment-free call split at {call_candidate.file_path}:{call_candidate.line}-{call_candidate.end_line} with one call expression.', metrics=lambda call_candidate: MappingMetrics.from_field_names(mapping_site_count=call_candidate.line_count, mapping_name=call_candidate.callee_name, field_names=('call_argument',))), candidate_collector=_multiline_call_expression_candidates)
+
+
+declare_module_detector(StraightlineSimpleFunctionCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Straightline simple function suite should collapse into one function authority', 'A comment-free function body containing only simple statements has no nested control structure. The physical suite split is layout, not behavior; the function authority can keep the same simple-statement sequence in one suite.', 'single source function suite for one straightline statement sequence', 'one function body is split across multiple physical lines while containing only simple statements', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[StraightlineSimpleFunctionCandidate](summary=lambda function_candidate: f'`{function_candidate.file_path}` has a {function_candidate.line_count}-line straightline `{function_candidate.function_name}` function with {function_candidate.statement_count} simple statement(s).', evidence=lambda function_candidate: (function_candidate.evidence,), scaffold=lambda function_candidate: 'def function(...): statement_a; statement_b; return value', codemod_patch=lambda function_candidate: f'# Replace the comment-free straightline function suite at {function_candidate.file_path}:{function_candidate.line}-{function_candidate.end_line} with one simple-statement suite.', metrics=lambda function_candidate: MappingMetrics.from_field_names(mapping_site_count=function_candidate.line_count, mapping_name=function_candidate.function_name, field_names=function_candidate.statement_kinds)), candidate_collector=_straightline_simple_function_candidates)
+
+
+declare_module_detector(SingleStatementControlSuiteCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Single-statement control suite should collapse into one control authority', 'A comment-free control statement whose body is exactly one simple statement has one guard/iteration authority and one action. The extra physical suite split is not semantic.', 'single source control suite for one guarded simple statement', 'one control suite is split across multiple physical lines despite containing exactly one simple statement', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[SingleStatementControlSuiteCandidate](summary=lambda suite_candidate: f'`{suite_candidate.file_path}` has a {suite_candidate.line_count}-line {suite_candidate.control_kind} suite at {suite_candidate.line}-{suite_candidate.end_line} with one {suite_candidate.statement_kind} statement.', evidence=lambda suite_candidate: (suite_candidate.evidence,), scaffold=lambda suite_candidate: 'if condition: return value', codemod_patch=lambda suite_candidate: f'# Replace the comment-free single-statement {suite_candidate.control_kind} suite at {suite_candidate.file_path}:{suite_candidate.line}-{suite_candidate.end_line} with one simple-statement suite.', metrics=lambda suite_candidate: MappingMetrics.from_field_names(mapping_site_count=suite_candidate.line_count, mapping_name=suite_candidate.control_kind, field_names=(suite_candidate.statement_kind,))), candidate_collector=_single_statement_control_suite_candidates)
 
 
 declare_module_detector(CatalogInstallingMixinFamilyCandidate, high_confidence_certified_spec(PatternId.ABC_TEMPLATE_METHOD, 'Catalog-installing mixins should share one subclass hook', 'Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.', 'one reusable catalog-installing subclass hook with declarative catalog attribute residue', 'sibling mixins repeat an identical class-creation hook over different catalog classvars', _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[CatalogInstallingMixinFamilyCandidate](summary=lambda catalog_candidate: f'Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.', evidence=lambda catalog_candidate: catalog_candidate.evidence, scaffold=lambda catalog_candidate: 'class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)', codemod_patch=lambda catalog_candidate: '# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.', metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(duplicate_site_count=len(catalog_candidate.class_names), statement_count=2, class_count=len(catalog_candidate.class_names), method_symbols=tuple((f'{class_name}.__init_subclass__' for class_name in catalog_candidate.class_names)))), candidate_collector=_catalog_installing_mixin_family_candidates)

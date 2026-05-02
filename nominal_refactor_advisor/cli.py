@@ -34,22 +34,16 @@ class CliArgumentSpec:
 
     def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
         kwargs: dict[str, object] = {"help": self.help}
-        if self.action is not None:
-            kwargs["action"] = self.action
-        if self.default is not None:
-            kwargs["default"] = self.default
-        if self.dest is not None:
-            kwargs["dest"] = self.dest
+        if self.action is not None: kwargs['action'] = self.action
+        if self.default is not None: kwargs['default'] = self.default
+        if self.dest is not None: kwargs['dest'] = self.dest
         if self.action not in _VALUELESS_ARGUMENT_ACTIONS:
-            if self.nargs is not None:
-                kwargs["nargs"] = self.nargs
-            if self.value_type is not None:
-                kwargs["type"] = self.value_type
+            if self.nargs is not None: kwargs['nargs'] = self.nargs
+            if self.value_type is not None: kwargs['type'] = self.value_type
         parser.add_argument(*self.flags, **kwargs)
 
 
-def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
-    return tuple((CliArgumentSpec(flags=(f"--{config_field.name.replace('_', '-')}",), value_type=int, default=config_field.default, help=str(config_field.metadata['cli_help'])) for config_field in fields(DetectorConfig) if 'cli_help' in config_field.metadata))
+def _config_argument_specs() -> tuple[CliArgumentSpec, ...]: return tuple((CliArgumentSpec(flags=(f"--{config_field.name.replace('_', '-')}",), value_type=int, default=config_field.default, help=str(config_field.metadata['cli_help'])) for config_field in fields(DetectorConfig) if 'cli_help' in config_field.metadata))
 
 
 _CLI_ARGUMENT_SPECS = (CliArgumentSpec(flags=('path',), nargs='?', default='nominal_refactor_advisor', help='Root path to analyze (defaults to nominal_refactor_advisor).'), CliArgumentSpec(flags=('--json',), action='store_true', help='Emit JSON instead of Markdown.'), CliArgumentSpec(flags=('--include-plans',), action='store_true', help='Also synthesize subsystem-level composed refactor plans.'), CliArgumentSpec(flags=('--plans-only',), action='store_true', help='Emit only subsystem-level composed refactor plans.')) + _config_argument_specs() + (CliArgumentSpec(flags=('--exclude-pattern',), action='append', dest='excluded_pattern_ids', value_type=int, default=[], help='Pattern ID to exclude from findings (can be specified multiple times).'),)
@@ -61,8 +55,7 @@ def analyze_modules(
     """Run all registered detectors against parsed modules."""
     config = config or DetectorConfig()
     findings: list[RefactorFinding] = []
-    for detector in default_detectors():
-        findings.extend(detector.detect(modules, config))
+    for detector in default_detectors(): findings.extend(detector.detect(modules, config))
     return sorted(findings, key=lambda finding: (finding.pattern_id, finding.title, finding.summary))
 
 
@@ -80,17 +73,7 @@ def plan_path(root: Path, config: DetectorConfig | None = None) -> list[Refactor
     return build_refactor_plans(findings, root)
 
 
-def _json_payload(
-    findings: list[RefactorFinding],
-    plans: list[RefactorPlan],
-    modules: list,
-) -> dict[str, object]:
-    report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
-    graph = build_observation_graph(modules)
-    payload = report.to_dict()
-    payload["observations"] = [asdict(item) for item in graph.observations]
-    payload["fibers"] = [asdict(item) for item in graph.fibers]
-    return payload
+def _json_payload(findings: list[RefactorFinding], plans: list[RefactorPlan], modules: list) -> dict[str, object]: report = AnalysisReport(findings=tuple(findings), plans=tuple(plans)); graph = build_observation_graph(modules); payload = report.to_dict(); payload['observations'] = [asdict(item) for item in graph.observations]; payload['fibers'] = [asdict(item) for item in graph.fibers]; return payload
 
 
 def _format_markdown(
@@ -101,14 +84,12 @@ def _format_markdown(
         sections.append(_format_findings_markdown(findings))
     elif not plans:
         sections.append("No refactoring findings.")
-    if plans is not None:
-        sections.append(_format_plans_markdown(plans))
+    if plans is not None: sections.append(_format_plans_markdown(plans))
     return "\n\n".join(section for section in sections if section)
 
 
 def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
-    if not findings:
-        return "No refactoring findings."
+    if not findings: return 'No refactoring findings.'
     lines: list[str] = []
     for index, finding in enumerate(findings, start=1):
         pattern = PATTERN_SPECS[finding.pattern_id]
@@ -122,24 +103,18 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
         lines.append(f"   - Relation: {finding.relation_context}")
         lines.append(f"   - Confidence: {finding.confidence}")
         lines.append(f"   - Certification: {finding.certification}")
-        for step in pattern.first_moves:
-            lines.append(f"   - First move: {step}")
-        for skeleton in pattern.example_skeletons:
-            lines.append(f"   - Example skeleton: {skeleton}")
-        if finding.scaffold:
-            lines.append(f"   - Suggested scaffold: {finding.scaffold}")
+        for step in pattern.first_moves: lines.append(f'   - First move: {step}')
+        for skeleton in pattern.example_skeletons: lines.append(f'   - Example skeleton: {skeleton}')
+        if finding.scaffold: lines.append(f'   - Suggested scaffold: {finding.scaffold}')
         if finding.codemod_patch:
             lines.append("   - Suggested patch:")
-            for patch_line in finding.codemod_patch.splitlines():
-                lines.append(f"     {patch_line}")
-        for item in finding.evidence:
-            lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
+            for patch_line in finding.codemod_patch.splitlines(): lines.append(f'     {patch_line}')
+        for item in finding.evidence: lines.append(f'   - Evidence: {item.file_path}:{item.line} `{item.symbol}`')
     return "\n".join(lines)
 
 
 def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
-    if not plans:
-        return "No subsystem plans."
+    if not plans: return 'No subsystem plans.'
     lines = ["Subsystem plans:"]
     for index, plan in enumerate(plans, start=1):
         primary = PATTERN_SPECS[plan.primary_pattern_id]
@@ -162,20 +137,16 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
             if action.statement_operation and action.statement_sites:
                 site_list = ', '.join((f'{item.file_path}:{item.line}' for item in action.statement_sites))
                 lines.append(f'   - Action sites: {action.statement_operation} at {site_list}')
-        for step in plan.plan_steps:
-            lines.append(f"   - Plan step: {step}")
-        for title in plan.supporting_findings[:5]:
-            lines.append(f"   - Supporting finding: {title}")
-        for item in plan.evidence:
-            lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
+        for step in plan.plan_steps: lines.append(f'   - Plan step: {step}')
+        for title in plan.supporting_findings[:5]: lines.append(f'   - Supporting finding: {title}')
+        for item in plan.evidence: lines.append(f'   - Evidence: {item.file_path}:{item.line} `{item.symbol}`')
     return "\n".join(lines)
 
 
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(description='AST-driven refactoring advisor for nominal architecture.')
-    for spec in _CLI_ARGUMENT_SPECS:
-        spec.add_to_parser(parser)
+    for spec in _CLI_ARGUMENT_SPECS: spec.add_to_parser(parser)
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)
@@ -183,8 +154,7 @@ def main() -> int:
     modules = parse_python_modules(root)
     findings = analyze_modules(modules, config)
     plans = None
-    if args.include_plans or args.plans_only:
-        plans = build_refactor_plans(findings, root)
+    if args.include_plans or args.plans_only: plans = build_refactor_plans(findings, root)
     if args.json:
         json_findings = [] if args.plans_only else findings
         print(json.dumps(_json_payload(json_findings, plans or [], modules), indent=2))
@@ -196,5 +166,4 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__ == '__main__': raise SystemExit(main())
