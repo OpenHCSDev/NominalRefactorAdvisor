@@ -18,9 +18,15 @@ from .constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSp
 from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
 
-from .observation_graph import ObservationKind, StructuralExecutionLevel, StructuralObservation, StructuralObservationCarrier
+from .observation_graph import (
+    ObservationKind,
+    StructuralExecutionLevel,
+    StructuralObservation,
+    StructuralObservationCarrier,
+)
 
-if TYPE_CHECKING: from .ast_tools import ParsedModule
+if TYPE_CHECKING:
+    from .ast_tools import ParsedModule
 
 
 class LiteralKind(StrEnum):
@@ -34,7 +40,8 @@ class LiteralKind(StrEnum):
 def _method_statement_texts(
     function_node: ast.FunctionDef | ast.AsyncFunctionDef | None,
 ) -> tuple[str, ...]:
-    if function_node is None: return ()
+    if function_node is None:
+        return ()
     return tuple(ast.unparse(statement) for statement in function_node.body)
 
 
@@ -55,46 +62,66 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
     OBSERVATION_KIND: ClassVar[ObservationKind]
 
     @property
-    def observation_kind(self) -> ObservationKind: return type(self).OBSERVATION_KIND
+    def observation_kind(self) -> ObservationKind:
+        return type(self).OBSERVATION_KIND
 
     @property
     @abstractmethod
-    def observation_execution_level(self) -> StructuralExecutionLevel: raise NotImplementedError
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        raise NotImplementedError
 
     @property
     @abstractmethod
-    def observation_line(self) -> int: raise NotImplementedError
+    def observation_line(self) -> int:
+        raise NotImplementedError
 
     @property
     @abstractmethod
-    def owner_symbol(self) -> str: raise NotImplementedError
+    def owner_symbol(self) -> str:
+        raise NotImplementedError
 
     @property
     @abstractmethod
-    def nominal_witness(self) -> str: raise NotImplementedError
+    def nominal_witness(self) -> str:
+        raise NotImplementedError
 
     @property
     @abstractmethod
-    def observed_name(self) -> str: raise NotImplementedError
+    def observed_name(self) -> str:
+        raise NotImplementedError
 
     @property
     @abstractmethod
-    def fiber_key(self) -> str: raise NotImplementedError
+    def fiber_key(self) -> str:
+        raise NotImplementedError
 
     @property
-    def structural_observation(self) -> StructuralObservation: return StructuralObservation(file_path=self.file_path, owner_symbol=self.owner_symbol, nominal_witness=self.nominal_witness, line=self.observation_line, observation_kind=self.observation_kind, execution_level=self.observation_execution_level, observed_name=self.observed_name, fiber_key=self.fiber_key)
+    def structural_observation(self) -> StructuralObservation:
+        return StructuralObservation(
+            file_path=self.file_path,
+            owner_symbol=self.owner_symbol,
+            nominal_witness=self.nominal_witness,
+            line=self.observation_line,
+            observation_kind=self.observation_kind,
+            execution_level=self.observation_execution_level,
+            observed_name=self.observed_name,
+            fiber_key=self.fiber_key,
+        )
 
 
 class ExecutionLevelObservationMixin(ABC):
     execution_level: StructuralExecutionLevel
-    observation_execution_level = AliasProperty[StructuralExecutionLevel]("execution_level")
+    observation_execution_level = AliasProperty[StructuralExecutionLevel](
+        "execution_level"
+    )
 
 
 class StaticExecutionLevelMixin(ABC):
     OBSERVATION_EXECUTION_LEVEL: ClassVar[StructuralExecutionLevel]
 
     @property
-    def observation_execution_level(self) -> StructuralExecutionLevel: return type(self).OBSERVATION_EXECUTION_LEVEL
+    def observation_execution_level(self) -> StructuralExecutionLevel:
+        return type(self).OBSERVATION_EXECUTION_LEVEL
 
 
 class FunctionBodyExecutionMixin(StaticExecutionLevelMixin):
@@ -117,7 +144,8 @@ class LinenoObservationMixin(ABC):
 
 class SymbolOwnerMixin(ABC):
     @property
-    def owner_symbol(self) -> str: return cast(Any, self).symbol
+    def owner_symbol(self) -> str:
+        return cast(Any, self).symbol
 
 
 @dataclass(frozen=True)
@@ -141,11 +169,13 @@ class FunctionBodyCallLikeShape(
     @property
     def owner_prefix(self) -> str:
         owner = self.function_name or "<module>"
-        if self.class_name: owner = f'{self.class_name}.{owner}'
+        if self.class_name:
+            owner = f"{self.class_name}.{owner}"
         return owner
 
     @property
-    def nominal_witness(self) -> str: return self.class_name or self.function_name or cast(Any, self).symbol
+    def nominal_witness(self) -> str:
+        return self.class_name or self.function_name or cast(Any, self).symbol
 
 
 class FunctionNameOwnerMixin(ABC):
@@ -155,7 +185,8 @@ class FunctionNameOwnerMixin(ABC):
 
 class SymbolNominalWitnessMixin(ABC):
     @property
-    def nominal_witness(self) -> str: return cast(Any, self).symbol
+    def nominal_witness(self) -> str:
+        return cast(Any, self).symbol
 
 
 class ClassNameNominalWitnessMixin(ABC):
@@ -208,7 +239,8 @@ class FieldObservation(
     annotation_fingerprint: str | None = None
 
     @property
-    def symbol(self) -> str: return f'{self.class_name}.{self.field_name}'
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.field_name}"
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
@@ -230,10 +262,12 @@ class AttributeProbeObservation(
     execution_level: StructuralExecutionLevel
 
     @property
-    def observed_name(self) -> str: return self.observed_attribute or self.probe_kind
+    def observed_name(self) -> str:
+        return self.observed_attribute or self.probe_kind
 
     @property
-    def fiber_key(self) -> str: return f'{self.probe_kind}:{self.observed_name}'
+    def fiber_key(self) -> str:
+        return f"{self.probe_kind}:{self.observed_name}"
 
 
 @dataclass(frozen=True)
@@ -255,12 +289,14 @@ class LiteralDispatchObservation(
     scope_owner: str | None = None
 
     @property
-    def nominal_witness(self) -> str: return self.scope_owner or self.symbol
+    def nominal_witness(self) -> str:
+        return self.scope_owner or self.symbol
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_expression")
 
     @property
-    def fiber_key(self) -> str: return f'{self.literal_kind}:{self.axis_fingerprint}'
+    def fiber_key(self) -> str:
+        return f"{self.literal_kind}:{self.axis_fingerprint}"
 
 
 @dataclass(frozen=True)
@@ -283,7 +319,10 @@ class ProjectionHelperShape(
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("projected_attribute")
 
     @property
-    def fiber_key(self) -> str: return f'{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}'
+    def fiber_key(self) -> str:
+        return (
+            f"{self.outer_call_name}:{self.aggregator_name}:{self.iterable_fingerprint}"
+        )
 
 
 @dataclass(frozen=True)
@@ -305,10 +344,12 @@ class AccessorWrapperCandidate(
     wrapper_shape: str
 
     @property
-    def symbol(self) -> str: return f'{self.class_name}.{self.method_name}'
+    def symbol(self) -> str:
+        return f"{self.class_name}.{self.method_name}"
 
     @property
-    def fiber_key(self) -> str: return f'{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}'
+    def fiber_key(self) -> str:
+        return f"{self.accessor_kind}:{self.wrapper_shape}:{self.observed_attribute}"
 
 
 @dataclass(frozen=True)
@@ -326,7 +367,8 @@ class ScopedShapeWrapperFunction(
     node_types: tuple[str, ...]
 
     @property
-    def fiber_key(self) -> str: return f"function:{'/'.join(self.node_types)}"
+    def fiber_key(self) -> str:
+        return f"function:{'/'.join(self.node_types)}"
 
 
 @dataclass(frozen=True)
@@ -346,7 +388,8 @@ class ScopedShapeWrapperSpec(
     owner_symbol: ClassVar[AliasProperty[str]] = AliasProperty("spec_name")
 
     @property
-    def fiber_key(self) -> str: return f"spec:{'/'.join(self.node_types)}:{self.function_name}"
+    def fiber_key(self) -> str:
+        return f"spec:{'/'.join(self.node_types)}:{self.function_name}"
 
 
 @dataclass(frozen=True)
@@ -481,7 +524,8 @@ class DualAxisResolutionObservation(
     inner_axis_name: str
 
     @property
-    def observed_name(self) -> str: return f'{self.outer_axis_name}:{self.inner_axis_name}'
+    def observed_name(self) -> str:
+        return f"{self.outer_axis_name}:{self.inner_axis_name}"
 
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_name")
 
@@ -501,30 +545,37 @@ class MethodShape(
     is_private: bool
     param_count: int
     decorators: tuple[str, ...]
-    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(default=None, compare=False, repr=False)
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @property
     def symbol(self) -> str:
-        if self.class_name: return f'{self.class_name}.{self.method_name}'
+        if self.class_name:
+            return f"{self.class_name}.{self.method_name}"
         return self.method_name
 
     @property
-    def nominal_witness(self) -> str: return self.class_name or self.symbol
+    def nominal_witness(self) -> str:
+        return self.class_name or self.symbol
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("method_name")
 
     @property
-    def fiber_key(self) -> str: return f'{self.is_private}:{self.param_count}:{self.fingerprint}'
+    def fiber_key(self) -> str:
+        return f"{self.is_private}:{self.param_count}:{self.fingerprint}"
 
     @property
     def fingerprint(self) -> str:
-        if self.function_node is None: return ''
+        if self.function_node is None:
+            return ""
         from .ast_tools import fingerprint_function
 
         return fingerprint_function(self.function_node)
 
     @property
-    def statement_texts(self) -> tuple[str, ...]: return _method_statement_texts(self.function_node)
+    def statement_texts(self) -> tuple[str, ...]:
+        return _method_statement_texts(self.function_node)
 
 
 @dataclass(frozen=True)
@@ -534,21 +585,61 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
     keyword_names: tuple[str, ...]
 
     @property
-    def symbol(self) -> str: return f'{self.owner_prefix}:{self.callee_name}'
+    def symbol(self) -> str:
+        return f"{self.owner_prefix}:{self.callee_name}"
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("callee_name")
 
     @property
-    def fiber_key(self) -> str: return f'{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}'
+    def fiber_key(self) -> str:
+        return f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
 
 
-def _registration_call_shape_fields(parsed_module: ParsedModule, node: ast.Call, registry_name: str, registered_class: str, key_fingerprint: str) -> dict[str, object]: return {'file_path': str(parsed_module.path), 'lineno': node.lineno, 'registry_name': registry_name, 'registered_class': registered_class, 'key_fingerprint': key_fingerprint, 'key_expression': ast.unparse(node.args[1] if len(node.args) >= 2 else node.args[0]), 'registration_style': 'registration_call'}
+def _registration_call_shape_fields(
+    parsed_module: ParsedModule,
+    node: ast.Call,
+    registry_name: str,
+    registered_class: str,
+    key_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "file_path": str(parsed_module.path),
+        "lineno": node.lineno,
+        "registry_name": registry_name,
+        "registered_class": registered_class,
+        "key_fingerprint": key_fingerprint,
+        "key_expression": ast.unparse(
+            node.args[1] if len(node.args) >= 2 else node.args[0]
+        ),
+        "registration_style": "registration_call",
+    }
 
 
-def _decorator_registration_shape_fields(parsed_module: ParsedModule, node: ast.ClassDef, registry_name: str, key_fingerprint: str) -> dict[str, object]: return {'file_path': str(parsed_module.path), 'lineno': node.lineno, 'registry_name': registry_name, 'registered_class': node.name, 'key_fingerprint': key_fingerprint, 'key_expression': node.name, 'registration_style': 'decorator_registration'}
+def _decorator_registration_shape_fields(
+    parsed_module: ParsedModule,
+    node: ast.ClassDef,
+    registry_name: str,
+    key_fingerprint: str,
+) -> dict[str, object]:
+    return {
+        "file_path": str(parsed_module.path),
+        "lineno": node.lineno,
+        "registry_name": registry_name,
+        "registered_class": node.name,
+        "key_fingerprint": key_fingerprint,
+        "key_expression": node.name,
+        "registration_style": "decorator_registration",
+    }
 
 
-_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog((ConstructorVariantSpec('from_registration_call', _registration_call_shape_fields), ConstructorVariantSpec('from_decorator', _decorator_registration_shape_fields)))
+_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog(
+    (
+        ConstructorVariantSpec(
+            "from_registration_call", _registration_call_shape_fields
+        ),
+        ConstructorVariantSpec("from_decorator", _decorator_registration_shape_fields),
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -571,13 +662,29 @@ class RegistrationShape:
         registry_name: str,
         key_fingerprint: str,
     ) -> RegistrationShape:
-        if not isinstance(node.value, ast.Name): raise TypeError('Registration assignment value must be a class name')
-        return cls(file_path=str(parsed_module.path), lineno=node.lineno, registry_name=registry_name, registered_class=node.value.id, key_fingerprint=key_fingerprint, key_expression=ast.unparse(node.targets[0].slice) if isinstance(node.targets[0], ast.Subscript) else '...', registration_style='subscript_assignment')
+        if not isinstance(node.value, ast.Name):
+            raise TypeError("Registration assignment value must be a class name")
+        return cls(
+            file_path=str(parsed_module.path),
+            lineno=node.lineno,
+            registry_name=registry_name,
+            registered_class=node.value.id,
+            key_fingerprint=key_fingerprint,
+            key_expression=(
+                ast.unparse(node.targets[0].slice)
+                if isinstance(node.targets[0], ast.Subscript)
+                else "..."
+            ),
+            registration_style="subscript_assignment",
+        )
 
-    (from_registration_call, from_decorator) = _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
+    from_registration_call, from_decorator = (
+        _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
+    )
 
     @property
-    def symbol(self) -> str: return f'{self.registry_name}[...] = {self.registered_class}'
+    def symbol(self) -> str:
+        return f"{self.registry_name}[...] = {self.registered_class}"
 
 
 @dataclass(frozen=True)
@@ -586,16 +693,24 @@ class ExportDictShape(FunctionBodyCallLikeShape):
     key_names: tuple[str, ...]
 
     @property
-    def symbol(self) -> str: return f'{self.owner_prefix}:export-dict'
+    def symbol(self) -> str:
+        return f"{self.owner_prefix}:export-dict"
 
     @property
-    def observed_name(self) -> str: return ','.join(self.key_names)
+    def observed_name(self) -> str:
+        return ",".join(self.key_names)
 
     @property
-    def fiber_key(self) -> str: return f'{self.key_names}:{self.value_fingerprint}'
+    def fiber_key(self) -> str:
+        return f"{self.key_names}:{self.value_fingerprint}"
 
 
-_PUBLIC_EXPORT_POLICY = PublicExportPolicy(module_name=__name__, include_enums=True, exclude_abstract=True, root_types=(StructuralObservationCarrier,))
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    include_enums=True,
+    exclude_abstract=True,
+    root_types=(StructuralObservationCarrier,),
+)
 
 
 __all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

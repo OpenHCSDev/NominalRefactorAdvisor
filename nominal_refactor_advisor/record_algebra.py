@@ -23,9 +23,11 @@ def _caller_module_name() -> str:
 def _field_annotations(field_spec: str) -> dict[str, str]:
     annotations: dict[str, str] = {}
     for field in (part.strip() for part in field_spec.split(";")):
-        if not field: continue
+        if not field:
+            continue
         field_name, separator, annotation = field.partition(":")
-        if not separator: raise ValueError(f'Product record field lacks annotation: {field!r}')
+        if not separator:
+            raise ValueError(f"Product record field lacks annotation: {field!r}")
         annotations[field_name.strip()] = annotation.strip()
     return annotations
 
@@ -43,8 +45,15 @@ def product_record(
 ) -> type[Any]:
     """Build a frozen dataclass from a compact nominal product schema."""
 
-    namespace = {'__annotations__': _field_annotations(field_spec), '__module__': module_name or _caller_module_name()}
-    if doc is not None: namespace['__doc__'] = doc
-    if defaults is not None: namespace.update(defaults)
-    record_type = new_class(class_name, bases, {}, lambda target: target.update(namespace))
+    namespace = {
+        "__annotations__": _field_annotations(field_spec),
+        "__module__": module_name or _caller_module_name(),
+    }
+    if doc is not None:
+        namespace["__doc__"] = doc
+    if defaults is not None:
+        namespace.update(defaults)
+    record_type = new_class(
+        class_name, bases, {}, lambda target: target.update(namespace)
+    )
     return dataclass(frozen=True, kw_only=kw_only)(record_type)

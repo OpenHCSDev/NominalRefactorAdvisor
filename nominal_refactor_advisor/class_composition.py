@@ -13,4 +13,9 @@ class CompositeClassSpec:
     bases: tuple[type[Any], ...]
     namespace: Mapping[str, Any] = ()
 
-    def build(self, module_name: str) -> type[Any]: return type(self.class_name, self.bases, {'__module__': module_name, **dict(self.namespace)})
+    def build(self, module_name: str) -> type[Any]:
+        return type(
+            self.class_name,
+            self.bases,
+            {"__module__": module_name, **dict(self.namespace)},
+        )
