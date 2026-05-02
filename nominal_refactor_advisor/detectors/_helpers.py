@@ -4046,12 +4046,11 @@ def _multiline_container_literal_candidates(
         def visit(self, node: ast.AST) -> None: self.parent_stack.append(node); super().visit(node); self.parent_stack.pop()
 
         def _visit_container(self, node: ast.AST) -> None:
-            segment = ast.get_source_segment(module.source, node) or ""
             if (
                 node.end_lineno is not None
                 and node.end_lineno > node.lineno
-                and "#" not in segment
                 and not any((isinstance(parent, _CONTAINER_LITERAL_TYPES) and parent.end_lineno is not None and (parent.end_lineno > parent.lineno) for parent in self.parent_stack[:-1]))
+                and "#" not in (ast.get_source_segment(module.source, node) or "")
             ):
                 candidates.append(MultilineContainerLiteralCandidate(file_path=str(module.path), line=node.lineno, end_line=node.end_lineno, line_count=node.end_lineno - node.lineno + 1, container_kind=type(node).__name__, element_count=_container_literal_element_count(node)))
             self.generic_visit(node)
@@ -4076,12 +4075,11 @@ def _multiline_call_expression_candidates(
         def visit(self, node: ast.AST) -> None: self.parent_stack.append(node); super().visit(node); self.parent_stack.pop()
 
         def visit_Call(self, node: ast.Call) -> None:
-            segment = ast.get_source_segment(module.source, node) or ""
             if (
                 node.end_lineno is not None
                 and node.end_lineno > node.lineno
-                and "#" not in segment
                 and not any((isinstance(parent, ast.Call) and parent.end_lineno is not None and (parent.end_lineno > parent.lineno) for parent in self.parent_stack[:-1]))
+                and "#" not in (ast.get_source_segment(module.source, node) or "")
             ):
                 candidates.append(MultilineCallExpressionCandidate(file_path=str(module.path), line=node.lineno, end_line=node.end_lineno, line_count=node.end_lineno - node.lineno + 1, callee_name=_ast_terminal_name(node.func) or type(node.func).__name__, argument_count=len(node.args) + len(node.keywords)))
             self.generic_visit(node)
@@ -4112,8 +4110,8 @@ def _straightline_simple_function_candidates(
     for node in ast.walk(module.module):
         if not isinstance(node, _STRAIGHTLINE_FUNCTION_TYPES): continue
         if node.end_lineno is None or node.end_lineno <= node.lineno: continue
-        if _has_docstring_statement(node.body) or not _comment_free_source_segment(module, node): continue
         if not node.body or not all((isinstance(statement, _SIMPLE_SUITE_STATEMENT_TYPES) for statement in node.body)): continue
+        if _has_docstring_statement(node.body) or not _comment_free_source_segment(module, node): continue
         candidates.append(StraightlineSimpleFunctionCandidate(file_path=str(module.path), line=node.lineno, end_line=node.end_lineno, line_count=node.end_lineno - node.lineno + 1, function_name=node.name, statement_count=len(node.body), statement_kinds=_statement_kind_names(node.body)))
     return tuple(candidates)
 
