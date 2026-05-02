@@ -8,6 +8,9 @@ from __future__ import annotations
 
 from ..record_algebra import product_record
 
+import io
+import tokenize
+
 from ._base import *
 from ._substrate_support import *
 
@@ -7148,6 +7151,69 @@ def _enum_metadata_table_candidates(
                         case_count=case_count,
                     )
                 )
+    return tuple(candidates)
+
+
+def _is_docstring_constant(
+    node: ast.Constant,
+    parent_stack: Sequence[ast.AST],
+) -> bool:
+    if len(parent_stack) < 2:
+        return False
+    parent, owner = parent_stack[-1], parent_stack[-2]
+    return (
+        isinstance(parent, ast.Expr)
+        and parent.value is node
+        and isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        and bool(owner.body)
+        and owner.body[0] is parent
+    )
+
+
+def _string_token_count(source: str, node: ast.AST) -> int:
+    segment = ast.get_source_segment(source, node)
+    if segment is None:
+        return 0
+    return sum(
+        token.type == tokenize.STRING
+        for token in tokenize.generate_tokens(io.StringIO(segment).readline)
+    )
+
+
+def _multiline_string_literal_candidates(
+    module: ParsedModule,
+) -> tuple[MultilineStringLiteralCandidate, ...]:
+    candidates: list[MultilineStringLiteralCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.parent_stack: list[ast.AST] = []
+
+        def visit(self, node: ast.AST) -> None:
+            self.parent_stack.append(node)
+            super().visit(node)
+            self.parent_stack.pop()
+
+        def visit_Constant(self, node: ast.Constant) -> None:
+            if (
+                isinstance(node.value, str)
+                and node.end_lineno is not None
+                and node.end_lineno > node.lineno
+                and not any(isinstance(parent, ast.JoinedStr) for parent in self.parent_stack)
+                and not _is_docstring_constant(node, self.parent_stack[:-1])
+                and _string_token_count(module.source, node) > 1
+            ):
+                candidates.append(
+                    MultilineStringLiteralCandidate(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        end_line=node.end_lineno,
+                        line_count=node.end_lineno - node.lineno + 1,
+                        char_count=len(node.value),
+                    )
+                )
+
+    Visitor().visit(module.module)
     return tuple(candidates)
 
 

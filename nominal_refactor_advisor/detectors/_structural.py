@@ -76,8 +76,7 @@ def _witness_mixin_enforcement_candidate(
 class MixinEnforcementDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_WITNESS_CARRIER, "Renamed orthogonal semantic slices should become mixins",
-        "Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. "
-            "One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.",
+        'Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.',
         "one authoritative semantic carrier spine plus reusable semantic-role mixins",
         "same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
         _NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
@@ -469,9 +468,7 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
 class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Shared field family across sibling classes should move to an ABC base",
-        "The docs treat repeated shared state components the same way as repeated shared algorithms: when the "
-            "same field family is declared across sibling classes at the same structural execution level, the shared "
-            "component should move to one authoritative base rather than being duplicated in each leaf class.",
+        'The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative base rather than being duplicated in each leaf class.',
         "single authoritative state component for a nominal class family",
         "same field family repeats across sibling classes at one structural execution level",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -519,9 +516,7 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]
 class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Role-prefixed field bundle should become nominal subrecords",
-        "A record that repeats the same member family behind role prefixes is encoding nominal role identity "
-            "in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so "
-            "the schema, PyTree behavior, and type-level role identity have one authoritative boundary.",
+        'A record that repeats the same member family behind role prefixes is encoding nominal role identity in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so the schema, PyTree behavior, and type-level role identity have one authoritative boundary.',
         "explicit nominal role records instead of parallel role-prefixed fields",
         "same semantic member family repeats under several leading role prefixes in one record",
         _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
@@ -568,8 +563,7 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[Propert
     candidate_collector = _property_alias_hook_groups
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Repeated property hook aliases should move into a shared base or mixin",
-        "Several subclasses re-declare the same one-line property hook over the same backing attribute. "
-            "That is non-orthogonal hook duplication and should live once in a shared base or mixin.",
+        'Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.',
         "single authoritative hook property implementation for a nominal subclass family",
         "same property hook alias repeats across siblings of one base family",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -612,8 +606,7 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantProp
     candidate_collector = _constant_property_hook_groups
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Constant property hooks should move into classvars or fixed mixins",
-        "Several subclasses implement the same property as a one-line constant return. "
-            "That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.",
+        'Several subclasses implement the same property as a one-line constant return. That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.',
         "single authoritative constant hook implementation for a nominal subclass family",
         "same property hook is re-declared as a constant return across one subclass family",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -668,8 +661,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
     candidate_collector = _reflective_self_attribute_candidates
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS, "Reflective self-attribute access hides a nominal contract",
-        "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. "
-            "That keeps the contract partial, stringly, and fail-soft.",
+        'A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. That keeps the contract partial, stringly, and fail-soft.',
         "declared fail-loud nominal attribute contract on the carrier family",
         "class template probes its own required state through reflective string access",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
@@ -703,8 +695,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
 class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Helper-backed wrapper classes should use a declarative substrate",
-        "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. "
-            "That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.",
+        'Several sibling wrapper classes do nothing except forward one entrypoint to one helper. That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.',
         "one declarative helper-backed wrapper family with class-level registration",
         "same helper-backed wrapper shape repeats across sibling classes",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
@@ -734,18 +725,10 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
                 ),
                 evidence[:8],
                 scaffold=(
-                    "class HelperBackedTemplate(ABC):\n"
-                    "    helper: ClassVar[Callable[..., object | None]]\n\n"
-                    "    def build(self, *args, **kwargs):\n"
-                    "        return type(self).helper(*args, **kwargs)\n\n"
-                    "class TupleResultMixin(ABC):\n"
-                    "    @staticmethod\n"
-                    "    def wrap_result(value):\n"
-                        "        return tuple(value) if value is not None else None"
+                    'class HelperBackedTemplate(ABC):\n    helper: ClassVar[Callable[..., object | None]]\n\n    def build(self, *args, **kwargs):\n        return type(self).helper(*args, **kwargs)\n\nclass TupleResultMixin(ABC):\n    @staticmethod\n    def wrap_result(value):\n        return tuple(value) if value is not None else None'
                 ),
                 codemod_patch=(
-                    "# Collapse helper-backed wrappers into declarative helper classes.\n"
-                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins, and let class creation discover the family."
+                    '# Collapse helper-backed wrappers into declarative helper classes.\n# Put helper identity, result wrapping, and guard policy on classvars/mixins, and let class creation discover the family.'
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.class_names),
@@ -768,8 +751,7 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[Declarati
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Classvar-only sibling leaves should come from one metaprogrammed family table",
-        "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should "
-            "collapse into one declarative family table plus metaprogrammed class generation or registration.",
+        'Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation or registration.',
         "one authoritative declarative family-definition table with class-generation or metaclass support",
         "same class-level family declaration boilerplate repeats across sibling family leaves",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -817,8 +799,7 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Type-indexed family definitions should derive from one typed declaration table",
-        "Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. "
-            "That metadata should live once in a typed declaration table and definition-time materializer.",
+        'Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. That metadata should live once in a typed declaration table and definition-time materializer.',
         "one authoritative typed declaration table for family generation and export derivation",
         "same type-indexed family definition and alias boilerplate repeats across sibling declarations",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -839,15 +820,7 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[
             ),
             evidence,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class FamilyDeclaration(Generic[TItem]):\n"
-                "    export_name: str\n"
-                "    item_type: type[TItem]\n"
-                "    spec_root: type[object] | None = None\n"
-                "    spec: object | None = None\n"
-                "    literal_kind: object | None = None\n\n"
-                "def materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n"
-                "    return AutoRegisterMeta(...)"
+                '@dataclass(frozen=True)\nclass FamilyDeclaration(Generic[TItem]):\n    export_name: str\n    item_type: type[TItem]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n    literal_kind: object | None = None\n\ndef materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n    return AutoRegisterMeta(...)'
             ),
             codemod_patch=(
                 f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
@@ -865,8 +838,7 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Manual export surfaces should derive from the authoritative type family",
-        "A module manually enumerates export names even though those exports are derivable from one local nominal class family. "
-            "That creates a second authority for the public surface.",
+        'A module manually enumerates export names even though those exports are derivable from one local nominal class family. That creates a second authority for the public surface.',
         "one derived export surface projected from the authoritative class family",
         "manual export tuple/list repeats names already implied by local type families",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -886,14 +858,7 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
                 ),
             ),
             scaffold=(
-                "def public_exports() -> tuple[str, ...]:\n"
-                "    return tuple(\n"
-                "        sorted(\n"
-                "            name\n"
-                "            for name, value in globals().items()\n"
-                "            if is_public_export(name, value)\n"
-                "        )\n"
-                "    )"
+                'def public_exports() -> tuple[str, ...]:\n    return tuple(\n        sorted(\n            name\n            for name, value in globals().items()\n            if is_public_export(name, value)\n        )\n    )'
             ),
             codemod_patch=(
                 f"# Delete `{export_candidate.export_symbol}` as a handwritten export list.\n"
@@ -909,8 +874,7 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
 class ManualPublicApiSurfaceDetector(ModuleCollectorCandidateDetector[ManualPublicApiSurfaceCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Manual public API surfaces should derive from the module authority",
-        "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. "
-            "That creates a second authority for the public surface.",
+        "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. That creates a second authority for the public surface.",
         "one derived public API surface projected from the module's authoritative declarations",
         "manual public export list repeats names already present in module bindings",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -959,19 +923,10 @@ class ExportPolicyPredicateDetector(IssueDetector):
                 ),
                 evidence,
                 scaffold=(
-                    "@dataclass(frozen=True)\n"
-                    "class DerivedSurfacePolicy:\n"
-                    "    include_callables: bool = False\n"
-                    "    include_types: bool = True\n"
-                    "    exclude_abstract: bool = False\n"
-                    "    include_enums: bool = False\n"
-                    "    root_types: tuple[type[object], ...] = ()\n\n"
-                    "def derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n"
-                    "    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))"
+                    '@dataclass(frozen=True)\nclass DerivedSurfacePolicy:\n    include_callables: bool = False\n    include_types: bool = True\n    exclude_abstract: bool = False\n    include_enums: bool = False\n    root_types: tuple[type[object], ...] = ()\n\ndef derive_surface_names(namespace: dict[str, object], policy: DerivedSurfacePolicy) -> tuple[str, ...]:\n    return tuple(sorted(name for name, value in namespace.items() if matches_surface_policy(name, value, policy)))'
                 ),
                 codemod_patch=(
-                    "# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n"
-                    "# Derive the exported name surface from the policy instead of open-coding the predicate in each module."
+                    '# Replace repeated `_is_public_*_export` helpers with one declarative `DerivedSurfacePolicy`.\n# Derive the exported name surface from the policy instead of open-coding the predicate in each module.'
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
@@ -988,8 +943,7 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Manual indexed module surfaces should derive from the authoritative type family",
-        "A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. "
-            "That splits authority between the family and a second registry projection.",
+        'A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. That splits authority between the family and a second registry projection.',
         "one derived index projected from the authoritative local type family",
         "manual dict index repeats keys and values already implied by local type families",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -1009,8 +963,7 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
                 ),
             ),
             scaffold=(
-                "def derived_index() -> dict[object, type[object]]:\n"
-                "    return {project_key(item): item for item in authoritative_family()}"
+                'def derived_index() -> dict[object, type[object]]:\n    return {project_key(item): item for item in authoritative_family()}'
             ),
             codemod_patch=(
                 f"# Delete `{index_candidate.surface_name}` as a handwritten index.\n"
@@ -1091,21 +1044,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             "    )"
             if group.registry_attribute_names
             else (
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                "def walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
-                "    seen = set()\n"
-                "    ordered = []\n"
-                "    queue = list(root.__subclasses__())\n"
-                "    while queue:\n"
-                "        current = queue.pop(0)\n"
-                "        queue.extend(current.__subclasses__())\n"
-                "        if not include(current) or current in seen:\n"
-                "            continue\n"
-                "        seen.add(current)\n"
-                "        ordered.append(materialize(current))\n"
-                "    return tuple(ordered)\n\n"
-                "# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n"
-                "# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
+                'from metaclass_registry import AutoRegisterMeta\n\ndef walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    seen = set()\n    ordered = []\n    queue = list(root.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not include(current) or current in seen:\n            continue\n        seen.add(current)\n        ordered.append(materialize(current))\n    return tuple(ordered)\n\n# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n# read registered classes from cls.__registry__.values() instead of maintaining a second walker.'
             )
         )
         return [
@@ -1117,8 +1056,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
                 evidence,
                 scaffold=scaffold,
                 codemod_patch=(
-                    "# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n"
-                    "# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm."
+                    '# Replace repeated subclass walkers with one shared discovery helper or one metaclass-registry root.\n# Keep only declarative include/materialize residue at each callsite instead of copying the queue/seen/append algorithm.'
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.symbols),
@@ -2053,8 +1991,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[Altern
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Alternate constructors should collapse into one provenance-dispatched builder",
-        "Several classmethods on one record class rebuild the same keyword schema from different source node types. "
-            "That provenance family should collapse into one authoritative constructor with dispatch over source kind.",
+        'Several classmethods on one record class rebuild the same keyword schema from different source node types. That provenance family should collapse into one authoritative constructor with dispatch over source kind.',
         "single provenance-aware builder for one record schema",
         "same record schema is rebuilt across sibling alternate constructors for different source types",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -2095,8 +2032,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[Altern
 class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[ConstructorVariantFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Constructor variants should derive from one constructor algebra",
-        "Several classmethods on one class are pure constructor vectors over the same target. "
-            "The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog.",
+        'Several classmethods on one class are pure constructor vectors over the same target. The varying coordinates are data, not independent algorithms, so the family should be derived from one typed variant catalog.',
         "single constructor-variant catalog that derives named class constructors",
         "same class has sibling classmethods that return the same constructor target with a shared coordinate schema",
         _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
@@ -2115,8 +2051,7 @@ class ConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[Construc
 class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector[AccumulatorFoldFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Accumulator folds should derive from one fold algebra",
-        "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. "
-            "The loop skeleton is an algebraic fold and should be one reusable composition primitive.",
+        'Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. The loop skeleton is an algebraic fold and should be one reusable composition primitive.',
         "single accumulator-fold substrate with declarative step hooks",
         "same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
         _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -2135,8 +2070,7 @@ class AccumulatorFoldFamilyDetector(ModuleCollectorCandidateDetector[Accumulator
 class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector[ExcessiveBlankLineRunCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY, "Nonsemantic blank source regions should be collapsed",
-        "A contiguous run of blank source lines outside docstrings carries no semantic information. "
-            "It inflates the module and hides true structure without adding an abstraction boundary.",
+        'A contiguous run of blank source lines outside docstrings carries no semantic information. It inflates the module and hides true structure without adding an abstraction boundary.',
         "compact source layout with no nonsemantic blank-line payload",
         "source contains an empty region larger than a canonical separator",
         _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS, (ObservationTag.NORMALIZED_AST,),
@@ -2151,11 +2085,34 @@ class ExcessiveBlankLineRunDetector(ModuleCollectorCandidateDetector[ExcessiveBl
     )
 
 
+class MultilineStringLiteralDetector(ModuleCollectorCandidateDetector[MultilineStringLiteralCandidate]):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Split string literal should collapse into one literal authority",
+        'A non-docstring string constant spread across several physical source lines has one runtime value. The extra line structure is not semantic; it should collapse into one literal authority.',
+        "single source literal for one runtime string value",
+        "one string constant is split across multiple physical source lines",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    finding_renderer = CandidateFindingRenderer[MultilineStringLiteralCandidate](
+        summary=lambda literal: f"`{literal.file_path}` has a {literal.line_count}-line string literal at {literal.line}-{literal.end_line}.",
+        evidence=lambda literal: (literal.evidence,),
+        scaffold=lambda literal: "literal = 'single source string with escaped newlines when needed'",
+        codemod_patch=lambda literal: f"# Replace the physical string split at {literal.file_path}:{literal.line}-{literal.end_line} with one escaped literal.",
+        metrics=lambda literal: MappingMetrics.from_field_names(
+            mapping_site_count=literal.line_count,
+            mapping_name="multiline-string-literal",
+            field_names=("runtime_string_value",),
+        ),
+    )
+
+
 class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector[CatalogInstallingMixinFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Catalog-installing mixins should share one subclass hook",
-        "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. "
-            "Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.",
+        'Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.',
         "one reusable catalog-installing subclass hook with declarative catalog attribute residue",
         "sibling mixins repeat an identical class-creation hook over different catalog classvars",
         _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
@@ -2174,8 +2131,7 @@ class CatalogInstallingMixinFamilyDetector(ModuleCollectorCandidateDetector[Cata
 class RegexGroupExtractorFamilyDetector(ModuleCollectorCandidateDetector[RegexGroupExtractorFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Regex group extractor methods should derive from descriptors",
-        "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. "
-            "The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate.",
+        'Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate.',
         "one regex group extraction descriptor with declared pattern and matcher coordinates",
         "same class repeats regex group extractor methods over different pattern fields",
         _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -2195,8 +2151,7 @@ class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[Sp
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Sparse dataclass constructor variants should derive from one variant catalog",
-        "Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. "
-            "Those sparse overrides are rows in the constructor algebra, not independent methods.",
+        'Several classmethods on one dataclass construct the same record while overriding sparse subsets of defaulted fields. Those sparse overrides are rows in the constructor algebra, not independent methods.',
         "single sparse constructor-variant catalog over dataclass defaults",
         "same dataclass repeats classmethod constructors that override different keyword subsets",
         _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
@@ -2215,8 +2170,7 @@ class SparseConstructorVariantFamilyDetector(ModuleCollectorCandidateDetector[Sp
 class SupportPreludeModuleFamilyDetector(IssueDetector):
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA, "Support-prelude module families should have a manifest authority",
-        "Many one-class modules importing the same support prelude form an implicit module family. "
-            "The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.",
+        'Many one-class modules importing the same support prelude form an implicit module family. The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.',
         "one manifest authority for a support-prelude module family",
         "several one-class modules share the same star-import support prelude without a module-family catalog",
         _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
@@ -2236,15 +2190,10 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
                     ),
                     candidate.evidence[:8],
                     scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        "class ModuleFamilyCatalog:\n"
-                        "    members: tuple[ModuleFamilyMember, ...]\n"
-                        "    @classmethod\n"
-                        "    def from_package(cls, package_dir, support_module): ..."
+                        '@dataclass(frozen=True)\nclass ModuleFamilyCatalog:\n    members: tuple[ModuleFamilyMember, ...]\n    @classmethod\n    def from_package(cls, package_dir, support_module): ...'
                     ),
                     codemod_patch=(
-                        "# Add one module-family catalog beside the shared support prelude.\n"
-                        "# Derive member rows from package structure instead of relying only on repeated star-import shape."
+                        '# Add one module-family catalog beside the shared support prelude.\n# Derive member rows from package structure instead of relying only on repeated star-import shape.'
                     ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(candidate.class_names),
@@ -2259,9 +2208,7 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
 class ModuleConstructorPolicyFamilyDetector(ModuleCollectorCandidateDetector[ModuleConstructorPolicyFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Module constructor policy rows should derive from a semantic catalog",
-        "Several module-level constant rows instantiate the same policy constructor with the same argument schema. "
-            "Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than "
-            "spell each constructor call by hand.",
+        'Several module-level constant rows instantiate the same policy constructor with the same argument schema. Those rows are semantic data, so the architecture should derive them from one role/catalog authority rather than spell each constructor call by hand.',
         "one constructor-row catalog keyed by semantic policy role",
         "same module has multiple constant rows assigned from the same constructor shape",
         _AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -2296,9 +2243,7 @@ class DynamicSelfFieldSelectionDetector(ModuleCollectorCandidateDetector[Dynamic
 class StringBackedReflectiveNominalLookupDetector(ConfiguredModuleCollectorCandidateDetector[StringBackedReflectiveNominalLookupCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY, "String-backed reflective lookup is simulating nominal identity",
-        "The docs say a class family should not smuggle behavior through string selectors and reflection. "
-            "When subclasses only supply constant names that are resolved through globals, getattr, or __dict__, "
-            "the boundary should become one declared nominal hook or typed handle.",
+        'The docs say a class family should not smuggle behavior through string selectors and reflection. When subclasses only supply constant names that are resolved through globals, getattr, or __dict__, the boundary should become one declared nominal hook or typed handle.',
         "declared nominal hook or typed family handle instead of string selector plus reflection",
         "class family encodes behavior with constant selector strings and resolves it reflectively",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,

@@ -13,8 +13,7 @@ class ManualFamilyRosterDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual subclass roster should become metaclass-registry auto-registration",
-        "One helper manually enumerates a class family instead of deriving membership from class existence. "
-            "The docs treat that as class-level registration logic that should live in one authoritative `metaclass-registry` hook.",
+        'One helper manually enumerates a class family instead of deriving membership from class existence. The docs treat that as class-level registration logic that should live in one authoritative `metaclass-registry` hook.',
         "zero-delay metaclass-registry class-family discovery with declarative ordering",
         "family membership is maintained by a manual roster function or constant",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -76,8 +75,7 @@ class ManualFamilyRosterDetector(IssueDetector):
 class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Parallel key-family tables should become one authoritative record",
-        "Several dicts keyed by the same nominal family collectively encode one semantic record. "
-            "The docs treat that as fragmented authority that should collapse into one authoritative schema.",
+        'Several dicts keyed by the same nominal family collectively encode one semantic record. The docs treat that as fragmented authority that should collapse into one authoritative schema.',
         "single authoritative enum-keyed planning record",
         "one key family is split across parallel metadata tables",
         _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
@@ -123,8 +121,7 @@ class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector[DerivedQ
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated linear query helpers should derive keyed indexes from the immutable authority",
-        "Several lookup helpers linearly rescan the same immutable authority to answer different key queries. "
-            "The docs treat those repeated scans as a derived-index surface that should be materialized once.",
+        'Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.',
         "one authoritative immutable family plus derived keyed indexes",
         "same immutable authority is rescanned by multiple query helpers with different key selectors",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -143,9 +140,7 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapte
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Secondary runtime adapter shell should collapse into the authoritative spec",
-        "A function is rebuilding a local runtime/spec record by copying fields from one authoritative source "
-            "record and resolving strategy ids through lookup tables. The docs treat that as secondary writable "
-            "authority rather than a true abstraction boundary.",
+        'A function is rebuilding a local runtime/spec record by copying fields from one authoritative source record and resolving strategy ids through lookup tables. The docs treat that as secondary writable authority rather than a true abstraction boundary.',
         "single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell",
         "one function copies source-record fields into a second record and resolves runtime hooks through keyed tables",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -162,13 +157,7 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapte
             ),
             adapter_candidate.evidence,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class AuthoritySpec:\n"
-                "    priority: int\n"
-                "    dependencies: tuple[object, ...] = ()\n"
-                "    strategy_id: object | None = None\n\n"
-                "    def resolve_strategy(self):\n"
-                "        return STRATEGY_BY_ID.get(self.strategy_id)\n"
+                '@dataclass(frozen=True)\nclass AuthoritySpec:\n    priority: int\n    dependencies: tuple[object, ...] = ()\n    strategy_id: object | None = None\n\n    def resolve_strategy(self):\n        return STRATEGY_BY_ID.get(self.strategy_id)\n'
             ),
             codemod_patch=(
                 f"# Stop rehydrating `{adapter_candidate.adapter_class_name}` inside `{adapter_candidate.function_name}`.\n"
@@ -198,8 +187,7 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBag
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Record-to-kwargs adapter shell should collapse onto the record authority",
-        "A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. "
-            "The docs treat that as a transport shell unless the kwargs bag is itself the real authority.",
+        'A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.',
         "single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
         "one helper copies several fields from a source record into a transient kwargs dictionary",
         _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -217,8 +205,7 @@ class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBag
 class ExistingNominalAuthorityReuseDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Existing nominal authority should be reused",
-        "A compatible nominal authority already exists, but another class repeats the same semantic field family outside that hierarchy. "
-            "The docs prefer reusing the existing authority before synthesizing a new one.",
+        'A compatible nominal authority already exists, but another class repeats the same semantic field family outside that hierarchy. The docs prefer reusing the existing authority before synthesizing a new one.',
         "reuse of an existing authoritative base or mixin instead of duplicating the family",
         "a concrete class repeats a semantic family already declared by an existing nominal authority",
         _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -281,9 +268,7 @@ class PassThroughNominalWrapperDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Pass-through wrapper should reuse the existing nominal authority directly",
-        "A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, "
-            "provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers "
-            "should use the existing authority directly.",
+        'A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers should use the existing authority directly.',
         "direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper",
         "a concrete class forwards an existing nominal contract member-for-member without adding new semantics",
         _NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS,
@@ -328,8 +313,7 @@ class PassThroughNominalWrapperDetector(IssueDetector):
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Repeated finding-assembly pipeline should move into a detector base",
-        "Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. "
-            "The docs prefer one template-method substrate plus mixins for residue.",
+        'Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. The docs prefer one template-method substrate plus mixins for residue.',
         "candidate-driven detector template with abstract hooks and mixins",
         "same finding assembly stages repeat across sibling detector classes",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -358,17 +342,10 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 scaffold=(
-                    "class CandidateFindingDetector(PerModuleIssueDetector, ABC):\n"
-                    "    @abstractmethod\n"
-                    "    def iter_candidates(self, module, config): ...\n\n"
-                    "    @abstractmethod\n"
-                    "    def build_finding(self, candidate): ...\n\n"
-                    "    def _findings_for_module(self, module, config):\n"
-                    "        return [self.build_finding(candidate) for candidate in self.iter_candidates(module, config)]"
+                    'class CandidateFindingDetector(PerModuleIssueDetector, ABC):\n    @abstractmethod\n    def iter_candidates(self, module, config): ...\n\n    @abstractmethod\n    def build_finding(self, candidate): ...\n\n    def _findings_for_module(self, module, config):\n        return [self.build_finding(candidate) for candidate in self.iter_candidates(module, config)]'
                 ),
                 codemod_patch=(
-                    "# Extract one candidate-driven detector base for `_findings_for_module`.\n"
-                    "# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves."
+                    '# Extract one candidate-driven detector base for `_findings_for_module`.\n# Leave only candidate collection, evidence shaping, metrics, and scaffold/patch helpers on the leaves.'
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
@@ -399,9 +376,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Projection-style record rebuild should collapse into one authoritative builder",
-        "Several call sites rebuild the same nominal record by projecting overlapping source authorities field-by-field, "
-            "often with guard/default residue mixed into the call. The docs treat that as fragmented builder authority: "
-            "the projection belongs in one authoritative constructor, classmethod, or helper.",
+        'Several call sites rebuild the same nominal record by projecting overlapping source authorities field-by-field, often with guard/default residue mixed into the call. The docs treat that as fragmented builder authority: the projection belongs in one authoritative constructor, classmethod, or helper.',
         "one authoritative projection builder for a repeated record family",
         "same nominal record is re-projected from overlapping sources at several call sites",
         _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -448,8 +423,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
 class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Repeated guarded spec wrappers should collapse into mixins",
-        "Several observation-spec methods differ only by a scope guard and one delegate helper call. "
-            "The docs prefer one shared wrapper substrate with orthogonal scope mixins.",
+        'Several observation-spec methods differ only by a scope guard and one delegate helper call. The docs prefer one shared wrapper substrate with orthogonal scope mixins.',
         "shared wrapper substrate with orthogonal scope mixins",
         "guard-and-delegate wrapper logic repeats across sibling observation specs",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -478,19 +452,10 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 scaffold=(
-                    "class ScopeFilteredSpec(ObservationShapeSpec, ABC):\n"
-                    "    @abstractmethod\n"
-                    "    def accepts_scope(self, observation): ...\n\n"
-                    "    @abstractmethod\n"
-                    "    def delegate(self, parsed_module, node, observation): ...\n\n"
-                    "    def build_shape(self, parsed_module, observation):\n"
-                    "        if not self.accepts_scope(observation):\n"
-                    "            return None\n"
-                    "        return self.delegate(parsed_module, observation.node, observation)"
+                    'class ScopeFilteredSpec(ObservationShapeSpec, ABC):\n    @abstractmethod\n    def accepts_scope(self, observation): ...\n\n    @abstractmethod\n    def delegate(self, parsed_module, node, observation): ...\n\n    def build_shape(self, parsed_module, observation):\n        if not self.accepts_scope(observation):\n            return None\n        return self.delegate(parsed_module, observation.node, observation)'
                 ),
                 codemod_patch=(
-                    "# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n"
-                    "# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks."
+                    '# Collapse repeated guard-and-delegate wrappers into one shared spec base.\n# Encode module-only, class-only, function-only, or node-type residue as mixins or tiny hooks.'
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(candidates),
@@ -509,8 +474,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated property projection builders should share one projection substrate",
-        "Several classes repeat the same property-backed constructor projection schema with only role hooks varying. "
-            "The docs prefer one authoritative projection template.",
+        'Several classes repeat the same property-backed constructor projection schema with only role hooks varying. The docs prefer one authoritative projection template.',
         "single authoritative projection builder with role hooks",
         "same property-backed constructor schema is manually rebuilt across many classes",
         _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,

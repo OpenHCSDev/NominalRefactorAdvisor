@@ -287,10 +287,7 @@ def _detector_base_name(detector_type: type[IssueDetector]) -> str:
 def _doc_summary(detector_type: type[IssueDetector]) -> str:
     doc = detector_type.__doc__
     if not doc:
-        return (
-            "Internal detector implementation; inspect the detector ID and finding output "
-            "for semantics."
-        )
+        return "Internal detector implementation; inspect the detector ID and finding output for semantics."
     first_line = doc.strip().splitlines()[0].strip()
     return first_line.rstrip(".") + "."
 

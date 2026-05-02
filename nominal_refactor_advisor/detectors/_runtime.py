@@ -79,8 +79,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
     detector_id = "repeated_builder_calls"
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Repeated field assignment should become an authoritative builder",
-        "The docs say repeated manual field assignment is an SSOT violation: the mapping should be declared once "
-            "in an authoritative constructor, classmethod, or shared builder rather than copied across call sites.",
+        'The docs say repeated manual field assignment is an SSOT violation: the mapping should be declared once in an authoritative constructor, classmethod, or shared builder rather than copied across call sites.',
         "single authoritative record-builder mapping for a repeated constructor family",
         "same builder role repeated across sibling functions or methods",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -203,8 +202,7 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
     observation_kind = ObservationKind.EXPORT_DICT
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Repeated projection dict should become an authoritative schema",
-        "The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative "
-            "row schema or projection builder instead of many hand-maintained dict literals.",
+        'The docs say repeated JSON/CSV/export dicts and kwargs/source-value bags should become one authoritative row schema or projection builder instead of many hand-maintained dict literals.',
         "single authoritative projection schema for a repeated record or kwargs family",
         "same string-key projection role repeated across sibling functions or methods",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -257,9 +255,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual class registration should become metaclass-registry AutoRegisterMeta",
-        "The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. "
-            "It should move into one authoritative `metaclass-registry` base so abstract-class skipping, uniqueness, "
-            "and inheritance behavior are enforced in one place.",
+        'The docs say repeated class-level registration boilerplate is a class-level non-orthogonal algorithm. It should move into one authoritative `metaclass-registry` base so abstract-class skipping, uniqueness, and inheritance behavior are enforced in one place.',
         "single authoritative metaclass-registry class-registration algorithm with nominal class identity",
         "same registry key family repeated through manual class-level registration assignments",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
@@ -320,9 +316,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
 class ManualConcreteSubclassRosterDetector(ConfiguredCrossModuleCollectorCandidateDetector[ManualConcreteSubclassRosterCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META, "Manual concrete-subclass roster should become a metaclass-registry base",
-        "The docs treat mutable subclass rosters maintained through __init_subclass__ as framework logic. "
-            "Abstract filtering, subclass discovery, and family access should live in one reusable `metaclass-registry` base "
-            "instead of being reimplemented inside each domain family.",
+        'The docs treat mutable subclass rosters maintained through __init_subclass__ as framework logic. Abstract filtering, subclass discovery, and family access should live in one reusable `metaclass-registry` base instead of being reimplemented inside each domain family.',
         "single authoritative metaclass-registry concrete-subclass registration hook with reusable family discovery",
         "class family maintains a mutable subclass roster through __init_subclass__ and then queries it manually",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -392,10 +386,7 @@ class PredicateSelectedConcreteFamilyDetector(ConfiguredCrossModuleCollectorCand
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Predicate-selected concrete family should collapse into one metaclass-registry selector base",
-        "The docs treat repeated scans over `registered_types()` plus `matches_*` predicates as family-selection "
-            "framework logic. When a root class manually filters registered concrete descendants, enforces exactly one "
-            "match, and then consumes the chosen subclass, the selection algorithm should live in one reusable "
-            "`metaclass-registry` family base.",
+        'The docs treat repeated scans over `registered_types()` plus `matches_*` predicates as family-selection framework logic. When a root class manually filters registered concrete descendants, enforces exactly one match, and then consumes the chosen subclass, the selection algorithm should live in one reusable `metaclass-registry` family base.',
         "single authoritative metaclass-registry predicate-selected concrete-family substrate",
         "registered concrete subclasses are manually scanned and cardinality-checked inside a family root",
         _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -451,9 +442,7 @@ class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidate
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Parallel mirrored leaf families should derive from one axis-declared family substrate",
-        "The docs treat mirrored registered leaf catalogs as framework duplication when the same contract is repeated "
-            "across two family roots and only one nominal axis really varies. The axis and role table should be "
-            "authoritative so registration and leaf generation are derived instead of hand-expanded twice.",
+        'The docs treat mirrored registered leaf catalogs as framework duplication when the same contract is repeated across two family roots and only one nominal axis really varies. The axis and role table should be authoritative so registration and leaf generation are derived instead of hand-expanded twice.',
         "single authoritative axis-declared family or role-spec table that derives mirrored registered leaves",
         "two registered abstract roots own mirrored concrete leaf catalogs over the same contract method family",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
@@ -476,12 +465,7 @@ class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidate
             ),
             mirrored_candidate.evidence[:6],
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class FamilyRoleSpec:\n"
-                "    role_name: str\n"
-                "    axis_impls: tuple[callable, ...]\n\n"
-                "class GeneratedLeafFamily(ABC): ...\n"
-                "# Declare the varying axis once, declare roles once, and derive leaf registration from the spec table."
+                '@dataclass(frozen=True)\nclass FamilyRoleSpec:\n    role_name: str\n    axis_impls: tuple[callable, ...]\n\nclass GeneratedLeafFamily(ABC): ...\n# Declare the varying axis once, declare roles once, and derive leaf registration from the spec table.'
             ),
             codemod_patch=(
                 f"# Replace mirrored roots `{mirrored_candidate.left.root_name}` and `{mirrored_candidate.right.root_name}` with one axis-declared family substrate.\n"
@@ -503,8 +487,7 @@ class ParallelMirroredLeafFamilyDetector(ConfiguredCrossModuleCollectorCandidate
 class SentinelAttributeSimulationDetector(CandidateFindingDetector):
     finding_spec = finding_spec_template(
         PatternId.NOMINAL_BOUNDARY, "Sentinel attribute is simulating nominal identity",
-        "The docs say sentinel attributes only simulate identity by convention. When they drive behavior across "
-            "multiple classes, the boundary should become a nominal family or another explicit identity handle.",
+        'The docs say sentinel attributes only simulate identity by convention. When they drive behavior across multiple classes, the boundary should become a nominal family or another explicit identity handle.',
         "enumerable and enforceable nominal role identity",
         "same class-level sentinel attribute reused as a fake identity boundary",
         _NOMINAL_IDENTITY_ENUMERATION_PROVENANCE_CAPABILITY_TAGS,
@@ -548,8 +531,7 @@ class SentinelAttributeSimulationDetector(CandidateFindingDetector):
 class PredicateFactoryChainDetector(CandidateFindingDetector):
     finding_spec = finding_spec_template(
         PatternId.DISCRIMINATED_UNION, "Predicate chain should become a discriminated union family",
-        "The docs say repeated predicate-driven variant selection should become an explicit subclass family with "
-            "enumeration rather than an open-ended if/elif chain.",
+        'The docs say repeated predicate-driven variant selection should become an explicit subclass family with enumeration rather than an open-ended if/elif chain.',
         "exhaustive nominal variant discovery and extension",
         "same factory role repeated as predicate branches inside one function",
         _ENUMERATION_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -584,8 +566,7 @@ class PredicateFactoryChainDetector(CandidateFindingDetector):
 class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.CONFIG_CONTRACTS, "Config dispatch is encoded through fragile attribute probing",
-        "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name "
-            "probing or ad hoc attribute comparisons.",
+        'The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name probing or ad hoc attribute comparisons.',
         "fail-loud polymorphic configuration contracts",
         "same config-family choice expressed through attribute-level probing",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
@@ -619,9 +600,7 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
 class ConcreteConfigFieldProbeDetector(ConfiguredModuleCollectorCandidateDetector[ConcreteConfigFieldProbeCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS, "Concrete config backend is probing fields outside its declared contract",
-        "The docs say concrete config-backed implementations should rely on declared config fields, not reflective "
-            "probing of attributes that are absent from the concrete config type. That usually means the backend is "
-            "borrowing another family's contract instead of owning its own configuration boundary.",
+        "The docs say concrete config-backed implementations should rely on declared config fields, not reflective probing of attributes that are absent from the concrete config type. That usually means the backend is borrowing another family's contract instead of owning its own configuration boundary.",
         "fail-loud concrete config contract for one backend family",
         "one concrete backend probes fields that are not declared by its concrete config type",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
@@ -638,10 +617,7 @@ class ConcreteConfigFieldProbeDetector(ConfiguredModuleCollectorCandidateDetecto
             ),
             (probe_candidate.evidence,),
             scaffold=(
-                "class BackendConfig(ABC):\n"
-                "    @property\n"
-                "    @abstractmethod\n"
-                "    def declared_parameter(self) -> object: ..."
+                'class BackendConfig(ABC):\n    @property\n    @abstractmethod\n    def declared_parameter(self) -> object: ...'
             ),
             codemod_patch=(
                 f"# Delete reflective field probes against `{probe_candidate.config_type_name}`.\n"
@@ -653,8 +629,7 @@ class ConcreteConfigFieldProbeDetector(ConfiguredModuleCollectorCandidateDetecto
 class GeneratedTypeLineageDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.TYPE_LINEAGE, "Generated types need explicit lineage tracking",
-        "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and "
-            "provenance remain exact.",
+        'The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and provenance remain exact.',
         "exact generated-type lineage and normalization",
         "same module combines runtime type generation with lineage-sensitive registries",
         _TYPE_LINEAGE_PROVENANCE_BIDIRECTIONAL_NORMALIZATION_CAPABILITY_TAGS,
@@ -702,8 +677,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
 class DualAxisResolutionDetector(PerModuleIssueDetector):
     finding_spec = finding_spec_template(
         PatternId.DUAL_AXIS_RESOLUTION, "Nested precedence walk should be a dual-axis resolution primitive",
-        "The docs say scope x type precedence should be modeled explicitly when both context and inheritance order "
-            "contribute to resolution and provenance.",
+        'The docs say scope x type precedence should be modeled explicitly when both context and inheritance order contribute to resolution and provenance.',
         "explicit dual-axis precedence with provenance",
         "same function combines context hierarchy and type/MRO hierarchy",
         _DUAL_AXIS_RESOLUTION_PROVENANCE_MRO_ORDERING_CAPABILITY_TAGS,
@@ -744,8 +718,7 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.VIRTUAL_MEMBERSHIP,
         "Manual class-marker membership should become custom isinstance semantics",
-        "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks "
-            "suggest a custom isinstance/subclass boundary rather than scattered manual probing.",
+        'The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks suggest a custom isinstance/subclass boundary rather than scattered manual probing.',
         "runtime-checkable virtual membership on nominal class identity",
         "same membership question repeated through class-marker probing",
         _VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -781,9 +754,7 @@ class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
     finding_spec = finding_spec_template(
         PatternId.VIRTUAL_MEMBERSHIP,
         "External concrete type identity table should become capability registration",
-        "A table of hardcoded external module/type string identities is recovering runtime membership "
-            "from concrete implementation names. The nominal boundary should be an explicit capability "
-            "registration surface owned by the integration layer, not a core table of third-party class names.",
+        'A table of hardcoded external module/type string identities is recovering runtime membership from concrete implementation names. The nominal boundary should be an explicit capability registration surface owned by the integration layer, not a core table of third-party class names.',
         "extension-owned virtual membership registration boundary",
         "same registry table maps external concrete type identities to capability registration",
         _VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
@@ -818,12 +789,7 @@ class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
                     ),
                     evidence,
                     scaffold=(
-                        "class RuntimeCapability(ABC, metaclass=AutoRegisterMeta):\n"
-                        "    __registry_key__ = 'capability_key'\n"
-                        "    __skip_if_no_key__ = True\n"
-                        "    capability_key = None\n\n"
-                        "# Integration modules register concrete external classes with the capability boundary.\n"
-                        "# Core runtime code queries the nominal capability, not module/type strings."
+                        "class RuntimeCapability(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'capability_key'\n    __skip_if_no_key__ = True\n    capability_key = None\n\n# Integration modules register concrete external classes with the capability boundary.\n# Core runtime code queries the nominal capability, not module/type strings."
                     ),
                     codemod_patch=(
                         f"# Replace `{candidate.symbol}` with explicit capability registration in the "
@@ -989,8 +955,7 @@ _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.DYNAMIC_INTERFACE, "Dynamic interface generation is present or required",
-        "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles "
-            "when structure alone cannot express membership.",
+        'The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles when structure alone cannot express membership.',
         "explicit runtime-generated nominal interface identity",
         "same module generates interface-like nominal types at runtime",
         _GENERATED_INTERFACE_IDENTITY_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -1024,8 +989,7 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
 class SentinelTypeMarkerDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.SENTINEL_TYPE_MARKER, "Unique sentinel type marker is present or should be used",
-        "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when "
-            "exact capability identity matters more than payload.",
+        'The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when exact capability identity matters more than payload.',
         "exact capability-marker identity independent of structure",
         "same module creates or uses unique nominal sentinel markers",
         _CAPABILITY_MARKER_IDENTITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -1054,8 +1018,7 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
 class DynamicMethodInjectionDetector(StaticModulePatternDetector):
     finding_spec = finding_spec_template(
         PatternId.TYPE_NAMESPACE_INJECTION, "Dynamic method injection belongs in a type-namespace pattern",
-        "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, "
-            "not in repeated instance-level patching.",
+        'The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, not in repeated instance-level patching.',
         "shared type-namespace mutation for a nominal family",
         "same module mutates class behavior through runtime namespace injection",
         _SHARED_TYPE_NAMESPACE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -1087,9 +1050,7 @@ class AttributeProbeDetector(PerModuleIssueDetector):
     detector_id = "attribute_probes"
     finding_spec = finding_spec_template(
         PatternId.ABC_TEMPLATE_METHOD, "Semantic role recovered from attribute probing",
-        "Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a "
-            "partial structural view. The documented fix is to migrate this region toward an ABC contract "
-            "with direct method calls and fail-loud guarantees.",
+        'Repeated hasattr/getattr/AttributeError logic means the code is recovering identity from a partial structural view. The documented fix is to migrate this region toward an ABC contract with direct method calls and fail-loud guarantees.',
         "declared semantic role identity and import-time enforcement",
         "same module-level probing layer across multiple call sites",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS, _ATTRIBUTE_PROBE_PARTIAL_VIEW_OBSERVATION_TAGS,
@@ -1127,10 +1088,7 @@ class AttributeProbeDetector(PerModuleIssueDetector):
 class InlineLiteralDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH, "Inline literal dispatch should be a registry",
-        "When the same observed value is split across several sibling literal branches, the docs "
-            "say the local rule family should be moved into one authoritative dispatch object instead of "
-            "repeating inline branch logic. When the cases select behavior, prefer an auto-registered class family "
-            "over a handwritten enum table.",
+        'When the same observed value is split across several sibling literal branches, the docs say the local rule family should be moved into one authoritative dispatch object instead of repeating inline branch logic. When the cases select behavior, prefer an auto-registered class family over a handwritten enum table.',
         "single authoritative dispatch representation for a closed local rule family, preferably an auto-registered behavior family when the cases are behavioral",
         "same branch role repeated inline inside a module block",
         _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
@@ -1179,9 +1137,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
 class StringDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH, "Closed-family dispatch expressed through strings",
-        "The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches "
-            "suggest the code is using a weaker representation than the domain requires. If those strings select implementations, "
-            "the stronger form is an auto-registered family keyed by the stable nominal axis.",
+        'The docs prefer enum- or type-keyed O(1) dispatch for closed families. Repeated string branches suggest the code is using a weaker representation than the domain requires. If those strings select implementations, the stronger form is an auto-registered family keyed by the stable nominal axis.',
         "closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         "same dispatch role repeated through string comparisons or string-key registries",
         _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
@@ -1218,8 +1174,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
                         f"same observed axis `{observation.axis_expression}` is split across literal string cases {observation.literal_cases}"
                     ),
                     codemod_patch=(
-                        "# Promote the closed string axis to a nominal key. If the cases select behavior, define an "
-                        "auto-registered family keyed by that axis and dispatch through `cls.__registry__`."
+                        '# Promote the closed string axis to a nominal key. If the cases select behavior, define an auto-registered family keyed by that axis and dispatch through `cls.__registry__`.'
                     ),
                     metrics=DispatchCountMetrics.from_literal_family(
                         observation.axis_expression,
@@ -1240,8 +1195,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
                         "same closed family encoded in string-key dispatch tables rather than one nominal dispatch boundary"
                     ),
                     codemod_patch=(
-                        "# Replace handwritten string-key dispatch tables with one authoritative nominal family. "
-                        "# Keep any string-key projection as a derived view of the auto-registered family."
+                        '# Replace handwritten string-key dispatch tables with one authoritative nominal family. # Keep any string-key projection as a derived view of the auto-registered family.'
                     ),
                     metrics=DispatchCountMetrics(
                         dispatch_site_count=len(dict_evidence)
@@ -1254,9 +1208,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH, "Closed-family dispatch expressed through numeric IDs",
-        "The docs treat repeated numeric pattern or mode IDs the same way as magic strings: the "
-            "domain axis is real but undeclared. Replace the literal-ID branches with a nominal "
-            "family keyed by a stable axis; if the cases select behavior, prefer an auto-registered family over a handwritten lookup table.",
+        'The docs treat repeated numeric pattern or mode IDs the same way as magic strings: the domain axis is real but undeclared. Replace the literal-ID branches with a nominal family keyed by a stable axis; if the cases select behavior, prefer an auto-registered family over a handwritten lookup table.',
         "closed-family dispatch with stable nominal keys and auto-registered type authority for behavioral cases",
         "same dispatch role repeated through numeric literal comparisons",
         _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
@@ -1305,9 +1257,7 @@ class RepeatedHardcodedStringDetector(CandidateFindingDetector):
     detector_id = "repeated_hardcoded_strings"
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA, "Repeated hardcoded semantic string should become authoritative",
-        "The docs treat repeated hardcoded semantic keys as a coherence failure: the key should "
-            "be declared once as an authoritative constant, enum member, or nominal handle instead "
-            "of being copied across sites.",
+        'The docs treat repeated hardcoded semantic keys as a coherence failure: the key should be declared once as an authoritative constant, enum member, or nominal handle instead of being copied across sites.',
         "single authoritative semantic-key declaration",
         "same semantic key duplicated across decision-bearing or declarative sites",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS,
@@ -1586,9 +1536,7 @@ class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetect
     candidate_collector = _embedded_static_payload_candidates
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Unreferenced embedded static-payload emitter should collapse",
-        "A private function that is not referenced in its module but still embeds and writes a large static "
-            "artifact payload is a duplicate derived-view authority. Delete it if it is genuinely dead; if it is "
-            "reached dynamically, move the payload to a template/resource or generate it from an authoritative schema.",
+        'A private function that is not referenced in its module but still embeds and writes a large static artifact payload is a duplicate derived-view authority. Delete it if it is genuinely dead; if it is reached dynamically, move the payload to a template/resource or generate it from an authoritative schema.',
         "single authoritative template/resource or generated schema for static artifact views",
         "private unreferenced emitter owns a large embedded static payload independently of call flow",
         _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -1705,9 +1653,7 @@ def _unreferenced_private_function_candidates(
 class UnreferencedPrivateFunctionDetector(ConfiguredModuleCollectorCandidateDetector[UnreferencedPrivateFunctionCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Unreferenced private function should be deleted or made explicit",
-        "A private function with no in-module references is not a witnessed local authority. If it is dead, "
-            "delete it. If it is invoked dynamically or by an external framework, that contract should be made "
-            "explicit through a registry, callback table, or public facade instead of relying on an invisible edge.",
+        'A private function with no in-module references is not a witnessed local authority. If it is dead, delete it. If it is invoked dynamically or by an external framework, that contract should be made explicit through a registry, callback table, or public facade instead of relying on an invisible edge.',
         "explicit call-graph witness or deletion of dead private implementation surface",
         "private function is present in the implementation surface but absent from local call flow",
         _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -1878,9 +1824,7 @@ class SiblingSmallMethodTemplateDetector(ModuleCollectorCandidateDetector[Siblin
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Sibling small method templates should collapse to one parameterized helper",
-        "One owner has private sibling methods with the same small execution template and shared name family. "
-            "Only role names or literal residue vary, so the implementation should name one local authority and "
-            "pass the role-specific values as data.",
+        'One owner has private sibling methods with the same small execution template and shared name family. Only role names or literal residue vary, so the implementation should name one local authority and pass the role-specific values as data.',
         "one local helper/table for repeated small method templates",
         "same owner repeats a small private method body template across sibling roles",
         _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -1896,8 +1840,7 @@ class SiblingSmallMethodTemplateDetector(ModuleCollectorCandidateDetector[Siblin
             ),
             template_candidate.evidence_locations,
             scaffold=(
-                "# Replace the sibling methods with one parameterized local helper that accepts the varying role/literal values.\n"
-                "# Keep separate methods only when each owns a distinct invariant or external contract."
+                '# Replace the sibling methods with one parameterized local helper that accepts the varying role/literal values.\n# Keep separate methods only when each owns a distinct invariant or external contract.'
             ),
             codemod_patch=(
                 f"# Collapse sibling template methods {template_candidate.method_names} into one parameterized local helper."
@@ -1993,9 +1936,7 @@ def _mirrored_import_fallback_candidates(
 class MirroredImportFallbackDetector(ModuleCollectorCandidateDetector[MirroredImportFallbackCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY, "Mirrored import fallback should collapse to one import authority",
-        "A try/except ImportError block that repeats the same imports once relatively and once absolutely "
-            "keeps two synchronized import surfaces. Prefer one package bootstrap or import adapter so direct-script "
-            "and package execution share the same import authority.",
+        'A try/except ImportError block that repeats the same imports once relatively and once absolutely keeps two synchronized import surfaces. Prefer one package bootstrap or import adapter so direct-script and package execution share the same import authority.',
         "single import authority for package and direct-script execution",
         "relative and absolute import lists are mirrored across an ImportError fallback",
         _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -2011,8 +1952,7 @@ class MirroredImportFallbackDetector(ModuleCollectorCandidateDetector[MirroredIm
             ),
             (import_candidate.evidence,),
             scaffold=(
-                "# Establish one package/direct-script import authority before local imports.\n"
-                "# Then use canonical relative imports once instead of mirroring every import list."
+                '# Establish one package/direct-script import authority before local imports.\n# Then use canonical relative imports once instead of mirroring every import list.'
             ),
             codemod_patch=(
                 "# Replace mirrored relative/absolute import branches with a package bootstrap or shared import adapter."
@@ -2146,9 +2086,7 @@ class ConstantBackedDispatchAxisDetector(ConfiguredModuleCollectorCandidateDetec
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Constant-backed action axis should become one typed dispatch authority",
-        "A closed behavior axis is declared as uppercase constants and then re-derived through branch ladders. "
-            "That splits the action family across constants, choices, and dispatch code. Prefer one typed action "
-            "authority that derives choices, ordering, and execution.",
+        'A closed behavior axis is declared as uppercase constants and then re-derived through branch ladders. That splits the action family across constants, choices, and dispatch code. Prefer one typed action authority that derives choices, ordering, and execution.',
         "single typed action-family authority deriving choices and dispatch",
         "same constant family drives branch dispatch across multiple functions",
         _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -2165,16 +2103,10 @@ class ConstantBackedDispatchAxisDetector(ConfiguredModuleCollectorCandidateDetec
             ),
             axis_candidate.evidence_locations,
             scaffold=(
-                "class Action(ABC):\n"
-                "    key: ClassVar[str]\n"
-                "    @abstractmethod\n"
-                "    def run(self, context): ...\n\n"
-                "ACTIONS = tuple(Action.__subclasses__())\n"
-                "CHOICES = tuple(action.key for action in ACTIONS)"
+                'class Action(ABC):\n    key: ClassVar[str]\n    @abstractmethod\n    def run(self, context): ...\n\nACTIONS = tuple(Action.__subclasses__())\nCHOICES = tuple(action.key for action in ACTIONS)'
             ),
             codemod_patch=(
-                "# Replace constant choices plus branch ladders with one typed action table or auto-registered action family.\n"
-                "# Derive CLI choices and all dispatch sites from that authority."
+                '# Replace constant choices plus branch ladders with one typed action table or auto-registered action family.\n# Derive CLI choices and all dispatch sites from that authority.'
             ),
             metrics=DispatchCountMetrics.from_literal_family(
                 axis_candidate.axis_name,
@@ -2296,9 +2228,7 @@ def _manual_process_step_ladder_candidates(
 class ManualProcessStepLadderDetector(ModuleCollectorCandidateDetector[ManualProcessStepLadderCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION, "Manual process-step ladders should become a typed stage plan",
-        "Multiple functions declare local command-step tables and execute them through repeated loops. "
-            "The step schema, execution policy, and failure policy are one staged orchestration authority, "
-            "not separate local declarations.",
+        'Multiple functions declare local command-step tables and execute them through repeated loops. The step schema, execution policy, and failure policy are one staged orchestration authority, not separate local declarations.',
         "single typed process-stage plan deriving command lists and execution loops",
         "local process-step tables are manually executed by repeated loop skeletons",
         _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -2315,14 +2245,10 @@ class ManualProcessStepLadderDetector(ModuleCollectorCandidateDetector[ManualPro
             ),
             ladder_candidate.evidence_locations,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class ProcessStagePlan:\n"
-                "    steps: tuple[ProcessStep, ...]\n"
-                "    def run(self, context): ..."
+                '@dataclass(frozen=True)\nclass ProcessStagePlan:\n    steps: tuple[ProcessStep, ...]\n    def run(self, context): ...'
             ),
             codemod_patch=(
-                "# Replace local command-step tables and repeated loops with one typed stage plan.\n"
-                "# Derive command argv, labels, allowed failures, and callbacks from the plan rows."
+                '# Replace local command-step tables and repeated loops with one typed stage plan.\n# Derive command argv, labels, allowed failures, and callbacks from the plan rows.'
             ),
             metrics=OrchestrationMetrics(
                 function_line_count=sum(ladder_candidate.line_numbers) * 0,
@@ -2404,9 +2330,7 @@ def _mirrored_file_rewrite_loop_candidates(
 class MirroredFileRewriteLoopDetector(ModuleCollectorCandidateDetector[MirroredFileRewriteLoopCandidate]):
     finding_spec = finding_spec_template(
         PatternId.LOCAL_VALUE_AUTHORITY, "Mirrored file rewrite loops should become a text rewrite plan",
-        "Several loops read files, apply the same textual rewrite mechanics, and write changes back. "
-            "The traversal roots are local variation, but the rewrite algebra and write policy should be one "
-            "declared plan.",
+        'Several loops read files, apply the same textual rewrite mechanics, and write changes back. The traversal roots are local variation, but the rewrite algebra and write policy should be one declared plan.',
         "single text rewrite plan with one file-application surface",
         "same read/transform/write loop mirrored over different file collections",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS, _NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
@@ -2421,14 +2345,10 @@ class MirroredFileRewriteLoopDetector(ModuleCollectorCandidateDetector[MirroredF
             ),
             loop_candidate.evidence_locations,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class TextRewritePlan:\n"
-                "    rules: tuple[TextRewriteRule, ...]\n"
-                "    def apply_to_files(self, files): ..."
+                '@dataclass(frozen=True)\nclass TextRewritePlan:\n    rules: tuple[TextRewriteRule, ...]\n    def apply_to_files(self, files): ...'
             ),
             codemod_patch=(
-                "# Replace mirrored read/replace/write loops with one typed rewrite plan.\n"
-                "# Pass only the varying file collections and display labels at call sites."
+                '# Replace mirrored read/replace/write loops with one typed rewrite plan.\n# Pass only the varying file collections and display labels at call sites.'
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(loop_candidate.line_numbers),
@@ -2566,9 +2486,7 @@ def _repeated_local_regex_bundle_candidates(
 class RepeatedLocalRegexBundleDetector(ConfiguredModuleCollectorCandidateDetector[RepeatedLocalRegexBundleCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Repeated local regex bundles should become a typed syntax authority",
-        "Sibling functions redeclare the same substantial regex grammar locally. "
-            "That makes each function a partial syntax authority instead of deriving parsing "
-            "from one typed grammar object.",
+        'Sibling functions redeclare the same substantial regex grammar locally. That makes each function a partial syntax authority instead of deriving parsing from one typed grammar object.',
         "single typed syntax authority deriving all repeated regex recognizers",
         "substantial regex literals are redeclared inside sibling functions",
         _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS, _NORMALIZED_AST_DATAFLOW_ROOT_OBSERVATION_TAGS,
@@ -2583,14 +2501,10 @@ class RepeatedLocalRegexBundleDetector(ConfiguredModuleCollectorCandidateDetecto
             ),
             regex_candidate.evidence_locations,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class SyntaxAuthority:\n"
-                "    recognizers: tuple[Pattern[str], ...]\n"
-                "    def parse(self, text: str): ..."
+                '@dataclass(frozen=True)\nclass SyntaxAuthority:\n    recognizers: tuple[Pattern[str], ...]\n    def parse(self, text: str): ...'
             ),
             codemod_patch=(
-                "# Move repeated local regex grammar into one typed syntax authority.\n"
-                "# Derive parser operations from named recognizers instead of redeclaring patterns in each helper."
+                '# Move repeated local regex grammar into one typed syntax authority.\n# Derive parser operations from named recognizers instead of redeclaring patterns in each helper.'
             ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(regex_candidate.function_names),
@@ -2722,9 +2636,7 @@ def _algebraic_duplicate_compound_block_candidates(
 class AlgebraicDuplicateCompoundBlockDetector(ModuleCollectorCandidateDetector[AlgebraicDuplicateCompoundBlockCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION, "Anti-unified compound blocks should become one derived algebra",
-        "The repeated blocks have the same quotient-normal-form AST after alpha-renaming "
-            "local names, literals, and attribute labels. That is a formal witness that the "
-            "algorithmic structure is duplicated modulo representation choices.",
+        'The repeated blocks have the same quotient-normal-form AST after alpha-renaming local names, literals, and attribute labels. That is a formal witness that the algorithmic structure is duplicated modulo representation choices.',
         "single derived algorithm authority for an anti-unified compound block",
         "compound blocks are equal in the AST quotient algebra modulo names and literals",
         _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_PROVENANCE_CAPABILITY_TAGS,
@@ -2740,14 +2652,10 @@ class AlgebraicDuplicateCompoundBlockDetector(ModuleCollectorCandidateDetector[A
             ),
             block_candidate.evidence_locations,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class BlockAlgebra:\n"
-                "    def run(self, context): ...\n\n"
-                "# Route each former block through one derived algebra with typed context rows."
+                '@dataclass(frozen=True)\nclass BlockAlgebra:\n    def run(self, context): ...\n\n# Route each former block through one derived algebra with typed context rows.'
             ),
             codemod_patch=(
-                "# Extract the repeated quotient-normal-form block into one typed helper or algebra object.\n"
-                "# Keep variation as context data; derive the shared control structure once."
+                '# Extract the repeated quotient-normal-form block into one typed helper or algebra object.\n# Keep variation as context data; derive the shared control structure once.'
             ),
             metrics=OrchestrationMetrics(
                 function_line_count=0,
@@ -2764,9 +2672,7 @@ class RepeatedProjectionHelperDetector(ModuleCollectorCandidateDetector[tuple[Pr
     candidate_collector = _projection_helper_groups
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA, "Repeated projection helper wrappers should become one projector",
-        "The docs treat parallel projection helpers as a coherence failure: once several helpers differ only in "
-            "which semantic attribute they project, the wrapper structure should be centralized in one authoritative "
-            "projector and the varying projection should become a parameter.",
+        'The docs treat parallel projection helpers as a coherence failure: once several helpers differ only in which semantic attribute they project, the wrapper structure should be centralized in one authoritative projector and the varying projection should become a parameter.',
         "single authoritative projection helper for a repeated semantic wrapper family",
         "same helper wrapper shape repeated across sibling module functions",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS, _PROJECTION_HELPER_NORMALIZED_AST_OBSERVATION_TAGS,
@@ -2794,9 +2700,7 @@ class RepeatedProjectionHelperDetector(ModuleCollectorCandidateDetector[tuple[Pr
 class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Parallel guarded wrappers and specs should become a polymorphic family",
-        "Parallel wrapper functions plus parallel spec declarations mean the code already has a hidden "
-            "strategy family, but it is encoded as duplicated procedural glue. The docs prefer moving the shared "
-            "algorithm into an ABC and letting polymorphic spec classes own the node family differences.",
+        'Parallel wrapper functions plus parallel spec declarations mean the code already has a hidden strategy family, but it is encoded as duplicated procedural glue. The docs prefer moving the shared algorithm into an ABC and letting polymorphic spec classes own the node family differences.',
         "single authoritative polymorphic wrapper/spec family",
         "same node-guarded wrapper skeleton repeated across multiple wrapper/spec pairs",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -2840,14 +2744,7 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 ),
                 evidence,
                 scaffold=(
-                    "class NodeFamilySpec(ABC):\n"
-                    "    node_types: ClassVar[tuple[type[ast.AST], ...]]\n\n"
-                    "    @classmethod\n"
-                    "    def build(cls, parsed_module, observation):\n"
-                    "        node = observation.node\n"
-                    "        if not isinstance(node, cls.node_types):\n"
-                    "            return None\n"
-                    "        return cls.build_for_node(parsed_module, node, observation)"
+                    'class NodeFamilySpec(ABC):\n    node_types: ClassVar[tuple[type[ast.AST], ...]]\n\n    @classmethod\n    def build(cls, parsed_module, observation):\n        node = observation.node\n        if not isinstance(node, cls.node_types):\n            return None\n        return cls.build_for_node(parsed_module, node, observation)'
                 ),
             )
         ]
@@ -2858,8 +2755,7 @@ class ManualIndexedFamilyExpansionDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Manually expanded indexed family should become one nominal family abstraction",
-        "The same collection scaffold is being hand-expanded over a latent family index. The docs prefer one "
-            "authoritative nominal family abstraction whose members provide only the varying family metadata.",
+        'The same collection scaffold is being hand-expanded over a latent family index. The docs prefer one authoritative nominal family abstraction whose members provide only the varying family metadata.',
         "single authoritative indexed family abstraction",
         "same normalized family scaffold repeated across sibling top-level functions",
         _SHARED_ALGORITHM_AUTHORITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
@@ -2900,9 +2796,7 @@ class AccessorWrapperDetector(ModuleCollectorCandidateDetector[tuple[AccessorWra
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Trivial structural accessor wrapper should collapse to attribute/property access",
-        "The docs treat one-step observation wrappers as redundant structure: if a method only transports an "
-            "already-owned attribute or a one-step computed view of it, the authority should remain the attribute "
-            "itself, with `@property` reserved for genuine computed access.",
+        'The docs treat one-step observation wrappers as redundant structure: if a method only transports an already-owned attribute or a one-step computed view of it, the authority should remain the attribute itself, with `@property` reserved for genuine computed access.',
         "direct authoritative attribute/property access instead of transport wrappers",
         "same class exposes owned facts through one-step transport wrappers",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS, _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
@@ -3027,9 +2921,7 @@ class FlattenedProjectionPropertyDetector(ModuleCollectorCandidateDetector[tuple
     candidate_collector = _flattened_projection_properties
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Flattened compatibility projection properties should be deleted",
-        "After a role-prefixed field bundle is moved into nominal nested records, adding properties such as "
-            "`ligand_coords -> ligand.coords` preserves the old flattened schema as a shadow API. That is a local "
-            "minimum: callers should move to the nested role record directly so the new schema is the only authority.",
+        'After a role-prefixed field bundle is moved into nominal nested records, adding properties such as `ligand_coords -> ligand.coords` preserves the old flattened schema as a shadow API. That is a local minimum: callers should move to the nested role record directly so the new schema is the only authority.',
         "direct nested record access instead of flattened compatibility aliases",
         "class exposes old role-prefixed fields as properties over nested role records",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -3069,9 +2961,7 @@ class FlattenedProjectionPropertyDetector(ModuleCollectorCandidateDetector[tuple
 class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidate]):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA, "Transport wrapper chain should collapse to one authoritative view",
-        "The docs treat stacked pass-through helpers and projection wrappers as a coherence failure: once the "
-            "same facts are rewrapped across multiple helper layers, the code should keep one authoritative carrier "
-            "and derive smaller views directly from it.",
+        'The docs treat stacked pass-through helpers and projection wrappers as a coherence failure: once the same facts are rewrapped across multiple helper layers, the code should keep one authoritative carrier and derive smaller views directly from it.',
         "direct authoritative projection/view instead of a stacked transport wrapper chain",
         "same fact family is transported through multiple wrapper layers before reaching the real owner",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -3118,9 +3008,7 @@ class TrivialForwardingWrapperDetector(ModuleCollectorCandidateDetector[TrivialF
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Trivial forwarding wrapper should be deleted in favor of the delegate authority",
-        "A one-line wrapper that only transports inputs into `for_*().method()` or a similar nested delegate call "
-            "adds no stable semantics. The docs treat that as zero-information indirection: call the authority "
-            "directly at the use site instead of naming a transport shell.",
+        'A one-line wrapper that only transports inputs into `for_*().method()` or a similar nested delegate call adds no stable semantics. The docs treat that as zero-information indirection: call the authority directly at the use site instead of naming a transport shell.',
         "direct delegate authority call instead of a trivial forwarding shell",
         "wrapper symbol only transports existing inputs into a nested delegate call chain",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -3168,10 +3056,7 @@ class PublicApiPrivateDelegateShellDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Public API shell over a private delegate should promote a public authority",
-        "A public module-level wrapper is carrying an external API contract only because the real implementation "
-            "authority is hidden behind a private `_X` root. When multiple external call sites depend on that shell, "
-            "the docs prefer promoting one public facade/ABC/policy authority instead of inlining callers onto the "
-            "private delegate.",
+        'A public module-level wrapper is carrying an external API contract only because the real implementation authority is hidden behind a private `_X` root. When multiple external call sites depend on that shell, the docs prefer promoting one public facade/ABC/policy authority instead of inlining callers onto the private delegate.',
         "public authoritative facade over a private delegate family",
         "external modules depend on a public forwarding shell because the true authority is private",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -3199,13 +3084,7 @@ class PublicApiPrivateDelegateShellDetector(IssueDetector):
                     ),
                     candidate.evidence,
                     scaffold=(
-                        "class PublicDelegatePolicy(ABC):\n"
-                        "    @classmethod\n"
-                        "    @abstractmethod\n"
-                        "    def for_key(cls, key): ...\n\n"
-                        "    @abstractmethod\n"
-                        "    def execute(self, *args, **kwargs): ...\n\n"
-                        "# Keep the concrete private delegate hidden behind this public authority."
+                        'class PublicDelegatePolicy(ABC):\n    @classmethod\n    @abstractmethod\n    def for_key(cls, key): ...\n\n    @abstractmethod\n    def execute(self, *args, **kwargs): ...\n\n# Keep the concrete private delegate hidden behind this public authority.'
                     ),
                     codemod_patch=(
                         f"# Do not inline callers of `{candidate.wrapper.qualname}` onto private `{candidate.delegate_root_symbol}`.\n"
@@ -3220,9 +3099,7 @@ class PublicApiPrivateDelegateFamilyDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Multiple public shells over one private delegate should collapse into a public facade family",
-        "When several public wrappers expose one private delegate root, the external API is fragmented across "
-            "transport shells instead of owned by one public authority. The docs prefer promoting a public facade, "
-            "ABC, or policy surface rather than keeping multiple pass-through exports over private machinery.",
+        'When several public wrappers expose one private delegate root, the external API is fragmented across transport shells instead of owned by one public authority. The docs prefer promoting a public facade, ABC, or policy surface rather than keeping multiple pass-through exports over private machinery.',
         "single public facade family over one private delegate root",
         "multiple public wrappers expose one private delegate family to external modules",
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
@@ -3246,13 +3123,7 @@ class PublicApiPrivateDelegateFamilyDetector(IssueDetector):
                     ),
                     candidate.evidence,
                     scaffold=(
-                        "class PublicFacadePolicy(ABC):\n"
-                        "    @classmethod\n"
-                        "    @abstractmethod\n"
-                        "    def for_key(cls, key): ...\n\n"
-                        "    @abstractmethod\n"
-                        "    def route(self, *args, **kwargs): ...\n\n"
-                        "# Re-export the contract through this public authority instead of multiple module-level shells."
+                        'class PublicFacadePolicy(ABC):\n    @classmethod\n    @abstractmethod\n    def for_key(cls, key): ...\n\n    @abstractmethod\n    def route(self, *args, **kwargs): ...\n\n# Re-export the contract through this public authority instead of multiple module-level shells.'
                     ),
                     codemod_patch=(
                         f"# Collapse wrappers {candidate.wrapper_names} into one public facade over `{candidate.delegate_root_symbol}`.\n"
@@ -3267,9 +3138,7 @@ class NominalPolicySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[No
     candidate_collector = _nominal_policy_surface_family_candidates
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD, "Nominal surface methods should not be thin shells over a policy family",
-        "A nominal owner exposes public methods or properties that do nothing except resolve a policy family and "
-            "forward into it. The docs treat that as split authority: the owner surface should either own the contract "
-            "directly or expose one explicit policy hook instead of scattering zero-information shells.",
+        'A nominal owner exposes public methods or properties that do nothing except resolve a policy family and forward into it. The docs treat that as split authority: the owner surface should either own the contract directly or expose one explicit policy hook instead of scattering zero-information shells.',
         "single authoritative owner surface or one explicit policy accessor",
         "public owner surface delegates member-for-member into a policy family",
         _NOMINAL_IDENTITY_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -3292,13 +3161,7 @@ class NominalPolicySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[No
             ),
             family_candidate.evidence,
             scaffold=(
-                "class PolicyBackedSurface(ABC):\n"
-                "    @property\n"
-                "    @abstractmethod\n"
-                "    def _policy(self): ...\n\n"
-                "    def _resolve_policy(self):\n"
-                "        return self._policy\n\n"
-                "# Keep one explicit policy accessor and move repeated surface forwarding behind it."
+                'class PolicyBackedSurface(ABC):\n    @property\n    @abstractmethod\n    def _policy(self): ...\n\n    def _resolve_policy(self):\n        return self._policy\n\n# Keep one explicit policy accessor and move repeated surface forwarding behind it.'
             ),
             codemod_patch=(
                 f"# Collapse `{family_candidate.owner_class_name}` surface shells into one explicit policy accessor or owner-owned contract.\n"
@@ -3310,9 +3173,7 @@ class NominalPolicySurfaceDetector(ConfiguredModuleCollectorCandidateDetector[No
 class SemanticDictBagDetector(PerModuleIssueDetector):
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA, "Semantic dict bag should become a nominal dataclass",
-        "The docs treat semantic field bags as coherence failures: once a dict carries named semantic "
-            "fields rather than serialization payload, the data should move into a nominal dataclass family "
-            "with one authoritative schema and explicit inheritance.",
+        'The docs treat semantic field bags as coherence failures: once a dict carries named semantic fields rather than serialization payload, the data should move into a nominal dataclass family with one authoritative schema and explicit inheritance.',
         "single authoritative nominal schema for semantic field bags",
         "same semantic field family is carried through an ad hoc dict bag instead of a nominal record",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_CAPABILITY_TAGS, _SEMANTIC_DICT_BAG_PARTIAL_VIEW_OBSERVATION_TAGS,
@@ -3364,9 +3225,7 @@ class BidirectionalRegistryDetector(ModuleCollectorCandidateDetector):
     candidate_collector = _mirrored_registry_candidates
     finding_spec = finding_spec_template(
         PatternId.BIDIRECTIONAL_LOOKUP, "Bidirectional registry maintained manually",
-        "The docs prescribe a single authoritative bidirectional type registry when exact companion "
-            "normalization and reverse lookup matter. Manual mirrored assignments are drift-prone and "
-            "should be centralized.",
+        'The docs prescribe a single authoritative bidirectional type registry when exact companion normalization and reverse lookup matter. Manual mirrored assignments are drift-prone and should be centralized.',
         "exact bijection and O(1) reverse lookup on nominal keys",
         "same class maintains forward and reverse registry state",
         _BIDIRECTIONAL_NORMALIZATION_EXACT_LOOKUP_PROVENANCE_CAPABILITY_TAGS,

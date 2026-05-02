@@ -6443,11 +6443,7 @@ def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
 
 def _descriptor_derived_view_scaffold(candidate: DescriptorDerivedViewCandidate) -> str:
     return (
-        "class DerivedField:\n"
-        "    def __init__(self, template):\n"
-        "        self.template = template\n"
-        "    def __set_name__(self, owner, name): ...\n"
-        "    def __get__(self, obj, objtype=None): ..."
+        'class DerivedField:\n    def __init__(self, template):\n        self.template = template\n    def __set_name__(self, owner, name): ...\n    def __get__(self, obj, objtype=None): ...'
     )
 
 
@@ -6461,15 +6457,7 @@ def _descriptor_derived_view_patch(candidate: DescriptorDerivedViewCandidate) ->
 
 def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
     return (
-        "from abc import ABC\n"
-        "from metaclass_registry import AutoRegisterMeta\n\n"
-        "class EventHandler(ABC, metaclass=AutoRegisterMeta):\n"
-        "    __registry_key__ = \"event_type\"\n"
-        "    __skip_if_no_key__ = True\n"
-        "    event_type = None\n\n"
-        "    @classmethod\n"
-        "    def type_for_event_type(cls, event_type):\n"
-        "        return cls.__registry__[event_type]"
+        'from abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass EventHandler(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "event_type"\n    __skip_if_no_key__ = True\n    event_type = None\n\n    @classmethod\n    def type_for_event_type(cls, event_type):\n        return cls.__registry__[event_type]'
     )
 
 
@@ -6713,10 +6701,7 @@ _WITNESS_MIXIN_ROLE_SPECS = {
     _WITNESS_NAME_PAYLOAD_ROLE: WitnessMixinRoleSpec(
         mixin_name="PrimaryNameMixin",
         scaffold=(
-            "class PrimaryNameMixin(ABC):\n"
-            "    @property\n"
-            "    @abstractmethod\n"
-            "    def primary_name(self) -> str | None: ..."
+            'class PrimaryNameMixin(ABC):\n    @property\n    @abstractmethod\n    def primary_name(self) -> str | None: ...'
         ),
     ),
     _WITNESS_NAME_FAMILY_ROLE: WitnessMixinRoleSpec(
@@ -6734,19 +6719,13 @@ _WITNESS_MIXIN_ROLE_SPECS = {
     _WITNESS_LINE_ROLE: WitnessMixinRoleSpec(
         mixin_name="SourceLineMixin",
         scaffold=(
-            "class SourceLineMixin(ABC):\n"
-            "    @property\n"
-            "    @abstractmethod\n"
-            "    def source_line(self) -> int: ..."
+            'class SourceLineMixin(ABC):\n    @property\n    @abstractmethod\n    def source_line(self) -> int: ...'
         ),
     ),
     _WITNESS_PATH_ROLE: WitnessMixinRoleSpec(
         mixin_name="SourcePathMixin",
         scaffold=(
-            "class SourcePathMixin(ABC):\n"
-            "    @property\n"
-            "    @abstractmethod\n"
-            "    def source_path(self) -> str: ..."
+            'class SourcePathMixin(ABC):\n    @property\n    @abstractmethod\n    def source_path(self) -> str: ...'
         ),
     ),
 }
@@ -8181,6 +8160,9 @@ DuplicateVisitorMethodBodyCandidate = product_record('DuplicateVisitorMethodBody
 
 
 EnumMetadataTableCandidate = product_record('EnumMetadataTableCandidate', 'table_name: str; property_names: tuple[str, ...]; case_count: int', bases=(ClassLineWitnessCandidate,))
+
+
+MultilineStringLiteralCandidate = product_record('MultilineStringLiteralCandidate', 'end_line: int; line_count: int; char_count: int', bases=(LineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
