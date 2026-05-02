@@ -5890,6 +5890,64 @@ _CANDIDATE_COLLECTOR_BASE_BY_SHAPE = {
     ("cross_module", False): "CrossModuleCollectorCandidateDetector",
     ("cross_module", True): "ConfiguredCrossModuleCollectorCandidateDetector",
 }
+_DECLARATIVE_DETECTOR_BASE_NAMES = frozenset(_CANDIDATE_COLLECTOR_BASE_BY_SHAPE.values())
+
+
+def _subscript_base_parts(base: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(base, ast.Subscript):
+        return None
+    base_name = name_id(base.value)
+    return None if base_name is None else (base_name, ast.unparse(base.slice))
+
+
+def _class_assignment_names(node: ast.ClassDef) -> tuple[str, ...]:
+    assignment_names: list[str] = []
+    for statement in node.body:
+        if isinstance(statement, ast.Assign):
+            assignment_names.extend(
+                name for target in statement.targets for name in (name_id(target),) if name is not None
+            )
+        elif isinstance(statement, ast.AnnAssign):
+            target_name = name_id(statement.target)
+            if target_name is not None:
+                assignment_names.append(target_name)
+        elif not (
+            isinstance(statement, ast.Expr)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        ):
+            return ()
+    return tuple(assignment_names)
+
+
+def _declarative_detector_class_candidates(
+    module: ParsedModule,
+) -> tuple[DeclarativeDetectorClassCandidate, ...]:
+    candidates: list[DeclarativeDetectorClassCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef) or node.end_lineno is None:
+            continue
+        base_parts = tuple(part for base in node.bases for part in (_subscript_base_parts(base),) if part is not None)
+        base_part = single_item(tuple(part for part in base_parts if part[0] in _DECLARATIVE_DETECTOR_BASE_NAMES))
+        assignment_names = _class_assignment_names(node)
+        if (
+            base_part is None
+            or "finding_spec" not in assignment_names
+            or "finding_renderer" not in assignment_names
+        ):
+            continue
+        candidates.append(
+            DeclarativeDetectorClassCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                class_name=node.name,
+                base_name=base_part[0],
+                candidate_type_name=base_part[1],
+                assignment_names=assignment_names,
+                line_count=node.end_lineno - node.lineno + 1,
+            )
+        )
+    return tuple(candidates)
 
 def _candidate_detector_scope_kind(node: ast.ClassDef) -> str | None:
     if not any(
@@ -7202,6 +7260,127 @@ def _multiline_f_string_literal_candidates(
             self.generic_visit(node)
 
     Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+def _dataclass_config_field_names(node: ast.ClassDef) -> tuple[str, ...]:
+    if not any(
+        name_id(decorator) == "dataclass"
+        or (
+            isinstance(decorator, ast.Call)
+            and name_id(decorator.func) == "dataclass"
+        )
+        for decorator in node.decorator_list
+    ):
+        return ()
+    return tuple(
+        statement.target.id
+        for statement in node.body
+        if isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+    )
+
+
+def _from_namespace_keyword_names(node: ast.ClassDef) -> tuple[int, tuple[str, ...]] | None:
+    for statement in node.body:
+        if not isinstance(statement, ast.FunctionDef) or statement.name != "from_namespace":
+            continue
+        for call in ast.walk(statement):
+            if isinstance(call, ast.Call) and name_id(call.func) == "cls":
+                keyword_names = tuple(
+                    keyword.arg for keyword in call.keywords if keyword.arg is not None
+                )
+                if keyword_names:
+                    return statement.lineno, keyword_names
+    return None
+
+
+def _argument_spec_field_name(node: ast.AST) -> str | None:
+    call = as_ast(node, ast.Call)
+    if call is None or not (name_id(call.func) or "").endswith("ArgumentSpec"):
+        return None
+    keywords = {keyword.arg: keyword.value for keyword in call.keywords}
+    flags = as_ast(keywords.get("flags"), ast.Tuple)
+    if flags is None or not flags.elts:
+        return None
+    first_flag = constant_value(flags.elts[0])
+    if not isinstance(first_flag, str) or not first_flag.startswith("--"):
+        return None
+    dest_name = constant_value(keywords.get("dest"))
+    return (
+        dest_name
+        if isinstance(dest_name, str)
+        else first_flag.removeprefix("--").replace("-", "_")
+    )
+
+
+def _cli_argument_spec_fields(
+    module: ParsedModule,
+) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
+    specs: list[tuple[str, int, tuple[str, ...]]] = []
+    for statement in module.module.body:
+        binding = named_value_binding(statement)
+        if binding is None or not isinstance(binding.value, ast.Tuple):
+            continue
+        field_names = tuple(
+            field_name
+            for field_name in (
+                _argument_spec_field_name(element) for element in binding.value.elts
+            )
+            if field_name is not None
+        )
+        if field_names:
+            specs.append((binding.target_name, binding.line, field_names))
+    return tuple(specs)
+
+
+def _dataclass_namespace_cli_mirror_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[DataclassNamespaceCliMirrorCandidate, ...]:
+    cli_specs = tuple(
+        (module, spec_name, spec_line, field_names)
+        for module in modules
+        for spec_name, spec_line, field_names in _cli_argument_spec_fields(module)
+    )
+    candidates: list[DataclassNamespaceCliMirrorCandidate] = []
+    for module in modules:
+        for node in module.module.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            dataclass_fields = _dataclass_config_field_names(node)
+            if not dataclass_fields:
+                continue
+            namespace_assignment = _from_namespace_keyword_names(node)
+            if namespace_assignment is None:
+                continue
+            from_namespace_line, namespace_fields = namespace_assignment
+            mirrored_fields = tuple(
+                name for name in namespace_fields if name in dataclass_fields
+            )
+            if len(mirrored_fields) < 4:
+                continue
+            for spec_module, spec_name, spec_line, cli_field_names in cli_specs:
+                mirrored_cli_fields = tuple(
+                    name for name in cli_field_names if name in dataclass_fields
+                )
+                shared_fields = tuple(
+                    name for name in mirrored_fields if name in mirrored_cli_fields
+                )
+                if len(shared_fields) < 4:
+                    continue
+                candidates.append(
+                    DataclassNamespaceCliMirrorCandidate(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        class_name=node.name,
+                        argument_spec_name=spec_name,
+                        field_names=mirrored_fields,
+                        cli_field_names=mirrored_cli_fields,
+                        from_namespace_line=from_namespace_line,
+                        argument_spec_file_path=str(spec_module.path),
+                        argument_spec_line=spec_line,
+                    )
+                )
     return tuple(candidates)
 
 

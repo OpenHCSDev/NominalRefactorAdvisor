@@ -17,7 +17,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, field, fields
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
@@ -367,28 +367,32 @@ def high_confidence_certified_spec(
     )
 
 
+def detector_config_option(default: object, help_text: str) -> object:
+    return field(default=default, metadata={"cli_help": help_text})
+
+
 @dataclass(frozen=True)
 class DetectorConfig:
     """Thresholds and tuning knobs shared by all detectors."""
 
-    min_duplicate_statements: int = 3
+    min_duplicate_statements: int = detector_config_option(3, "Minimum statement count for repeated-method detection.")
     min_shared_pipeline_stages: int = 5
     min_nested_builder_forwarded_params: int = 4
-    min_string_cases: int = 3
-    min_attribute_probes: int = 2
-    min_builder_keywords: int = 3
-    min_export_keys: int = 3
-    min_registration_sites: int = 2
+    min_string_cases: int = detector_config_option(3, "Minimum string cases for closed-family dispatch detection.")
+    min_attribute_probes: int = detector_config_option(2, "Minimum attribute probes before surfacing a finding.")
+    min_builder_keywords: int = detector_config_option(3, "Minimum keyword count for repeated record-builder detection.")
+    min_export_keys: int = detector_config_option(3, "Minimum key count for repeated export-dict detection.")
+    min_registration_sites: int = detector_config_option(2, "Minimum manual registration sites before surfacing a class-registration finding.")
     min_prefixed_role_shared_fields: int = 2
     min_prefixed_role_bundle_fields: int = 3
     min_reflective_selector_values: int = 2
-    min_hardcoded_string_sites: int = 3
-    min_static_payload_function_lines: int = 60
-    min_static_payload_literal_lines: int = 20
-    min_unreferenced_private_function_lines: int = 8
-    min_repeated_local_regex_literals: int = 3
-    min_effect_guard_stages: int = 5
-    min_effect_step_payoff_score: int = 8
+    min_hardcoded_string_sites: int = detector_config_option(3, "Minimum repeated semantic string-literal sites before surfacing an SSOT finding.")
+    min_static_payload_function_lines: int = detector_config_option(60, "Minimum function length for unreferenced embedded static-payload emitter detection.")
+    min_static_payload_literal_lines: int = detector_config_option(20, "Minimum embedded static-payload literal lines before surfacing an emitter finding.")
+    min_unreferenced_private_function_lines: int = detector_config_option(8, "Minimum private function length before surfacing an unreferenced-code finding.")
+    min_repeated_local_regex_literals: int = detector_config_option(3, "Minimum shared substantial regex literals before surfacing a local syntax-authority finding.")
+    min_effect_guard_stages: int = detector_config_option(5, "Minimum fail-soft guard stages before surfacing an effect-pipeline finding.")
+    min_effect_step_payoff_score: int = detector_config_option(8, "Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.")
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
@@ -399,57 +403,21 @@ class DetectorConfig:
     @classmethod
     def from_namespace(cls, namespace: Any) -> "DetectorConfig":
         namespace_values = vars(namespace)
-        excluded = tuple(namespace_values.get("excluded_pattern_ids", []) or [])
-        return cls(
-            min_duplicate_statements=int(namespace.min_duplicate_statements),
-            min_shared_pipeline_stages=int(
-                namespace_values.get("min_shared_pipeline_stages", 5)
-            ),
-            min_nested_builder_forwarded_params=int(
-                namespace_values.get("min_nested_builder_forwarded_params", 4)
-            ),
-            min_string_cases=int(namespace.min_string_cases),
-            min_attribute_probes=int(namespace.min_attribute_probes),
-            min_builder_keywords=int(namespace.min_builder_keywords),
-            min_export_keys=int(namespace.min_export_keys),
-            min_registration_sites=int(namespace.min_registration_sites),
-            min_reflective_selector_values=int(
-                namespace_values.get("min_reflective_selector_values", 2)
-            ),
-            min_hardcoded_string_sites=int(namespace.min_hardcoded_string_sites),
-            min_static_payload_function_lines=int(
-                namespace_values.get("min_static_payload_function_lines", 60)
-            ),
-            min_static_payload_literal_lines=int(
-                namespace_values.get("min_static_payload_literal_lines", 20)
-            ),
-            min_unreferenced_private_function_lines=int(
-                namespace_values.get("min_unreferenced_private_function_lines", 8)
-            ),
-            min_repeated_local_regex_literals=int(
-                namespace_values.get("min_repeated_local_regex_literals", 3)
-            ),
-            min_effect_guard_stages=int(
-                namespace_values.get("min_effect_guard_stages", 5)
-            ),
-            min_effect_step_payoff_score=int(
-                namespace_values.get("min_effect_step_payoff_score", 8)
-            ),
-            min_orchestration_function_lines=int(
-                namespace_values.get("min_orchestration_function_lines", 150)
-            ),
-            min_orchestration_branches=int(
-                namespace_values.get("min_orchestration_branches", 15)
-            ),
-            min_orchestration_calls=int(
-                namespace_values.get("min_orchestration_calls", 50)
-            ),
-            min_shared_parameters=int(namespace_values.get("min_shared_parameters", 5)),
-            min_parameter_family_function_lines=int(
-                namespace_values.get("min_parameter_family_function_lines", 40)
-            ),
-            excluded_pattern_ids=excluded,
-        )
+        config_values: dict[str, object] = {}
+        for config_field in fields(cls):
+            if config_field.default is not MISSING:
+                default = config_field.default
+            elif config_field.default_factory is not MISSING:
+                default = config_field.default_factory()
+            else:
+                raise TypeError(f"{cls.__name__}.{config_field.name} has no default")
+            value = namespace_values.get(config_field.name, default)
+            if isinstance(default, int):
+                value = int(value)
+            elif isinstance(default, tuple):
+                value = tuple(value or ())
+            config_values[config_field.name] = value
+        return cls(**config_values)
 
 
 class IssueDetector(ABC, metaclass=AutoRegisterMeta):
@@ -726,6 +694,40 @@ class ConfiguredCrossModuleCollectorCandidateDetector(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         return type(self).candidate_collector(modules, config)
+
+
+def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
+    return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
+
+
+def declare_module_detector(
+    candidate_type: type[object],
+    finding_spec: FindingSpec,
+    finding_renderer: CandidateFindingRenderer[Any],
+    *,
+    detector_name: str | None = None,
+    detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector,
+    candidate_collector: Callable[..., Sequence[Any]] | None = None,
+    detector_priority: int | None = None,
+) -> type[IssueDetector]:
+    frame = inspect.currentframe()
+    caller = None if frame is None else frame.f_back
+    if caller is None:
+        raise RuntimeError("declare_module_detector() requires a caller frame")
+    class_name = detector_name or _detector_name_from_candidate_type(candidate_type)
+    namespace: dict[str, object] = {
+        "__module__": caller.f_globals["__name__"],
+        "__firstlineno__": caller.f_lineno,
+        "finding_spec": finding_spec,
+        "finding_renderer": finding_renderer,
+    }
+    if candidate_collector is not None:
+        namespace["candidate_collector"] = candidate_collector
+    if detector_priority is not None:
+        namespace["detector_priority"] = detector_priority
+    detector_type = cast(type[IssueDetector], type(class_name, (detector_base,), namespace))
+    caller.f_globals[class_name] = detector_type
+    return detector_type
 
 
 class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
@@ -8126,6 +8128,9 @@ DerivableCandidateCollectorCandidate = product_record('DerivableCandidateCollect
 CanonicalFindingSpecBuilderCandidate = product_record('CanonicalFindingSpecBuilderCandidate', 'constructor_name: str; builder_name: str; keyword_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
+DeclarativeDetectorClassCandidate = product_record('DeclarativeDetectorClassCandidate', 'base_name: str; candidate_type_name: str; assignment_names: tuple[str, ...]; line_count: int', bases=(ClassLineWitnessCandidate,))
+
+
 ManualSortedTupleReturnCandidate = product_record('ManualSortedTupleReturnCandidate', 'sorted_expression: str; key_expression: str | None; reverse_expression: str | None; line_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
@@ -8151,6 +8156,9 @@ MultilineStringLiteralCandidate = product_record('MultilineStringLiteralCandidat
 
 
 MultilineFStringLiteralCandidate = product_record('MultilineFStringLiteralCandidate', 'end_line: int; line_count: int; expression_count: int; char_count: int', bases=(LineWitnessCandidate,))
+
+
+DataclassNamespaceCliMirrorCandidate = product_record('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)

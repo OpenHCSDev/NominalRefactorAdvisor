@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 from .ast_tools import parse_python_modules
@@ -50,6 +50,19 @@ class CliArgumentSpec:
         parser.add_argument(*self.flags, **kwargs)
 
 
+def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
+    return tuple(
+        CliArgumentSpec(
+            flags=(f"--{config_field.name.replace('_', '-')}",),
+            value_type=int,
+            default=config_field.default,
+            help=str(config_field.metadata["cli_help"]),
+        )
+        for config_field in fields(DetectorConfig)
+        if "cli_help" in config_field.metadata
+    )
+
+
 _CLI_ARGUMENT_SPECS = (
     CliArgumentSpec(
         flags=("path",),
@@ -72,84 +85,7 @@ _CLI_ARGUMENT_SPECS = (
         action="store_true",
         help="Emit only subsystem-level composed refactor plans.",
     ),
-    CliArgumentSpec(
-        flags=("--min-duplicate-statements",),
-        value_type=int,
-        default=3,
-        help="Minimum statement count for repeated-method detection.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-string-cases",),
-        value_type=int,
-        default=3,
-        help="Minimum string cases for closed-family dispatch detection.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-attribute-probes",),
-        value_type=int,
-        default=2,
-        help="Minimum attribute probes before surfacing a finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-builder-keywords",),
-        value_type=int,
-        default=3,
-        help="Minimum keyword count for repeated record-builder detection.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-export-keys",),
-        value_type=int,
-        default=3,
-        help="Minimum key count for repeated export-dict detection.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-registration-sites",),
-        value_type=int,
-        default=2,
-        help="Minimum manual registration sites before surfacing a class-registration finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-hardcoded-string-sites",),
-        value_type=int,
-        default=3,
-        help="Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-static-payload-function-lines",),
-        value_type=int,
-        default=60,
-        help="Minimum function length for unreferenced embedded static-payload emitter detection.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-static-payload-literal-lines",),
-        value_type=int,
-        default=20,
-        help="Minimum embedded static-payload literal lines before surfacing an emitter finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-unreferenced-private-function-lines",),
-        value_type=int,
-        default=8,
-        help="Minimum private function length before surfacing an unreferenced-code finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-repeated-local-regex-literals",),
-        value_type=int,
-        default=3,
-        help="Minimum shared substantial regex literals before surfacing a local syntax-authority finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-effect-guard-stages",),
-        value_type=int,
-        default=5,
-        help="Minimum fail-soft guard stages before surfacing an effect-pipeline finding.",
-    ),
-    CliArgumentSpec(
-        flags=("--min-effect-step-payoff-score",),
-        value_type=int,
-        default=8,
-        help="Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
-    ),
+) + _config_argument_specs() + (
     CliArgumentSpec(
         flags=("--exclude-pattern",),
         action="append",

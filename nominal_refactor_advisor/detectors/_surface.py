@@ -98,24 +98,7 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[Fragmen
         )
 
 
-class DerivedQueryIndexSurfaceDetector(ModuleCollectorCandidateDetector[DerivedQueryIndexCandidate]):
-    candidate_collector = _derived_query_index_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated linear query helpers should derive keyed indexes from the immutable authority",
-        'Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.',
-        "one authoritative immutable family plus derived keyed indexes",
-        "same immutable authority is rescanned by multiple query helpers with different key selectors",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-    )
-
-    finding_renderer = CandidateFindingRenderer[DerivedQueryIndexCandidate](
-        summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.",
-        evidence=lambda query_candidate: query_candidate.evidence,
-        scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in ITEMS if hasattr(item, "secondary_key")}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]',
-        codemod_patch=lambda query_candidate: f'# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Derive keyed indexes once and route the query helpers through those indexes instead of rescanning the family.',
-        metrics=lambda query_candidate: MappingMetrics(mapping_site_count=len(query_candidate.function_names), field_count=max(len(query_candidate.query_key_names), 1), mapping_name=query_candidate.function_names[0], field_names=query_candidate.query_key_names, source_name=query_candidate.source_expression, identity_field_names=query_candidate.query_key_names),
-    )
+declare_module_detector(DerivedQueryIndexCandidate, high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Repeated linear query helpers should derive keyed indexes from the immutable authority', 'Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.', 'one authoritative immutable family plus derived keyed indexes', 'same immutable authority is rescanned by multiple query helpers with different key selectors', _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS), CandidateFindingRenderer[DerivedQueryIndexCandidate](summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.", evidence=lambda query_candidate: query_candidate.evidence, scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in ITEMS if hasattr(item, "secondary_key")}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]', codemod_patch=lambda query_candidate: f'# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Derive keyed indexes once and route the query helpers through those indexes instead of rescanning the family.', metrics=lambda query_candidate: MappingMetrics(mapping_site_count=len(query_candidate.function_names), field_count=max(len(query_candidate.query_key_names), 1), mapping_name=query_candidate.function_names[0], field_names=query_candidate.query_key_names, source_name=query_candidate.source_expression, identity_field_names=query_candidate.query_key_names)), detector_name='DerivedQueryIndexSurfaceDetector', candidate_collector=_derived_query_index_candidates)
 
 
 class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapterShellCandidate]):
@@ -164,24 +147,7 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapte
         )
 
 
-class KeywordBagAdapterShellDetector(ModuleCollectorCandidateDetector[KeywordBagAdapterCandidate]):
-    candidate_collector = _keyword_bag_adapter_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Record-to-kwargs adapter shell should collapse onto the record authority",
-        'A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.',
-        "single authoritative record projection or owner method instead of a standalone kwargs adapter shell",
-        "one helper copies several fields from a source record into a transient kwargs dictionary",
-        _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-    )
-
-    finding_renderer = CandidateFindingRenderer[KeywordBagAdapterCandidate](
-        summary=lambda adapter_candidate: f'`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}.',
-        evidence=lambda adapter_candidate: (adapter_candidate.evidence,),
-        scaffold=lambda adapter_candidate: '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs',
-        codemod_patch=lambda adapter_candidate: f'# Stop routing `{adapter_candidate.source_name}` through standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on the source record itself or make the downstream builder consume the record directly.',
-        metrics=lambda adapter_candidate: MappingMetrics.from_field_names(mapping_site_count=1, mapping_name=adapter_candidate.function_name, field_names=adapter_candidate.key_names, source_name=adapter_candidate.source_name, identity_field_names=adapter_candidate.source_field_names),
-    )
+declare_module_detector(KeywordBagAdapterCandidate, high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Record-to-kwargs adapter shell should collapse onto the record authority', 'A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.', 'single authoritative record projection or owner method instead of a standalone kwargs adapter shell', 'one helper copies several fields from a source record into a transient kwargs dictionary', _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS), CandidateFindingRenderer[KeywordBagAdapterCandidate](summary=lambda adapter_candidate: f'`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}.', evidence=lambda adapter_candidate: (adapter_candidate.evidence,), scaffold=lambda adapter_candidate: '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs', codemod_patch=lambda adapter_candidate: f'# Stop routing `{adapter_candidate.source_name}` through standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on the source record itself or make the downstream builder consume the record directly.', metrics=lambda adapter_candidate: MappingMetrics.from_field_names(mapping_site_count=1, mapping_name=adapter_candidate.function_name, field_names=adapter_candidate.key_names, source_name=adapter_candidate.source_name, identity_field_names=adapter_candidate.source_field_names)), detector_name='KeywordBagAdapterShellDetector', candidate_collector=_keyword_bag_adapter_candidates)
 
 
 class ExistingNominalAuthorityReuseDetector(IssueDetector):
