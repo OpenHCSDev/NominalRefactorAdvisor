@@ -75,9 +75,7 @@ def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
 
 
 def _declared_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(
-        {base_name for base_name in (_ast_terminal_name(base) for base in node.bases) if base_name is not None},
-    )
+    return sorted_tuple({base_name for base_name in (_ast_terminal_name(base) for base in node.bases) if base_name is not None})
 
 
 
@@ -88,9 +86,7 @@ def _class_direct_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
             target = statement.targets[0]
             if isinstance(target, ast.Name):
                 assignments[target.id] = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
+        elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
             assignments[statement.target.id] = statement.value
     return assignments
 
@@ -110,11 +106,7 @@ def _is_dataclass_decorator(node: ast.AST) -> bool:
 def _iter_class_methods(
     node: ast.ClassDef,
 ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
-    return tuple(
-        statement
-        for statement in node.body
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-    )
+    return tuple((statement for statement in node.body if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))))
 
 
 
@@ -142,10 +134,7 @@ def _is_abstract_class(node: ast.ClassDef) -> bool:
 
 
 def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(
-        _ast_terminal_name(decorator) == "abstractmethod"
-        for decorator in node.decorator_list
-    )
+    return any((_ast_terminal_name(decorator) == 'abstractmethod' for decorator in node.decorator_list))
 
 
 
@@ -204,22 +193,12 @@ def _class_name_tokens(name: str) -> frozenset[str]:
         token.lower()
         for token in re.findall(r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", name)
     ]
-    return frozenset(
-        token
-        for token in tokens
-        if token not in {"abc", "abstract", "base", "mixin", "spec"}
-    )
+    return frozenset((token for token in tokens if token not in {'abc', 'abstract', 'base', 'mixin', 'spec'}))
 
 
 
 def _ordered_class_name_tokens(name: str) -> tuple[str, ...]:
-    return tuple(
-        token.lower()
-        for token in re.findall(
-            r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", name.lstrip("_")
-        )
-        if token.lower() not in {"abc", "abstract", "base", "mixin", "spec"}
-    )
+    return tuple((token.lower() for token in re.findall('[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+', name.lstrip('_')) if token.lower() not in {'abc', 'abstract', 'base', 'mixin', 'spec'}))
 
 
 
@@ -272,11 +251,7 @@ def _descendant_class_names(
             continue
         seen.add(current)
         descendants.append(current)
-        queue.extend(
-            child
-            for child in sorted(children_by_base.get(current, ()))
-            if child not in seen
-        )
+        queue.extend((child for child in sorted(children_by_base.get(current, ())) if child not in seen))
     return tuple(descendants)
 
 
@@ -296,9 +271,7 @@ def _indexed_class_display_names(
     indexed_classes: tuple[IndexedClass, ...],
     class_index: ClassFamilyIndex,
 ) -> tuple[str, ...]:
-    return sorted_tuple(
-        (_indexed_class_display_name(indexed_class, class_index) for indexed_class in indexed_classes),
-    )
+    return sorted_tuple((_indexed_class_display_name(indexed_class, class_index) for indexed_class in indexed_classes))
 
 
 
@@ -306,11 +279,7 @@ def _indexed_descendant_classes(
     class_index: ClassFamilyIndex,
     base_symbol: str,
 ) -> tuple[IndexedClass, ...]:
-    return tuple(
-        indexed_class
-        for descendant_symbol in class_index.descendant_symbols(base_symbol)
-        if (indexed_class := class_index.class_for(descendant_symbol)) is not None
-    )
+    return tuple((indexed_class for descendant_symbol in class_index.descendant_symbols(base_symbol) if (indexed_class := class_index.class_for(descendant_symbol)) is not None))
 
 
 def _call_name(node: ast.AST) -> str | None:
@@ -327,33 +296,4 @@ def _is_private_symbol_name(name: str) -> bool:
     return name.startswith("_") and not (name.startswith("__") and name.endswith("__"))
 
 
-__all__ = (
-    '_camel_case',
-    '_constant_string',
-    '_is_docstring_expr',
-    '_trim_docstring_body',
-    '_ast_terminal_name',
-    '_ast_attribute_chain',
-    '_declared_base_names',
-    '_class_direct_assignments',
-    '_iter_class_methods',
-    '_class_method_named',
-    '_is_abstract_class',
-    '_is_abstract_method',
-    '_is_dataclass_class',
-    '_selector_attribute_name',
-    '_annotation_type_names',
-    '_class_name_tokens',
-    '_ordered_class_name_tokens',
-    '_longest_common_prefix',
-    '_longest_common_suffix',
-    '_IGNORED_BASE_NAMES',
-    '_IGNORED_ANCESTOR_NAMES',
-    '_module_class_defs_by_name',
-    '_descendant_class_names',
-    '_indexed_class_display_name',
-    '_indexed_class_display_names',
-    '_indexed_descendant_classes',
-    '_call_name',
-    '_is_private_symbol_name',
-)
+__all__ = ('_camel_case', '_constant_string', '_is_docstring_expr', '_trim_docstring_body', '_ast_terminal_name', '_ast_attribute_chain', '_declared_base_names', '_class_direct_assignments', '_iter_class_methods', '_class_method_named', '_is_abstract_class', '_is_abstract_method', '_is_dataclass_class', '_selector_attribute_name', '_annotation_type_names', '_class_name_tokens', '_ordered_class_name_tokens', '_longest_common_prefix', '_longest_common_suffix', '_IGNORED_BASE_NAMES', '_IGNORED_ANCESTOR_NAMES', '_module_class_defs_by_name', '_descendant_class_names', '_indexed_class_display_name', '_indexed_class_display_names', '_indexed_descendant_classes', '_call_name', '_is_private_symbol_name')

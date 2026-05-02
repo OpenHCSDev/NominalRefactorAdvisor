@@ -92,16 +92,7 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
 
     @property
     def structural_observation(self) -> StructuralObservation:
-        return StructuralObservation(
-            file_path=self.file_path,
-            owner_symbol=self.owner_symbol,
-            nominal_witness=self.nominal_witness,
-            line=self.observation_line,
-            observation_kind=self.observation_kind,
-            execution_level=self.observation_execution_level,
-            observed_name=self.observed_name,
-            fiber_key=self.fiber_key,
-        )
+        return StructuralObservation(file_path=self.file_path, owner_symbol=self.owner_symbol, nominal_witness=self.nominal_witness, line=self.observation_line, observation_kind=self.observation_kind, execution_level=self.observation_execution_level, observed_name=self.observed_name, fiber_key=self.fiber_key)
 
 
 class ExecutionLevelObservationMixin(ABC):
@@ -538,11 +529,7 @@ class MethodShape(
     is_private: bool
     param_count: int
     decorators: tuple[str, ...]
-    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(
-        default=None,
-        compare=False,
-        repr=False,
-    )
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(default=None, compare=False, repr=False)
 
     @property
     def symbol(self) -> str:
@@ -597,17 +584,7 @@ def _registration_call_shape_fields(
     registered_class: str,
     key_fingerprint: str,
 ) -> dict[str, object]:
-    return {
-        "file_path": str(parsed_module.path),
-        "lineno": node.lineno,
-        "registry_name": registry_name,
-        "registered_class": registered_class,
-        "key_fingerprint": key_fingerprint,
-        "key_expression": ast.unparse(
-            node.args[1] if len(node.args) >= 2 else node.args[0]
-        ),
-        "registration_style": "registration_call",
-    }
+    return {'file_path': str(parsed_module.path), 'lineno': node.lineno, 'registry_name': registry_name, 'registered_class': registered_class, 'key_fingerprint': key_fingerprint, 'key_expression': ast.unparse(node.args[1] if len(node.args) >= 2 else node.args[0]), 'registration_style': 'registration_call'}
 
 
 def _decorator_registration_shape_fields(
@@ -616,29 +593,10 @@ def _decorator_registration_shape_fields(
     registry_name: str,
     key_fingerprint: str,
 ) -> dict[str, object]:
-    return {
-        "file_path": str(parsed_module.path),
-        "lineno": node.lineno,
-        "registry_name": registry_name,
-        "registered_class": node.name,
-        "key_fingerprint": key_fingerprint,
-        "key_expression": node.name,
-        "registration_style": "decorator_registration",
-    }
+    return {'file_path': str(parsed_module.path), 'lineno': node.lineno, 'registry_name': registry_name, 'registered_class': node.name, 'key_fingerprint': key_fingerprint, 'key_expression': node.name, 'registration_style': 'decorator_registration'}
 
 
-_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog(
-    (
-        ConstructorVariantSpec(
-            "from_registration_call",
-            _registration_call_shape_fields,
-        ),
-        ConstructorVariantSpec(
-            "from_decorator",
-            _decorator_registration_shape_fields,
-        ),
-    )
-)
+_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog((ConstructorVariantSpec('from_registration_call', _registration_call_shape_fields), ConstructorVariantSpec('from_decorator', _decorator_registration_shape_fields)))
 
 
 @dataclass(frozen=True)
@@ -663,22 +621,9 @@ class RegistrationShape:
     ) -> RegistrationShape:
         if not isinstance(node.value, ast.Name):
             raise TypeError("Registration assignment value must be a class name")
-        return cls(
-            file_path=str(parsed_module.path),
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=node.value.id,
-            key_fingerprint=key_fingerprint,
-            key_expression=ast.unparse(node.targets[0].slice)
-            if isinstance(node.targets[0], ast.Subscript)
-            else "...",
-            registration_style="subscript_assignment",
-        )
+        return cls(file_path=str(parsed_module.path), lineno=node.lineno, registry_name=registry_name, registered_class=node.value.id, key_fingerprint=key_fingerprint, key_expression=ast.unparse(node.targets[0].slice) if isinstance(node.targets[0], ast.Subscript) else '...', registration_style='subscript_assignment')
 
-    (
-        from_registration_call,
-        from_decorator,
-    ) = _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
+    (from_registration_call, from_decorator) = _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
 
     @property
     def symbol(self) -> str:
@@ -703,12 +648,7 @@ class ExportDictShape(FunctionBodyCallLikeShape):
         return f"{self.key_names}:{self.value_fingerprint}"
 
 
-_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
-    module_name=__name__,
-    include_enums=True,
-    exclude_abstract=True,
-    root_types=(StructuralObservationCarrier,),
-)
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(module_name=__name__, include_enums=True, exclude_abstract=True, root_types=(StructuralObservationCarrier,))
 
 
 __all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

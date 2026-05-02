@@ -19,9 +19,7 @@ from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
 
-_VALUELESS_ARGUMENT_ACTIONS = frozenset(
-    {"store_true", "store_false", "store_const", "append_const", "count", "help", "version"}
-)
+_VALUELESS_ARGUMENT_ACTIONS = frozenset({'store_true', 'store_false', 'store_const', 'append_const', 'count', 'help', 'version'})
 
 
 @dataclass(frozen=True)
@@ -51,50 +49,10 @@ class CliArgumentSpec:
 
 
 def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
-    return tuple(
-        CliArgumentSpec(
-            flags=(f"--{config_field.name.replace('_', '-')}",),
-            value_type=int,
-            default=config_field.default,
-            help=str(config_field.metadata["cli_help"]),
-        )
-        for config_field in fields(DetectorConfig)
-        if "cli_help" in config_field.metadata
-    )
+    return tuple((CliArgumentSpec(flags=(f"--{config_field.name.replace('_', '-')}",), value_type=int, default=config_field.default, help=str(config_field.metadata['cli_help'])) for config_field in fields(DetectorConfig) if 'cli_help' in config_field.metadata))
 
 
-_CLI_ARGUMENT_SPECS = (
-    CliArgumentSpec(
-        flags=("path",),
-        nargs="?",
-        default="nominal_refactor_advisor",
-        help="Root path to analyze (defaults to nominal_refactor_advisor).",
-    ),
-    CliArgumentSpec(
-        flags=("--json",),
-        action="store_true",
-        help="Emit JSON instead of Markdown.",
-    ),
-    CliArgumentSpec(
-        flags=("--include-plans",),
-        action="store_true",
-        help="Also synthesize subsystem-level composed refactor plans.",
-    ),
-    CliArgumentSpec(
-        flags=("--plans-only",),
-        action="store_true",
-        help="Emit only subsystem-level composed refactor plans.",
-    ),
-) + _config_argument_specs() + (
-    CliArgumentSpec(
-        flags=("--exclude-pattern",),
-        action="append",
-        dest="excluded_pattern_ids",
-        value_type=int,
-        default=[],
-        help="Pattern ID to exclude from findings (can be specified multiple times).",
-    ),
-)
+_CLI_ARGUMENT_SPECS = (CliArgumentSpec(flags=('path',), nargs='?', default='nominal_refactor_advisor', help='Root path to analyze (defaults to nominal_refactor_advisor).'), CliArgumentSpec(flags=('--json',), action='store_true', help='Emit JSON instead of Markdown.'), CliArgumentSpec(flags=('--include-plans',), action='store_true', help='Also synthesize subsystem-level composed refactor plans.'), CliArgumentSpec(flags=('--plans-only',), action='store_true', help='Emit only subsystem-level composed refactor plans.')) + _config_argument_specs() + (CliArgumentSpec(flags=('--exclude-pattern',), action='append', dest='excluded_pattern_ids', value_type=int, default=[], help='Pattern ID to exclude from findings (can be specified multiple times).'),)
 
 
 def analyze_modules(
@@ -105,10 +63,7 @@ def analyze_modules(
     findings: list[RefactorFinding] = []
     for detector in default_detectors():
         findings.extend(detector.detect(modules, config))
-    return sorted(
-        findings,
-        key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
-    )
+    return sorted(findings, key=lambda finding: (finding.pattern_id, finding.title, finding.summary))
 
 
 def analyze_path(
@@ -188,48 +143,25 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
     lines = ["Subsystem plans:"]
     for index, plan in enumerate(plans, start=1):
         primary = PATTERN_SPECS[plan.primary_pattern_id]
-        order = " -> ".join(
-            f"Pattern {pattern_id.value}" for pattern_id in plan.application_order
-        )
+        order = ' -> '.join((f'Pattern {pattern_id.value}' for pattern_id in plan.application_order))
         lines.append(f"{index}. {plan.subsystem}")
         lines.append(f"   - Summary: {plan.summary}")
-        lines.append(
-            f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
-        )
+        lines.append(f'   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}')
         if plan.secondary_pattern_ids:
-            secondary = ", ".join(
-                f"Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].name}"
-                for pattern_id in plan.secondary_pattern_ids
-            )
+            secondary = ', '.join((f'Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].name}' for pattern_id in plan.secondary_pattern_ids))
             lines.append(f"   - Secondary patterns: {secondary}")
         lines.append(f"   - Application order: {order}")
         lines.append(f"   - Certification: {plan.certification}")
         lines.append(f"   - Partial view: {plan.current_partial_view}")
-        lines.append(
-            f"   - Collapsed distinctions: {', '.join(plan.collapsed_distinctions)}"
-        )
-        lines.append(
-            f"   - Missing capabilities: {', '.join(plan.missing_capabilities)}"
-        )
+        lines.append(f"   - Collapsed distinctions: {', '.join(plan.collapsed_distinctions)}")
+        lines.append(f"   - Missing capabilities: {', '.join(plan.missing_capabilities)}")
         lines.append(f"   - Canonical normal form: {plan.canonical_normal_form}")
-        lines.append(
-            "   - Outcome: "
-            f"removable LOC {plan.outcome.lower_bound_removable_loc}-{plan.outcome.upper_bound_removable_loc}; "
-            f"loci {plan.outcome.loci_of_change_before}->{plan.outcome.loci_of_change_after}; "
-            f"mappings {plan.outcome.repeated_mappings_centralized}; "
-            f"dispatch {plan.outcome.dispatch_sites_eliminated}; "
-            f"registrations {plan.outcome.registration_sites_removed}; "
-            f"shared algorithms {plan.outcome.shared_algorithm_sites_centralized}"
-        )
+        lines.append(f'   - Outcome: removable LOC {plan.outcome.lower_bound_removable_loc}-{plan.outcome.upper_bound_removable_loc}; loci {plan.outcome.loci_of_change_before}->{plan.outcome.loci_of_change_after}; mappings {plan.outcome.repeated_mappings_centralized}; dispatch {plan.outcome.dispatch_sites_eliminated}; registrations {plan.outcome.registration_sites_removed}; shared algorithms {plan.outcome.shared_algorithm_sites_centralized}')
         for action in plan.actions:
             lines.append(f"   - Action: {action.kind} -> {action.description}")
             if action.statement_operation and action.statement_sites:
-                site_list = ", ".join(
-                    f"{item.file_path}:{item.line}" for item in action.statement_sites
-                )
-                lines.append(
-                    f"   - Action sites: {action.statement_operation} at {site_list}"
-                )
+                site_list = ', '.join((f'{item.file_path}:{item.line}' for item in action.statement_sites))
+                lines.append(f'   - Action sites: {action.statement_operation} at {site_list}')
         for step in plan.plan_steps:
             lines.append(f"   - Plan step: {step}")
         for title in plan.supporting_findings[:5]:
@@ -241,9 +173,7 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
 
 def main() -> int:
     """Run the command-line interface and return a process status code."""
-    parser = argparse.ArgumentParser(
-        description="AST-driven refactoring advisor for nominal architecture."
-    )
+    parser = argparse.ArgumentParser(description='AST-driven refactoring advisor for nominal architecture.')
     for spec in _CLI_ARGUMENT_SPECS:
         spec.add_to_parser(parser)
     args = parser.parse_args()
@@ -257,12 +187,7 @@ def main() -> int:
         plans = build_refactor_plans(findings, root)
     if args.json:
         json_findings = [] if args.plans_only else findings
-        print(
-            json.dumps(
-                _json_payload(json_findings, plans or [], modules),
-                indent=2,
-            )
-        )
+        print(json.dumps(_json_payload(json_findings, plans or [], modules), indent=2))
     else:
         if args.plans_only:
             print(_format_plans_markdown(plans or []))

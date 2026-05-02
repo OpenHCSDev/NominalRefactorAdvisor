@@ -18,11 +18,7 @@ class AliasProperty(Generic[ValueT]):
     _project: Callable[[object], ValueT] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_project",
-            cast(Callable[[object], ValueT], attrgetter(self.source_name)),
-        )
+        object.__setattr__(self, '_project', cast(Callable[[object], ValueT], attrgetter(self.source_name)))
 
     @overload
     def __get__(

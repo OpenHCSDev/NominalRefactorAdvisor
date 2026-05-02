@@ -46,31 +46,7 @@ class ImpactDelta(SemanticRecord):
     shared_algorithm_sites_centralized: int = 0
 
     def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
-        return ImpactDelta(
-            lower_bound_removable_loc=(
-                self.lower_bound_removable_loc + other.lower_bound_removable_loc
-            ),
-            upper_bound_removable_loc=(
-                self.upper_bound_removable_loc + other.upper_bound_removable_loc
-            ),
-            loci_of_change_before=(
-                self.loci_of_change_before + other.loci_of_change_before
-            ),
-            loci_of_change_after=self.loci_of_change_after + other.loci_of_change_after,
-            repeated_mappings_centralized=(
-                self.repeated_mappings_centralized + other.repeated_mappings_centralized
-            ),
-            dispatch_sites_eliminated=(
-                self.dispatch_sites_eliminated + other.dispatch_sites_eliminated
-            ),
-            registration_sites_removed=(
-                self.registration_sites_removed + other.registration_sites_removed
-            ),
-            shared_algorithm_sites_centralized=(
-                self.shared_algorithm_sites_centralized
-                + other.shared_algorithm_sites_centralized
-            ),
-        )
+        return ImpactDelta(lower_bound_removable_loc=self.lower_bound_removable_loc + other.lower_bound_removable_loc, upper_bound_removable_loc=self.upper_bound_removable_loc + other.upper_bound_removable_loc, loci_of_change_before=self.loci_of_change_before + other.loci_of_change_before, loci_of_change_after=self.loci_of_change_after + other.loci_of_change_after, repeated_mappings_centralized=self.repeated_mappings_centralized + other.repeated_mappings_centralized, dispatch_sites_eliminated=self.dispatch_sites_eliminated + other.dispatch_sites_eliminated, registration_sites_removed=self.registration_sites_removed + other.registration_sites_removed, shared_algorithm_sites_centralized=self.shared_algorithm_sites_centralized + other.shared_algorithm_sites_centralized)
 
     @classmethod
     def from_repeated_mapping_family(
@@ -79,13 +55,7 @@ class ImpactDelta(SemanticRecord):
         repeated_component_count: int,
     ) -> "ImpactDelta":
         removable = max((owner_count - 1) * repeated_component_count, 0)
-        return cls(
-            lower_bound_removable_loc=removable,
-            upper_bound_removable_loc=removable,
-            loci_of_change_before=owner_count,
-            loci_of_change_after=1,
-            repeated_mappings_centralized=removable,
-        )
+        return cls(lower_bound_removable_loc=removable, upper_bound_removable_loc=removable, loci_of_change_before=owner_count, loci_of_change_after=1, repeated_mappings_centralized=removable)
 
     @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
@@ -190,10 +160,7 @@ class FindingMetrics(SemanticRecord, ABC):
         return None
 
 
-BehaviorFindingMetrics = CompositeClassSpec(
-    "BehaviorFindingMetrics",
-    (FindingMetrics, ABC),
-).build(__name__)
+BehaviorFindingMetrics = CompositeClassSpec('BehaviorFindingMetrics', (FindingMetrics, ABC)).build(__name__)
 
 
 class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
@@ -201,22 +168,13 @@ class ClassNamesPlanMetrics(BehaviorFindingMetrics, ABC):
     plan_class_names = AliasProperty[tuple[str, ...]]("class_names")
 
 
-MappingFindingMetrics = CompositeClassSpec(
-    "MappingFindingMetrics",
-    (FindingMetrics, ABC),
-).build(__name__)
+MappingFindingMetrics = CompositeClassSpec('MappingFindingMetrics', (FindingMetrics, ABC)).build(__name__)
 
 
-RegistrationFindingMetrics = CompositeClassSpec(
-    "RegistrationFindingMetrics",
-    (FindingMetrics, ABC),
-).build(__name__)
+RegistrationFindingMetrics = CompositeClassSpec('RegistrationFindingMetrics', (FindingMetrics, ABC)).build(__name__)
 
 
-DispatchFindingMetrics = CompositeClassSpec(
-    "DispatchFindingMetrics",
-    (FindingMetrics, ABC),
-).build(__name__)
+DispatchFindingMetrics = CompositeClassSpec('DispatchFindingMetrics', (FindingMetrics, ABC)).build(__name__)
 
 
 @dataclass(frozen=True)
@@ -246,33 +204,15 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
         method_symbols: tuple[str, ...],
         shared_statement_texts: tuple[str, ...] = (),
     ) -> RepeatedMethodMetrics:
-        return cls(
-            duplicate_site_count=duplicate_site_count,
-            statement_count=statement_count,
-            class_count=class_count,
-            method_symbols=method_symbols,
-            shared_statement_texts=shared_statement_texts,
-        )
+        return cls(duplicate_site_count=duplicate_site_count, statement_count=statement_count, class_count=class_count, method_symbols=method_symbols, shared_statement_texts=shared_statement_texts)
 
     shared_algorithm_sites: ClassVar[AliasProperty[int]] = AliasProperty("duplicate_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        lower_bound = max(
-            (self.duplicate_site_count - 1) * max(self.statement_count - 2, 0),
-            0,
-        )
-        upper_bound = max(
-            (self.duplicate_site_count - 1) * self.statement_count,
-            lower_bound,
-        )
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=upper_bound,
-            loci_of_change_before=self.duplicate_site_count,
-            loci_of_change_after=1,
-            shared_algorithm_sites_centralized=max(self.duplicate_site_count - 1, 0),
-        )
+        lower_bound = max((self.duplicate_site_count - 1) * max(self.statement_count - 2, 0), 0)
+        upper_bound = max((self.duplicate_site_count - 1) * self.statement_count, lower_bound)
+        return ImpactDelta(lower_bound_removable_loc=lower_bound, upper_bound_removable_loc=upper_bound, loci_of_change_before=self.duplicate_site_count, loci_of_change_after=1, shared_algorithm_sites_centralized=max(self.duplicate_site_count - 1, 0))
 
     plan_statement_count: ClassVar[AliasProperty[int]] = AliasProperty("statement_count")
     plan_shared_statement_texts: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_statement_texts")
@@ -306,10 +246,7 @@ class FieldFamilyMetrics(ClassNamesPlanMetrics):
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        return ImpactDelta.from_repeated_mapping_family(
-            self.class_count,
-            self.field_count,
-        )
+        return ImpactDelta.from_repeated_mapping_family(self.class_count, self.field_count)
 
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("field_names")
     plan_field_execution_level: ClassVar[AliasProperty[str]] = AliasProperty("execution_level")
@@ -326,10 +263,7 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        return ImpactDelta.from_repeated_mapping_family(
-            self.class_count,
-            self.shared_role_count,
-        )
+        return ImpactDelta.from_repeated_mapping_family(self.class_count, self.shared_role_count)
 
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_role_names")
 
@@ -355,37 +289,15 @@ class MappingMetrics(MappingFindingMetrics):
         source_name: str | None = None,
         identity_field_names: tuple[str, ...] = (),
     ) -> "MappingMetrics":
-        return cls(
-            mapping_site_count=mapping_site_count,
-            field_count=len(field_names),
-            mapping_name=mapping_name,
-            field_names=field_names,
-            source_name=source_name,
-            identity_field_names=identity_field_names,
-        )
+        return cls(mapping_site_count=mapping_site_count, field_count=len(field_names), mapping_name=mapping_name, field_names=field_names, source_name=source_name, identity_field_names=identity_field_names)
 
     mapping_sites: ClassVar[AliasProperty[int]] = AliasProperty("mapping_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        lower_bound = max(
-            (self.mapping_site_count - 1) * max(self.field_count - 1, 0),
-            0,
-        )
-        upper_bound = max(
-            (self.mapping_site_count - 1) * self.field_count,
-            lower_bound,
-        )
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=upper_bound,
-            loci_of_change_before=self.mapping_site_count,
-            loci_of_change_after=1,
-            repeated_mappings_centralized=max(
-                (self.mapping_site_count - 1) * self.field_count,
-                0,
-            ),
-        )
+        lower_bound = max((self.mapping_site_count - 1) * max(self.field_count - 1, 0), 0)
+        upper_bound = max((self.mapping_site_count - 1) * self.field_count, lower_bound)
+        return ImpactDelta(lower_bound_removable_loc=lower_bound, upper_bound_removable_loc=upper_bound, loci_of_change_before=self.mapping_site_count, loci_of_change_after=1, repeated_mappings_centralized=max((self.mapping_site_count - 1) * self.field_count, 0))
 
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("field_names")
     plan_mapping_name: ClassVar[AliasProperty[str | None]] = AliasProperty("mapping_name")
@@ -412,26 +324,14 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         registry_name: str | None = None,
         class_key_pairs: tuple[str, ...] = (),
     ) -> "RegistrationMetrics":
-        return cls(
-            registration_site_count=registration_site_count,
-            class_count=len(class_names),
-            registry_name=registry_name,
-            class_names=class_names,
-            class_key_pairs=class_key_pairs,
-        )
+        return cls(registration_site_count=registration_site_count, class_count=len(class_names), registry_name=registry_name, class_names=class_names, class_key_pairs=class_key_pairs)
 
     registration_sites: ClassVar[AliasProperty[int]] = AliasProperty("registration_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
         lower_bound = max(self.registration_site_count - 1, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=max(self.registration_site_count, lower_bound),
-            loci_of_change_before=self.registration_site_count,
-            loci_of_change_after=1,
-            registration_sites_removed=self.registration_site_count,
-        )
+        return ImpactDelta(lower_bound_removable_loc=lower_bound, upper_bound_removable_loc=max(self.registration_site_count, lower_bound), loci_of_change_before=self.registration_site_count, loci_of_change_after=1, registration_sites_removed=self.registration_site_count)
 
     plan_class_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("class_names")
     plan_registry_name: ClassVar[AliasProperty[str | None]] = AliasProperty("registry_name")
@@ -440,10 +340,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
 
     @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
-        return (
-            frozenset({"registration_site_count"}),
-            frozenset({"registration_site_count", "class_count"}),
-        )
+        return (frozenset({'registration_site_count'}), frozenset({'registration_site_count', 'class_count'}))
 
 
 SentinelSimulationMetrics = product_record('SentinelSimulationMetrics', 'class_count: int; branch_site_count: int', bases=(FindingMetrics,))
@@ -469,13 +366,7 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
     def impact_delta(self) -> ImpactDelta:
         count = self.count_value
         lower_bound = max(count - 1, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=lower_bound,
-            upper_bound_removable_loc=max(count, lower_bound),
-            loci_of_change_before=count,
-            loci_of_change_after=1,
-            dispatch_sites_eliminated=count,
-        )
+        return ImpactDelta(lower_bound_removable_loc=lower_bound, upper_bound_removable_loc=max(count, lower_bound), loci_of_change_before=count, loci_of_change_after=1, dispatch_sites_eliminated=count)
 
 
 @dataclass(frozen=True)
@@ -508,11 +399,7 @@ class DispatchCountMetrics(CountedDispatchMetrics):
     def from_literal_family(
         cls, dispatch_axis: str | None, literal_cases: tuple[str, ...]
     ) -> "DispatchCountMetrics":
-        return cls(
-            dispatch_site_count=len(literal_cases),
-            dispatch_axis=dispatch_axis,
-            literal_cases=literal_cases,
-        )
+        return cls(dispatch_site_count=len(literal_cases), dispatch_axis=dispatch_axis, literal_cases=literal_cases)
 
     plan_dispatch_axis: ClassVar[AliasProperty[str | None]] = AliasProperty("dispatch_axis")
     plan_literal_cases: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("literal_cases")
@@ -531,13 +418,7 @@ class OrchestrationMetrics(BehaviorFindingMetrics):
     @property
     def impact_delta(self) -> ImpactDelta:
         removable = max(self.function_line_count // 2, 0)
-        return ImpactDelta(
-            lower_bound_removable_loc=removable,
-            upper_bound_removable_loc=max(self.function_line_count - 1, removable),
-            loci_of_change_before=1,
-            loci_of_change_after=max(self.callee_family_count, 2),
-            shared_algorithm_sites_centralized=max(self.callee_family_count - 1, 0),
-        )
+        return ImpactDelta(lower_bound_removable_loc=removable, upper_bound_removable_loc=max(self.function_line_count - 1, removable), loci_of_change_before=1, loci_of_change_after=max(self.callee_family_count, 2), shared_algorithm_sites_centralized=max(self.callee_family_count - 1, 0))
 
 
 @dataclass(frozen=True)
@@ -548,17 +429,8 @@ class ParameterThreadMetrics(FindingMetrics):
 
     @property
     def impact_delta(self) -> ImpactDelta:
-        removable = max(
-            (self.function_count - 1) * self.shared_parameter_count,
-            0,
-        )
-        return ImpactDelta(
-            lower_bound_removable_loc=removable,
-            upper_bound_removable_loc=removable,
-            loci_of_change_before=self.function_count,
-            loci_of_change_after=1,
-            repeated_mappings_centralized=removable,
-        )
+        removable = max((self.function_count - 1) * self.shared_parameter_count, 0)
+        return ImpactDelta(lower_bound_removable_loc=removable, upper_bound_removable_loc=removable, loci_of_change_before=self.function_count, loci_of_change_after=1, repeated_mappings_centralized=removable)
 
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_parameter_names")
 
@@ -598,23 +470,7 @@ class RefactorFinding(FindingSemantics):
         observation_tags: tuple[ObservationTag, ...] | None = None,
         metrics: FindingMetrics | None = None,
     ) -> "RefactorFinding":
-        return cls(
-            detector_id=detector_id,
-            pattern_id=spec.pattern_id,
-            title=title or spec.title,
-            summary=summary,
-            why=why or spec.why,
-            capability_gap=capability_gap or spec.capability_gap,
-            confidence=confidence or spec.confidence,
-            relation_context=relation_context or spec.relation_context,
-            evidence=evidence,
-            scaffold=scaffold,
-            codemod_patch=codemod_patch,
-            certification=certification or spec.certification,
-            capability_tags=capability_tags or spec.capability_tags,
-            observation_tags=observation_tags or spec.observation_tags,
-            metrics=metrics or EmptyFindingMetrics(),
-        )
+        return cls(detector_id=detector_id, pattern_id=spec.pattern_id, title=title or spec.title, summary=summary, why=why or spec.why, capability_gap=capability_gap or spec.capability_gap, confidence=confidence or spec.confidence, relation_context=relation_context or spec.relation_context, evidence=evidence, scaffold=scaffold, codemod_patch=codemod_patch, certification=certification or spec.certification, capability_tags=capability_tags or spec.capability_tags, observation_tags=observation_tags or spec.observation_tags, metrics=metrics or EmptyFindingMetrics())
 
 
 @dataclass(frozen=True)
@@ -641,23 +497,7 @@ class FindingSpec(FindingSemantics):
         capability_tags: tuple[CapabilityTag, ...] | None = None,
         observation_tags: tuple[ObservationTag, ...] | None = None,
     ) -> RefactorFinding:
-        return RefactorFinding.from_spec(
-            self,
-            detector_id,
-            summary,
-            evidence,
-            title=title,
-            why=why,
-            capability_gap=capability_gap,
-            confidence=confidence,
-            relation_context=relation_context,
-            scaffold=scaffold,
-            codemod_patch=codemod_patch,
-            certification=certification,
-            capability_tags=capability_tags,
-            observation_tags=observation_tags,
-            metrics=metrics,
-        )
+        return RefactorFinding.from_spec(self, detector_id, summary, evidence, title=title, why=why, capability_gap=capability_gap, confidence=confidence, relation_context=relation_context, scaffold=scaffold, codemod_patch=codemod_patch, certification=certification, capability_tags=capability_tags, observation_tags=observation_tags, metrics=metrics)
 
 
 HighConfidenceFindingSpec = product_record('HighConfidenceFindingSpec', 'confidence: ConfidenceLevel', bases=(FindingSpec,), defaults={'confidence': HIGH_CONFIDENCE}, doc='Finding spec whose confidence is intentionally high by construction.')
@@ -683,32 +523,16 @@ SemanticBagDescriptor = product_record('SemanticBagDescriptor', 'class_name: str
 
 def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
     """Return descriptors for all concrete finding-metric types."""
-    return tuple(
-        SemanticBagDescriptor(
-            class_name=metric_type.__name__,
-            base_class_name=metric_type.semantic_bag_base_name(),
-            accepted_key_sets=metric_type.semantic_bag_key_sets(),
-        )
-        for metric_type in _concrete_metric_types()
-        if metric_type.semantic_bag_key_sets()
-    )
+    return tuple((SemanticBagDescriptor(class_name=metric_type.__name__, base_class_name=metric_type.semantic_bag_base_name(), accepted_key_sets=metric_type.semantic_bag_key_sets()) for metric_type in _concrete_metric_types() if metric_type.semantic_bag_key_sets()))
 
 
 def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
     """Return the semantic bag descriptor for :class:`ImpactDelta`."""
-    return SemanticBagDescriptor(
-        class_name=ImpactDelta.__name__,
-        base_class_name=ImpactDelta.__name__,
-        accepted_key_sets=ImpactDelta.semantic_bag_key_sets(),
-    )
+    return SemanticBagDescriptor(class_name=ImpactDelta.__name__, base_class_name=ImpactDelta.__name__, accepted_key_sets=ImpactDelta.semantic_bag_key_sets())
 
 
 def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
     from .ast_tools import _descendant_types
 
-    discovered = tuple(
-        cast(type[FindingMetrics], metric_type)
-        for metric_type in _descendant_types(FindingMetrics)
-        if is_dataclass(metric_type)
-    )
+    discovered = tuple((cast(type[FindingMetrics], metric_type) for metric_type in _descendant_types(FindingMetrics) if is_dataclass(metric_type)))
     return sorted_tuple(discovered, key=lambda metric_type: metric_type.__name__)

@@ -68,14 +68,7 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
 
 
 def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sample:
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sample:\n    pass\n')
 
     modules = parse_python_modules(tmp_path / "pkg/mod.py")
 
@@ -84,14 +77,7 @@ class Sample:
 
 
 def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ProjectSource:
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ProjectSource:\n    pass\n')
     env_module = tmp_path / ".venv/lib/python/site-packages/bad_encoding.py"
     env_module.parent.mkdir(parents=True, exist_ok=True)
     env_module.write_bytes(b"# coding: latin-1\nvalue = '\\xa4'\n")
@@ -102,64 +88,19 @@ class ProjectSource:
 
 
 def test_detects_repeated_private_method_shape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def _build(self, item):
-        prepared = self.normalize(item)
-        checked = self.validate(prepared)
-        return self.finish(checked)
-
-
-class Beta:
-    def _assemble(self, value):
-        prepared = self.normalize(value)
-        checked = self.validate(prepared)
-        return self.finish(checked)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def _build(self, item):\n        prepared = self.normalize(item)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _assemble(self, value):\n        prepared = self.normalize(value)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 5 for finding in findings)
     assert any(finding.pattern_id == 5 and finding.scaffold for finding in findings)
-    assert any(
-        finding.pattern_id == 5 and finding.codemod_patch for finding in findings
-    )
+    assert any((finding.pattern_id == 5 and finding.codemod_patch for finding in findings))
 
 
 def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from pathlib import Path
-
-
-class PathPlanner:
-    def _input_dir_for_step(self, snapshot, step_index):
-        if step_index in self.plans and self.plans[step_index].input_dir is not None:
-            return Path(self.plans[step_index].input_dir)
-        if step_index == 0 or snapshot.input_source == "pipeline_start":
-            return self.initial_input
-        return Path(self.plans[step_index - 1].output_dir)
-
-    def _output_dir_for_step(self, snapshot, step_index, work_in_place_dir):
-        if step_index in self.plans and self.plans[step_index].output_dir is not None:
-            return Path(self.plans[step_index].output_dir)
-        if step_index == 0 or snapshot.input_source == "pipeline_start":
-            return self._build_output_path()
-        return work_in_place_dir
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom pathlib import Path\n\n\nclass PathPlanner:\n    def _input_dir_for_step(self, snapshot, step_index):\n        if step_index in self.plans and self.plans[step_index].input_dir is not None:\n            return Path(self.plans[step_index].input_dir)\n        if step_index == 0 or snapshot.input_source == "pipeline_start":\n            return self.initial_input\n        return Path(self.plans[step_index - 1].output_dir)\n\n    def _output_dir_for_step(self, snapshot, step_index, work_in_place_dir):\n        if step_index in self.plans and self.plans[step_index].output_dir is not None:\n            return Path(self.plans[step_index].output_dir)\n        if step_index == 0 or snapshot.input_source == "pipeline_start":\n            return self._build_output_path()\n        return work_in_place_dir\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "sibling_role_helper_symmetry"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'sibling_role_helper_symmetry'))
 
     assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
     assert "_input_dir_for_step" in finding.summary
@@ -169,27 +110,10 @@ class PathPlanner:
 
 
 def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from typing import Protocol, runtime_checkable
-
-
-@runtime_checkable
-class ColumnarRows(Protocol):
-    @property
-    def columns(self):
-        ...
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom typing import Protocol, runtime_checkable\n\n\n@runtime_checkable\nclass ColumnarRows(Protocol):\n    @property\n    def columns(self):\n        ...\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "typing_protocol_contract"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'typing_protocol_contract'))
 
     assert finding.pattern_id == PatternId.ABC_TEMPLATE_METHOD
     assert "ColumnarRows" in finding.summary
@@ -198,63 +122,21 @@ class ColumnarRows(Protocol):
 
 
 def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
-    branch_body = "\n".join(
-        f"""
-    if branch_{index}(request):
-        value = phase_{index}(value)
-    else:
-        value = fallback_{index}(value)
-    audit_{index}(value)
-""".rstrip()
-        for index in range(12)
-    )
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        (
-            f'def orchestrate(request):\n    value = start(request)\n{branch_body}\n    finalized = finalize(value)\n    publish(finalized)\n    return finalized\n'
-        ),
-    )
+    branch_body = '\n'.join((f'\n    if branch_{index}(request):\n        value = phase_{index}(value)\n    else:\n        value = fallback_{index}(value)\n    audit_{index}(value)\n'.rstrip() for index in range(12)))
+    _write_module(tmp_path, 'pkg/mod.py', f'def orchestrate(request):\n    value = start(request)\n{branch_body}\n    finalized = finalize(value)\n    publish(finalized)\n    return finalized\n')
 
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_orchestration_function_lines=40,
-            min_orchestration_branches=10,
-            min_orchestration_calls=24,
-        ),
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_orchestration_function_lines=40, min_orchestration_branches=10, min_orchestration_calls=24))
 
-    assert any(
-        finding.pattern_id == PatternId.STAGED_ORCHESTRATION for finding in findings
-    )
+    assert any((finding.pattern_id == PatternId.STAGED_ORCHESTRATION for finding in findings))
 
 
 def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
     filler = "# filler\n" * 240
-    repeated_lines = "\n".join(
-        f"    detail_{index} = selection['winner']" for index in range(60)
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        (
-            f"{filler}\nclass _ReturnedPoseSelection:\n    def __init__(self, winner, support):\n        self.winner = winner\n        self.support = support\n\nclass _ReturnedPoseProofContext:\n    def __init__(self, scores):\n        self.scores = scores\n\ndef _returned_pose_support_indices(context):\n    support = []\n    for index, _score in enumerate(context.scores):\n        if index < 2:\n            support.append(index)\n    return tuple(support)\n\ndef _returned_pose_selection(context):\n    support = _returned_pose_support_indices(context)\n    winner = support[0] if support else 0\n    return _ReturnedPoseSelection(winner, support)\n\ndef _returned_pose_proof_plan(context):\n    selection = _returned_pose_selection(context)\n{repeated_lines}\n    return {{'winner': selection.winner, 'support': selection.support}}\n\ndef _returned_pose_certification(context):\n    plan = _returned_pose_proof_plan(context)\n    return plan['winner'], plan['support']\n\ndef run_pipeline(scores):\n    context = _ReturnedPoseProofContext(scores)\n    return _returned_pose_certification(context)\n"
-        ),
-    )
+    repeated_lines = '\n'.join((f"    detail_{index} = selection['winner']" for index in range(60)))
+    _write_module(tmp_path, 'pkg/pipeline.py', f"{filler}\nclass _ReturnedPoseSelection:\n    def __init__(self, winner, support):\n        self.winner = winner\n        self.support = support\n\nclass _ReturnedPoseProofContext:\n    def __init__(self, scores):\n        self.scores = scores\n\ndef _returned_pose_support_indices(context):\n    support = []\n    for index, _score in enumerate(context.scores):\n        if index < 2:\n            support.append(index)\n    return tuple(support)\n\ndef _returned_pose_selection(context):\n    support = _returned_pose_support_indices(context)\n    winner = support[0] if support else 0\n    return _ReturnedPoseSelection(winner, support)\n\ndef _returned_pose_proof_plan(context):\n    selection = _returned_pose_selection(context)\n{repeated_lines}\n    return {{'winner': selection.winner, 'support': selection.support}}\n\ndef _returned_pose_certification(context):\n    plan = _returned_pose_proof_plan(context)\n    return plan['winner'], plan['support']\n\ndef run_pipeline(scores):\n    context = _ReturnedPoseProofContext(scores)\n    return _returned_pose_certification(context)\n")
 
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_orchestration_function_lines=20,
-            min_registration_sites=2,
-        ),
-    )
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2))
+    finding = next((finding for finding in findings if finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID))
 
     assert "returned, pose" in finding.summary
     assert "_returned_pose_proof_plan" in finding.summary
@@ -263,182 +145,36 @@ def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
 
 def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None:
     filler = "# filler\n" * 240
-    _write_module(
-        tmp_path,
-        "pkg/helpers.py",
-        (
-            f"{filler}\ndef _build_payload(value):\n    return {{'value': value}}\n\ndef _load_registry(name):\n    return {{'name': name}}\n\ndef _write_audit(event):\n    return event\n\ndef run_helpers(value):\n    return _write_audit(_build_payload(value))\n"
-        ),
-    )
+    _write_module(tmp_path, 'pkg/helpers.py', f"{filler}\ndef _build_payload(value):\n    return {{'value': value}}\n\ndef _load_registry(name):\n    return {{'name': name}}\n\ndef _write_audit(event):\n    return event\n\ndef run_helpers(value):\n    return _write_audit(_build_payload(value))\n")
 
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_orchestration_function_lines=20,
-            min_registration_sites=2,
-        ),
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2))
 
-    assert not any(
-        finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-        for finding in findings
-    )
+    assert not any((finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID for finding in findings))
 
 
 def test_private_cohort_ignores_generic_analyzer_vocabulary(tmp_path: Path) -> None:
     filler = "# filler\n" * 240
-    helper_blocks = "\n\n".join(
-        (
-            f"def _parallel_keyed_family_candidate_{name}(value):\n"
-            + "\n".join(f"    step_{index} = value" for index in range(30))
-            + "\n    return value\n"
-        )
-        for name in (
-            "alpha",
-            "bravo",
-            "charlie",
-            "delta",
-            "echo",
-            "foxtrot",
-        )
-    )
-    _write_module(
-        tmp_path,
-        "pkg/analyzer_helpers.py",
-        f"{filler}\n{helper_blocks}\n",
-    )
+    helper_blocks = '\n\n'.join((f'def _parallel_keyed_family_candidate_{name}(value):\n' + '\n'.join((f'    step_{index} = value' for index in range(30))) + '\n    return value\n' for name in ('alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot')))
+    _write_module(tmp_path, 'pkg/analyzer_helpers.py', f'{filler}\n{helper_blocks}\n')
 
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_orchestration_function_lines=20,
-            min_registration_sites=2,
-        ),
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_orchestration_function_lines=20, min_registration_sites=2))
 
-    assert not any(
-        finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID
-        for finding in findings
-    )
+    assert not any((finding.detector_id == PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID for finding in findings))
 
 
 def test_detects_repeated_threaded_parameter_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def score_exact(
-    request,
-    scoring_context,
-    electrostatics,
-    receptor_coords,
-    receptor_radii,
-    quaternion,
-    translation,
-    candidate_coords,
-):
-    posed = rigid(candidate_coords, quaternion, translation)
-    audited = audit_pose(posed, receptor_coords)
-    return compute_exact(
-        request,
-        scoring_context,
-        electrostatics,
-        receptor_coords,
-        receptor_radii,
-        audited,
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef score_exact(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    candidate_coords,\n):\n    posed = rigid(candidate_coords, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return compute_exact(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n\n\ndef score_softened(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    candidate_coords,\n):\n    posed = rigid(candidate_coords, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return compute_softened(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n\n\ndef certify_pose(\n    request,\n    scoring_context,\n    electrostatics,\n    receptor_coords,\n    receptor_radii,\n    quaternion,\n    translation,\n    pose_index,\n):\n    posed = derive_pose(pose_index, quaternion, translation)\n    audited = audit_pose(posed, receptor_coords)\n    return certify(\n        request,\n        scoring_context,\n        electrostatics,\n        receptor_coords,\n        receptor_radii,\n        audited,\n    )\n')
 
+    findings = analyze_path(tmp_path, DetectorConfig(min_shared_parameters=5, min_parameter_family_function_lines=8))
 
-def score_softened(
-    request,
-    scoring_context,
-    electrostatics,
-    receptor_coords,
-    receptor_radii,
-    quaternion,
-    translation,
-    candidate_coords,
-):
-    posed = rigid(candidate_coords, quaternion, translation)
-    audited = audit_pose(posed, receptor_coords)
-    return compute_softened(
-        request,
-        scoring_context,
-        electrostatics,
-        receptor_coords,
-        receptor_radii,
-        audited,
-    )
-
-
-def certify_pose(
-    request,
-    scoring_context,
-    electrostatics,
-    receptor_coords,
-    receptor_radii,
-    quaternion,
-    translation,
-    pose_index,
-):
-    posed = derive_pose(pose_index, quaternion, translation)
-    audited = audit_pose(posed, receptor_coords)
-    return certify(
-        request,
-        scoring_context,
-        electrostatics,
-        receptor_coords,
-        receptor_radii,
-        audited,
-    )
-""",
-    )
-
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_shared_parameters=5,
-            min_parameter_family_function_lines=8,
-        ),
-    )
-
-    assert any(
-        finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT for finding in findings
-    )
+    assert any((finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT for finding in findings))
 
 
 def test_detects_suffix_axis_compatibility_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Compiler:
-    @staticmethod
-    def declare_for_context(context, steps, runner):
-        names = [step.name for step in steps]
-        return declare(context, steps, runner, names)
-
-    @staticmethod
-    def declare_for_session(session):
-        return declare(session.context, session.steps, session.runner, session.names)
-
-    @staticmethod
-    def validate_for_context(context, steps, runner):
-        names = [step.name for step in steps]
-        return validate(context, steps, runner, names)
-
-    @staticmethod
-    def validate_for_session(session):
-        return validate(session.context, session.steps, session.runner, session.names)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Compiler:\n    @staticmethod\n    def declare_for_context(context, steps, runner):\n        names = [step.name for step in steps]\n        return declare(context, steps, runner, names)\n\n    @staticmethod\n    def declare_for_session(session):\n        return declare(session.context, session.steps, session.runner, session.names)\n\n    @staticmethod\n    def validate_for_context(context, steps, runner):\n        names = [step.name for step in steps]\n        return validate(context, steps, runner, names)\n\n    @staticmethod\n    def validate_for_session(session):\n        return validate(session.context, session.steps, session.runner, session.names)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "suffix_axis_compatibility_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'suffix_axis_compatibility_surface'))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
     assert "context / session" in finding.summary
@@ -448,35 +184,11 @@ class Compiler:
 
 
 def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-
-
-class Mode(Enum):
-    OBSERVED = "observed"
-    CERTIFIED = "certified"
-
-
-def run_mode(mode, inputs, steps):
-    if mode == Mode.OBSERVED:
-        return run_observed(inputs, steps)
-    elif mode == Mode.CERTIFIED:
-        return run_certified(inputs, steps)
-    else:
-        raise ValueError(mode)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\n\n\nclass Mode(Enum):\n    OBSERVED = "observed"\n    CERTIFIED = "certified"\n\n\ndef run_mode(mode, inputs, steps):\n    if mode == Mode.OBSERVED:\n        return run_observed(inputs, steps)\n    elif mode == Mode.CERTIFIED:\n        return run_certified(inputs, steps)\n    else:\n        raise ValueError(mode)\n')
 
     findings = analyze_path(tmp_path)
 
-    strategy_finding = next(
-        finding
-        for finding in findings
-        if finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
-    )
+    strategy_finding = next((finding for finding in findings if finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY))
     assert "Mode.OBSERVED" in strategy_finding.summary
     assert strategy_finding.scaffold is not None
     assert "from metaclass_registry import AutoRegisterMeta" in strategy_finding.scaffold
@@ -486,37 +198,10 @@ def run_mode(mode, inputs, steps):
 
 
 def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-
-
-class MeasurementScope(Enum):
-    ARTIFACT = "artifact"
-    IMAGE = "image"
-    OBJECT = "object"
-    RELATIONSHIP = "relationship"
-    EXPERIMENT = "experiment"
-
-
-def validate_subject(scope, subject_name):
-    if scope in {
-        MeasurementScope.IMAGE,
-        MeasurementScope.OBJECT,
-        MeasurementScope.RELATIONSHIP,
-    } and subject_name is None:
-        raise ValueError("name required")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\n\n\nclass MeasurementScope(Enum):\n    ARTIFACT = "artifact"\n    IMAGE = "image"\n    OBJECT = "object"\n    RELATIONSHIP = "relationship"\n    EXPERIMENT = "experiment"\n\n\ndef validate_subject(scope, subject_name):\n    if scope in {\n        MeasurementScope.IMAGE,\n        MeasurementScope.OBJECT,\n        MeasurementScope.RELATIONSHIP,\n    } and subject_name is None:\n        raise ValueError("name required")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "inline_enum_subset_guard"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'inline_enum_subset_guard'))
 
     assert "MeasurementScope.IMAGE" in finding.summary
     assert "MeasurementScope.OBJECT" in finding.summary
@@ -527,43 +212,10 @@ def validate_subject(scope, subject_name):
 
 
 def test_detects_residual_closed_axis_indirection(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-from types import MappingProxyType
-
-
-class Direction(Enum):
-    INPUT = "input"
-    OUTPUT = "output"
-
-
-DIRECTION_READERS = MappingProxyType(
-    {
-        Direction.INPUT: lambda plan: plan.input_dir,
-        Direction.OUTPUT: lambda plan: plan.output_dir,
-    }
-)
-
-
-def resolve_dir(plan, direction, fallback):
-    existing = DIRECTION_READERS[direction](plan)
-    if existing is not None:
-        return existing
-    if direction is Direction.INPUT:
-        return plan.initial_input
-    return fallback
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\nfrom types import MappingProxyType\n\n\nclass Direction(Enum):\n    INPUT = "input"\n    OUTPUT = "output"\n\n\nDIRECTION_READERS = MappingProxyType(\n    {\n        Direction.INPUT: lambda plan: plan.input_dir,\n        Direction.OUTPUT: lambda plan: plan.output_dir,\n    }\n)\n\n\ndef resolve_dir(plan, direction, fallback):\n    existing = DIRECTION_READERS[direction](plan)\n    if existing is not None:\n        return existing\n    if direction is Direction.INPUT:\n        return plan.initial_input\n    return fallback\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "residual_closed_axis_indirection"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'residual_closed_axis_indirection'))
 
     assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
     assert "DIRECTION_READERS" in finding.summary
@@ -576,71 +228,11 @@ def resolve_dir(plan, direction, fallback):
 
 
 def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class MissingState:
-    note: str
-
-
-@dataclass(frozen=True)
-class ReadyState:
-    value: int
-
-
-@dataclass(frozen=True)
-class FailedState:
-    error: str
-
-
-State = MissingState | ReadyState | FailedState
-
-
-@dataclass(frozen=True)
-class Record:
-    state: State
-
-
-def state_status(record):
-    state = record.state
-    if isinstance(state, ReadyState):
-        return "ready"
-    if isinstance(state, FailedState):
-        return "failed"
-    return "missing"
-
-
-def state_value(record):
-    state = record.state
-    if isinstance(state, ReadyState):
-        return state.value
-    if isinstance(state, FailedState):
-        return None
-    return None
-
-
-def state_message(record):
-    state = record.state
-    if isinstance(state, MissingState):
-        return state.note
-    if isinstance(state, FailedState):
-        return state.error
-    return "ok"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass MissingState:\n    note: str\n\n\n@dataclass(frozen=True)\nclass ReadyState:\n    value: int\n\n\n@dataclass(frozen=True)\nclass FailedState:\n    error: str\n\n\nState = MissingState | ReadyState | FailedState\n\n\n@dataclass(frozen=True)\nclass Record:\n    state: State\n\n\ndef state_status(record):\n    state = record.state\n    if isinstance(state, ReadyState):\n        return "ready"\n    if isinstance(state, FailedState):\n        return "failed"\n    return "missing"\n\n\ndef state_value(record):\n    state = record.state\n    if isinstance(state, ReadyState):\n        return state.value\n    if isinstance(state, FailedState):\n        return None\n    return None\n\n\ndef state_message(record):\n    state = record.state\n    if isinstance(state, MissingState):\n        return state.note\n    if isinstance(state, FailedState):\n        return state.error\n    return "ok"\n')
 
     findings = analyze_path(tmp_path)
 
-    case_finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_concrete_type_case_analysis"
-    )
+    case_finding = next((finding for finding in findings if finding.detector_id == 'repeated_concrete_type_case_analysis'))
     assert case_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
     assert "state" in case_finding.summary
     assert "ReadyState" in case_finding.summary
@@ -650,49 +242,10 @@ def state_message(record):
 
 
 def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-
-
-class SamplingStrategy(Enum):
-    RANDOM = "random"
-    GUIDED = "guided"
-    HYBRID = "hybrid"
-
-
-def run_sampling(strategy, sampler, request, guided_fn):
-    if strategy == SamplingStrategy.GUIDED:
-        return guided_fn(request)
-    if strategy == SamplingStrategy.HYBRID:
-        guided, random = sampler.hybrid(request, guided_fn)
-        return guided + random
-    return sampler.random(request)
-
-
-class Sampler:
-    def sample(self, strategy, request, guided_fn):
-        match strategy:
-            case SamplingStrategy.RANDOM:
-                return self.random(request)
-            case SamplingStrategy.GUIDED:
-                return guided_fn(request)
-            case SamplingStrategy.HYBRID:
-                guided, random = self.hybrid(request, guided_fn)
-                return guided + random
-            case _:
-                raise ValueError(strategy)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\n\n\nclass SamplingStrategy(Enum):\n    RANDOM = "random"\n    GUIDED = "guided"\n    HYBRID = "hybrid"\n\n\ndef run_sampling(strategy, sampler, request, guided_fn):\n    if strategy == SamplingStrategy.GUIDED:\n        return guided_fn(request)\n    if strategy == SamplingStrategy.HYBRID:\n        guided, random = sampler.hybrid(request, guided_fn)\n        return guided + random\n    return sampler.random(request)\n\n\nclass Sampler:\n    def sample(self, strategy, request, guided_fn):\n        match strategy:\n            case SamplingStrategy.RANDOM:\n                return self.random(request)\n            case SamplingStrategy.GUIDED:\n                return guided_fn(request)\n            case SamplingStrategy.HYBRID:\n                guided, random = self.hybrid(request, guided_fn)\n                return guided + random\n            case _:\n                raise ValueError(strategy)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_enum_strategy_dispatch"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_enum_strategy_dispatch'))
 
     assert "SamplingStrategy" in finding.summary
     assert "run_sampling" in finding.summary
@@ -700,74 +253,10 @@ class Sampler:
 
 
 def test_detects_split_dispatch_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-from functools import singledispatch
-
-
-class ModeRunner(ABC):
-    @abstractmethod
-    def run(self, *, random_fn, source_fn):
-        raise NotImplementedError
-
-    @classmethod
-    def for_mode(cls, mode):
-        return _MODE_RUNNERS[mode]
-
-
-class RandomRunner(ModeRunner):
-    def run(self, *, random_fn, source_fn):
-        return random_fn()
-
-
-class GuidedRunner(ModeRunner):
-    def run(self, *, random_fn, source_fn):
-        return source_fn()
-
-
-_MODE_RUNNERS = {
-    Mode.RANDOM: RandomRunner(),
-    Mode.GUIDED: GuidedRunner(),
-}
-
-
-@singledispatch
-def source_for_item(item):
-    raise TypeError(type(item).__name__)
-
-
-@source_for_item.register
-def _(item: FileItem):
-    return item.path
-
-
-@source_for_item.register
-def _(item: MemoryItem):
-    return item.payload
-
-
-def orchestrate(request):
-    runner = ModeRunner.for_mode(request.mode)
-
-    def _source():
-        return source_for_item(request.item)
-
-    return runner.run(
-        random_fn=lambda: request.default_source,
-        source_fn=_source,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\nfrom functools import singledispatch\n\n\nclass ModeRunner(ABC):\n    @abstractmethod\n    def run(self, *, random_fn, source_fn):\n        raise NotImplementedError\n\n    @classmethod\n    def for_mode(cls, mode):\n        return _MODE_RUNNERS[mode]\n\n\nclass RandomRunner(ModeRunner):\n    def run(self, *, random_fn, source_fn):\n        return random_fn()\n\n\nclass GuidedRunner(ModeRunner):\n    def run(self, *, random_fn, source_fn):\n        return source_fn()\n\n\n_MODE_RUNNERS = {\n    Mode.RANDOM: RandomRunner(),\n    Mode.GUIDED: GuidedRunner(),\n}\n\n\n@singledispatch\ndef source_for_item(item):\n    raise TypeError(type(item).__name__)\n\n\n@source_for_item.register\ndef _(item: FileItem):\n    return item.path\n\n\n@source_for_item.register\ndef _(item: MemoryItem):\n    return item.payload\n\n\ndef orchestrate(request):\n    runner = ModeRunner.for_mode(request.mode)\n\n    def _source():\n        return source_for_item(request.item)\n\n    return runner.run(\n        random_fn=lambda: request.default_source,\n        source_fn=_source,\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "split_dispatch_authority"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'split_dispatch_authority'))
 
     assert "ModeRunner.for_mode(request.mode)" in finding.summary
     assert "source_for_item(request.item)" in finding.summary
@@ -775,50 +264,7 @@ def orchestrate(request):
 
 
 def test_detects_closed_constant_selector(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-
-
-class Mode(Enum):
-    DIRECT = "direct"
-    FALLBACK = "fallback"
-
-
-class Plan:
-    def __init__(self, *, mode_name):
-        self.mode_name = mode_name
-
-
-class Runner:
-    def __init__(self, plan):
-        self.plan = plan
-
-
-PRIMARY_PLAN = Plan(mode_name="primary")
-FALLBACK_PLAN = Plan(mode_name="fallback")
-SAFE_PLAN = Plan(mode_name="safe")
-
-DIRECT_CONTRACT = "direct"
-FALLBACK_CONTRACT = "fallback"
-
-
-def build_runner(mode: Mode, *, enabled: bool):
-    if mode == Mode.DIRECT and enabled:
-        return Runner(PRIMARY_PLAN)
-    if enabled:
-        return Runner(FALLBACK_PLAN)
-    return Runner(SAFE_PLAN)
-
-
-def active_contract(mode: Mode):
-    if mode == Mode.DIRECT:
-        return DIRECT_CONTRACT
-    return FALLBACK_CONTRACT
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\n\n\nclass Mode(Enum):\n    DIRECT = "direct"\n    FALLBACK = "fallback"\n\n\nclass Plan:\n    def __init__(self, *, mode_name):\n        self.mode_name = mode_name\n\n\nclass Runner:\n    def __init__(self, plan):\n        self.plan = plan\n\n\nPRIMARY_PLAN = Plan(mode_name="primary")\nFALLBACK_PLAN = Plan(mode_name="fallback")\nSAFE_PLAN = Plan(mode_name="safe")\n\nDIRECT_CONTRACT = "direct"\nFALLBACK_CONTRACT = "fallback"\n\n\ndef build_runner(mode: Mode, *, enabled: bool):\n    if mode == Mode.DIRECT and enabled:\n        return Runner(PRIMARY_PLAN)\n    if enabled:\n        return Runner(FALLBACK_PLAN)\n    return Runner(SAFE_PLAN)\n\n\ndef active_contract(mode: Mode):\n    if mode == Mode.DIRECT:\n        return DIRECT_CONTRACT\n    return FALLBACK_CONTRACT\n')
 
     findings = analyze_path(tmp_path)
     selector_findings = [
@@ -835,69 +281,10 @@ def active_contract(mode: Mode):
 
 
 def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass, field
-
-
-class AlphaRequest:
-    pass
-
-
-class BetaRequest:
-    pass
-
-
-def run_alpha(request):
-    return request
-
-
-def run_beta(request):
-    return request
-
-
-@dataclass(frozen=True)
-class ExecutionSpec:
-    request_type: type
-    runner: object
-
-
-ALPHA_EXECUTION_SPEC = ExecutionSpec(request_type=AlphaRequest, runner=run_alpha)
-BETA_EXECUTION_SPEC = ExecutionSpec(request_type=BetaRequest, runner=run_beta)
-EXECUTION_SPECS = (ALPHA_EXECUTION_SPEC, BETA_EXECUTION_SPEC)
-
-
-@dataclass(frozen=True)
-class WrapperRule:
-    name: str
-    execution: ExecutionSpec
-    defaults: dict[str, object] = field(default_factory=dict)
-
-
-def build_wrapper(rule: WrapperRule):
-    def wrapper():
-        return rule.execution.runner(rule.execution.request_type())
-    wrapper.__name__ = rule.name
-    return wrapper
-
-
-WRAPPER_RULES = (
-    WrapperRule(name="run_alpha", execution=ALPHA_EXECUTION_SPEC),
-    WrapperRule(name="run_beta", execution=BETA_EXECUTION_SPEC, defaults={"key": None}),
-)
-
-globals().update({rule.name: build_wrapper(rule) for rule in WRAPPER_RULES})
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass, field\n\n\nclass AlphaRequest:\n    pass\n\n\nclass BetaRequest:\n    pass\n\n\ndef run_alpha(request):\n    return request\n\n\ndef run_beta(request):\n    return request\n\n\n@dataclass(frozen=True)\nclass ExecutionSpec:\n    request_type: type\n    runner: object\n\n\nALPHA_EXECUTION_SPEC = ExecutionSpec(request_type=AlphaRequest, runner=run_alpha)\nBETA_EXECUTION_SPEC = ExecutionSpec(request_type=BetaRequest, runner=run_beta)\nEXECUTION_SPECS = (ALPHA_EXECUTION_SPEC, BETA_EXECUTION_SPEC)\n\n\n@dataclass(frozen=True)\nclass WrapperRule:\n    name: str\n    execution: ExecutionSpec\n    defaults: dict[str, object] = field(default_factory=dict)\n\n\ndef build_wrapper(rule: WrapperRule):\n    def wrapper():\n        return rule.execution.runner(rule.execution.request_type())\n    wrapper.__name__ = rule.name\n    return wrapper\n\n\nWRAPPER_RULES = (\n    WrapperRule(name="run_alpha", execution=ALPHA_EXECUTION_SPEC),\n    WrapperRule(name="run_beta", execution=BETA_EXECUTION_SPEC, defaults={"key": None}),\n)\n\nglobals().update({rule.name: build_wrapper(rule) for rule in WRAPPER_RULES})\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "derived_wrapper_spec_shadow"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'derived_wrapper_spec_shadow'))
 
     assert "WRAPPER_RULES" in finding.summary
     assert "EXECUTION_SPECS" in finding.summary
@@ -907,62 +294,10 @@ globals().update({rule.name: build_wrapper(rule) for rule in WRAPPER_RULES})
 
 
 def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-from enum import Enum
-from typing import Generic, Sequence, TypeVar
-
-
-KeyT = TypeVar("KeyT")
-ValueT = TypeVar("ValueT")
-
-
-class Mode(Enum):
-    ALPHA = "alpha"
-    BETA = "beta"
-
-
-@dataclass(frozen=True)
-class SelectionRule(Generic[KeyT, ValueT]):
-    key: KeyT
-    selected: ValueT
-
-
-def build_index(rules: Sequence[SelectionRule[KeyT, ValueT]]) -> dict[KeyT, ValueT]:
-    return {rule.key: rule.selected for rule in rules}
-
-
-def choose(index: dict[KeyT, ValueT], key: KeyT, *, family_name: str) -> ValueT:
-    try:
-        return index[key]
-    except KeyError as error:
-        raise ValueError(f"No {family_name} registered for {key!r}.") from error
-
-
-VALUE_RULES = (
-    SelectionRule(key=Mode.ALPHA, selected="a"),
-    SelectionRule(key=Mode.BETA, selected="b"),
-)
-
-HANDLER_RULES = (
-    SelectionRule(key=Mode.ALPHA, selected=int),
-    SelectionRule(key=Mode.BETA, selected=str),
-)
-
-VALUE_BY_MODE = build_index(VALUE_RULES)
-HANDLER_BY_MODE = build_index(HANDLER_RULES)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nfrom enum import Enum\nfrom typing import Generic, Sequence, TypeVar\n\n\nKeyT = TypeVar("KeyT")\nValueT = TypeVar("ValueT")\n\n\nclass Mode(Enum):\n    ALPHA = "alpha"\n    BETA = "beta"\n\n\n@dataclass(frozen=True)\nclass SelectionRule(Generic[KeyT, ValueT]):\n    key: KeyT\n    selected: ValueT\n\n\ndef build_index(rules: Sequence[SelectionRule[KeyT, ValueT]]) -> dict[KeyT, ValueT]:\n    return {rule.key: rule.selected for rule in rules}\n\n\ndef choose(index: dict[KeyT, ValueT], key: KeyT, *, family_name: str) -> ValueT:\n    try:\n        return index[key]\n    except KeyError as error:\n        raise ValueError(f"No {family_name} registered for {key!r}.") from error\n\n\nVALUE_RULES = (\n    SelectionRule(key=Mode.ALPHA, selected="a"),\n    SelectionRule(key=Mode.BETA, selected="b"),\n)\n\nHANDLER_RULES = (\n    SelectionRule(key=Mode.ALPHA, selected=int),\n    SelectionRule(key=Mode.BETA, selected=str),\n)\n\nVALUE_BY_MODE = build_index(VALUE_RULES)\nHANDLER_BY_MODE = build_index(HANDLER_RULES)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "module_keyed_selection_helper"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'module_keyed_selection_helper'))
 
     assert "SelectionRule" in finding.summary
     assert "build_index" in finding.summary
@@ -973,113 +308,11 @@ HANDLER_BY_MODE = build_index(HANDLER_RULES)
 
 
 def test_detects_cross_module_axis_shadow_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/core.py",
-        """
-from abc import ABC, abstractmethod
-from enum import Enum, auto
-from typing import ClassVar, Generic, TypeVar
-
-
-KeyT = TypeVar("KeyT")
-
-
-class AutoRegisterByClassVar:
-    registry_key_attr: ClassVar[str]
-    _registry: ClassVar[dict[object, object]]
-
-    def __init_subclass__(cls, **kwargs):
-        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
-            cls._registry = {}
-        super().__init_subclass__(**kwargs)
-        key_attr = getattr(cls, "registry_key_attr", None)
-        if key_attr is None:
-            return
-        registry = getattr(cls, "_registry", None)
-        if not isinstance(registry, dict):
-            return
-        key = cls.__dict__.get(key_attr)
-        if key is not None:
-            registry[key] = cls()
-
-
-class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
-    @classmethod
-    def for_key(cls, key: KeyT):
-        return cls._registry[key]
-
-
-class Mode(Enum):
-    ALPHA = auto()
-    BETA = auto()
-
-
-class ModePolicy(KeyedNominalFamily[Mode], ABC):
-    registry_key_attr = "mode"
-    _registry = {}
-    mode: ClassVar[Mode]
-
-    @abstractmethod
-    def ratio(self) -> float:
-        raise NotImplementedError
-
-
-class AlphaModePolicy(ModePolicy):
-    mode = Mode.ALPHA
-
-    def ratio(self) -> float:
-        return 0.0
-
-
-class BetaModePolicy(ModePolicy):
-    mode = Mode.BETA
-
-    def ratio(self) -> float:
-        return 1.0
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/runtime.py",
-        """
-from abc import ABC, abstractmethod
-from pkg.core import Mode
-
-
-class ModeRunner(ABC):
-    @abstractmethod
-    def run(self):
-        raise NotImplementedError
-
-    @classmethod
-    def for_mode(cls, mode: Mode):
-        return _MODE_RUNNERS[mode]
-
-
-class AlphaModeRunner(ModeRunner):
-    def run(self):
-        return "alpha"
-
-
-class BetaModeRunner(ModeRunner):
-    def run(self):
-        return "beta"
-
-
-_MODE_RUNNERS = {
-    Mode.ALPHA: AlphaModeRunner(),
-    Mode.BETA: BetaModeRunner(),
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/core.py', '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n    def __init_subclass__(cls, **kwargs):\n        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:\n            cls._registry = {}\n        super().__init_subclass__(**kwargs)\n        key_attr = getattr(cls, "registry_key_attr", None)\n        if key_attr is None:\n            return\n        registry = getattr(cls, "_registry", None)\n        if not isinstance(registry, dict):\n            return\n        key = cls.__dict__.get(key_attr)\n        if key is not None:\n            registry[key] = cls()\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    @classmethod\n    def for_key(cls, key: KeyT):\n        return cls._registry[key]\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModePolicy(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def ratio(self) -> float:\n        raise NotImplementedError\n\n\nclass AlphaModePolicy(ModePolicy):\n    mode = Mode.ALPHA\n\n    def ratio(self) -> float:\n        return 0.0\n\n\nclass BetaModePolicy(ModePolicy):\n    mode = Mode.BETA\n\n    def ratio(self) -> float:\n        return 1.0\n')
+    _write_module(tmp_path, 'pkg/runtime.py', '\nfrom abc import ABC, abstractmethod\nfrom pkg.core import Mode\n\n\nclass ModeRunner(ABC):\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return _MODE_RUNNERS[mode]\n\n\nclass AlphaModeRunner(ModeRunner):\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    def run(self):\n        return "beta"\n\n\n_MODE_RUNNERS = {\n    Mode.ALPHA: AlphaModeRunner(),\n    Mode.BETA: BetaModeRunner(),\n}\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "cross_module_axis_shadow_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'cross_module_axis_shadow_family'))
 
     assert "Mode" in finding.summary
     assert "ModePolicy" in finding.summary
@@ -1090,130 +323,11 @@ _MODE_RUNNERS = {
 
 
 def test_detects_parallel_keyed_axis_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/specs.py",
-        """
-from abc import ABC, abstractmethod
-from enum import Enum, auto
-from typing import ClassVar, Generic, TypeVar
-
-
-KeyT = TypeVar("KeyT")
-
-
-class AutoRegisterByClassVar:
-    registry_key_attr: ClassVar[str]
-    _registry: ClassVar[dict[object, object]]
-
-    def __init_subclass__(cls, **kwargs):
-        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
-            cls._registry = {}
-        super().__init_subclass__(**kwargs)
-        key_attr = getattr(cls, "registry_key_attr", None)
-        if key_attr is None:
-            return
-        registry = getattr(cls, "_registry", None)
-        if not isinstance(registry, dict):
-            return
-        key = cls.__dict__.get(key_attr)
-        if key is not None:
-            registry[key] = cls()
-
-
-class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
-    @classmethod
-    def for_key(cls, key: KeyT):
-        return cls._registry[key]
-
-
-class Mode(Enum):
-    ALPHA = auto()
-    BETA = auto()
-    GAMMA = auto()
-
-
-class ModeSpecPolicy(KeyedNominalFamily[Mode], ABC):
-    registry_key_attr = "mode"
-    family_label = "mode case"
-    _registry = {}
-    mode: ClassVar[Mode]
-
-    @abstractmethod
-    def describe(self) -> str:
-        raise NotImplementedError
-
-
-class AlphaModeSpec(ModeSpecPolicy):
-    mode = Mode.ALPHA
-
-    def describe(self) -> str:
-        return "alpha"
-
-
-class BetaModeSpec(ModeSpecPolicy):
-    mode = Mode.BETA
-
-    def describe(self) -> str:
-        return "beta"
-
-
-class GammaModeSpec(ModeSpecPolicy):
-    mode = Mode.GAMMA
-
-    def describe(self) -> str:
-        return "gamma"
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/runtime.py",
-        """
-from abc import ABC, abstractmethod
-from typing import ClassVar
-
-from pkg.specs import KeyedNominalFamily, Mode
-
-
-class ModeAssemblyPolicy(KeyedNominalFamily[Mode], ABC):
-    registry_key_attr = "mode"
-    family_label = "mode case"
-    _registry = {}
-    mode: ClassVar[Mode]
-
-    @abstractmethod
-    def build(self) -> str:
-        raise NotImplementedError
-
-
-class AlphaModeAssembly(ModeAssemblyPolicy):
-    mode = Mode.ALPHA
-
-    def build(self) -> str:
-        return "build-alpha"
-
-
-class BetaModeAssembly(ModeAssemblyPolicy):
-    mode = Mode.BETA
-
-    def build(self) -> str:
-        return "build-beta"
-
-
-class GammaModeAssembly(ModeAssemblyPolicy):
-    mode = Mode.GAMMA
-
-    def build(self) -> str:
-        return "build-gamma"
-""",
-    )
+    _write_module(tmp_path, 'pkg/specs.py', '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n    def __init_subclass__(cls, **kwargs):\n        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:\n            cls._registry = {}\n        super().__init_subclass__(**kwargs)\n        key_attr = getattr(cls, "registry_key_attr", None)\n        if key_attr is None:\n            return\n        registry = getattr(cls, "_registry", None)\n        if not isinstance(registry, dict):\n            return\n        key = cls.__dict__.get(key_attr)\n        if key is not None:\n            registry[key] = cls()\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    @classmethod\n    def for_key(cls, key: KeyT):\n        return cls._registry[key]\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\nclass ModeSpecPolicy(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    family_label = "mode case"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def describe(self) -> str:\n        raise NotImplementedError\n\n\nclass AlphaModeSpec(ModeSpecPolicy):\n    mode = Mode.ALPHA\n\n    def describe(self) -> str:\n        return "alpha"\n\n\nclass BetaModeSpec(ModeSpecPolicy):\n    mode = Mode.BETA\n\n    def describe(self) -> str:\n        return "beta"\n\n\nclass GammaModeSpec(ModeSpecPolicy):\n    mode = Mode.GAMMA\n\n    def describe(self) -> str:\n        return "gamma"\n')
+    _write_module(tmp_path, 'pkg/runtime.py', '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\n\nfrom pkg.specs import KeyedNominalFamily, Mode\n\n\nclass ModeAssemblyPolicy(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    family_label = "mode case"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def build(self) -> str:\n        raise NotImplementedError\n\n\nclass AlphaModeAssembly(ModeAssemblyPolicy):\n    mode = Mode.ALPHA\n\n    def build(self) -> str:\n        return "build-alpha"\n\n\nclass BetaModeAssembly(ModeAssemblyPolicy):\n    mode = Mode.BETA\n\n    def build(self) -> str:\n        return "build-beta"\n\n\nclass GammaModeAssembly(ModeAssemblyPolicy):\n    mode = Mode.GAMMA\n\n    def build(self) -> str:\n        return "build-gamma"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "parallel_keyed_axis_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'parallel_keyed_axis_family'))
 
     assert "Mode" in finding.summary
     assert "ModeSpecPolicy" in finding.summary
@@ -1224,100 +338,10 @@ class GammaModeAssembly(ModeAssemblyPolicy):
 
 
 def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from enum import Enum, auto
-from typing import ClassVar, Generic, TypeVar
-
-
-KeyT = TypeVar("KeyT")
-
-
-class AutoRegisterByClassVar:
-    registry_key_attr: ClassVar[str]
-    _registry: ClassVar[dict[object, object]]
-
-    def __init_subclass__(cls, **kwargs):
-        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:
-            cls._registry = {}
-        super().__init_subclass__(**kwargs)
-        key_attr = getattr(cls, "registry_key_attr", None)
-        if key_attr is None:
-            return
-        registry = getattr(cls, "_registry", None)
-        if not isinstance(registry, dict):
-            return
-        key = cls.__dict__.get(key_attr)
-        if key is not None:
-            registry[key] = cls()
-
-
-class KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):
-    @classmethod
-    def for_key(cls, key: KeyT):
-        return cls._registry[key]
-
-
-class Mode(Enum):
-    ALPHA = auto()
-    BETA = auto()
-    GAMMA = auto()
-
-
-@dataclass(frozen=True)
-class ModeConfig:
-    mode: Mode
-    weight: float
-
-
-MODE_CONFIGS = {
-    Mode.ALPHA: ModeConfig(mode=Mode.ALPHA, weight=0.0),
-    Mode.BETA: ModeConfig(mode=Mode.BETA, weight=0.5),
-    Mode.GAMMA: ModeConfig(mode=Mode.GAMMA, weight=1.0),
-}
-
-
-class ModeRunner(KeyedNominalFamily[Mode], ABC):
-    registry_key_attr = "mode"
-    mode: ClassVar[Mode]
-
-    @abstractmethod
-    def run(self):
-        raise NotImplementedError
-
-
-class AlphaModeRunner(ModeRunner):
-    mode = Mode.ALPHA
-
-    def run(self):
-        return "alpha"
-
-
-class BetaModeRunner(ModeRunner):
-    mode = Mode.BETA
-
-    def run(self):
-        return "beta"
-
-
-class GammaModeRunner(ModeRunner):
-    mode = Mode.GAMMA
-
-    def run(self):
-        return "gamma"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n    def __init_subclass__(cls, **kwargs):\n        if "registry_key_attr" in cls.__dict__ and "_registry" not in cls.__dict__:\n            cls._registry = {}\n        super().__init_subclass__(**kwargs)\n        key_attr = getattr(cls, "registry_key_attr", None)\n        if key_attr is None:\n            return\n        registry = getattr(cls, "_registry", None)\n        if not isinstance(registry, dict):\n            return\n        key = cls.__dict__.get(key_attr)\n        if key is not None:\n            registry[key] = cls()\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    @classmethod\n    def for_key(cls, key: KeyT):\n        return cls._registry[key]\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\n@dataclass(frozen=True)\nclass ModeConfig:\n    mode: Mode\n    weight: float\n\n\nMODE_CONFIGS = {\n    Mode.ALPHA: ModeConfig(mode=Mode.ALPHA, weight=0.0),\n    Mode.BETA: ModeConfig(mode=Mode.BETA, weight=0.5),\n    Mode.GAMMA: ModeConfig(mode=Mode.GAMMA, weight=1.0),\n}\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    mode: ClassVar[Mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\nclass GammaModeRunner(ModeRunner):\n    mode = Mode.GAMMA\n\n    def run(self):\n        return "gamma"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "parallel_keyed_table_and_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'parallel_keyed_table_and_family'))
 
     assert "Mode" in finding.summary
     assert "MODE_CONFIGS" in finding.summary
@@ -1327,62 +351,11 @@ class GammaModeRunner(ModeRunner):
 
 
 def test_detects_parallel_keyed_table_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/specs.py",
-        """
-from dataclasses import dataclass
-from enum import Enum, auto
-
-
-class Mode(Enum):
-    ALPHA = auto()
-    BETA = auto()
-    GAMMA = auto()
-
-
-@dataclass(frozen=True)
-class ModeSpec:
-    mode: Mode
-    label: str
-
-
-MODE_SPECS = {
-    Mode.ALPHA: ModeSpec(Mode.ALPHA, "alpha"),
-    Mode.BETA: ModeSpec(Mode.BETA, "beta"),
-    Mode.GAMMA: ModeSpec(Mode.GAMMA, "gamma"),
-}
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/plans.py",
-        """
-from dataclasses import dataclass
-
-from pkg.specs import Mode
-
-
-@dataclass(frozen=True)
-class ModePlan:
-    mode: Mode
-    priority: int
-
-
-MODE_PLANNING_SPECS = {
-    Mode.ALPHA: ModePlan(Mode.ALPHA, 1),
-    Mode.BETA: ModePlan(Mode.BETA, 2),
-    Mode.GAMMA: ModePlan(Mode.GAMMA, 3),
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/specs.py', '\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\n@dataclass(frozen=True)\nclass ModeSpec:\n    mode: Mode\n    label: str\n\n\nMODE_SPECS = {\n    Mode.ALPHA: ModeSpec(Mode.ALPHA, "alpha"),\n    Mode.BETA: ModeSpec(Mode.BETA, "beta"),\n    Mode.GAMMA: ModeSpec(Mode.GAMMA, "gamma"),\n}\n')
+    _write_module(tmp_path, 'pkg/plans.py', '\nfrom dataclasses import dataclass\n\nfrom pkg.specs import Mode\n\n\n@dataclass(frozen=True)\nclass ModePlan:\n    mode: Mode\n    priority: int\n\n\nMODE_PLANNING_SPECS = {\n    Mode.ALPHA: ModePlan(Mode.ALPHA, 1),\n    Mode.BETA: ModePlan(Mode.BETA, 2),\n    Mode.GAMMA: ModePlan(Mode.GAMMA, 3),\n}\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "parallel_keyed_table_axis"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'parallel_keyed_table_axis'))
 
     assert "Mode" in finding.summary
     assert "MODE_SPECS" in finding.summary
@@ -1391,38 +364,10 @@ MODE_PLANNING_SPECS = {
 
 
 def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-ITEMS = ()
-
-
-def _registered_items():
-    return ITEMS
-
-
-def item_for_type(item_type):
-    for item in _registered_items():
-        if item.item_type is item_type:
-            return item
-    raise KeyError(item_type)
-
-
-def item_for_kind(kind):
-    for item in _registered_items():
-        if item.kind is kind:
-            return item
-    raise KeyError(kind)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nITEMS = ()\n\n\ndef _registered_items():\n    return ITEMS\n\n\ndef item_for_type(item_type):\n    for item in _registered_items():\n        if item.item_type is item_type:\n            return item\n    raise KeyError(item_type)\n\n\ndef item_for_kind(kind):\n    for item in _registered_items():\n        if item.kind is kind:\n            return item\n    raise KeyError(kind)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "derived_query_index_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'derived_query_index_surface'))
 
     assert "item_for_type" in finding.summary
     assert "item_for_kind" in finding.summary
@@ -1431,68 +376,10 @@ def item_for_kind(kind):
 
 
 def test_detects_runtime_adapter_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-from enum import Enum, auto
-
-
-class StrategyId(Enum):
-    ALPHA = auto()
-
-
-class ActionId(Enum):
-    DEFAULT = auto()
-
-
-class AlphaStrategy:
-    pass
-
-
-class DefaultAction:
-    pass
-
-
-@dataclass(frozen=True)
-class BaseSpec:
-    priority: int
-    dependencies: tuple[str, ...] = ()
-    strategy_id: StrategyId | None = None
-    action_id: ActionId | None = None
-
-
-@dataclass(frozen=True)
-class RuntimeSpec:
-    priority: int = 0
-    dependencies: tuple[str, ...] = ()
-    strategy: object | None = None
-    action: object | None = None
-
-
-STRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}
-ACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}
-
-
-def runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:
-    if spec is None:
-        return RuntimeSpec()
-    return RuntimeSpec(
-        priority=spec.priority,
-        dependencies=spec.dependencies,
-        strategy=STRATEGY_BY_ID.get(spec.strategy_id)
-        if spec.strategy_id is not None
-        else None,
-        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nfrom enum import Enum, auto\n\n\nclass StrategyId(Enum):\n    ALPHA = auto()\n\n\nclass ActionId(Enum):\n    DEFAULT = auto()\n\n\nclass AlphaStrategy:\n    pass\n\n\nclass DefaultAction:\n    pass\n\n\n@dataclass(frozen=True)\nclass BaseSpec:\n    priority: int\n    dependencies: tuple[str, ...] = ()\n    strategy_id: StrategyId | None = None\n    action_id: ActionId | None = None\n\n\n@dataclass(frozen=True)\nclass RuntimeSpec:\n    priority: int = 0\n    dependencies: tuple[str, ...] = ()\n    strategy: object | None = None\n    action: object | None = None\n\n\nSTRATEGY_BY_ID = {StrategyId.ALPHA: AlphaStrategy()}\nACTION_BY_ID = {ActionId.DEFAULT: DefaultAction()}\n\n\ndef runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:\n    if spec is None:\n        return RuntimeSpec()\n    return RuntimeSpec(\n        priority=spec.priority,\n        dependencies=spec.dependencies,\n        strategy=STRATEGY_BY_ID.get(spec.strategy_id)\n        if spec.strategy_id is not None\n        else None,\n        action=ACTION_BY_ID.get(spec.action_id) if spec.action_id is not None else None,\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "runtime_adapter_shell"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'runtime_adapter_shell'))
 
     assert "runtime_spec_for" in finding.summary
     assert "RuntimeSpec" in finding.summary
@@ -1502,39 +389,10 @@ def runtime_spec_for(spec: BaseSpec | None) -> RuntimeSpec:
 
 
 def test_detects_keyword_bag_adapter_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class OptionSpec:
-    help: str
-    action: str | None = None
-    default: object | None = None
-    dest: str | None = None
-
-
-def option_kwargs(spec: OptionSpec) -> dict[str, object]:
-    kwargs = {"help": spec.help}
-    if spec.action is not None:
-        kwargs["action"] = spec.action
-    if spec.default is not None:
-        kwargs["default"] = spec.default
-    if spec.dest is not None:
-        kwargs["dest"] = spec.dest
-    return kwargs
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n    default: object | None = None\n    dest: str | None = None\n\n\ndef option_kwargs(spec: OptionSpec) -> dict[str, object]:\n    kwargs = {"help": spec.help}\n    if spec.action is not None:\n        kwargs["action"] = spec.action\n    if spec.default is not None:\n        kwargs["default"] = spec.default\n    if spec.dest is not None:\n        kwargs["dest"] = spec.dest\n    return kwargs\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "keyword_bag_adapter_shell"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'keyword_bag_adapter_shell'))
 
     assert "option_kwargs" in finding.summary
     assert "help" in finding.summary
@@ -1543,52 +401,10 @@ def option_kwargs(spec: OptionSpec) -> dict[str, object]:
 
 
 def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from enum import Enum
-from typing import ClassVar
-
-
-class RouteKind(Enum):
-    DIRECT = "direct"
-    MULTI_STAGE = "multi_stage"
-
-
-class NominalRequest:
-    route_kind: ClassVar[RouteKind | None] = None
-
-
-class DirectRequest(NominalRequest):
-    route_kind: ClassVar[RouteKind] = RouteKind.DIRECT
-
-
-class MultiStageRequest(NominalRequest):
-    route_kind: ClassVar[RouteKind] = RouteKind.MULTI_STAGE
-
-
-class DirectRoute:
-    pass
-
-
-class MultiStageRoute:
-    pass
-
-
-ROUTE_REGISTRY = {
-    RouteKind.DIRECT: DirectRoute,
-    RouteKind.MULTI_STAGE: MultiStageRoute,
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom enum import Enum\nfrom typing import ClassVar\n\n\nclass RouteKind(Enum):\n    DIRECT = "direct"\n    MULTI_STAGE = "multi_stage"\n\n\nclass NominalRequest:\n    route_kind: ClassVar[RouteKind | None] = None\n\n\nclass DirectRequest(NominalRequest):\n    route_kind: ClassVar[RouteKind] = RouteKind.DIRECT\n\n\nclass MultiStageRequest(NominalRequest):\n    route_kind: ClassVar[RouteKind] = RouteKind.MULTI_STAGE\n\n\nclass DirectRoute:\n    pass\n\n\nclass MultiStageRoute:\n    pass\n\n\nROUTE_REGISTRY = {\n    RouteKind.DIRECT: DirectRoute,\n    RouteKind.MULTI_STAGE: MultiStageRoute,\n}\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "enum_keyed_table_class_axis_shadow"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'enum_keyed_table_class_axis_shadow'))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "ROUTE_REGISTRY" in finding.summary
@@ -1599,135 +415,10 @@ ROUTE_REGISTRY = {
 
 
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-class StructuralRecordTransportMixin:
-    def encode(self):
-        return (self.payload_fields(), self.metadata_fields())
-
-
-@dataclass(frozen=True)
-class AlphaSpec(StructuralRecordTransportMixin):
-    left: object
-    right: object
-    cutoff: float
-
-    def validate(self):
-        if self.left.ndim != 1:
-            raise ValueError
-        if self.right.ndim != 1:
-            raise ValueError
-        if self.cutoff <= 0:
-            raise ValueError
-
-    def payload_fields(self):
-        return (self.left, self.right)
-
-    def metadata_fields(self):
-        return (self.cutoff,)
-
-    @classmethod
-    def from_payload(cls, metadata, payload):
-        return cls(*payload, *metadata)
-
-    def subsetted(self, indices):
-        return AlphaSpec(
-            left=self.left[indices],
-            right=self.right,
-            cutoff=self.cutoff,
-        )
-
-
-@dataclass(frozen=True)
-class BetaSpec(StructuralRecordTransportMixin):
-    left: object
-    right: object
-    beta: float
-    cutoff: float
-
-    def validate(self):
-        if self.left.ndim != 1:
-            raise ValueError
-        if self.right.ndim != 1:
-            raise ValueError
-        if self.beta <= 0:
-            raise ValueError
-        if self.cutoff <= 0:
-            raise ValueError
-
-    def payload_fields(self):
-        return (self.left, self.right)
-
-    def metadata_fields(self):
-        return (self.beta, self.cutoff)
-
-    @classmethod
-    def from_payload(cls, metadata, payload):
-        return cls(*payload, *metadata)
-
-    def subsetted(self, indices):
-        return BetaSpec(
-            left=self.left[indices],
-            right=self.right,
-            beta=self.beta,
-            cutoff=self.cutoff,
-        )
-
-    def zeroed(self):
-        return BetaSpec(
-            left=zeros_like(self.left),
-            right=zeros_like(self.right),
-            beta=self.beta,
-            cutoff=self.cutoff,
-        )
-
-
-@dataclass(frozen=True)
-class GammaSpec(StructuralRecordTransportMixin):
-    left: object
-    right: object
-    width: float
-
-    def validate(self):
-        if self.left.ndim != 1:
-            raise ValueError
-        if self.right.ndim != 1:
-            raise ValueError
-        if self.left.shape[0] != self.right.shape[0]:
-            raise ValueError
-        if self.width <= 0:
-            raise ValueError
-
-    def payload_fields(self):
-        return (self.left, self.right)
-
-    def metadata_fields(self):
-        return (self.width,)
-
-    @classmethod
-    def from_payload(cls, metadata, payload):
-        return cls(*payload, *metadata)
-
-    def zeroed(self):
-        return GammaSpec(
-            left=zeros_like(self.left),
-            right=zeros_like(self.right),
-            width=self.width,
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\nclass StructuralRecordTransportMixin:\n    def encode(self):\n        return (self.payload_fields(), self.metadata_fields())\n\n\n@dataclass(frozen=True)\nclass AlphaSpec(StructuralRecordTransportMixin):\n    left: object\n    right: object\n    cutoff: float\n\n    def validate(self):\n        if self.left.ndim != 1:\n            raise ValueError\n        if self.right.ndim != 1:\n            raise ValueError\n        if self.cutoff <= 0:\n            raise ValueError\n\n    def payload_fields(self):\n        return (self.left, self.right)\n\n    def metadata_fields(self):\n        return (self.cutoff,)\n\n    @classmethod\n    def from_payload(cls, metadata, payload):\n        return cls(*payload, *metadata)\n\n    def subsetted(self, indices):\n        return AlphaSpec(\n            left=self.left[indices],\n            right=self.right,\n            cutoff=self.cutoff,\n        )\n\n\n@dataclass(frozen=True)\nclass BetaSpec(StructuralRecordTransportMixin):\n    left: object\n    right: object\n    beta: float\n    cutoff: float\n\n    def validate(self):\n        if self.left.ndim != 1:\n            raise ValueError\n        if self.right.ndim != 1:\n            raise ValueError\n        if self.beta <= 0:\n            raise ValueError\n        if self.cutoff <= 0:\n            raise ValueError\n\n    def payload_fields(self):\n        return (self.left, self.right)\n\n    def metadata_fields(self):\n        return (self.beta, self.cutoff)\n\n    @classmethod\n    def from_payload(cls, metadata, payload):\n        return cls(*payload, *metadata)\n\n    def subsetted(self, indices):\n        return BetaSpec(\n            left=self.left[indices],\n            right=self.right,\n            beta=self.beta,\n            cutoff=self.cutoff,\n        )\n\n    def zeroed(self):\n        return BetaSpec(\n            left=zeros_like(self.left),\n            right=zeros_like(self.right),\n            beta=self.beta,\n            cutoff=self.cutoff,\n        )\n\n\n@dataclass(frozen=True)\nclass GammaSpec(StructuralRecordTransportMixin):\n    left: object\n    right: object\n    width: float\n\n    def validate(self):\n        if self.left.ndim != 1:\n            raise ValueError\n        if self.right.ndim != 1:\n            raise ValueError\n        if self.left.shape[0] != self.right.shape[0]:\n            raise ValueError\n        if self.width <= 0:\n            raise ValueError\n\n    def payload_fields(self):\n        return (self.left, self.right)\n\n    def metadata_fields(self):\n        return (self.width,)\n\n    @classmethod\n    def from_payload(cls, metadata, payload):\n        return cls(*payload, *metadata)\n\n    def zeroed(self):\n        return GammaSpec(\n            left=zeros_like(self.left),\n            right=zeros_like(self.right),\n            width=self.width,\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "manual_structural_record_mechanics"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'manual_structural_record_mechanics'))
 
     assert "AlphaSpec" in finding.summary
     assert "BetaSpec" in finding.summary
@@ -1735,80 +426,10 @@ class GammaSpec(StructuralRecordTransportMixin):
 
 
 def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-class ChildrenAuxDataPyTreeMixin:
-    pass
-
-
-@dataclass(frozen=True)
-class DirectionalBatchInputs(ChildrenAuxDataPyTreeMixin):
-    receptor_coords: object
-    poses_coords: object
-    receptor_anchor_indices: object
-    receptor_directions: object
-    ligand_anchor_indices: object
-    ligand_local_directions: object
-    ligand_frame_coords: object
-    receptor_strengths: object
-    ligand_strengths: object
-    receptor_alignment_sign: float
-    ligand_alignment_sign: float
-    ideal_distance: float
-    distance_width: float
-
-    def _tree_children(self):
-        return (
-            self.receptor_coords,
-            self.poses_coords,
-            self.receptor_anchor_indices,
-            self.receptor_directions,
-            self.ligand_anchor_indices,
-            self.ligand_local_directions,
-            self.ligand_frame_coords,
-            self.receptor_strengths,
-            self.ligand_strengths,
-        )
-
-    def _tree_aux_data(self):
-        return (
-            self.receptor_alignment_sign,
-            self.ligand_alignment_sign,
-            self.ideal_distance,
-            self.distance_width,
-        )
-
-    @classmethod
-    def tree_unflatten(cls, aux_data, children):
-        return cls(
-            receptor_coords=children[0],
-            poses_coords=children[1],
-            receptor_anchor_indices=children[2],
-            receptor_directions=children[3],
-            ligand_anchor_indices=children[4],
-            ligand_local_directions=children[5],
-            ligand_frame_coords=children[6],
-            receptor_strengths=children[7],
-            ligand_strengths=children[8],
-            receptor_alignment_sign=aux_data[0],
-            ligand_alignment_sign=aux_data[1],
-            ideal_distance=aux_data[2],
-            distance_width=aux_data[3],
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\nclass ChildrenAuxDataPyTreeMixin:\n    pass\n\n\n@dataclass(frozen=True)\nclass DirectionalBatchInputs(ChildrenAuxDataPyTreeMixin):\n    receptor_coords: object\n    poses_coords: object\n    receptor_anchor_indices: object\n    receptor_directions: object\n    ligand_anchor_indices: object\n    ligand_local_directions: object\n    ligand_frame_coords: object\n    receptor_strengths: object\n    ligand_strengths: object\n    receptor_alignment_sign: float\n    ligand_alignment_sign: float\n    ideal_distance: float\n    distance_width: float\n\n    def _tree_children(self):\n        return (\n            self.receptor_coords,\n            self.poses_coords,\n            self.receptor_anchor_indices,\n            self.receptor_directions,\n            self.ligand_anchor_indices,\n            self.ligand_local_directions,\n            self.ligand_frame_coords,\n            self.receptor_strengths,\n            self.ligand_strengths,\n        )\n\n    def _tree_aux_data(self):\n        return (\n            self.receptor_alignment_sign,\n            self.ligand_alignment_sign,\n            self.ideal_distance,\n            self.distance_width,\n        )\n\n    @classmethod\n    def tree_unflatten(cls, aux_data, children):\n        return cls(\n            receptor_coords=children[0],\n            poses_coords=children[1],\n            receptor_anchor_indices=children[2],\n            receptor_directions=children[3],\n            ligand_anchor_indices=children[4],\n            ligand_local_directions=children[5],\n            ligand_frame_coords=children[6],\n            receptor_strengths=children[7],\n            ligand_strengths=children[8],\n            receptor_alignment_sign=aux_data[0],\n            ligand_alignment_sign=aux_data[1],\n            ideal_distance=aux_data[2],\n            distance_width=aux_data[3],\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "prefixed_role_field_bundle"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'prefixed_role_field_bundle'))
 
     assert "DirectionalBatchInputs" in finding.summary
     assert "receptor" in finding.summary
@@ -1819,72 +440,10 @@ class DirectionalBatchInputs(ChildrenAuxDataPyTreeMixin):
 
 
 def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def contains_group(handles, required):
-    return all(handle in handles for handle in required)
-
-
-def alpha_handles():
-    return ("A1", "A2")
-
-
-def beta_handles():
-    return ("B1",)
-
-
-def gamma_handles():
-    return ("C1",)
-
-
-def has_alpha_chain(plan):
-    witness = plan.witness
-    if not isinstance(witness, AlphaWitness):
-        return False
-    if plan.case != "alpha":
-        return False
-    if plan.total_gap is None:
-        return False
-    if plan.total_gap > witness.bound:
-        return False
-    return contains_group(plan.theorem_handles, alpha_handles())
-
-
-def has_beta_chain(plan):
-    witness = plan.witness
-    if not isinstance(witness, BetaWitness):
-        return False
-    if plan.case != "beta":
-        return False
-    if plan.total_gap is None:
-        return False
-    if plan.total_gap > witness.bound:
-        return False
-    return contains_group(plan.theorem_handles, beta_handles())
-
-
-def has_gamma_chain(plan):
-    witness = plan.witness
-    if not isinstance(witness, GammaWitness):
-        return False
-    if plan.case != "gamma":
-        return False
-    if plan.total_gap is None:
-        return False
-    if plan.total_gap > witness.bound:
-        return False
-    return contains_group(plan.theorem_handles, gamma_handles())
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef contains_group(handles, required):\n    return all(handle in handles for handle in required)\n\n\ndef alpha_handles():\n    return ("A1", "A2")\n\n\ndef beta_handles():\n    return ("B1",)\n\n\ndef gamma_handles():\n    return ("C1",)\n\n\ndef has_alpha_chain(plan):\n    witness = plan.witness\n    if not isinstance(witness, AlphaWitness):\n        return False\n    if plan.case != "alpha":\n        return False\n    if plan.total_gap is None:\n        return False\n    if plan.total_gap > witness.bound:\n        return False\n    return contains_group(plan.theorem_handles, alpha_handles())\n\n\ndef has_beta_chain(plan):\n    witness = plan.witness\n    if not isinstance(witness, BetaWitness):\n        return False\n    if plan.case != "beta":\n        return False\n    if plan.total_gap is None:\n        return False\n    if plan.total_gap > witness.bound:\n        return False\n    return contains_group(plan.theorem_handles, beta_handles())\n\n\ndef has_gamma_chain(plan):\n    witness = plan.witness\n    if not isinstance(witness, GammaWitness):\n        return False\n    if plan.case != "gamma":\n        return False\n    if plan.total_gap is None:\n        return False\n    if plan.total_gap > witness.bound:\n        return False\n    return contains_group(plan.theorem_handles, gamma_handles())\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_guard_validator_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_guard_validator_family'))
 
     assert "has_alpha_chain" in finding.summary
     assert "has_beta_chain" in finding.summary
@@ -1892,55 +451,10 @@ def has_gamma_chain(plan):
 
 
 def test_detects_repeated_validate_shape_guard_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class AnchoredArray:
-    def __init__(self, positions, vectors, strengths):
-        self.positions = positions
-        self.vectors = vectors
-        self.strengths = strengths
-
-    def validate(self):
-        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
-        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:
-            raise ValueError("vectors must have shape (N, 3)")
-        if self.strengths.ndim != 1:
-            raise ValueError("strengths must be 1D")
-        if self.positions.shape[0] != self.vectors.shape[0]:
-            raise ValueError("positions and vectors must align")
-        if self.positions.shape[0] != self.strengths.shape[0]:
-            raise ValueError("positions and strengths must align")
-
-
-class IndexedArray:
-    def __init__(self, atom_rows, reference_rows, weights):
-        self.atom_rows = atom_rows
-        self.reference_rows = reference_rows
-        self.weights = weights
-
-    def validate(self):
-        if self.atom_rows.ndim != 2 or self.atom_rows.shape[1] != 3:
-            raise ValueError("rows must have shape (N, 3)")
-        if self.reference_rows.ndim != 2 or self.reference_rows.shape[1] != 3:
-            raise ValueError("references must have shape (N, 3)")
-        if self.weights.ndim != 1:
-            raise ValueError("weights must be 1D")
-        if self.atom_rows.shape[0] != self.reference_rows.shape[0]:
-            raise ValueError("row families must align")
-        if self.atom_rows.shape[0] != self.weights.shape[0]:
-            raise ValueError("rows and weights must align")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass AnchoredArray:\n    def __init__(self, positions, vectors, strengths):\n        self.positions = positions\n        self.vectors = vectors\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:\n            raise ValueError("vectors must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.positions.shape[0] != self.vectors.shape[0]:\n            raise ValueError("positions and vectors must align")\n        if self.positions.shape[0] != self.strengths.shape[0]:\n            raise ValueError("positions and strengths must align")\n\n\nclass IndexedArray:\n    def __init__(self, atom_rows, reference_rows, weights):\n        self.atom_rows = atom_rows\n        self.reference_rows = reference_rows\n        self.weights = weights\n\n    def validate(self):\n        if self.atom_rows.ndim != 2 or self.atom_rows.shape[1] != 3:\n            raise ValueError("rows must have shape (N, 3)")\n        if self.reference_rows.ndim != 2 or self.reference_rows.shape[1] != 3:\n            raise ValueError("references must have shape (N, 3)")\n        if self.weights.ndim != 1:\n            raise ValueError("weights must be 1D")\n        if self.atom_rows.shape[0] != self.reference_rows.shape[0]:\n            raise ValueError("row families must align")\n        if self.atom_rows.shape[0] != self.weights.shape[0]:\n            raise ValueError("rows and weights must align")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID))
 
     assert "AnchoredArray.validate" in finding.summary
     assert "IndexedArray.validate" in finding.summary
@@ -1950,57 +464,11 @@ class IndexedArray:
 def test_detects_cross_module_repeated_validate_shape_guard_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/chemistry.py",
-        """
-class AnchoredArray:
-    def __init__(self, positions, vectors, strengths):
-        self.positions = positions
-        self.vectors = vectors
-        self.strengths = strengths
-
-    def validate(self):
-        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
-        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:
-            raise ValueError("vectors must have shape (N, 3)")
-        if self.strengths.ndim != 1:
-            raise ValueError("strengths must be 1D")
-        if self.positions.shape[0] != self.vectors.shape[0]:
-            raise ValueError("positions and vectors must align")
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        """
-class ReceptorGrid:
-    def __init__(self, centers, normals, weights):
-        self.centers = centers
-        self.normals = normals
-        self.weights = weights
-
-    def validate(self):
-        if self.centers.ndim != 2 or self.centers.shape[1] != 3:
-            raise ValueError("centers must have shape (N, 3)")
-        if self.normals.ndim != 2 or self.normals.shape[1] != 3:
-            raise ValueError("normals must have shape (N, 3)")
-        if self.weights.ndim != 1:
-            raise ValueError("weights must be 1D")
-        if self.centers.shape[0] != self.normals.shape[0]:
-            raise ValueError("centers and normals must align")
-""",
-    )
+    _write_module(tmp_path, 'pkg/chemistry.py', '\nclass AnchoredArray:\n    def __init__(self, positions, vectors, strengths):\n        self.positions = positions\n        self.vectors = vectors\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.vectors.ndim != 2 or self.vectors.shape[1] != 3:\n            raise ValueError("vectors must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.positions.shape[0] != self.vectors.shape[0]:\n            raise ValueError("positions and vectors must align")\n')
+    _write_module(tmp_path, 'pkg/scoring.py', '\nclass ReceptorGrid:\n    def __init__(self, centers, normals, weights):\n        self.centers = centers\n        self.normals = normals\n        self.weights = weights\n\n    def validate(self):\n        if self.centers.ndim != 2 or self.centers.shape[1] != 3:\n            raise ValueError("centers must have shape (N, 3)")\n        if self.normals.ndim != 2 or self.normals.shape[1] != 3:\n            raise ValueError("normals must have shape (N, 3)")\n        if self.weights.ndim != 1:\n            raise ValueError("weights must be 1D")\n        if self.centers.shape[0] != self.normals.shape[0]:\n            raise ValueError("centers and normals must align")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-        and "AnchoredArray.validate" in finding.summary
-        and "ReceptorGrid.validate" in finding.summary
-    )
+    finding = next((finding for finding in findings if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID and 'AnchoredArray.validate' in finding.summary and ('ReceptorGrid.validate' in finding.summary)))
 
     assert "repeat 4 shared shape/ndim guard forms" in finding.summary
     assert "ShapeValidatedRecord" in (finding.scaffold or "")
@@ -2009,153 +477,22 @@ class ReceptorGrid:
 def test_detects_pairwise_validate_shape_guard_family_without_full_intersection(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/a.py",
-        """
-class AnchoredArray:
-    def __init__(self, positions, strengths):
-        self.positions = positions
-        self.strengths = strengths
-
-    def validate(self):
-        if self.positions.ndim != 2 or self.positions.shape[1] != 3:
-            raise ValueError("positions must have shape (N, 3)")
-        if self.strengths.ndim != 1:
-            raise ValueError("strengths must be 1D")
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/b.py",
-        """
-class IndexedArray:
-    def __init__(self, rows, mask, strengths):
-        self.rows = rows
-        self.mask = mask
-        self.strengths = strengths
-
-    def validate(self):
-        if self.rows.ndim != 2 or self.mask.ndim != 2:
-            raise ValueError("rows and masks must be 2D")
-        if self.strengths.ndim != 1:
-            raise ValueError("strengths must be 1D")
-        if self.rows.shape != self.mask.shape:
-            raise ValueError("rows and masks must match")
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/c.py",
-        """
-class ReceptorGrid:
-    def __init__(self, coords, mask):
-        self.coords = coords
-        self.mask = mask
-
-    def validate(self):
-        if self.coords.ndim != 2 or self.coords.shape[1] != 3:
-            raise ValueError("coords must have shape (N, 3)")
-        if self.coords.shape != self.mask.shape:
-            raise ValueError("coords and mask must match")
-""",
-    )
+    _write_module(tmp_path, 'pkg/a.py', '\nclass AnchoredArray:\n    def __init__(self, positions, strengths):\n        self.positions = positions\n        self.strengths = strengths\n\n    def validate(self):\n        if self.positions.ndim != 2 or self.positions.shape[1] != 3:\n            raise ValueError("positions must have shape (N, 3)")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n')
+    _write_module(tmp_path, 'pkg/b.py', '\nclass IndexedArray:\n    def __init__(self, rows, mask, strengths):\n        self.rows = rows\n        self.mask = mask\n        self.strengths = strengths\n\n    def validate(self):\n        if self.rows.ndim != 2 or self.mask.ndim != 2:\n            raise ValueError("rows and masks must be 2D")\n        if self.strengths.ndim != 1:\n            raise ValueError("strengths must be 1D")\n        if self.rows.shape != self.mask.shape:\n            raise ValueError("rows and masks must match")\n')
+    _write_module(tmp_path, 'pkg/c.py', '\nclass ReceptorGrid:\n    def __init__(self, coords, mask):\n        self.coords = coords\n        self.mask = mask\n\n    def validate(self):\n        if self.coords.ndim != 2 or self.coords.shape[1] != 3:\n            raise ValueError("coords must have shape (N, 3)")\n        if self.coords.shape != self.mask.shape:\n            raise ValueError("coords and mask must match")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID
-        and "AnchoredArray.validate" in finding.summary
-        and "IndexedArray.validate" in finding.summary
-        and "ReceptorGrid.validate" in finding.summary
-    )
+    finding = next((finding for finding in findings if finding.detector_id == REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID and 'AnchoredArray.validate' in finding.summary and ('IndexedArray.validate' in finding.summary) and ('ReceptorGrid.validate' in finding.summary)))
 
     assert "repeat 4 shared shape/ndim guard forms" in finding.summary
     assert "ShapeValidatedRecord" in (finding.scaffold or "")
 
 
 def test_detects_transport_shell_template_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
-
-
-class ArtifactBase:
-    pass
-
-
-class AlphaArtifact(ArtifactBase):
-    pass
-
-
-class BetaArtifact(ArtifactBase):
-    pass
-
-
-ArtifactT = TypeVar("ArtifactT", bound=ArtifactBase)
-ResultT = TypeVar("ResultT")
-
-
-def materialize_artifact(artifact_cls, source, **kwargs):
-    del source, kwargs
-    return artifact_cls()
-
-
-class ArtifactShell(ABC, Generic[ArtifactT, ResultT]):
-    artifact_cls: type[ArtifactT]
-
-    def execute(self, source):
-        artifact = materialize_artifact(
-            self.artifact_cls,
-            source,
-            **self.options(source),
-        )
-        return self.package(self.operate(artifact))
-
-    def options(self, source):
-        del source
-        return {}
-
-    @abstractmethod
-    def operate(self, artifact: ArtifactT) -> ResultT:
-        raise NotImplementedError
-
-    @abstractmethod
-    def package(self, result: ResultT):
-        raise NotImplementedError
-
-
-class AlphaShell(ArtifactShell[AlphaArtifact, AlphaArtifact]):
-    artifact_cls = AlphaArtifact
-
-    def operate(self, artifact: AlphaArtifact) -> AlphaArtifact:
-        return artifact
-
-    def package(self, result: AlphaArtifact):
-        return result
-
-
-class BetaShell(ArtifactShell[BetaArtifact, BetaArtifact]):
-    artifact_cls = BetaArtifact
-
-    def operate(self, artifact: BetaArtifact) -> BetaArtifact:
-        return artifact
-
-    def package(self, result: BetaArtifact):
-        return result
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\nfrom typing import Generic, TypeVar\n\n\nclass ArtifactBase:\n    pass\n\n\nclass AlphaArtifact(ArtifactBase):\n    pass\n\n\nclass BetaArtifact(ArtifactBase):\n    pass\n\n\nArtifactT = TypeVar("ArtifactT", bound=ArtifactBase)\nResultT = TypeVar("ResultT")\n\n\ndef materialize_artifact(artifact_cls, source, **kwargs):\n    del source, kwargs\n    return artifact_cls()\n\n\nclass ArtifactShell(ABC, Generic[ArtifactT, ResultT]):\n    artifact_cls: type[ArtifactT]\n\n    def execute(self, source):\n        artifact = materialize_artifact(\n            self.artifact_cls,\n            source,\n            **self.options(source),\n        )\n        return self.package(self.operate(artifact))\n\n    def options(self, source):\n        del source\n        return {}\n\n    @abstractmethod\n    def operate(self, artifact: ArtifactT) -> ResultT:\n        raise NotImplementedError\n\n    @abstractmethod\n    def package(self, result: ResultT):\n        raise NotImplementedError\n\n\nclass AlphaShell(ArtifactShell[AlphaArtifact, AlphaArtifact]):\n    artifact_cls = AlphaArtifact\n\n    def operate(self, artifact: AlphaArtifact) -> AlphaArtifact:\n        return artifact\n\n    def package(self, result: AlphaArtifact):\n        return result\n\n\nclass BetaShell(ArtifactShell[BetaArtifact, BetaArtifact]):\n    artifact_cls = BetaArtifact\n\n    def operate(self, artifact: BetaArtifact) -> BetaArtifact:\n        return artifact\n\n    def package(self, result: BetaArtifact):\n        return result\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "transport_shell_template_method"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'transport_shell_template_method'))
 
     assert "ArtifactShell.execute" in finding.summary
     assert "AlphaArtifact" in finding.summary
@@ -2165,93 +502,11 @@ class BetaShell(ArtifactShell[BetaArtifact, BetaArtifact]):
 
 
 def test_detects_cross_module_spec_axis_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        """
-class AlphaArtifact:
-    pass
-
-
-class BetaArtifact:
-    pass
-
-
-def execute_alpha(artifact):
-    return artifact
-
-
-def execute_beta(artifact):
-    return artifact
-
-
-class GeneratedWrapperRule:
-    def __init__(self, *, name, artifact_cls, executor):
-        self.name = name
-        self.artifact_cls = artifact_cls
-        self.executor = executor
-
-
-WRAPPER_RULES = (
-    GeneratedWrapperRule(
-        name="wrap_alpha",
-        artifact_cls=AlphaArtifact,
-        executor=execute_alpha,
-    ),
-    GeneratedWrapperRule(
-        name="wrap_beta",
-        artifact_cls=BetaArtifact,
-        executor=execute_beta,
-    ),
-)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/benchmark.py",
-        """
-from pkg.pipeline import (
-    AlphaArtifact,
-    BetaArtifact,
-    execute_alpha,
-    execute_beta,
-)
-
-
-def package_outcome(result):
-    return result
-
-
-class BenchmarkRoute:
-    def __init__(self, *, path_name, artifact_cls, executor, outcome_builder):
-        self.path_name = path_name
-        self.artifact_cls = artifact_cls
-        self.executor = executor
-        self.outcome_builder = outcome_builder
-
-
-ALPHA_ROUTE = BenchmarkRoute(
-    path_name="alpha",
-    artifact_cls=AlphaArtifact,
-    executor=execute_alpha,
-    outcome_builder=package_outcome,
-)
-
-BETA_ROUTE = BenchmarkRoute(
-    path_name="beta",
-    artifact_cls=BetaArtifact,
-    executor=execute_beta,
-    outcome_builder=package_outcome,
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/pipeline.py', '\nclass AlphaArtifact:\n    pass\n\n\nclass BetaArtifact:\n    pass\n\n\ndef execute_alpha(artifact):\n    return artifact\n\n\ndef execute_beta(artifact):\n    return artifact\n\n\nclass GeneratedWrapperRule:\n    def __init__(self, *, name, artifact_cls, executor):\n        self.name = name\n        self.artifact_cls = artifact_cls\n        self.executor = executor\n\n\nWRAPPER_RULES = (\n    GeneratedWrapperRule(\n        name="wrap_alpha",\n        artifact_cls=AlphaArtifact,\n        executor=execute_alpha,\n    ),\n    GeneratedWrapperRule(\n        name="wrap_beta",\n        artifact_cls=BetaArtifact,\n        executor=execute_beta,\n    ),\n)\n')
+    _write_module(tmp_path, 'pkg/benchmark.py', '\nfrom pkg.pipeline import (\n    AlphaArtifact,\n    BetaArtifact,\n    execute_alpha,\n    execute_beta,\n)\n\n\ndef package_outcome(result):\n    return result\n\n\nclass BenchmarkRoute:\n    def __init__(self, *, path_name, artifact_cls, executor, outcome_builder):\n        self.path_name = path_name\n        self.artifact_cls = artifact_cls\n        self.executor = executor\n        self.outcome_builder = outcome_builder\n\n\nALPHA_ROUTE = BenchmarkRoute(\n    path_name="alpha",\n    artifact_cls=AlphaArtifact,\n    executor=execute_alpha,\n    outcome_builder=package_outcome,\n)\n\nBETA_ROUTE = BenchmarkRoute(\n    path_name="beta",\n    artifact_cls=BetaArtifact,\n    executor=execute_beta,\n    outcome_builder=package_outcome,\n)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "cross_module_spec_axis_authority"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'cross_module_spec_axis_authority'))
 
     assert "WRAPPER_RULES" in finding.summary
     assert "ALPHA_ROUTE" in finding.summary
@@ -2260,55 +515,10 @@ BETA_ROUTE = BenchmarkRoute(
 
 
 def test_detects_parallel_registry_projection_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class AlphaAuthority:
-    @classmethod
-    def declared_variants(cls):
-        return ()
-
-
-class BetaAuthority:
-    @classmethod
-    def declared_variants(cls):
-        return ()
-
-
-class AlphaProjection:
-    def __init__(self, *, sites):
-        self.sites = sites
-
-
-class BetaProjection:
-    def __init__(self, *, sites):
-        self.sites = sites
-
-
-def _collect_sites(structure, extractor_types):
-    return tuple(extractor_types)
-
-
-def projection_from_alpha(source):
-    return AlphaProjection(
-        sites=_collect_sites(source, AlphaAuthority.declared_variants())
-    )
-
-
-def projection_from_beta(source):
-    return BetaProjection(
-        sites=_collect_sites(source, BetaAuthority.declared_variants())
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass AlphaAuthority:\n    @classmethod\n    def declared_variants(cls):\n        return ()\n\n\nclass BetaAuthority:\n    @classmethod\n    def declared_variants(cls):\n        return ()\n\n\nclass AlphaProjection:\n    def __init__(self, *, sites):\n        self.sites = sites\n\n\nclass BetaProjection:\n    def __init__(self, *, sites):\n        self.sites = sites\n\n\ndef _collect_sites(structure, extractor_types):\n    return tuple(extractor_types)\n\n\ndef projection_from_alpha(source):\n    return AlphaProjection(\n        sites=_collect_sites(source, AlphaAuthority.declared_variants())\n    )\n\n\ndef projection_from_beta(source):\n    return BetaProjection(\n        sites=_collect_sites(source, BetaAuthority.declared_variants())\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "parallel_registry_projection_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'parallel_registry_projection_family'))
 
     assert "projection_from_alpha" in finding.summary
     assert "projection_from_beta" in finding.summary
@@ -2317,83 +527,11 @@ def projection_from_beta(source):
 
 
 def test_detects_repeated_keyed_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/a.py",
-        """
-from abc import ABC, abstractmethod
-
-
-class AutoRegisterByClassVar:
-    pass
-
-
-class SamplingStrategyPolicy(AutoRegisterByClassVar, ABC):
-    registry_key_attr = "strategy"
-    _registry = {}
-
-    @classmethod
-    def for_strategy(cls, strategy):
-        try:
-            return cls._registry[strategy]
-        except KeyError as error:
-            raise ValueError(f"Unsupported sampling strategy: {strategy}") from error
-
-    @abstractmethod
-    def keep_ratio(self):
-        raise NotImplementedError
-
-
-class CertificationDecisionSummaryPolicy(AutoRegisterByClassVar, ABC):
-    registry_key_attr = "decision"
-    _registry = {}
-
-    @classmethod
-    def for_decision(cls, decision):
-        try:
-            return cls._registry[decision]
-        except KeyError as error:
-            raise ValueError(f"Unsupported decision: {decision}") from error
-
-    @abstractmethod
-    def format(self, value):
-        raise NotImplementedError
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/b.py",
-        """
-from abc import ABC, abstractmethod
-
-
-class AutoRegisterByClassVar:
-    pass
-
-
-class ScoringBackendFactory(AutoRegisterByClassVar, ABC):
-    registry_key_attr = "family"
-    _registry = {}
-
-    @classmethod
-    def for_family(cls, family):
-        try:
-            return cls._registry[family]
-        except KeyError as error:
-            raise ValueError(f"Unsupported family: {family}") from error
-
-    @abstractmethod
-    def create_backend(self):
-        raise NotImplementedError
-""",
-    )
+    _write_module(tmp_path, 'pkg/a.py', '\nfrom abc import ABC, abstractmethod\n\n\nclass AutoRegisterByClassVar:\n    pass\n\n\nclass SamplingStrategyPolicy(AutoRegisterByClassVar, ABC):\n    registry_key_attr = "strategy"\n    _registry = {}\n\n    @classmethod\n    def for_strategy(cls, strategy):\n        try:\n            return cls._registry[strategy]\n        except KeyError as error:\n            raise ValueError(f"Unsupported sampling strategy: {strategy}") from error\n\n    @abstractmethod\n    def keep_ratio(self):\n        raise NotImplementedError\n\n\nclass CertificationDecisionSummaryPolicy(AutoRegisterByClassVar, ABC):\n    registry_key_attr = "decision"\n    _registry = {}\n\n    @classmethod\n    def for_decision(cls, decision):\n        try:\n            return cls._registry[decision]\n        except KeyError as error:\n            raise ValueError(f"Unsupported decision: {decision}") from error\n\n    @abstractmethod\n    def format(self, value):\n        raise NotImplementedError\n')
+    _write_module(tmp_path, 'pkg/b.py', '\nfrom abc import ABC, abstractmethod\n\n\nclass AutoRegisterByClassVar:\n    pass\n\n\nclass ScoringBackendFactory(AutoRegisterByClassVar, ABC):\n    registry_key_attr = "family"\n    _registry = {}\n\n    @classmethod\n    def for_family(cls, family):\n        try:\n            return cls._registry[family]\n        except KeyError as error:\n            raise ValueError(f"Unsupported family: {family}") from error\n\n    @abstractmethod\n    def create_backend(self):\n        raise NotImplementedError\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_keyed_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_keyed_family'))
 
     assert "SamplingStrategyPolicy" in finding.summary
     assert "CertificationDecisionSummaryPolicy" in finding.summary
@@ -2404,83 +542,10 @@ class ScoringBackendFactory(AutoRegisterByClassVar, ABC):
 
 
 def test_detects_manual_keyed_record_table(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class MetalChargeCompatibility:
-    charge_method: str
-    incompatibility_reasons: tuple[str, ...] = ()
-    _registry = {}
-
-    @classmethod
-    def register(cls, *, charge_method, incompatibility_reasons=()):
-        if charge_method in cls._registry:
-            raise TypeError(charge_method)
-        cls._registry[charge_method] = cls(
-            charge_method=charge_method,
-            incompatibility_reasons=incompatibility_reasons,
-        )
-
-    @classmethod
-    def for_charge_method(cls, charge_method):
-        if charge_method not in cls._registry:
-            raise TypeError(charge_method)
-        return cls._registry[charge_method]
-
-
-@dataclass(frozen=True)
-class ScoringFamilyCompatibility:
-    scoring_family: str
-    reasons: tuple[str, ...] = ()
-    _registry = {}
-
-    @classmethod
-    def register(cls, *, scoring_family, reasons=()):
-        if scoring_family in cls._registry:
-            raise TypeError(scoring_family)
-        cls._registry[scoring_family] = cls(
-            scoring_family=scoring_family,
-            reasons=reasons,
-        )
-
-    @classmethod
-    def for_scoring_family(cls, scoring_family):
-        if scoring_family not in cls._registry:
-            raise TypeError(scoring_family)
-        return cls._registry[scoring_family]
-
-
-@dataclass(frozen=True)
-class ComponentCompatibilityRule:
-    role: str
-    projector: object
-    _registry = {}
-
-    @classmethod
-    def register(cls, *, role, projector):
-        if role in cls._registry:
-            raise TypeError(role)
-        cls._registry[role] = cls(role=role, projector=projector)
-
-    @classmethod
-    def for_role(cls, role):
-        if role not in cls._registry:
-            raise TypeError(role)
-        return cls._registry[role]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass MetalChargeCompatibility:\n    charge_method: str\n    incompatibility_reasons: tuple[str, ...] = ()\n    _registry = {}\n\n    @classmethod\n    def register(cls, *, charge_method, incompatibility_reasons=()):\n        if charge_method in cls._registry:\n            raise TypeError(charge_method)\n        cls._registry[charge_method] = cls(\n            charge_method=charge_method,\n            incompatibility_reasons=incompatibility_reasons,\n        )\n\n    @classmethod\n    def for_charge_method(cls, charge_method):\n        if charge_method not in cls._registry:\n            raise TypeError(charge_method)\n        return cls._registry[charge_method]\n\n\n@dataclass(frozen=True)\nclass ScoringFamilyCompatibility:\n    scoring_family: str\n    reasons: tuple[str, ...] = ()\n    _registry = {}\n\n    @classmethod\n    def register(cls, *, scoring_family, reasons=()):\n        if scoring_family in cls._registry:\n            raise TypeError(scoring_family)\n        cls._registry[scoring_family] = cls(\n            scoring_family=scoring_family,\n            reasons=reasons,\n        )\n\n    @classmethod\n    def for_scoring_family(cls, scoring_family):\n        if scoring_family not in cls._registry:\n            raise TypeError(scoring_family)\n        return cls._registry[scoring_family]\n\n\n@dataclass(frozen=True)\nclass ComponentCompatibilityRule:\n    role: str\n    projector: object\n    _registry = {}\n\n    @classmethod\n    def register(cls, *, role, projector):\n        if role in cls._registry:\n            raise TypeError(role)\n        cls._registry[role] = cls(role=role, projector=projector)\n\n    @classmethod\n    def for_role(cls, role):\n        if role not in cls._registry:\n            raise TypeError(role)\n        return cls._registry[role]\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "manual_keyed_record_table"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'manual_keyed_record_table'))
 
     assert "MetalChargeCompatibility" in finding.summary
     assert "ScoringFamilyCompatibility" in finding.summary
@@ -2489,52 +554,10 @@ class ComponentCompatibilityRule:
 
 
 def test_detects_external_concrete_type_identity_table(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-from types import MappingProxyType
-
-
-@dataclass(frozen=True)
-class TypeIdentity:
-    module: str
-    qualname: str
-
-
-@dataclass(frozen=True)
-class ExternalTypeRule:
-    identity: TypeIdentity
-    register: object
-
-
-def register_array_type(payload_type):
-    return payload_type
-
-
-def register_table_type(payload_type):
-    return payload_type
-
-
-EXTERNAL_TYPES_BY_IDENTITY = MappingProxyType({
-    rule.identity: rule
-    for rule in (
-        ExternalTypeRule(TypeIdentity("numpy", "ndarray"), register_array_type),
-        ExternalTypeRule(TypeIdentity("cupy._core.core", "ndarray"), register_array_type),
-        ExternalTypeRule(TypeIdentity("torch", "Tensor"), register_array_type),
-        ExternalTypeRule(TypeIdentity("pandas.core.frame", "DataFrame"), register_table_type),
-    )
-})
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nfrom types import MappingProxyType\n\n\n@dataclass(frozen=True)\nclass TypeIdentity:\n    module: str\n    qualname: str\n\n\n@dataclass(frozen=True)\nclass ExternalTypeRule:\n    identity: TypeIdentity\n    register: object\n\n\ndef register_array_type(payload_type):\n    return payload_type\n\n\ndef register_table_type(payload_type):\n    return payload_type\n\n\nEXTERNAL_TYPES_BY_IDENTITY = MappingProxyType({\n    rule.identity: rule\n    for rule in (\n        ExternalTypeRule(TypeIdentity("numpy", "ndarray"), register_array_type),\n        ExternalTypeRule(TypeIdentity("cupy._core.core", "ndarray"), register_array_type),\n        ExternalTypeRule(TypeIdentity("torch", "Tensor"), register_array_type),\n        ExternalTypeRule(TypeIdentity("pandas.core.frame", "DataFrame"), register_table_type),\n    )\n})\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "external_concrete_type_identity_table"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'external_concrete_type_identity_table'))
 
     assert finding.pattern_id == PatternId.VIRTUAL_MEMBERSHIP
     assert "EXTERNAL_TYPES_BY_IDENTITY" in finding.summary
@@ -2544,57 +567,10 @@ EXTERNAL_TYPES_BY_IDENTITY = MappingProxyType({
 
 
 def test_detects_repeated_result_assembly_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sampler:
-    def sample_from_certified(self, key, n_poses, pocket):
-        templates, template_weights = self.certified_templates(pocket)
-        key_trans, key_rot = random.split(key)
-        indices = select_template_indices(key_trans, template_weights, n_poses)
-        translations = sample_biased_translations(
-            key_trans, templates, template_weights, n_poses
-        )
-        quaternions = sample_biased_rotations(key_rot, templates, indices, n_poses)
-        return SamplingResult(
-            translations=translations,
-            quaternions=quaternions,
-            strategy=SamplingStrategy.GUIDED,
-            n_guided=n_poses,
-            n_random=0,
-            templates_used=len(templates),
-        )
-
-    def sample_from_analysis(self, request):
-        templates, template_weights = self.analysis_templates(
-            request.coords, request.shape, request.features
-        )
-        key_trans, key_rot = random.split(request.key)
-        indices = select_template_indices(key_trans, template_weights, request.n_poses)
-        translations = sample_biased_translations(
-            key_trans, templates, template_weights, request.n_poses
-        )
-        quaternions = sample_biased_rotations(
-            key_rot, templates, indices, request.n_poses
-        )
-        return SamplingResult(
-            translations=translations,
-            quaternions=quaternions,
-            strategy=SamplingStrategy.GUIDED,
-            n_guided=request.n_poses,
-            n_random=0,
-            templates_used=len(templates),
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sampler:\n    def sample_from_certified(self, key, n_poses, pocket):\n        templates, template_weights = self.certified_templates(pocket)\n        key_trans, key_rot = random.split(key)\n        indices = select_template_indices(key_trans, template_weights, n_poses)\n        translations = sample_biased_translations(\n            key_trans, templates, template_weights, n_poses\n        )\n        quaternions = sample_biased_rotations(key_rot, templates, indices, n_poses)\n        return SamplingResult(\n            translations=translations,\n            quaternions=quaternions,\n            strategy=SamplingStrategy.GUIDED,\n            n_guided=n_poses,\n            n_random=0,\n            templates_used=len(templates),\n        )\n\n    def sample_from_analysis(self, request):\n        templates, template_weights = self.analysis_templates(\n            request.coords, request.shape, request.features\n        )\n        key_trans, key_rot = random.split(request.key)\n        indices = select_template_indices(key_trans, template_weights, request.n_poses)\n        translations = sample_biased_translations(\n            key_trans, templates, template_weights, request.n_poses\n        )\n        quaternions = sample_biased_rotations(\n            key_rot, templates, indices, request.n_poses\n        )\n        return SamplingResult(\n            translations=translations,\n            quaternions=quaternions,\n            strategy=SamplingStrategy.GUIDED,\n            n_guided=request.n_poses,\n            n_random=0,\n            templates_used=len(templates),\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_result_assembly_pipeline"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_result_assembly_pipeline'))
 
     assert "sample_from_certified" in finding.summary
     assert "sample_from_analysis" in finding.summary
@@ -2602,35 +578,9 @@ class Sampler:
 
 
 def test_detects_fail_soft_effect_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def build_route(node):
-    head = extract_head(node)
-    if head is None:
-        return None
-    route = parse_route(head)
-    if route is None:
-        return None
-    owner = route_owner(route)
-    if owner is None:
-        return None
-    policy = policy_for(owner)
-    if policy is None:
-        return None
-    payload = build_payload(route, policy)
-    if payload is None:
-        return None
-    return RouteWitness(owner=owner, payload=payload)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef build_route(node):\n    head = extract_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    owner = route_owner(route)\n    if owner is None:\n        return None\n    policy = policy_for(owner)\n    if policy is None:\n        return None\n    payload = build_payload(route, policy)\n    if payload is None:\n        return None\n    return RouteWitness(owner=owner, payload=payload)\n')
 
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID))
 
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "5 fail-soft guard stages" in finding.summary
@@ -2641,31 +591,9 @@ def build_route(node):
 
 
 def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import ast
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport ast\n\ndef match_projected_attribute(node):\n    if not isinstance(node, ast.Call):\n        return None\n    if len(node.args) != 1:\n        return None\n    inner = node.args[0]\n    if not isinstance(inner, ast.Attribute):\n        return None\n    if not isinstance(inner.value, ast.Name):\n        return None\n    return inner.attr\n')
 
-def match_projected_attribute(node):
-    if not isinstance(node, ast.Call):
-        return None
-    if len(node.args) != 1:
-        return None
-    inner = node.args[0]
-    if not isinstance(inner, ast.Attribute):
-        return None
-    if not isinstance(inner.value, ast.Name):
-        return None
-    return inner.attr
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID))
 
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "payoff score" in finding.summary
@@ -2676,58 +604,11 @@ def match_projected_attribute(node):
 
 
 def test_detects_under_amortized_effect_infrastructure(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/effects.py",
-        """
-class EffectStep:
-    pass
+    _write_module(tmp_path, 'pkg/effects.py', '\nclass EffectStep:\n    pass\n\n\nclass SingleUseCarrier:\n    pass\n\n\ndef single_use_matcher(node):\n    return SingleUseCarrier()\n\n\ndef shared_matcher(node):\n    return node\n')
+    _write_module(tmp_path, 'pkg/consumer_a.py', '\nfrom pkg.effects import shared_matcher, single_use_matcher\n\n\ndef consume_one(node):\n    return single_use_matcher(node)\n\n\ndef consume_shared(node):\n    return shared_matcher(node)\n')
+    _write_module(tmp_path, 'pkg/consumer_b.py', '\nfrom pkg.effects import shared_matcher\n\n\ndef consume_again(node):\n    return shared_matcher(node)\n')
 
-
-class SingleUseCarrier:
-    pass
-
-
-def single_use_matcher(node):
-    return SingleUseCarrier()
-
-
-def shared_matcher(node):
-    return node
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_a.py",
-        """
-from pkg.effects import shared_matcher, single_use_matcher
-
-
-def consume_one(node):
-    return single_use_matcher(node)
-
-
-def consume_shared(node):
-    return shared_matcher(node)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer_b.py",
-        """
-from pkg.effects import shared_matcher
-
-
-def consume_again(node):
-    return shared_matcher(node)
-""",
-    )
-
-    finding = next(
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "under_amortized_infrastructure"
-    )
+    finding = next((item for item in analyze_path(tmp_path) if item.detector_id == 'under_amortized_infrastructure'))
 
     assert "single_use_matcher" in finding.summary
     assert "SingleUseCarrier" in finding.summary
@@ -2735,31 +616,7 @@ def consume_again(node):
 
 
 def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalDetector(CandidateFindingDetector):
-    detector_id = "local"
-
-    def _candidate_items(self, module, config):
-        del config
-        return _local_candidates(module)
-
-    def _finding_for_candidate(self, candidate):
-        return candidate
-
-
-class ConfiguredDetector(CandidateFindingDetector):
-    detector_id = "configured"
-
-    def _candidate_items(self, module, config):
-        return _configured_candidates(module, config)
-
-    def _finding_for_candidate(self, candidate):
-        return candidate
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalDetector(CandidateFindingDetector):\n    detector_id = "local"\n\n    def _candidate_items(self, module, config):\n        del config\n        return _local_candidates(module)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n\n\nclass ConfiguredDetector(CandidateFindingDetector):\n    detector_id = "configured"\n\n    def _candidate_items(self, module, config):\n        return _configured_candidates(module, config)\n\n    def _finding_for_candidate(self, candidate):\n        return candidate\n')
 
     findings = [
         item
@@ -2767,40 +624,13 @@ class ConfiguredDetector(CandidateFindingDetector):
         if item.detector_id == "candidate_collector_boilerplate"
     ]
 
-    assert {finding.evidence[0].symbol for finding in findings} == {
-        "LocalDetector._candidate_items",
-        "ConfiguredDetector._candidate_items",
-    }
-    assert any(
-        "ModuleCollectorCandidateDetector" in finding.summary for finding in findings
-    )
-    assert any(
-        "ConfiguredModuleCollectorCandidateDetector" in finding.summary
-        for finding in findings
-    )
+    assert {finding.evidence[0].symbol for finding in findings} == {'LocalDetector._candidate_items', 'ConfiguredDetector._candidate_items'}
+    assert any(('ModuleCollectorCandidateDetector' in finding.summary for finding in findings))
+    assert any(('ConfiguredModuleCollectorCandidateDetector' in finding.summary for finding in findings))
 
 
 def test_detects_typed_candidate_cast_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from typing import cast
-
-
-class Payload:
-    pass
-
-
-class LocalDetector(ModuleCollectorCandidateDetector):
-    detector_id = "local"
-    candidate_collector = _payloads
-
-    def _finding_for_candidate(self, candidate: object):
-        payload = cast(Payload, candidate)
-        return payload
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom typing import cast\n\n\nclass Payload:\n    pass\n\n\nclass LocalDetector(ModuleCollectorCandidateDetector):\n    detector_id = "local"\n    candidate_collector = _payloads\n\n    def _finding_for_candidate(self, candidate: object):\n        payload = cast(Payload, candidate)\n        return payload\n')
 
     findings = [
         item
@@ -2814,22 +644,7 @@ class LocalDetector(ModuleCollectorCandidateDetector):
 
 
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Detector:
-    finding_spec = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Example",
-        why="Example",
-        capability_gap="example",
-        relation_context="example",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Detector:\n    finding_spec = FindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Example",\n        why="Example",\n        capability_gap="example",\n        relation_context="example",\n        confidence=HIGH_CONFIDENCE,\n        certification=STRONG_HEURISTIC,\n    )\n')
 
     findings = [
         item
@@ -2844,21 +659,7 @@ class Detector:
 
 
 def test_detects_finding_spec_build_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalDetector:
-    detector_id = "local"
-
-    def render(self, item):
-        return self.finding_spec.build(
-            self.detector_id,
-            "summary",
-            (),
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalDetector:\n    detector_id = "local"\n\n    def render(self, item):\n        return self.finding_spec.build(\n            self.detector_id,\n            "summary",\n            (),\n        )\n')
 
     findings = [
         item
@@ -2872,22 +673,7 @@ class LocalDetector:
 
 
 def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):
-    detector_id = "local"
-    candidate_collector = local_candidates
-
-    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:
-        return self.build_finding(
-            f"`{candidate.name}` repeats renderer boilerplate.",
-            (candidate.evidence,),
-            scaffold="CandidateFindingRenderer(...)",
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):\n    detector_id = "local"\n    candidate_collector = local_candidates\n\n    def _finding_for_candidate(self, candidate: LocalCandidate) -> RefactorFinding:\n        return self.build_finding(\n            f"`{candidate.name}` repeats renderer boilerplate.",\n            (candidate.evidence,),\n            scaffold="CandidateFindingRenderer(...)",\n        )\n')
 
     findings = [
         item
@@ -2901,21 +687,7 @@ class LocalDetector(ModuleCollectorCandidateDetector[LocalCandidate]):
 
 
 def test_detects_derivable_detector_id(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalRuleDetector(IssueDetector):
-    detector_id = "local_rule"
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Local rule",
-        why="Local rule",
-        capability_gap="local rule",
-        relation_context="local rule",
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalRuleDetector(IssueDetector):\n    detector_id = "local_rule"\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n    )\n')
 
     findings = [
         item
@@ -2929,21 +701,7 @@ class LocalRuleDetector(IssueDetector):
 
 
 def test_detects_derivable_candidate_collector(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):
-    candidate_collector = _local_rule_candidates
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Local rule",
-        why="Local rule",
-        capability_gap="local rule",
-        relation_context="local rule",
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):\n    candidate_collector = _local_rule_candidates\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.ABC_TEMPLATE_METHOD,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n    )\n')
 
     findings = [
         item
@@ -2957,22 +715,7 @@ class LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):
 
 
 def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalRuleDetector(IssueDetector):
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Local rule",
-        why="Local rule",
-        capability_gap="local rule",
-        relation_context="local rule",
-        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
-        observation_tags=_DATAFLOW_ROOT_OBSERVATION_TAGS,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalRuleDetector(IssueDetector):\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n        capability_tags=_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,\n        observation_tags=_DATAFLOW_ROOT_OBSERVATION_TAGS,\n    )\n')
 
     findings = [
         item
@@ -2986,19 +729,7 @@ class LocalRuleDetector(IssueDetector):
 
 
 def test_detects_manual_sorted_tuple_return(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def ordered_names(items):
-    return tuple(
-        sorted(
-            {item.name for item in items},
-            key=str.lower,
-        )
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef ordered_names(items):\n    return tuple(\n        sorted(\n            {item.name for item in items},\n            key=str.lower,\n        )\n    )\n')
 
     findings = [
         item
@@ -3012,20 +743,7 @@ def ordered_names(items):
 
 
 def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def ordered_payload(items):
-    names = tuple(
-        sorted(
-            {item.name for item in items},
-            key=str.lower,
-        )
-    )
-    return {"names": names}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef ordered_payload(items):\n    names = tuple(\n        sorted(\n            {item.name for item in items},\n            key=str.lower,\n        )\n    )\n    return {"names": names}\n')
 
     findings = [
         item
@@ -3039,18 +757,7 @@ def ordered_payload(items):
 
 
 def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalAliasMixin:
-    source_name: str
-
-    @property
-    def public_name(self) -> str:
-        return self.source_name
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalAliasMixin:\n    source_name: str\n\n    @property\n    def public_name(self) -> str:\n        return self.source_name\n')
 
     findings = [
         item
@@ -3064,21 +771,7 @@ class LocalAliasMixin:
 
 
 def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class LocalRecord:
-    source_name: str
-
-    def other_behavior(self):
-        return self.source_name.upper()
-
-    @property
-    def public_name(self) -> str:
-        return self.source_name
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass LocalRecord:\n    source_name: str\n\n    def other_behavior(self):\n        return self.source_name.upper()\n\n    @property\n    def public_name(self) -> str:\n        return self.source_name\n')
 
     findings = [
         item
@@ -3092,19 +785,7 @@ class LocalRecord:
 
 
 def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class LocalProduct:
-    name: str
-    line: int
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass LocalProduct:\n    name: str\n    line: int\n')
 
     findings = [
         item
@@ -3118,40 +799,7 @@ class LocalProduct:
 
 
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class First:
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="First",
-        why="First",
-        capability_gap="first",
-        relation_context="first",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-
-
-class Second:
-    finding_spec = HighConfidenceFindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Second",
-        why="Second",
-        capability_gap="second",
-        relation_context="second",
-        capability_tags=(
-            CapabilityTag.AUTHORITATIVE_MAPPING,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.NOMINAL_IDENTITY,
-        ),
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass First:\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="First",\n        why="First",\n        capability_gap="first",\n        relation_context="first",\n        capability_tags=(\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n            CapabilityTag.NOMINAL_IDENTITY,\n        ),\n    )\n\n\nclass Second:\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Second",\n        why="Second",\n        capability_gap="second",\n        relation_context="second",\n        capability_tags=(\n            CapabilityTag.AUTHORITATIVE_MAPPING,\n            CapabilityTag.PROVENANCE,\n            CapabilityTag.NOMINAL_IDENTITY,\n        ),\n    )\n')
 
     findings = [
         item
@@ -3160,29 +808,11 @@ class Second:
     ]
 
     assert len(findings) == 2
-    assert all(
-        "AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS" in finding.summary
-        for finding in findings
-    )
+    assert all(('AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS' in finding.summary for finding in findings))
 
 
 def test_detects_derivable_semantic_tag_constant(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (
-    CapabilityTag.AUTHORITATIVE_MAPPING,
-    CapabilityTag.PROVENANCE,
-    CapabilityTag.NOMINAL_IDENTITY,
-)
-
-_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (
-    ObservationTag.DATAFLOW_ROOT,
-    ObservationTag.NORMALIZED_AST,
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\n_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (\n    CapabilityTag.AUTHORITATIVE_MAPPING,\n    CapabilityTag.PROVENANCE,\n    CapabilityTag.NOMINAL_IDENTITY,\n)\n\n_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (\n    ObservationTag.DATAFLOW_ROOT,\n    ObservationTag.NORMALIZED_AST,\n)\n')
 
     findings = [
         item
@@ -3196,19 +826,7 @@ _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (
 
 
 def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def build_metrics(field_names):
-    return MappingMetrics(
-        mapping_site_count=3,
-        field_count=len(field_names),
-        mapping_name="example",
-        field_names=field_names,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef build_metrics(field_names):\n    return MappingMetrics(\n        mapping_site_count=3,\n        field_count=len(field_names),\n        mapping_name="example",\n        field_names=field_names,\n    )\n')
 
     findings = [
         item
@@ -3222,45 +840,15 @@ def build_metrics(field_names):
 
 
 def test_ignores_existing_effect_step_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def match_projected_attribute(node, steps):
-    return Maybe.of(node).bind_all(steps).unwrap_or_none()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef match_projected_attribute(node, steps):\n    return Maybe.of(node).bind_all(steps).unwrap_or_none()\n')
 
-    assert not any(
-        finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID
-        for finding in analyze_path(tmp_path)
-    )
+    assert not any((finding.detector_id == EFFECT_STEP_AMORTIZATION_DETECTOR_ID for finding in analyze_path(tmp_path)))
 
 
 def test_detects_effect_step_implementation_leak(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import ast
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport ast\n\nclass CallStep(EffectStep):\n    step_id = "call"\n\n    def apply(self, value):\n        if not isinstance(value, ast.Call):\n            return None\n        if len(value.args) != 1:\n            return None\n        return value\n')
 
-class CallStep(EffectStep):
-    step_id = "call"
-
-    def apply(self, value):
-        if not isinstance(value, ast.Call):
-            return None
-        if len(value.args) != 1:
-            return None
-        return value
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID))
 
     assert "CallStep.apply" in finding.summary
     assert "attrs/properties" in finding.summary
@@ -3270,204 +858,46 @@ class CallStep(EffectStep):
 
 
 def test_ignores_effect_step_template_method_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class GoodStep(GuardedEffectStep):
-    step_id = "good"
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass GoodStep(GuardedEffectStep):\n    step_id = "good"\n\n    def accepts(self, value):\n        return bool(value)\n\n    def project(self, value):\n        return value\n')
 
-    def accepts(self, value):
-        return bool(value)
-
-    def project(self, value):
-        return value
-""",
-    )
-
-    assert not any(
-        finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-        for finding in analyze_path(tmp_path)
-    )
+    assert not any((finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID for finding in analyze_path(tmp_path)))
 
 
 def test_detects_effect_step_boolean_guard_leak(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import ast
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport ast\n\nclass TargetStep(IdentityGuardEffectStep):\n    step_id = "target"\n\n    def accepts(self, value):\n        return (\n            not value.comprehension.is_async\n            and not value.comprehension.ifs\n            and isinstance(value.comprehension.target, ast.Name)\n        )\n')
 
-class TargetStep(IdentityGuardEffectStep):
-    step_id = "target"
-
-    def accepts(self, value):
-        return (
-            not value.comprehension.is_async
-            and not value.comprehension.ifs
-            and isinstance(value.comprehension.target, ast.Name)
-        )
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID))
 
     assert "TargetStep.accepts" in finding.summary
     assert "raw guard mechanics" in finding.summary
 
 
 def test_ignores_abstract_effect_step_template_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import abstractmethod
-import ast
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import abstractmethod\nimport ast\n\nclass TargetBaseStep(IdentityGuardEffectStep):\n    def accepts(self, value):\n        return (\n            not value.comprehension.is_async\n            and not value.comprehension.ifs\n            and isinstance(value.comprehension.target, ast.Name)\n        )\n\n    @abstractmethod\n    def comprehension_from(self, value):\n        raise NotImplementedError\n')
 
-class TargetBaseStep(IdentityGuardEffectStep):
-    def accepts(self, value):
-        return (
-            not value.comprehension.is_async
-            and not value.comprehension.ifs
-            and isinstance(value.comprehension.target, ast.Name)
-        )
-
-    @abstractmethod
-    def comprehension_from(self, value):
-        raise NotImplementedError
-""",
-    )
-
-    assert not any(
-        finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID
-        for finding in analyze_path(tmp_path)
-    )
+    assert not any((finding.detector_id == EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID for finding in analyze_path(tmp_path)))
 
 
 def test_ignores_short_fail_soft_helper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def build_route(node):
-    head = extract_head(node)
-    if head is None:
-        return None
-    route = parse_route(head)
-    if route is None:
-        return None
-    return RouteWitness(route)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef build_route(node):\n    head = extract_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    return RouteWitness(route)\n')
 
-    assert not any(
-        finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-        for finding in analyze_path(tmp_path)
-    )
+    assert not any((finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID for finding in analyze_path(tmp_path)))
 
 
 def test_classifies_fail_soft_call_chain_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def _call_chain_from_outer_call(node):
-    return node
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef _call_chain_from_outer_call(node):\n    return node\n\n\ndef _call_chain_transport_values(node):\n    return node\n\n\ndef build_route(node):\n    chain = _call_chain_from_outer_call(node)\n    if chain is None:\n        return None\n    values = _call_chain_transport_values(chain)\n    if values is None:\n        return None\n    root = values[0]\n    if root is None:\n        return None\n    owner = values[1]\n    if owner is None:\n        return None\n    payload = values[2]\n    if payload is None:\n        return None\n    return RouteWitness(root, owner, payload)\n')
 
-
-def _call_chain_transport_values(node):
-    return node
-
-
-def build_route(node):
-    chain = _call_chain_from_outer_call(node)
-    if chain is None:
-        return None
-    values = _call_chain_transport_values(chain)
-    if values is None:
-        return None
-    root = values[0]
-    if root is None:
-        return None
-    owner = values[1]
-    if owner is None:
-        return None
-    payload = values[2]
-    if payload is None:
-        return None
-    return RouteWitness(root, owner, payload)
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID))
 
     assert "transport_call_chain_matcher" in finding.summary
     assert "match_transport_chain" in (finding.scaffold or "")
 
 
 def test_detects_nested_builder_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class SearchRequest:
-    @classmethod
-    def from_inputs(
-        cls,
-        *,
-        key,
-        ligand_com,
-        strategy,
-        n_poses=None,
-        n_poses_override=None,
-    ):
-        return cls(
-            key=key,
-            ligand_com=ligand_com,
-            strategy=strategy,
-            n_poses=n_poses,
-            n_poses_override=n_poses_override,
-        )
-
-
-class ExecutionRequest:
-    @classmethod
-    def from_detected_site(
-        cls,
-        site,
-        *,
-        key,
-        ligand_com,
-        strategy,
-        n_poses=None,
-        n_poses_override=None,
-    ):
-        return cls(
-            search=SearchRequest.from_inputs(
-                key=key,
-                ligand_com=ligand_com,
-                strategy=strategy,
-                n_poses=n_poses,
-                n_poses_override=n_poses_override,
-            ),
-            center=site.center,
-            box_size=max(site.radius, extent(site)),
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass SearchRequest:\n    @classmethod\n    def from_inputs(\n        cls,\n        *,\n        key,\n        ligand_com,\n        strategy,\n        n_poses=None,\n        n_poses_override=None,\n    ):\n        return cls(\n            key=key,\n            ligand_com=ligand_com,\n            strategy=strategy,\n            n_poses=n_poses,\n            n_poses_override=n_poses_override,\n        )\n\n\nclass ExecutionRequest:\n    @classmethod\n    def from_detected_site(\n        cls,\n        site,\n        *,\n        key,\n        ligand_com,\n        strategy,\n        n_poses=None,\n        n_poses_override=None,\n    ):\n        return cls(\n            search=SearchRequest.from_inputs(\n                key=key,\n                ligand_com=ligand_com,\n                strategy=strategy,\n                n_poses=n_poses,\n                n_poses_override=n_poses_override,\n            ),\n            center=site.center,\n            box_size=max(site.radius, extent(site)),\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "nested_builder_shell"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'nested_builder_shell'))
 
     assert "ExecutionRequest.from_detected_site" in finding.summary
     assert "SearchRequest.from_inputs" in finding.summary
@@ -3475,29 +905,7 @@ class ExecutionRequest:
 
 
 def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Notification:
-    def __init__(self, kind, recipient, subject=None, body=None, phone=None, device_token=None):
-        self.kind = kind
-        self.recipient = recipient
-        self.subject = subject
-        self.body = body
-        self.phone = phone
-        self.device_token = device_token
-
-    def send(self):
-        if self.kind == "email":
-            return smtp_send(self.recipient, self.subject, self.body)
-        elif self.kind == "sms":
-            return twilio_send(self.phone, self.body)
-        elif self.kind == "push":
-            return apns_send(self.device_token, self.body)
-        raise ValueError(self.kind)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Notification:\n    def __init__(self, kind, recipient, subject=None, body=None, phone=None, device_token=None):\n        self.kind = kind\n        self.recipient = recipient\n        self.subject = subject\n        self.body = body\n        self.phone = phone\n        self.device_token = device_token\n\n    def send(self):\n        if self.kind == "email":\n            return smtp_send(self.recipient, self.subject, self.body)\n        elif self.kind == "sms":\n            return twilio_send(self.phone, self.body)\n        elif self.kind == "push":\n            return apns_send(self.device_token, self.body)\n        raise ValueError(self.kind)\n')
 
     findings = analyze_path(tmp_path)
     finding = next(item for item in findings if item.detector_id == "manual_fiber_tag")
@@ -3507,70 +915,20 @@ class Notification:
 
 
 def test_detects_descriptor_derived_view_drift(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Model:
-    def __init__(self, table_name):
-        self.table_name = table_name
-        self.select_query = f"SELECT * FROM {self.table_name}"
-        self.insert_query = f"INSERT INTO {self.table_name}"
-        self.count_query = f"SELECT COUNT(*) FROM {self.table_name}"
-
-    def rename_table(self, new_name):
-        self.table_name = new_name
-        self.select_query = f"SELECT * FROM {self.table_name}"
-        self.insert_query = f"INSERT INTO {self.table_name}"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Model:\n    def __init__(self, table_name):\n        self.table_name = table_name\n        self.select_query = f"SELECT * FROM {self.table_name}"\n        self.insert_query = f"INSERT INTO {self.table_name}"\n        self.count_query = f"SELECT COUNT(*) FROM {self.table_name}"\n\n    def rename_table(self, new_name):\n        self.table_name = new_name\n        self.select_query = f"SELECT * FROM {self.table_name}"\n        self.insert_query = f"INSERT INTO {self.table_name}"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item for item in findings if item.detector_id == "descriptor_derived_view"
-    )
+    finding = next((item for item in findings if item.detector_id == 'descriptor_derived_view'))
     assert "count_query" in finding.summary
     assert finding.scaffold is not None
     assert "class DerivedField" in finding.scaffold
 
 
 def test_detects_deferred_class_registration(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-HANDLERS = {}
-
-
-def register_handler(event_type):
-    def decorator(cls):
-        HANDLERS[event_type] = cls
-        return cls
-    return decorator
-
-
-@register_handler("user.created")
-class UserCreatedHandler:
-    def handle(self, event):
-        return event
-
-
-@register_handler("order.placed")
-class OrderPlacedHandler:
-    def handle(self, event):
-        return event
-
-
-class PaymentFailedHandler:
-    def handle(self, event):
-        return event
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nHANDLERS = {}\n\n\ndef register_handler(event_type):\n    def decorator(cls):\n        HANDLERS[event_type] = cls\n        return cls\n    return decorator\n\n\n@register_handler("user.created")\nclass UserCreatedHandler:\n    def handle(self, event):\n        return event\n\n\n@register_handler("order.placed")\nclass OrderPlacedHandler:\n    def handle(self, event):\n        return event\n\n\nclass PaymentFailedHandler:\n    def handle(self, event):\n        return event\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item for item in findings if item.detector_id == "deferred_class_registration"
-    )
+    finding = next((item for item in findings if item.detector_id == 'deferred_class_registration'))
     assert "HANDLERS" in finding.summary
     assert finding.scaffold is not None
     assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
@@ -3579,40 +937,10 @@ class PaymentFailedHandler:
 
 
 def test_detects_structural_confusability_without_abc_witness(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def process_batch(items, backend):
-    for item in items:
-        backend.store(item)
-    backend.flush()
-
-
-class DatabaseBackend:
-    def store(self, item):
-        return item
-
-    def flush(self):
-        return None
-
-
-class CacheBackend:
-    def store(self, item):
-        return item
-
-    def flush(self):
-        return None
-
-    def invalidate(self):
-        return None
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef process_batch(items, backend):\n    for item in items:\n        backend.store(item)\n    backend.flush()\n\n\nclass DatabaseBackend:\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n\n\nclass CacheBackend:\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n\n    def invalidate(self):\n        return None\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item for item in findings if item.detector_id == "structural_confusability"
-    )
+    finding = next((item for item in findings if item.detector_id == 'structural_confusability'))
     assert "process_batch" in finding.summary
     assert finding.scaffold is not None
     assert "class BackendInterface(ABC)" in finding.scaffold
@@ -3621,89 +949,17 @@ class CacheBackend:
 def test_ignores_structural_confusability_when_abstract_witness_exists(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-
-
-def process_batch(items, backend):
-    for item in items:
-        backend.store(item)
-    backend.flush()
-
-
-class BackendInterface(ABC):
-    @abstractmethod
-    def store(self, item):
-        raise NotImplementedError
-
-    @abstractmethod
-    def flush(self):
-        raise NotImplementedError
-
-
-class DatabaseBackend(BackendInterface):
-    def store(self, item):
-        return item
-
-    def flush(self):
-        return None
-
-
-class CacheBackend(BackendInterface):
-    def store(self, item):
-        return item
-
-    def flush(self):
-        return None
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\n\n\ndef process_batch(items, backend):\n    for item in items:\n        backend.store(item)\n    backend.flush()\n\n\nclass BackendInterface(ABC):\n    @abstractmethod\n    def store(self, item):\n        raise NotImplementedError\n\n    @abstractmethod\n    def flush(self):\n        raise NotImplementedError\n\n\nclass DatabaseBackend(BackendInterface):\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n\n\nclass CacheBackend(BackendInterface):\n    def store(self, item):\n        return item\n\n    def flush(self):\n        return None\n')
 
     findings = analyze_path(tmp_path)
-    assert not any(
-        item.detector_id == "structural_confusability" for item in findings
-    )
+    assert not any((item.detector_id == 'structural_confusability' for item in findings))
 
 
 def test_detects_semantic_witness_family_with_abc_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class FunctionTrace:
-    file_path: str
-    function_name: str
-    line: int
-    helper_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class RegistryTrace:
-    source_path: str
-    registry_name: str
-    init_line: int
-    class_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ExportTrace:
-    artifact_path: str
-    subject_name: str
-    method_line: int
-    export_names: tuple[str, ...]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass FunctionTrace:\n    file_path: str\n    function_name: str\n    line: int\n    helper_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass RegistryTrace:\n    source_path: str\n    registry_name: str\n    init_line: int\n    class_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass ExportTrace:\n    artifact_path: str\n    subject_name: str\n    method_line: int\n    export_names: tuple[str, ...]\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item for item in findings if item.detector_id == "semantic_witness_family"
-    )
+    finding = next((item for item in findings if item.detector_id == 'semantic_witness_family'))
     assert "FunctionTrace" in finding.summary
     assert finding.scaffold is not None
     assert "class SemanticCarrier(ABC)" in finding.scaffold
@@ -3712,46 +968,10 @@ class ExportTrace:
 def test_detects_mixin_enforcement_for_renamed_semantic_roles(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class FunctionTrace:
-    file_path: str
-    function_name: str
-    method_line: int
-    helper_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class RegistryTrace:
-    source_path: str
-    registry_name: str
-    line: int
-    class_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ExportTrace:
-    artifact_path: str
-    subject_name: str
-    init_line: int
-    export_names: tuple[str, ...]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass FunctionTrace:\n    file_path: str\n    function_name: str\n    method_line: int\n    helper_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass RegistryTrace:\n    source_path: str\n    registry_name: str\n    line: int\n    class_names: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass ExportTrace:\n    artifact_path: str\n    subject_name: str\n    init_line: int\n    export_names: tuple[str, ...]\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        item
-        for item in findings
-        if item.detector_id == "mixin_enforcement"
-        and "function_name" in item.summary
-        and "class_names" in item.summary
-    )
+    finding = next((item for item in findings if item.detector_id == 'mixin_enforcement' and 'function_name' in item.summary and ('class_names' in item.summary)))
     assert finding.scaffold is not None
     assert "class PrimaryNameMixin(ABC)" in finding.scaffold
     assert "(SemanticCarrier, PrimaryNameMixin" in finding.scaffold
@@ -3760,116 +980,31 @@ class ExportTrace:
 
 
 def test_detects_sentinel_attribute_simulation(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    sigma = "alpha"
-
-
-class Beta:
-    sigma = "beta"
-
-
-def choose(obj):
-    if obj.sigma == "alpha":
-        return 1
-    return 2
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    sigma = "alpha"\n\n\nclass Beta:\n    sigma = "beta"\n\n\ndef choose(obj):\n    if obj.sigma == "alpha":\n        return 1\n    return 2\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 1 for finding in findings)
 
 
 def test_detects_predicate_factory_chain(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def build(param_type):
-    if is_optional(param_type):
-        return OptionalInfo()
-    elif is_dataclass(param_type):
-        return DataclassInfo()
-    return GenericInfo()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef build(param_type):\n    if is_optional(param_type):\n        return OptionalInfo()\n    elif is_dataclass(param_type):\n        return DataclassInfo()\n    return GenericInfo()\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 2 for finding in findings)
 
 
 def test_detects_config_attribute_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(config):
-    if hasattr(config, "napari_port"):
-        return config.napari_port
-    if getattr(config, "viewer_type", None) == "fiji":
-        return 2
-    return 0
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(config):\n    if hasattr(config, "napari_port"):\n        return config.napari_port\n    if getattr(config, "viewer_type", None) == "fiji":\n        return 2\n    return 0\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 4 for finding in findings)
 
 
 def test_detects_concrete_config_field_probe(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class VinardoConfig:
-    gaussians: tuple[tuple[float, float], ...] = ()
-    repulsion: float = 0.0
-    hydrophobic_low: float = 0.0
-    cutoff: float = 8.0
-
-
-@dataclass(frozen=True)
-class SoftLJConfig:
-    repulsion_exp: int = 8
-    attraction_exp: int = 4
-    repulsion_weight: float = 4.0
-    attraction_weight: float = 2.0
-    cutoff: float = 8.0
-
-
-class ScoringBackend(ABC):
-    _config: VinardoConfig | SoftLJConfig
-
-
-class SoftLJBackend(ScoringBackend):
-    def __init__(self, config: SoftLJConfig | None = None):
-        self._config = config if config is not None else SoftLJConfig()
-
-    def score(self):
-        cfg = self._config
-        return (
-            getattr(cfg, "gaussians"),
-            getattr(cfg, "repulsion"),
-            getattr(cfg, "hydrophobic_low"),
-            cfg.cutoff,
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass VinardoConfig:\n    gaussians: tuple[tuple[float, float], ...] = ()\n    repulsion: float = 0.0\n    hydrophobic_low: float = 0.0\n    cutoff: float = 8.0\n\n\n@dataclass(frozen=True)\nclass SoftLJConfig:\n    repulsion_exp: int = 8\n    attraction_exp: int = 4\n    repulsion_weight: float = 4.0\n    attraction_weight: float = 2.0\n    cutoff: float = 8.0\n\n\nclass ScoringBackend(ABC):\n    _config: VinardoConfig | SoftLJConfig\n\n\nclass SoftLJBackend(ScoringBackend):\n    def __init__(self, config: SoftLJConfig | None = None):\n        self._config = config if config is not None else SoftLJConfig()\n\n    def score(self):\n        cfg = self._config\n        return (\n            getattr(cfg, "gaussians"),\n            getattr(cfg, "repulsion"),\n            getattr(cfg, "hydrophobic_low"),\n            cfg.cutoff,\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "concrete_config_field_probe"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'concrete_config_field_probe'))
 
     assert "SoftLJBackend.score" in finding.summary
     assert "SoftLJConfig" in finding.summary
@@ -3878,68 +1013,23 @@ class SoftLJBackend(ScoringBackend):
 
 
 def test_collects_config_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(config):
-    if hasattr(config, "napari_port"):
-        return config.napari_port
-    if getattr(config, "viewer_type", None) == "fiji":
-        return 2
-    return 0
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(config):\n    if hasattr(config, "napari_port"):\n        return config.napari_port\n    if getattr(config, "viewer_type", None) == "fiji":\n        return 2\n    return 0\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, ConfigDispatchObservationFamily)
 
-    assert {item.observed_attribute for item in observations} == {
-        "napari_port",
-        "viewer_type",
-    }
+    assert {item.observed_attribute for item in observations} == {'napari_port', 'viewer_type'}
 
 
 def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    name = "alpha"
-
-
-class Beta:
-    name = "beta"
-
-
-def choose(obj):
-    if obj.name == "alpha":
-        return 1
-    return 2
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    name = "alpha"\n\n\nclass Beta:\n    name = "beta"\n\n\ndef choose(obj):\n    if obj.name == "alpha":\n        return 1\n    return 2\n')
 
     findings = analyze_path(tmp_path)
     assert not any(finding.pattern_id == 1 for finding in findings)
 
 
 def test_detects_generated_type_lineage(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-BASE_TO_LAZY = {}
-
-
-class Base:
-    pass
-
-
-LazyBase = type("LazyBase", (Base,), {})
-BASE_TO_LAZY[Base] = LazyBase
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nBASE_TO_LAZY = {}\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 7 for finding in findings)
@@ -3948,21 +1038,7 @@ BASE_TO_LAZY[Base] = LazyBase
 def test_collects_generated_type_lineage_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-BASE_TO_LAZY = {}
-
-
-class Base:
-    pass
-
-
-LazyBase = type("LazyBase", (Base,), {})
-BASE_TO_LAZY[Base] = LazyBase
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nBASE_TO_LAZY = {}\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n')
 
     module = parse_python_modules(tmp_path)[0]
     generation = collect_family_items(module, RuntimeTypeGenerationObservationFamily)
@@ -3973,15 +1049,7 @@ BASE_TO_LAZY[Base] = LazyBase
 
 
 def test_ignores_type_introspection_for_generated_type_lineage(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Box:
-    def clone(self):
-        return type(self)()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Box:\n    def clone(self):\n        return type(self)()\n')
 
     findings = analyze_path(tmp_path)
     assert not any(finding.detector_id == "generated_type_lineage" for finding in findings)
@@ -3992,18 +1060,7 @@ class Box:
 
 
 def test_detects_dual_axis_resolution(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(scope_stack, obj):
-    for scope in scope_stack:
-        for mro_type in type(obj).__mro__:
-            if scope and mro_type:
-                return scope, mro_type
-    return None
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(scope_stack, obj):\n    for scope in scope_stack:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return None\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 8 for finding in findings)
@@ -4012,18 +1069,7 @@ def resolve(scope_stack, obj):
 def test_collects_dual_axis_resolution_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(scope_stack, obj):
-    for scope in scope_stack:
-        for mro_type in type(obj).__mro__:
-            if scope and mro_type:
-                return scope, mro_type
-    return None
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(scope_stack, obj):\n    for scope in scope_stack:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return None\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, DualAxisResolutionObservationFamily)
@@ -4034,32 +1080,14 @@ def resolve(scope_stack, obj):
 
 
 def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def check(instance):
-    if hasattr(instance.__class__, "_is_global_config"):
-        return instance.__class__._is_global_config
-    return False
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef check(instance):\n    if hasattr(instance.__class__, "_is_global_config"):\n        return instance.__class__._is_global_config\n    return False\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 9 for finding in findings)
 
 
 def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def check(instance):
-    if hasattr(instance.__class__, "_is_global_config"):
-        return instance.__class__._is_global_config
-    return False
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef check(instance):\n    if hasattr(instance.__class__, "_is_global_config"):\n        return instance.__class__._is_global_config\n    return False\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, ClassMarkerObservationFamily)
@@ -4068,17 +1096,7 @@ def check(instance):
 
 
 def test_detects_dynamic_interface_generation(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-def make_interface(name):
-    return type(name, (ABC,), {})
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\ndef make_interface(name):\n    return type(name, (ABC,), {})\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 10 for finding in findings)
@@ -4087,17 +1105,7 @@ def make_interface(name):
 def test_collects_interface_generation_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-def make_interface(name):
-    return type(name, (ABC,), {})
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\ndef make_interface(name):\n    return type(name, (ABC,), {})\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, InterfaceGenerationObservationFamily)
@@ -4106,34 +1114,14 @@ def make_interface(name):
 
 
 def test_detects_sentinel_type_marker(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-SENTINEL = type("Sentinel", (), {})()
-
-
-def present(registry):
-    return SENTINEL in registry
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nSENTINEL = type("Sentinel", (), {})()\n\n\ndef present(registry):\n    return SENTINEL in registry\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 11 for finding in findings)
 
 
 def test_collects_sentinel_type_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-SENTINEL = type("Sentinel", (), {})()
-
-
-def present(registry):
-    return SENTINEL in registry
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nSENTINEL = type("Sentinel", (), {})()\n\n\ndef present(registry):\n    return SENTINEL in registry\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, SentinelTypeObservationFamily)
@@ -4143,14 +1131,7 @@ def present(registry):
 
 
 def test_detects_dynamic_method_injection(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def inject(target_type, method_name, method_impl):
-    setattr(target_type, method_name, method_impl)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef inject(target_type, method_name, method_impl):\n    setattr(target_type, method_name, method_impl)\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 12 for finding in findings)
@@ -4159,14 +1140,7 @@ def inject(target_type, method_name, method_impl):
 def test_collects_dynamic_method_injection_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def inject(target_type, method_name, method_impl):
-    setattr(target_type, method_name, method_impl)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef inject(target_type, method_name, method_impl):\n    setattr(target_type, method_name, method_impl)\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, DynamicMethodInjectionObservationFamily)
@@ -4175,18 +1149,7 @@ def inject(target_type, method_name, method_impl):
 
 
 def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def build(param_type):
-    if is_optional(param_type):
-        return OptionalInfo()
-    elif is_dataclass(param_type):
-        return DataclassInfo()
-    return GenericInfo()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef build(param_type):\n    if is_optional(param_type):\n        return OptionalInfo()\n    elif is_dataclass(param_type):\n        return DataclassInfo()\n    return GenericInfo()\n')
 
     findings = analyze_path(tmp_path)
     output = _format_markdown(findings)
@@ -4197,24 +1160,7 @@ def build(param_type):
 
 
 def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def _prepare(self, item):
-        ready = self.normalize(item)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-
-class Beta:
-    def _build(self, value):
-        ready = self.normalize(value)
-        checked = self.validate(ready)
-        return self.finish(checked)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n')
 
     findings = analyze_path(tmp_path)
     output = _format_markdown(findings)
@@ -4224,212 +1170,65 @@ class Beta:
 
 
 def test_clusters_redundant_methods_into_abc_candidate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def _prepare(self, item):
-        ready = self.normalize(item)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def _score(self, item):
-        scored = self.compute(item)
-        bounded = self.bound(scored)
-        packaged = self.package(bounded)
-        return self.finish(packaged)
-
-
-class Beta:
-    def _build(self, value):
-        ready = self.normalize(value)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def _evaluate(self, value):
-        scored = self.compute(value)
-        bounded = self.bound(scored)
-        packaged = self.package(bounded)
-        return self.finish(packaged)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _score(self, item):\n        scored = self.compute(item)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _evaluate(self, value):\n        scored = self.compute(value)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n')
 
     findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == "inheritance_hierarchy_candidate" for finding in findings
-    )
+    assert any((finding.detector_id == 'inheritance_hierarchy_candidate' for finding in findings))
 
 
 def test_observation_graph_recovers_method_coherence_cohort(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def _prepare(self, item):
-        ready = self.normalize(item)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def _score(self, item):
-        scored = self.compute(item)
-        bounded = self.bound(scored)
-        packaged = self.package(bounded)
-        return self.finish(packaged)
-
-
-class Beta:
-    def _build(self, value):
-        ready = self.normalize(value)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def _evaluate(self, value):
-        scored = self.compute(value)
-        bounded = self.bound(scored)
-        packaged = self.package(bounded)
-        return self.finish(packaged)
-
-
-class Gamma:
-    def _render(self, payload):
-        ready = self.normalize(payload)
-        checked = self.validate(ready)
-        return self.finish(checked)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _score(self, item):\n        scored = self.compute(item)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def _evaluate(self, value):\n        scored = self.compute(value)\n        bounded = self.bound(scored)\n        packaged = self.package(bounded)\n        return self.finish(packaged)\n\n\nclass Gamma:\n    def _render(self, payload):\n        ready = self.normalize(payload)\n        checked = self.validate(ready)\n        return self.finish(checked)\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, MethodShapeFamily)
-    graph = ObservationGraph(
-        tuple(item.structural_observation for item in observations)
-    )
+    graph = ObservationGraph(tuple((item.structural_observation for item in observations)))
 
-    cohorts = graph.coherence_cohorts_for(
-        ObservationKind.METHOD_SHAPE,
-        StructuralExecutionLevel.FUNCTION_BODY,
-        minimum_witnesses=2,
-        minimum_fibers=2,
-    )
+    cohorts = graph.coherence_cohorts_for(ObservationKind.METHOD_SHAPE, StructuralExecutionLevel.FUNCTION_BODY, minimum_witnesses=2, minimum_fibers=2)
 
-    cohort = next(
-        item for item in cohorts if item.nominal_witnesses == ("Alpha", "Beta")
-    )
+    cohort = next((item for item in cohorts if item.nominal_witnesses == ('Alpha', 'Beta')))
     assert len(cohort.fibers) == 2
 
 
 def test_detects_attribute_probe_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(widget):
-    if hasattr(widget, \"isChecked\"):
-        return widget.isChecked()
-    return getattr(widget, \"value\", None)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(widget):\n    if hasattr(widget, "isChecked"):\n        return widget.isChecked()\n    return getattr(widget, "value", None)\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "attribute_probes" for finding in findings)
 
 
 def test_collects_attribute_probe_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(widget):
-    if hasattr(widget, "checked"):
-        return widget.checked
-    try:
-        return getattr(widget, "value", None)
-    except AttributeError:
-        return None
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(widget):\n    if hasattr(widget, "checked"):\n        return widget.checked\n    try:\n        return getattr(widget, "value", None)\n    except AttributeError:\n        return None\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, AttributeProbeObservationFamily)
 
-    assert {item.probe_kind for item in observations} == {
-        "hasattr",
-        "getattr",
-        "attribute_error",
-    }
+    assert {item.probe_kind for item in observations} == {'hasattr', 'getattr', 'attribute_error'}
     assert any(item.observed_attribute == "checked" for item in observations)
 
 
 def test_ignores_array_protocol_attribute_probes(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def validate(value):
-    shape = getattr(value, "shape", None)
-    ndim = getattr(value, "ndim", None)
-    dtype = getattr(value, "dtype", None)
-    return shape, ndim, dtype
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef validate(value):\n    shape = getattr(value, "shape", None)\n    ndim = getattr(value, "ndim", None)\n    dtype = getattr(value, "dtype", None)\n    return shape, ndim, dtype\n')
 
     findings = analyze_path(tmp_path)
     assert not any(finding.detector_id == "attribute_probes" for finding in findings)
 
 
 def test_collects_literal_dispatch_observations_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def convert(kind, value):
-    if kind == "numpy":
-        return value
-    elif kind == "cupy":
-        return value
-    return value
-
-
-def walk(node):
-    if node.kind == "alpha":
-        return 1
-    if node.kind == "beta":
-        return 2
-    return 0
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef convert(kind, value):\n    if kind == "numpy":\n        return value\n    elif kind == "cupy":\n        return value\n    return value\n\n\ndef walk(node):\n    if node.kind == "alpha":\n        return 1\n    if node.kind == "beta":\n        return 2\n    return 0\n')
 
     module = parse_python_modules(tmp_path)[0]
     chains = collect_family_items(module, StringLiteralDispatchObservationFamily)
-    inline_groups = collect_family_items(
-        module, InlineStringLiteralDispatchObservationFamily
-    )
+    inline_groups = collect_family_items(module, InlineStringLiteralDispatchObservationFamily)
 
     assert any(item.axis_expression == "kind" for item in chains)
     assert any(item.axis_expression == "node.kind" for item in inline_groups)
 
 
 def test_detects_string_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def convert(kind, value):
-    if kind == \"numpy\":
-        return value
-    elif kind == \"cupy\":
-        return value
-    elif kind == \"torch\":
-        return value
-    return value
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef convert(kind, value):\n    if kind == "numpy":\n        return value\n    elif kind == "cupy":\n        return value\n    elif kind == "torch":\n        return value\n    return value\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == STRING_DISPATCH_DETECTOR_ID))
     assert finding.pattern_id == 3
     assert "`kind`" in finding.summary
     assert "'numpy'" in finding.summary
@@ -4437,25 +1236,10 @@ def convert(kind, value):
 
 
 def test_detects_inline_literal_dispatch_registry_smell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def walk(node):
-    if node.kind == "alpha":
-        return 1
-    if node.kind == "beta":
-        return 2
-    return 0
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef walk(node):\n    if node.kind == "alpha":\n        return 1\n    if node.kind == "beta":\n        return 2\n    return 0\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "inline_literal_dispatch"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'inline_literal_dispatch'))
     assert finding.scaffold is not None
     assert "DispatchCase(ABC)" in finding.scaffold
     assert "dispatch_node_kind" in finding.scaffold
@@ -4464,98 +1248,26 @@ def walk(node):
 
 
 def test_detects_bidirectional_registry(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Registry:
-    def __init__(self):
-        self._forward = {}
-        self._reverse = {}
-
-    def register(self, left, right):
-        self._forward[left] = right
-        self._reverse[right] = left
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Registry:\n    def __init__(self):\n        self._forward = {}\n        self._reverse = {}\n\n    def register(self, left, right):\n        self._forward[left] = right\n        self._reverse[right] = left\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 13 for finding in findings)
 
 
 def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def build(self, candidate):
-        return RuntimePlan(
-            pose_id=candidate.pose_id,
-            score=candidate.score,
-            theorem_handles=tuple(candidate.theorem_handles),
-        )
-
-
-class Beta:
-    def build(self, entry):
-        return RuntimePlan(
-            pose_id=entry.pose_id,
-            score=entry.score,
-            theorem_handles=tuple(entry.theorem_handles),
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def build(self, candidate):\n        return RuntimePlan(\n            pose_id=candidate.pose_id,\n            score=candidate.score,\n            theorem_handles=tuple(candidate.theorem_handles),\n        )\n\n\nclass Beta:\n    def build(self, entry):\n        return RuntimePlan(\n            pose_id=entry.pose_id,\n            score=entry.score,\n            theorem_handles=tuple(entry.theorem_handles),\n        )\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 14 for finding in findings)
     assert any(finding.pattern_id == 14 and finding.scaffold for finding in findings)
-    assert any(
-        finding.pattern_id == 14 and finding.codemod_patch for finding in findings
-    )
+    assert any((finding.pattern_id == 14 and finding.codemod_patch for finding in findings))
 
 
 def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import argparse
-
-
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--json", action="store_true", help="Emit JSON output")
-    parser.add_argument(
-        "--include-plans",
-        action="store_true",
-        help="Include planning details",
-    )
-    parser.add_argument(
-        "--min-builder-keywords",
-        type=int,
-        default=3,
-        help="Minimum builder keywords",
-    )
-    parser.add_argument(
-        "--exclude-pattern",
-        action="append",
-        dest="excluded_pattern_ids",
-        default=[],
-        help="Exclude one pattern id",
-    )
-    return parser
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_builder_calls"
-        and "main" in finding.summary
-        and "add_argument" in finding.summary
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_builder_calls' and 'main' in finding.summary and ('add_argument' in finding.summary)))
 
     assert "InvocationSpec" in (finding.scaffold or "")
     assert "declarative invocation table" in (finding.codemod_patch or "")
@@ -4566,15 +1278,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     for spec in _CLI_ARGUMENT_SPECS:
         spec.add_to_parser(parser)
 
-    args = parser.parse_args(
-        [
-            "--json",
-            "--include-plans",
-            "--exclude-pattern",
-            "14",
-            "nominal_refactor_advisor",
-        ]
-    )
+    args = parser.parse_args(['--json', '--include-plans', '--exclude-pattern', '14', 'nominal_refactor_advisor'])
 
     assert args.json is True
     assert args.include_plans is True
@@ -4583,91 +1287,22 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-REGISTRY = {}
-
-
-class AlphaHandler:
-    pass
-
-
-class BetaHandler:
-    pass
-
-
-REGISTRY["alpha"] = AlphaHandler
-REGISTRY["beta"] = BetaHandler
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
-    assert any(
-        finding.pattern_id == 6
-        and "from metaclass_registry import AutoRegisterMeta"
-        in (finding.scaffold or "")
-        for finding in findings
-    )
-    assert any(
-        finding.pattern_id == 6
-        and "__key_extractor__" in (finding.scaffold or "")
-        for finding in findings
-    )
-    assert any(
-        finding.pattern_id == 6
-        and "__registry__" in (finding.codemod_patch or "")
-        for finding in findings
-    )
+    assert any((finding.pattern_id == 6 and 'from metaclass_registry import AutoRegisterMeta' in (finding.scaffold or '') for finding in findings))
+    assert any((finding.pattern_id == 6 and '__key_extractor__' in (finding.scaffold or '') for finding in findings))
+    assert any((finding.pattern_id == 6 and '__registry__' in (finding.codemod_patch or '') for finding in findings))
 
 
 def test_detects_manual_concrete_subclass_roster_with_abstract_filter(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import inspect
-from abc import ABC, abstractmethod
-
-
-class Extractor(ABC):
-    _registered_types = []
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if not inspect.isabstract(cls):
-            cls._registered_types.append(cls)
-
-    @classmethod
-    def registered_types(cls):
-        return tuple(cls._registered_types)
-
-    @abstractmethod
-    def extract(self):
-        raise NotImplementedError
-
-
-class HydrogenExtractor(Extractor):
-    def extract(self):
-        return ("H",)
-
-
-class DonorExtractor(Extractor):
-    def extract(self):
-        return ("D",)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport inspect\nfrom abc import ABC, abstractmethod\n\n\nclass Extractor(ABC):\n    _registered_types = []\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        if not inspect.isabstract(cls):\n            cls._registered_types.append(cls)\n\n    @classmethod\n    def registered_types(cls):\n        return tuple(cls._registered_types)\n\n    @abstractmethod\n    def extract(self):\n        raise NotImplementedError\n\n\nclass HydrogenExtractor(Extractor):\n    def extract(self):\n        return ("H",)\n\n\nclass DonorExtractor(Extractor):\n    def extract(self):\n        return ("D",)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID))
 
     assert "Extractor" in finding.summary
     assert "_registered_types" in finding.summary
@@ -4680,42 +1315,10 @@ class DonorExtractor(Extractor):
 def test_detects_manual_concrete_subclass_roster_with_selector_guard(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class RoutedRequest(ABC):
-    route_name = None
-    _registered_types = []
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if cls.__dict__.get("route_name") is not None:
-            cls._registered_types.append(cls)
-
-    @classmethod
-    def concrete_types(cls):
-        return tuple(cls._registered_types)
-
-
-class DirectRequest(RoutedRequest):
-    route_name = "direct"
-
-
-class GuidedRequest(RoutedRequest):
-    route_name = "guided"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass RoutedRequest(ABC):\n    route_name = None\n    _registered_types = []\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        if cls.__dict__.get("route_name") is not None:\n            cls._registered_types.append(cls)\n\n    @classmethod\n    def concrete_types(cls):\n        return tuple(cls._registered_types)\n\n\nclass DirectRequest(RoutedRequest):\n    route_name = "direct"\n\n\nclass GuidedRequest(RoutedRequest):\n    route_name = "guided"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID))
 
     assert "route_name" in finding.summary
     assert "DirectRequest" in finding.summary
@@ -4726,57 +1329,10 @@ class GuidedRequest(RoutedRequest):
 def test_detects_manual_concrete_subclass_roster_with_root_qualified_append(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import inspect
-from abc import ABC, abstractmethod
-
-
-class HandlerBase(ABC):
-    _registered_handlers = []
-    _registration_index = 0
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if inspect.isabstract(cls):
-            return
-        cls._registration_index = HandlerBase._registration_index
-        HandlerBase._registration_index += 1
-        HandlerBase._registered_handlers.append(cls)
-
-    @classmethod
-    def registered_handlers(cls):
-        return tuple(
-            sorted(
-                HandlerBase._registered_handlers,
-                key=lambda item: item._registration_index,
-            )
-        )
-
-    @abstractmethod
-    def run(self):
-        raise NotImplementedError
-
-
-class AlphaHandler(HandlerBase):
-    def run(self):
-        return "alpha"
-
-
-class BetaHandler(HandlerBase):
-    def run(self):
-        return "beta"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport inspect\nfrom abc import ABC, abstractmethod\n\n\nclass HandlerBase(ABC):\n    _registered_handlers = []\n    _registration_index = 0\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        if inspect.isabstract(cls):\n            return\n        cls._registration_index = HandlerBase._registration_index\n        HandlerBase._registration_index += 1\n        HandlerBase._registered_handlers.append(cls)\n\n    @classmethod\n    def registered_handlers(cls):\n        return tuple(\n            sorted(\n                HandlerBase._registered_handlers,\n                key=lambda item: item._registration_index,\n            )\n        )\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaHandler(HandlerBase):\n    def run(self):\n        return "alpha"\n\n\nclass BetaHandler(HandlerBase):\n    def run(self):\n        return "beta"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID))
 
     assert "HandlerBase" in finding.summary
     assert "_registered_handlers" in finding.summary
@@ -4786,62 +1342,10 @@ class BetaHandler(HandlerBase):
 
 
 def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-
-
-class AutoRegisterConcreteTypes:
-    pass
-
-
-class RenderRule(AutoRegisterConcreteTypes, ABC):
-    _registered_types = []
-
-    @classmethod
-    def registered_types(cls):
-        return (AlphaRenderRule, BetaRenderRule)
-
-    @classmethod
-    def resolve(cls, artifact):
-        matches = [
-            candidate
-            for candidate in cls.registered_types()
-            if candidate.matches_context(artifact)
-        ]
-        if not matches:
-            raise ValueError(type(artifact).__name__)
-        if len(matches) != 1:
-            raise TypeError([candidate.__name__ for candidate in matches])
-        return matches[0]()
-
-    @classmethod
-    @abstractmethod
-    def matches_context(cls, artifact):
-        raise NotImplementedError
-
-
-class AlphaRenderRule(RenderRule):
-    @classmethod
-    def matches_context(cls, artifact):
-        return artifact.kind == "alpha"
-
-
-class BetaRenderRule(RenderRule):
-    @classmethod
-    def matches_context(cls, artifact):
-        return artifact.kind == "beta"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\n\n\nclass AutoRegisterConcreteTypes:\n    pass\n\n\nclass RenderRule(AutoRegisterConcreteTypes, ABC):\n    _registered_types = []\n\n    @classmethod\n    def registered_types(cls):\n        return (AlphaRenderRule, BetaRenderRule)\n\n    @classmethod\n    def resolve(cls, artifact):\n        matches = [\n            candidate\n            for candidate in cls.registered_types()\n            if candidate.matches_context(artifact)\n        ]\n        if not matches:\n            raise ValueError(type(artifact).__name__)\n        if len(matches) != 1:\n            raise TypeError([candidate.__name__ for candidate in matches])\n        return matches[0]()\n\n    @classmethod\n    @abstractmethod\n    def matches_context(cls, artifact):\n        raise NotImplementedError\n\n\nclass AlphaRenderRule(RenderRule):\n    @classmethod\n    def matches_context(cls, artifact):\n        return artifact.kind == "alpha"\n\n\nclass BetaRenderRule(RenderRule):\n    @classmethod\n    def matches_context(cls, artifact):\n        return artifact.kind == "beta"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "predicate_selected_concrete_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'predicate_selected_concrete_family'))
 
     assert "RenderRule.resolve" in finding.summary
     assert "matches_context(artifact)" in finding.summary
@@ -4856,49 +1360,11 @@ class BetaRenderRule(RenderRule):
 def test_detects_manual_concrete_subclass_roster_across_modules(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/base.py",
-        """
-from abc import ABC
-
-
-class RoutedRequest(ABC):
-    route_name = None
-    _registered_types = []
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if cls.__dict__.get("route_name") is not None:
-            cls._registered_types.append(cls)
-
-    @classmethod
-    def concrete_types(cls):
-        return tuple(cls._registered_types)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/routes.py",
-        """
-from .base import RoutedRequest
-
-
-class DirectRequest(RoutedRequest):
-    route_name = "direct"
-
-
-class GuidedRequest(RoutedRequest):
-    route_name = "guided"
-""",
-    )
+    _write_module(tmp_path, 'pkg/base.py', '\nfrom abc import ABC\n\n\nclass RoutedRequest(ABC):\n    route_name = None\n    _registered_types = []\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        if cls.__dict__.get("route_name") is not None:\n            cls._registered_types.append(cls)\n\n    @classmethod\n    def concrete_types(cls):\n        return tuple(cls._registered_types)\n')
+    _write_module(tmp_path, 'pkg/routes.py', '\nfrom .base import RoutedRequest\n\n\nclass DirectRequest(RoutedRequest):\n    route_name = "direct"\n\n\nclass GuidedRequest(RoutedRequest):\n    route_name = "guided"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID))
 
     assert "DirectRequest" in finding.summary
     assert "GuidedRequest" in finding.summary
@@ -4910,48 +1376,10 @@ class GuidedRequest(RoutedRequest):
 def test_detects_manual_concrete_subclass_roster_with_module_level_consumer(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-from typing import cast
-
-
-class FamilyGeneratingSpec(ABC):
-    family_specs = ()
-    _declaring_spec_types = []
-
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if cls.__dict__.get("family_specs"):
-            FamilyGeneratingSpec._declaring_spec_types.append(
-                cast(type[FamilyGeneratingSpec], cls)
-            )
-
-
-class AlphaSpec(FamilyGeneratingSpec):
-    family_specs = ("alpha",)
-
-
-class BetaSpec(FamilyGeneratingSpec):
-    family_specs = ("beta",)
-
-
-def materialize_declared_families():
-    return tuple(
-        spec_type.__name__
-        for spec_type in FamilyGeneratingSpec._declaring_spec_types
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\nfrom typing import cast\n\n\nclass FamilyGeneratingSpec(ABC):\n    family_specs = ()\n    _declaring_spec_types = []\n\n    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__(**kwargs)\n        if cls.__dict__.get("family_specs"):\n            FamilyGeneratingSpec._declaring_spec_types.append(\n                cast(type[FamilyGeneratingSpec], cls)\n            )\n\n\nclass AlphaSpec(FamilyGeneratingSpec):\n    family_specs = ("alpha",)\n\n\nclass BetaSpec(FamilyGeneratingSpec):\n    family_specs = ("beta",)\n\n\ndef materialize_declared_families():\n    return tuple(\n        spec_type.__name__\n        for spec_type in FamilyGeneratingSpec._declaring_spec_types\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID))
 
     assert "FamilyGeneratingSpec" in finding.summary
     assert "_declaring_spec_types" in finding.summary
@@ -4963,74 +1391,12 @@ def materialize_declared_families():
 def test_detects_predicate_selected_concrete_family_across_modules(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/base.py",
-        """
-from abc import ABC, abstractmethod
-from .alpha import AlphaRenderRule
-from .beta import BetaRenderRule
-
-
-class RenderRule(ABC):
-    _registered_types = []
-
-    @classmethod
-    def registered_types(cls):
-        return (AlphaRenderRule, BetaRenderRule)
-
-    @classmethod
-    def resolve(cls, artifact):
-        matches = [
-            candidate
-            for candidate in cls.registered_types()
-            if candidate.matches_context(artifact)
-        ]
-        if not matches:
-            raise ValueError(type(artifact).__name__)
-        if len(matches) != 1:
-            raise TypeError([candidate.__name__ for candidate in matches])
-        return matches[0]()
-
-    @classmethod
-    @abstractmethod
-    def matches_context(cls, artifact):
-        raise NotImplementedError
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/alpha.py",
-        """
-from .base import RenderRule
-
-
-class AlphaRenderRule(RenderRule):
-    @classmethod
-    def matches_context(cls, artifact):
-        return artifact.kind == "alpha"
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/beta.py",
-        """
-from .base import RenderRule
-
-
-class BetaRenderRule(RenderRule):
-    @classmethod
-    def matches_context(cls, artifact):
-        return artifact.kind == "beta"
-""",
-    )
+    _write_module(tmp_path, 'pkg/base.py', '\nfrom abc import ABC, abstractmethod\nfrom .alpha import AlphaRenderRule\nfrom .beta import BetaRenderRule\n\n\nclass RenderRule(ABC):\n    _registered_types = []\n\n    @classmethod\n    def registered_types(cls):\n        return (AlphaRenderRule, BetaRenderRule)\n\n    @classmethod\n    def resolve(cls, artifact):\n        matches = [\n            candidate\n            for candidate in cls.registered_types()\n            if candidate.matches_context(artifact)\n        ]\n        if not matches:\n            raise ValueError(type(artifact).__name__)\n        if len(matches) != 1:\n            raise TypeError([candidate.__name__ for candidate in matches])\n        return matches[0]()\n\n    @classmethod\n    @abstractmethod\n    def matches_context(cls, artifact):\n        raise NotImplementedError\n')
+    _write_module(tmp_path, 'pkg/alpha.py', '\nfrom .base import RenderRule\n\n\nclass AlphaRenderRule(RenderRule):\n    @classmethod\n    def matches_context(cls, artifact):\n        return artifact.kind == "alpha"\n')
+    _write_module(tmp_path, 'pkg/beta.py', '\nfrom .base import RenderRule\n\n\nclass BetaRenderRule(RenderRule):\n    @classmethod\n    def matches_context(cls, artifact):\n        return artifact.kind == "beta"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "predicate_selected_concrete_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'predicate_selected_concrete_family'))
 
     assert "RenderRule.resolve" in finding.summary
     assert "AlphaRenderRule" in finding.summary
@@ -5042,66 +1408,10 @@ class BetaRenderRule(RenderRule):
 
 
 def test_detects_parallel_mirrored_leaf_families(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-
-
-class InvoiceFieldEmitter(ABC):
-    _registered_types = []
-
-    @abstractmethod
-    def emit(self, artifact):
-        raise NotImplementedError
-
-
-class ReceiptFieldEmitter(ABC):
-    _registered_types = []
-
-    @abstractmethod
-    def emit(self, artifact):
-        raise NotImplementedError
-
-
-class InvoiceAlphaEmitter(InvoiceFieldEmitter):
-    def emit(self, artifact):
-        return artifact.alpha
-
-
-class InvoiceBetaEmitter(InvoiceFieldEmitter):
-    def emit(self, artifact):
-        return artifact.beta
-
-
-class InvoiceGammaEmitter(InvoiceFieldEmitter):
-    def emit(self, artifact):
-        return artifact.gamma
-
-
-class ReceiptAlphaEmitter(ReceiptFieldEmitter):
-    def emit(self, artifact):
-        return artifact.alpha
-
-
-class ReceiptBetaEmitter(ReceiptFieldEmitter):
-    def emit(self, artifact):
-        return artifact.beta
-
-
-class ReceiptGammaEmitter(ReceiptFieldEmitter):
-    def emit(self, artifact):
-        return artifact.gamma
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\n\n\nclass InvoiceFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact):\n        raise NotImplementedError\n\n\nclass ReceiptFieldEmitter(ABC):\n    _registered_types = []\n\n    @abstractmethod\n    def emit(self, artifact):\n        raise NotImplementedError\n\n\nclass InvoiceAlphaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.alpha\n\n\nclass InvoiceBetaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.beta\n\n\nclass InvoiceGammaEmitter(InvoiceFieldEmitter):\n    def emit(self, artifact):\n        return artifact.gamma\n\n\nclass ReceiptAlphaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.alpha\n\n\nclass ReceiptBetaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.beta\n\n\nclass ReceiptGammaEmitter(ReceiptFieldEmitter):\n    def emit(self, artifact):\n        return artifact.gamma\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "parallel_mirrored_leaf_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'parallel_mirrored_leaf_family'))
 
     assert "InvoiceFieldEmitter" in finding.summary
     assert "ReceiptFieldEmitter" in finding.summary
@@ -5110,112 +1420,32 @@ class ReceiptGammaEmitter(ReceiptFieldEmitter):
 
 
 def test_detects_helper_registration_call(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Registry:
-    def register(self, cls, key):
-        return cls
-
-
-registry = Registry()
-
-
-class Alpha:
-    pass
-
-
-class Beta:
-    pass
-
-
-registry.register(Alpha, "alpha")
-registry.register(Beta, "beta")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Registry:\n    def register(self, cls, key):\n        return cls\n\n\nregistry = Registry()\n\n\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n\n\nregistry.register(Alpha, "alpha")\nregistry.register(Beta, "beta")\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
 
 
 def test_detects_decorator_registration(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def register(registry, key):
-    def deco(cls):
-        return cls
-    return deco
-
-
-REGISTRY = {}
-
-
-@register(REGISTRY, "alpha")
-class Alpha:
-    pass
-
-
-@register(REGISTRY, "beta")
-class Beta:
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef register(registry, key):\n    def deco(cls):\n        return cls\n    return deco\n\n\nREGISTRY = {}\n\n\n@register(REGISTRY, "alpha")\nclass Alpha:\n    pass\n\n\n@register(REGISTRY, "beta")\nclass Beta:\n    pass\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
 
 
 def test_detects_auto_register_decorator_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def auto_register(registry, key):
-    def deco(cls):
-        return cls
-    return deco
-
-
-REGISTRY = {}
-
-
-@auto_register(REGISTRY, "alpha")
-class Alpha:
-    pass
-
-
-@auto_register(REGISTRY, "beta")
-class Beta:
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef auto_register(registry, key):\n    def deco(cls):\n        return cls\n    return deco\n\n\nREGISTRY = {}\n\n\n@auto_register(REGISTRY, "alpha")\nclass Alpha:\n    pass\n\n\n@auto_register(REGISTRY, "beta")\nclass Beta:\n    pass\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
 
 
 def test_collects_scoped_call_observations(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def build(self, result):
-        return transform(result)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def build(self, result):\n        return transform(result)\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_scoped_observations(module, (ast.Call,))
-    call_observation = next(
-        item
-        for item in observations
-        if isinstance(item.node, ast.Call)
-        and getattr(item.node.func, "id", None) == "transform"
-    )
+    call_observation = next((item for item in observations if isinstance(item.node, ast.Call) and getattr(item.node.func, 'id', None) == 'transform'))
 
     assert call_observation.class_name == "Alpha"
     assert call_observation.function_name == "build"
@@ -5229,15 +1459,8 @@ def test_spec_families_use_autoregistration() -> None:
         type(spec).__name__ for spec in FieldObservationSpec.registered_specs()
     }
 
-    assert registration_specs == {
-        "AssignmentRegistrationShapeSpec",
-        "CallRegistrationShapeSpec",
-        "DecoratorRegistrationShapeSpec",
-    }
-    assert field_specs == {
-        "DataclassBodyFieldObservationSpec",
-        "InitAssignmentFieldObservationSpec",
-    }
+    assert registration_specs == {'AssignmentRegistrationShapeSpec', 'CallRegistrationShapeSpec', 'DecoratorRegistrationShapeSpec'}
+    assert field_specs == {'DataclassBodyFieldObservationSpec', 'InitAssignmentFieldObservationSpec'}
 
 
 def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
@@ -5250,99 +1473,22 @@ def test_typed_literal_specs_are_derived_from_canonical_registry() -> None:
         for spec in TypedLiteralObservationSpec.registered_specs_for_literal_type(str)
     }
 
-    assert all_typed_specs == {
-        "StringLiteralDispatchObservationSpec",
-        "NumericLiteralDispatchObservationSpec",
-        "InlineStringLiteralDispatchObservationSpec",
-    }
-    assert string_typed_specs == {
-        "StringLiteralDispatchObservationSpec",
-        "InlineStringLiteralDispatchObservationSpec",
-    }
+    assert all_typed_specs == {'StringLiteralDispatchObservationSpec', 'NumericLiteralDispatchObservationSpec', 'InlineStringLiteralDispatchObservationSpec'}
+    assert string_typed_specs == {'StringLiteralDispatchObservationSpec', 'InlineStringLiteralDispatchObservationSpec'}
 
 
 def test_detects_parallel_scoped_shape_wrappers(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-import ast
-
-
-@dataclass(frozen=True)
-class NodeWrapperSpec:
-    node_types: tuple[type[ast.AST], ...]
-    builder: object
-
-
-def _build_function_projection(parsed_module, observation):
-    node = observation.node
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return None
-    return (parsed_module, node, observation.class_name)
-
-
-def _build_call_projection(parsed_module, observation):
-    node = observation.node
-    if not isinstance(node, ast.Call):
-        return None
-    return (parsed_module, node, observation.function_name)
-
-
-_FUNCTION_PROJECTION_SPEC = NodeWrapperSpec(
-    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),
-    builder=_build_function_projection,
-)
-
-
-_CALL_PROJECTION_SPEC = NodeWrapperSpec(
-    node_types=(ast.Call,),
-    builder=_build_call_projection,
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nimport ast\n\n\n@dataclass(frozen=True)\nclass NodeWrapperSpec:\n    node_types: tuple[type[ast.AST], ...]\n    builder: object\n\n\ndef _build_function_projection(parsed_module, observation):\n    node = observation.node\n    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n        return None\n    return (parsed_module, node, observation.class_name)\n\n\ndef _build_call_projection(parsed_module, observation):\n    node = observation.node\n    if not isinstance(node, ast.Call):\n        return None\n    return (parsed_module, node, observation.function_name)\n\n\n_FUNCTION_PROJECTION_SPEC = NodeWrapperSpec(\n    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),\n    builder=_build_function_projection,\n)\n\n\n_CALL_PROJECTION_SPEC = NodeWrapperSpec(\n    node_types=(ast.Call,),\n    builder=_build_call_projection,\n)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "scoped_shape_wrapper"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'scoped_shape_wrapper'))
 
     assert "polymorphic family" in finding.title
     assert "NodeFamilySpec" in (finding.scaffold or "")
 
 
 def test_detects_manual_indexed_family_expansion(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class FieldObservationSpec: ...
-class FieldObservation: ...
-class ConfigDispatchObservationSpec: ...
-class ConfigDispatchObservation: ...
-
-
-def collect_field_observations(parsed_module):
-    return [
-        item
-        for item in _collect_items_from_spec_root(
-            FieldObservationSpec, parsed_module, FieldObservation
-        )
-        if isinstance(item, FieldObservation)
-    ]
-
-
-def collect_config_dispatch_observations(parsed_module):
-    return [
-        item
-        for item in _collect_items_from_spec_root(
-            ConfigDispatchObservationSpec, parsed_module, ConfigDispatchObservation
-        )
-        if isinstance(item, ConfigDispatchObservation)
-    ]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass FieldObservationSpec: ...\nclass FieldObservation: ...\nclass ConfigDispatchObservationSpec: ...\nclass ConfigDispatchObservation: ...\n\n\ndef collect_field_observations(parsed_module):\n    return [\n        item\n        for item in _collect_items_from_spec_root(\n            FieldObservationSpec, parsed_module, FieldObservation\n        )\n        if isinstance(item, FieldObservation)\n    ]\n\n\ndef collect_config_dispatch_observations(parsed_module):\n    return [\n        item\n        for item in _collect_items_from_spec_root(\n            ConfigDispatchObservationSpec, parsed_module, ConfigDispatchObservation\n        )\n        if isinstance(item, ConfigDispatchObservation)\n    ]\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == "manual_indexed_family" for finding in findings)
@@ -5351,152 +1497,44 @@ def collect_config_dispatch_observations(parsed_module):
 def test_collects_scoped_shape_wrapper_observations_via_spec_family(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import ast
-
-
-def _build_method_shape_from_observation(parsed_module, observation):
-    node = observation.node
-    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return None
-    return (parsed_module, node)
-
-
-_METHOD_SHAPE_SPEC = ScopedShapeSpec(
-    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),
-    build_shape=_build_method_shape_from_observation,
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport ast\n\n\ndef _build_method_shape_from_observation(parsed_module, observation):\n    node = observation.node\n    if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n        return None\n    return (parsed_module, node)\n\n\n_METHOD_SHAPE_SPEC = ScopedShapeSpec(\n    node_types=(ast.FunctionDef, ast.AsyncFunctionDef),\n    build_shape=_build_method_shape_from_observation,\n)\n')
 
     module = parse_python_modules(tmp_path)[0]
     functions = collect_family_items(module, ScopedShapeWrapperFunctionFamily)
     specs = collect_family_items(module, ScopedShapeWrapperSpecFamily)
 
-    assert [item.function_name for item in functions] == [
-        "_build_method_shape_from_observation"
-    ]
+    assert [item.function_name for item in functions] == ['_build_method_shape_from_observation']
     assert [item.spec_name for item in specs] == ["_METHOD_SHAPE_SPEC"]
 
 
 def test_detects_namespaced_auto_register_decorator_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Plugins:
-    def auto_register(self, registry, key):
-        def deco(cls):
-            return cls
-        return deco
-
-
-plugins = Plugins()
-REGISTRY = {}
-
-
-@plugins.auto_register(REGISTRY, "alpha")
-class Alpha:
-    pass
-
-
-@plugins.auto_register(REGISTRY, "beta")
-class Beta:
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Plugins:\n    def auto_register(self, registry, key):\n        def deco(cls):\n            return cls\n        return deco\n\n\nplugins = Plugins()\nREGISTRY = {}\n\n\n@plugins.auto_register(REGISTRY, "alpha")\nclass Alpha:\n    pass\n\n\n@plugins.auto_register(REGISTRY, "beta")\nclass Beta:\n    pass\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.pattern_id == 6 for finding in findings)
 
 
 def test_collects_registration_shapes_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Plugins:
-    def auto_register(self, registry, key):
-        def deco(cls):
-            return cls
-        return deco
-
-
-plugins = Plugins()
-REGISTRY = {}
-
-
-@plugins.auto_register(REGISTRY, "alpha")
-class Alpha:
-    pass
-
-
-REGISTRY["beta"] = Alpha
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Plugins:\n    def auto_register(self, registry, key):\n        def deco(cls):\n            return cls\n        return deco\n\n\nplugins = Plugins()\nREGISTRY = {}\n\n\n@plugins.auto_register(REGISTRY, "alpha")\nclass Alpha:\n    pass\n\n\nREGISTRY["beta"] = Alpha\n')
 
     module = parse_python_modules(tmp_path)[0]
     shapes = collect_family_items(module, RegistrationShapeFamily)
 
-    assert {shape.registration_style for shape in shapes} == {
-        "decorator_registration",
-        "subscript_assignment",
-    }
+    assert {shape.registration_style for shape in shapes} == {'decorator_registration', 'subscript_assignment'}
 
 
 def test_detects_repeated_export_dict_shape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def export(self, result):
-        return {
-            "pose_id": result.pose_id,
-            "score": result.score,
-            "label": result.label,
-        }
-
-
-class Beta:
-    def export(self, item):
-        return {
-            "pose_id": item.pose_id,
-            "score": item.score,
-            "label": item.label,
-        }
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def export(self, result):\n        return {\n            "pose_id": result.pose_id,\n            "score": result.score,\n            "label": result.label,\n        }\n\n\nclass Beta:\n    def export(self, item):\n        return {\n            "pose_id": item.pose_id,\n            "score": item.score,\n            "label": item.label,\n        }\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID for finding in findings)
     assert any("projection dict" in finding.title.lower() for finding in findings)
-    assert any(
-        finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.scaffold
-        for finding in findings
-    )
-    assert any(
-        finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.codemod_patch
-        for finding in findings
-    )
+    assert any((finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.scaffold for finding in findings))
+    assert any((finding.detector_id == REPEATED_EXPORT_DICTS_DETECTOR_ID and finding.codemod_patch for finding in findings))
 
 
 def test_collects_projection_helper_shapes_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def labels(items):
-    return tuple(sorted(item.label for item in items))
-
-
-def scores(items):
-    return tuple(sorted(item.score for item in items))
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef labels(items):\n    return tuple(sorted(item.label for item in items))\n\n\ndef scores(items):\n    return tuple(sorted(item.score for item in items))\n')
 
     module = parse_python_modules(tmp_path)[0]
     shapes = collect_family_items(module, ProjectionHelperObservationFamily)
@@ -5505,18 +1543,7 @@ def scores(items):
 
 
 def test_collects_accessor_wrapper_candidates_via_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sample:
-    def current(self):
-        return self._current
-
-    def update(self, current):
-        self._current = current
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sample:\n    def current(self):\n        return self._current\n\n    def update(self, current):\n        self._current = current\n')
 
     module = parse_python_modules(tmp_path)[0]
     candidates = collect_family_items(module, AccessorWrapperObservationFamily)
@@ -5525,62 +1552,19 @@ class Sample:
 
 
 def test_collects_field_observation_fibers_for_dataclass_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-    label: str
-
-
-@dataclass
-class BetaResult:
-    pose_id: int
-    score: float
-    label: str
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    label: str\n\n\n@dataclass\nclass BetaResult:\n    pose_id: int\n    score: float\n    label: str\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
-    graph = ObservationGraph(
-        tuple(item.structural_observation for item in observations)
-    )
-    fibers = graph.fibers_for(
-        ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY
-    )
+    graph = ObservationGraph(tuple((item.structural_observation for item in observations)))
+    fibers = graph.fibers_for(ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY)
 
     pose_fiber = next(fiber for fiber in fibers if fiber.observed_name == "pose_id")
     assert len(pose_fiber.observations) == 2
 
 
 def test_ignores_classvar_fields_via_generic_annotation_matcher(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-from typing import ClassVar
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    cache: ClassVar[dict[str, int]] = {}
-
-
-@dataclass
-class BetaResult:
-    pose_id: int
-    cache: ClassVar[dict[str, int]] = {}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nfrom typing import ClassVar\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    cache: ClassVar[dict[str, int]] = {}\n\n\n@dataclass\nclass BetaResult:\n    pose_id: int\n    cache: ClassVar[dict[str, int]] = {}\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
@@ -5589,75 +1573,20 @@ class BetaResult:
 
 
 def test_observation_graph_recovers_field_coherence_cohort(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-    label: str
-    rank: int
-    alpha_only: int
-
-
-@dataclass
-class BetaResult:
-    pose_id: int
-    score: float
-    label: str
-    rank: int
-    beta_only: int
-
-
-@dataclass
-class GammaResult:
-    pose_id: int
-    score: float
-    gamma_only: int
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    label: str\n    rank: int\n    alpha_only: int\n\n\n@dataclass\nclass BetaResult:\n    pose_id: int\n    score: float\n    label: str\n    rank: int\n    beta_only: int\n\n\n@dataclass\nclass GammaResult:\n    pose_id: int\n    score: float\n    gamma_only: int\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
-    graph = ObservationGraph(
-        tuple(item.structural_observation for item in observations)
-    )
+    graph = ObservationGraph(tuple((item.structural_observation for item in observations)))
 
-    cohorts = graph.coherence_cohorts_for(
-        ObservationKind.FIELD,
-        StructuralExecutionLevel.CLASS_BODY,
-        minimum_witnesses=2,
-        minimum_fibers=2,
-    )
+    cohorts = graph.coherence_cohorts_for(ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY, minimum_witnesses=2, minimum_fibers=2)
 
-    cohort = next(
-        item
-        for item in cohorts
-        if item.nominal_witnesses == ("AlphaResult", "BetaResult")
-    )
+    cohort = next((item for item in cohorts if item.nominal_witnesses == ('AlphaResult', 'BetaResult')))
     assert set(cohort.observed_names) == {"pose_id", "score", "label", "rank"}
 
 
 def test_ignores_namespaced_classvar_fields_via_family_matcher(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import typing
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    cache: typing.ClassVar[dict[str, int]] = {}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport typing\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    cache: typing.ClassVar[dict[str, int]] = {}\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
@@ -5666,19 +1595,7 @@ class AlphaResult:
 
 
 def test_collects_namespaced_dataclass_fields_via_name_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import dataclasses as dc
-
-
-@dc.dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport dataclasses as dc\n\n\n@dc.dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n')
 
     module = parse_python_modules(tmp_path)[0]
     observations = collect_family_items(module, FieldObservationFamily)
@@ -5687,36 +1604,10 @@ class AlphaResult:
 
 
 def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-    label: str
-    alpha_only: int
-
-
-@dataclass
-class BetaResult:
-    pose_id: int
-    score: float
-    label: str
-    beta_only: int
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    label: str\n    alpha_only: int\n\n\n@dataclass\nclass BetaResult:\n    pose_id: int\n    score: float\n    label: str\n    beta_only: int\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_field_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_field_family'))
 
     assert finding.pattern_id == 5
     assert "pose_id" in finding.summary
@@ -5725,90 +1616,27 @@ class BetaResult:
 
 
 def test_does_not_merge_dataclass_fields_with_conflicting_types(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-    alpha_only: int
-
-
-@dataclass
-class BetaResult:
-    pose_id: str
-    score: float
-    beta_only: int
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n    alpha_only: int\n\n\n@dataclass\nclass BetaResult:\n    pose_id: str\n    score: float\n    beta_only: int\n')
 
     findings = analyze_path(tmp_path)
-    assert not any(
-        finding.detector_id == "repeated_field_family" for finding in findings
-    )
+    assert not any((finding.detector_id == 'repeated_field_family' for finding in findings))
 
 
 def test_plan_extracts_shared_fields_to_abc_base(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class AlphaController:
-    def __init__(self, pose_id, score, label, alpha_only):
-        self.pose_id = pose_id
-        self.score = score
-        self.label = label
-        self.alpha_only = alpha_only
-
-
-class BetaController:
-    def __init__(self, pose_id, score, label, beta_only):
-        self.pose_id = pose_id
-        self.score = score
-        self.label = label
-        self.beta_only = beta_only
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass AlphaController:\n    def __init__(self, pose_id, score, label, alpha_only):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n        self.alpha_only = alpha_only\n\n\nclass BetaController:\n    def __init__(self, pose_id, score, label, beta_only):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n        self.beta_only = beta_only\n')
 
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
     plan = next(plan for plan in plans if plan.primary_pattern_id == 5)
 
     assert any(action.kind == "extract_shared_fields" for action in plan.actions)
-    field_action = next(
-        action for action in plan.actions if action.kind == "extract_shared_fields"
-    )
+    field_action = next((action for action in plan.actions if action.kind == 'extract_shared_fields'))
     assert field_action.statement_operation == "move"
     assert "pose_id" in field_action.description
 
 
 def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass
-class AlphaResult:
-    pose_id: int
-    score: float
-
-
-def convert(kind, value):
-    if kind == "numpy":
-        return value
-    elif kind == "cupy":
-        return value
-    return value
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass AlphaResult:\n    pose_id: int\n    score: float\n\n\ndef convert(kind, value):\n    if kind == "numpy":\n        return value\n    elif kind == "cupy":\n        return value\n    return value\n')
 
     modules = parse_python_modules(tmp_path)
     findings = analyze_path(tmp_path)
@@ -5825,32 +1653,7 @@ def convert(kind, value):
 def test_observation_graph_auto_includes_registered_observation_families(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-BASE_TO_LAZY = {}
-SENTINEL = type("Sentinel", (), {})()
-
-
-class Base:
-    pass
-
-
-LazyBase = type("LazyBase", (Base,), {})
-BASE_TO_LAZY[Base] = LazyBase
-
-
-def resolve(config, obj):
-    if hasattr(config, "kind"):
-        return config.kind
-    for scope in [1]:
-        for mro_type in type(obj).__mro__:
-            if scope and mro_type:
-                return scope, mro_type
-    return SENTINEL
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nBASE_TO_LAZY = {}\nSENTINEL = type("Sentinel", (), {})()\n\n\nclass Base:\n    pass\n\n\nLazyBase = type("LazyBase", (Base,), {})\nBASE_TO_LAZY[Base] = LazyBase\n\n\ndef resolve(config, obj):\n    if hasattr(config, "kind"):\n        return config.kind\n    for scope in [1]:\n        for mro_type in type(obj).__mro__:\n            if scope and mro_type:\n                return scope, mro_type\n    return SENTINEL\n')
 
     graph = build_observation_graph(parse_python_modules(tmp_path))
     kinds = {item.observation_kind for item in graph.observations}
@@ -5863,17 +1666,7 @@ def resolve(config, obj):
 
 
 def test_ignores_constant_string_maps_for_pattern_three(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-LOOKUP = {
-    "alpha": 1,
-    "beta": 2,
-    "gamma": 3,
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nLOOKUP = {\n    "alpha": 1,\n    "beta": 2,\n    "gamma": 3,\n}\n')
 
     findings = analyze_path(tmp_path)
     assert not any(finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
@@ -5882,143 +1675,41 @@ LOOKUP = {
 def test_detects_module_level_dispatch_dict_with_callable_targets(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def alpha():
-    return 1
-
-
-def beta():
-    return 2
-
-
-def gamma():
-    return 3
-
-
-DISPATCH = {
-    "alpha": alpha,
-    "beta": beta,
-    "gamma": gamma,
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef alpha():\n    return 1\n\n\ndef beta():\n    return 2\n\n\ndef gamma():\n    return 3\n\n\nDISPATCH = {\n    "alpha": alpha,\n    "beta": beta,\n    "gamma": gamma,\n}\n')
 
     findings = analyze_path(tmp_path)
     assert any(finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings)
 
 
 def test_ignores_non_branch_config_reads(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def resolve(config):
-    port = config.napari_port
-    return port
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef resolve(config):\n    port = config.napari_port\n    return port\n')
 
     findings = analyze_path(tmp_path)
     assert not any(finding.pattern_id == 4 for finding in findings)
 
 
 def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def render(pattern_id):
-    if pattern_id == 3:
-        return "dispatch"
-    elif pattern_id == 5:
-        return "abc"
-    elif pattern_id == 14:
-        return "schema"
-    return "other"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef render(pattern_id):\n    if pattern_id == 3:\n        return "dispatch"\n    elif pattern_id == 5:\n        return "abc"\n    elif pattern_id == 14:\n        return "schema"\n    return "other"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "numeric_literal_dispatch"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'numeric_literal_dispatch'))
     assert "`pattern_id`" in finding.summary
     assert "3" in finding.summary
     assert finding.certification == "certified"
 
 
 def test_detects_repeated_hardcoded_semantic_string(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-DEFAULT_CERTIFICATION = "strong_heuristic"
-
-
-def first():
-    return configure(certification="strong_heuristic")
-
-
-def second():
-    return configure(certification="strong_heuristic")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nDEFAULT_CERTIFICATION = "strong_heuristic"\n\n\ndef first():\n    return configure(certification="strong_heuristic")\n\n\ndef second():\n    return configure(certification="strong_heuristic")\n')
 
     findings = analyze_path(tmp_path)
-    assert any(
-        finding.detector_id == "repeated_hardcoded_strings" for finding in findings
-    )
+    assert any((finding.detector_id == 'repeated_hardcoded_strings' for finding in findings))
 
 
 def test_detects_dead_embedded_static_payload_emitter(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Publisher:
-    def publish(self, dest):
-        return self._write_manifest(dest)
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Publisher:\n    def publish(self, dest):\n        return self._write_manifest(dest)\n\n    def _write_manifest(self, dest):\n        (dest / "manifest.json").write_text("{}", encoding="utf-8")\n\n    def _write_static_shell(self, dest):\n        payload = """\\\n<section class="report">\n  <header>\n    <h1>Release</h1>\n  </header>\n  <main>\n    <article data-kind="summary">\n      <p>Generated view</p>\n    </article>\n    <aside>\n      <span>Status</span>\n    </aside>\n  </main>\n</section>\n"""\n        (dest / "index.html").write_text(payload, encoding="utf-8")\n')
 
-    def _write_manifest(self, dest):
-        (dest / "manifest.json").write_text("{}", encoding="utf-8")
-
-    def _write_static_shell(self, dest):
-        payload = \"\"\"\\
-<section class="report">
-  <header>
-    <h1>Release</h1>
-  </header>
-  <main>
-    <article data-kind="summary">
-      <p>Generated view</p>
-    </article>
-    <aside>
-      <span>Status</span>
-    </aside>
-  </main>
-</section>
-\"\"\"
-        (dest / "index.html").write_text(payload, encoding="utf-8")
-""",
-    )
-
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_static_payload_function_lines=10,
-            min_static_payload_literal_lines=8,
-        ),
-    )
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_static_payload_function_lines=10, min_static_payload_literal_lines=8))
+    finding = next((finding for finding in findings if finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Publisher._write_static_shell" in finding.summary
@@ -6027,80 +1718,18 @@ class Publisher:
 
 
 def test_keeps_referenced_embedded_static_payload_emitters(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Publisher:
-    def publish(self, dest):
-        return self._write_static_shell(dest)
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Publisher:\n    def publish(self, dest):\n        return self._write_static_shell(dest)\n\n    def _write_static_shell(self, dest):\n        payload = """\\\n<section class="report">\n  <header>\n    <h1>Release</h1>\n  </header>\n  <main>\n    <article data-kind="summary">\n      <p>Generated view</p>\n    </article>\n    <aside>\n      <span>Status</span>\n    </aside>\n  </main>\n</section>\n"""\n        (dest / "index.html").write_text(payload, encoding="utf-8")\n')
 
-    def _write_static_shell(self, dest):
-        payload = \"\"\"\\
-<section class="report">
-  <header>
-    <h1>Release</h1>
-  </header>
-  <main>
-    <article data-kind="summary">
-      <p>Generated view</p>
-    </article>
-    <aside>
-      <span>Status</span>
-    </aside>
-  </main>
-</section>
-\"\"\"
-        (dest / "index.html").write_text(payload, encoding="utf-8")
-""",
-    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_static_payload_function_lines=10, min_static_payload_literal_lines=8))
 
-    findings = analyze_path(
-        tmp_path,
-        DetectorConfig(
-            min_static_payload_function_lines=10,
-            min_static_payload_literal_lines=8,
-        ),
-    )
-
-    assert not any(
-        finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-        for finding in findings
-    )
+    assert not any((finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID for finding in findings))
 
 
 def test_detects_unreferenced_private_function(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Cleanup:
-    def run(self, item):
-        return self._live(item)
-
-    def _live(self, item):
-        return item
-
-    def _stale_export(self, rows):
-        normalized = []
-        for row in rows:
-            normalized.append(str(row).strip())
-        if not normalized:
-            return []
-        return [
-            value.upper()
-            for value in normalized
-            if value
-        ]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Cleanup:\n    def run(self, item):\n        return self._live(item)\n\n    def _live(self, item):\n        return item\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Cleanup._stale_export" in finding.summary
@@ -6109,68 +1738,18 @@ class Cleanup:
 
 
 def test_keeps_referenced_private_function(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Cleanup:
-    def run(self, rows):
-        return self._stale_export(rows)
-
-    def _stale_export(self, rows):
-        normalized = []
-        for row in rows:
-            normalized.append(str(row).strip())
-        if not normalized:
-            return []
-        return [
-            value.upper()
-            for value in normalized
-            if value
-        ]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Cleanup:\n    def run(self, rows):\n        return self._stale_export(rows)\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-        for finding in findings
-    )
+    assert not any((finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID for finding in findings))
 
 
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-import shutil
-
-
-class Packager:
-    def _copy_pdf(self, pdf_file, package_dir):
-        pdf_dest = package_dir / pdf_file.name
-        shutil.copy2(pdf_file, pdf_dest)
-        print(f"PDF: {pdf_file.name}")
-
-    def _copy_markdown(self, markdown_file, package_dir):
-        markdown_dest = package_dir / markdown_file.name
-        shutil.copy2(markdown_file, markdown_dest)
-        print(f"Markdown: {markdown_file.name}")
-
-    def _copy_metadata(self, metadata_file, package_dir):
-        metadata_dest = package_dir / metadata_file.name
-        shutil.copy2(metadata_file, metadata_dest)
-        print(f"Metadata: {metadata_file.name}")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport shutil\n\n\nclass Packager:\n    def _copy_pdf(self, pdf_file, package_dir):\n        pdf_dest = package_dir / pdf_file.name\n        shutil.copy2(pdf_file, pdf_dest)\n        print(f"PDF: {pdf_file.name}")\n\n    def _copy_markdown(self, markdown_file, package_dir):\n        markdown_dest = package_dir / markdown_file.name\n        shutil.copy2(markdown_file, markdown_dest)\n        print(f"Markdown: {markdown_file.name}")\n\n    def _copy_metadata(self, metadata_file, package_dir):\n        metadata_dest = package_dir / metadata_file.name\n        shutil.copy2(metadata_file, metadata_dest)\n        print(f"Metadata: {metadata_file.name}")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "sibling_small_method_template"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'sibling_small_method_template'))
 
     assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
     assert "_copy_pdf" in finding.summary
@@ -6179,51 +1758,18 @@ class Packager:
 
 
 def test_ignores_unrelated_small_private_methods(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Packager:
-    def _alpha(self, value):
-        result = normalize(value)
-        emit(result)
-        return result
-
-    def _beta(self, value):
-        result = normalize(value)
-        emit(result)
-        return result
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Packager:\n    def _alpha(self, value):\n        result = normalize(value)\n        emit(result)\n        return result\n\n    def _beta(self, value):\n        result = normalize(value)\n        emit(result)\n        return result\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "sibling_small_method_template"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'sibling_small_method_template' for finding in findings))
 
 
 def test_detects_mirrored_import_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-try:
-    from .constants import ALPHA, BETA
-    from .models import Request
-except ImportError:
-    from constants import ALPHA, BETA
-    from models import Request
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ntry:\n    from .constants import ALPHA, BETA\n    from .models import Request\nexcept ImportError:\n    from constants import ALPHA, BETA\n    from models import Request\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "mirrored_import_fallback"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'mirrored_import_fallback'))
 
     assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
     assert "constants" in finding.summary
@@ -6232,63 +1778,18 @@ except ImportError:
 
 
 def test_ignores_nonmirrored_import_fallback(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-try:
-    from .constants import ALPHA, BETA
-except ImportError:
-    from constants import ALPHA
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ntry:\n    from .constants import ALPHA, BETA\nexcept ImportError:\n    from constants import ALPHA\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "mirrored_import_fallback"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'mirrored_import_fallback' for finding in findings))
 
 
 def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-ACTION_RUN = "run"
-ACTION_CHECK = "check"
-ACTION_EXPORT = "export"
-ACTION_AUDIT = "audit"
-
-ACTION_CHOICES = (ACTION_RUN, ACTION_CHECK, ACTION_EXPORT, ACTION_AUDIT)
-
-
-class Driver:
-    def run_one(self, action):
-        if action == ACTION_RUN:
-            return self.run()
-        if action in (ACTION_CHECK, ACTION_EXPORT):
-            return self.project(action)
-        if action == ACTION_AUDIT:
-            return self.audit()
-
-    def run_all(self, action):
-        if action in (ACTION_RUN, ACTION_CHECK):
-            return self.batch(action)
-        if action == ACTION_EXPORT:
-            return self.export()
-        if action == ACTION_AUDIT:
-            return self.audit()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nACTION_RUN = "run"\nACTION_CHECK = "check"\nACTION_EXPORT = "export"\nACTION_AUDIT = "audit"\n\nACTION_CHOICES = (ACTION_RUN, ACTION_CHECK, ACTION_EXPORT, ACTION_AUDIT)\n\n\nclass Driver:\n    def run_one(self, action):\n        if action == ACTION_RUN:\n            return self.run()\n        if action in (ACTION_CHECK, ACTION_EXPORT):\n            return self.project(action)\n        if action == ACTION_AUDIT:\n            return self.audit()\n\n    def run_all(self, action):\n        if action in (ACTION_RUN, ACTION_CHECK):\n            return self.batch(action)\n        if action == ACTION_EXPORT:\n            return self.export()\n        if action == ACTION_AUDIT:\n            return self.audit()\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "constant_backed_dispatch_axis"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'constant_backed_dispatch_axis'))
 
     assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
     assert "ACTION_*" in finding.summary
@@ -6298,77 +1799,18 @@ class Driver:
 
 
 def test_ignores_single_site_constant_backed_dispatch(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-ACTION_RUN = "run"
-ACTION_CHECK = "check"
-ACTION_EXPORT = "export"
-ACTION_AUDIT = "audit"
-
-
-class Driver:
-    def run_one(self, action):
-        if action == ACTION_RUN:
-            return self.run()
-        if action in (ACTION_CHECK, ACTION_EXPORT):
-            return self.project(action)
-        if action == ACTION_AUDIT:
-            return self.audit()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nACTION_RUN = "run"\nACTION_CHECK = "check"\nACTION_EXPORT = "export"\nACTION_AUDIT = "audit"\n\n\nclass Driver:\n    def run_one(self, action):\n        if action == ACTION_RUN:\n            return self.run()\n        if action in (ACTION_CHECK, ACTION_EXPORT):\n            return self.project(action)\n        if action == ACTION_AUDIT:\n            return self.audit()\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "constant_backed_dispatch_axis"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'constant_backed_dispatch_axis' for finding in findings))
 
 
 def test_detects_manual_process_step_ladders(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def runner(cmd):
-    return cmd
-
-
-def warn(label):
-    return label
-
-
-def build_pdf():
-    steps = [
-        (("tool", "a"), "first pass"),
-        (("tool", "b"), "second pass"),
-    ]
-    for cmd, label in steps:
-        result = runner(cmd).run()
-        if result.returncode:
-            warn(label)
-
-
-def build_submission():
-    submission_steps = [
-        (("tool", "c"), "submission pass"),
-        (("tool", "d"), "final pass"),
-    ]
-    for index, (cmd, label) in enumerate(submission_steps):
-        result = runner(cmd).run()
-        if result.returncode:
-            warn(label)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef runner(cmd):\n    return cmd\n\n\ndef warn(label):\n    return label\n\n\ndef build_pdf():\n    steps = [\n        (("tool", "a"), "first pass"),\n        (("tool", "b"), "second pass"),\n    ]\n    for cmd, label in steps:\n        result = runner(cmd).run()\n        if result.returncode:\n            warn(label)\n\n\ndef build_submission():\n    submission_steps = [\n        (("tool", "c"), "submission pass"),\n        (("tool", "d"), "final pass"),\n    ]\n    for index, (cmd, label) in enumerate(submission_steps):\n        result = runner(cmd).run()\n        if result.returncode:\n            warn(label)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "manual_process_step_ladder"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'manual_process_step_ladder'))
 
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "steps" in finding.summary
@@ -6380,63 +1822,18 @@ def build_submission():
 
 
 def test_ignores_single_manual_process_step_ladder(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def runner(cmd):
-    return cmd
-
-
-def build_pdf():
-    steps = [
-        (("tool", "a"), "first pass"),
-        (("tool", "b"), "second pass"),
-    ]
-    for cmd, label in steps:
-        runner(cmd).run()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef runner(cmd):\n    return cmd\n\n\ndef build_pdf():\n    steps = [\n        (("tool", "a"), "first pass"),\n        (("tool", "b"), "second pass"),\n    ]\n    for cmd, label in steps:\n        runner(cmd).run()\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "manual_process_step_ladder"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'manual_process_step_ladder' for finding in findings))
 
 
 def test_detects_mirrored_file_rewrite_loops(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def rewrite_package(root_dir, content_dir):
-    replacements = [("old", "new"), ("legacy", "modern")]
-    for path in root_dir.glob("*.txt"):
-        content = path.read_text(encoding="utf-8")
-        updated = content
-        for old, new in replacements:
-            updated = updated.replace(old, new)
-        if updated != content:
-            path.write_text(updated, encoding="utf-8")
-
-    for path in content_dir.glob("*.txt"):
-        content = path.read_text(encoding="utf-8")
-        updated = content
-        for old, new in replacements:
-            updated = updated.replace(old, new)
-        if updated != content:
-            path.write_text(updated, encoding="utf-8")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef rewrite_package(root_dir, content_dir):\n    replacements = [("old", "new"), ("legacy", "modern")]\n    for path in root_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content\n        for old, new in replacements:\n            updated = updated.replace(old, new)\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n\n    for path in content_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content\n        for old, new in replacements:\n            updated = updated.replace(old, new)\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "mirrored_file_rewrite_loop"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'mirrored_file_rewrite_loop'))
 
     assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
     assert "rewrite_package" in finding.summary
@@ -6445,57 +1842,18 @@ def rewrite_package(root_dir, content_dir):
 
 
 def test_ignores_single_file_rewrite_loop(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def rewrite_package(root_dir):
-    replacements = [("old", "new")]
-    for path in root_dir.glob("*.txt"):
-        content = path.read_text(encoding="utf-8")
-        updated = content.replace("old", "new")
-        if updated != content:
-            path.write_text(updated, encoding="utf-8")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef rewrite_package(root_dir):\n    replacements = [("old", "new")]\n    for path in root_dir.glob("*.txt"):\n        content = path.read_text(encoding="utf-8")\n        updated = content.replace("old", "new")\n        if updated != content:\n            path.write_text(updated, encoding="utf-8")\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "mirrored_file_rewrite_loop"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'mirrored_file_rewrite_loop' for finding in findings))
 
 
 def test_detects_repeated_local_regex_bundles(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        r'''
-import re
-
-
-class Parser:
-    def parse_one(self, text):
-        name = re.compile(r"\bname\s+([A-Za-z_][A-Za-z0-9_]*)")
-        namespace = re.compile(r"^\s*namespace\s+([A-Za-z0-9_.]+)\s*$")
-        end = re.compile(r"^\s*end(?:\s+[A-Za-z0-9_.]+)?\s*$")
-        return name.search(text), namespace.search(text), end.search(text)
-
-    def parse_two(self, text):
-        name = re.compile(r"\bname\s+([A-Za-z_][A-Za-z0-9_]*)")
-        namespace = re.compile(r"^\s*namespace\s+([A-Za-z0-9_.]+)\s*$")
-        end = re.compile(r"^\s*end(?:\s+[A-Za-z0-9_.]+)?\s*$")
-        return name.search(text), namespace.search(text), end.search(text)
-''',
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport re\n\n\nclass Parser:\n    def parse_one(self, text):\n        name = re.compile(r"\\bname\\s+([A-Za-z_][A-Za-z0-9_]*)")\n        namespace = re.compile(r"^\\s*namespace\\s+([A-Za-z0-9_.]+)\\s*$")\n        end = re.compile(r"^\\s*end(?:\\s+[A-Za-z0-9_.]+)?\\s*$")\n        return name.search(text), namespace.search(text), end.search(text)\n\n    def parse_two(self, text):\n        name = re.compile(r"\\bname\\s+([A-Za-z_][A-Za-z0-9_]*)")\n        namespace = re.compile(r"^\\s*namespace\\s+([A-Za-z0-9_.]+)\\s*$")\n        end = re.compile(r"^\\s*end(?:\\s+[A-Za-z0-9_.]+)?\\s*$")\n        return name.search(text), namespace.search(text), end.search(text)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_local_regex_bundle"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_local_regex_bundle'))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "parse_one" in finding.summary
@@ -6505,64 +1863,18 @@ class Parser:
 
 
 def test_ignores_small_repeated_local_regex_fragments(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        r'''
-import re
-
-
-class Parser:
-    def normalize_one(self, text):
-        return re.sub(r"\s+", " ", text)
-
-    def normalize_two(self, text):
-        return re.sub(r"\s+", " ", text)
-''',
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nimport re\n\n\nclass Parser:\n    def normalize_one(self, text):\n        return re.sub(r"\\s+", " ", text)\n\n    def normalize_two(self, text):\n        return re.sub(r"\\s+", " ", text)\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "repeated_local_regex_bundle"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'repeated_local_regex_bundle' for finding in findings))
 
 
 def test_detects_algebraic_duplicate_compound_blocks(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Renderer:
-    def render_left(self, items, index):
-        rendered = []
-        for item in items:
-            key = item.left_name
-            if key in index:
-                rendered.append(index[key])
-            else:
-                rendered.append(str(item))
-        return rendered
-
-    def render_right(self, rows, lookup):
-        values = []
-        for row in rows:
-            code = row.right_name
-            if code in lookup:
-                values.append(lookup[code])
-            else:
-                values.append(str(row))
-        return values
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Renderer:\n    def render_left(self, items, index):\n        rendered = []\n        for item in items:\n            key = item.left_name\n            if key in index:\n                rendered.append(index[key])\n            else:\n                rendered.append(str(item))\n        return rendered\n\n    def render_right(self, rows, lookup):\n        values = []\n        for row in rows:\n            code = row.right_name\n            if code in lookup:\n                values.append(lookup[code])\n            else:\n                values.append(str(row))\n        return values\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "algebraic_duplicate_compound_block"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'algebraic_duplicate_compound_block'))
 
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "render_left" in finding.summary
@@ -6572,77 +1884,18 @@ class Renderer:
 
 
 def test_ignores_flat_repeated_loops_without_nested_control(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Renderer:
-    def render_left(self, items):
-        rendered = []
-        for item in items:
-            rendered.append(str(item))
-        return rendered
-
-    def render_right(self, rows):
-        values = []
-        for row in rows:
-            values.append(str(row))
-        return values
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Renderer:\n    def render_left(self, items):\n        rendered = []\n        for item in items:\n            rendered.append(str(item))\n        return rendered\n\n    def render_right(self, rows):\n        values = []\n        for row in rows:\n            values.append(str(row))\n        return values\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "algebraic_duplicate_compound_block"
-        for finding in findings
-    )
+    assert not any((finding.detector_id == 'algebraic_duplicate_compound_block' for finding in findings))
 
 
 def test_detects_class_role_quotient(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Builder:
-    def run(self):
-        self._build_pdf()
-        self._write_pdf()
-        self._copy_pdf()
-        self._extract_pdf()
-
-    def _build_pdf(self):
-        return self.root / "paper.pdf"
-
-    def _build_markdown(self):
-        return self.root / "paper.md"
-
-    def _write_pdf(self):
-        return self.output.write_text("pdf")
-
-    def _write_markdown(self):
-        return self.output.write_text("md")
-
-    def _copy_pdf(self):
-        return self.destination / "paper.pdf"
-
-    def _copy_markdown(self):
-        return self.destination / "paper.md"
-
-    def _extract_pdf(self):
-        return self.source.name
-
-    def _extract_markdown(self):
-        return self.source.stem
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Builder:\n    def run(self):\n        self._build_pdf()\n        self._write_pdf()\n        self._copy_pdf()\n        self._extract_pdf()\n\n    def _build_pdf(self):\n        return self.root / "paper.pdf"\n\n    def _build_markdown(self):\n        return self.root / "paper.md"\n\n    def _write_pdf(self):\n        return self.output.write_text("pdf")\n\n    def _write_markdown(self):\n        return self.output.write_text("md")\n\n    def _copy_pdf(self):\n        return self.destination / "paper.pdf"\n\n    def _copy_markdown(self):\n        return self.destination / "paper.md"\n\n    def _extract_pdf(self):\n        return self.source.name\n\n    def _extract_markdown(self):\n        return self.source.stem\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "class_role_quotient"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'class_role_quotient'))
 
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "Builder" in finding.summary
@@ -6653,41 +1906,12 @@ class Builder:
 def test_unreferenced_private_function_uses_repo_wide_call_witness(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/worker.py",
-        """
-class WorkerMixin:
-    def _derived_artifact(self):
-        step_one = 1
-        step_two = step_one + 1
-        step_three = step_two + 1
-        step_four = step_three + 1
-        step_five = step_four + 1
-        step_six = step_five + 1
-        return step_six
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/facade.py",
-        """
-from .worker import WorkerMixin
-
-
-class Facade(WorkerMixin):
-    def run(self):
-        return self._derived_artifact()
-""",
-    )
+    _write_module(tmp_path, 'pkg/worker.py', '\nclass WorkerMixin:\n    def _derived_artifact(self):\n        step_one = 1\n        step_two = step_one + 1\n        step_three = step_two + 1\n        step_four = step_three + 1\n        step_five = step_four + 1\n        step_six = step_five + 1\n        return step_six\n')
+    _write_module(tmp_path, 'pkg/facade.py', '\nfrom .worker import WorkerMixin\n\n\nclass Facade(WorkerMixin):\n    def run(self):\n        return self._derived_artifact()\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
-        and "WorkerMixin._derived_artifact" in finding.summary
-        for finding in findings
-    )
+    assert not any((finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID and 'WorkerMixin._derived_artifact' in finding.summary for finding in findings))
 
 
 def test_dead_embedded_payload_uses_repo_wide_call_witness(
@@ -6695,65 +1919,18 @@ def test_dead_embedded_payload_uses_repo_wide_call_witness(
 ) -> None:
     payload = "\n".join(f"key_{index}: value_{index}" for index in range(25))
     padding = "\n".join(f"        step_{index} = {index}" for index in range(40))
-    _write_module(
-        tmp_path,
-        "pkg/artifact.py",
-        f'''
-class ArtifactMixin:
-    def _write_payload(self, path):
-        payload = """{payload}"""
-{padding}
-        path.write_text(payload)
-        return payload
-''',
-    )
-    _write_module(
-        tmp_path,
-        "pkg/facade.py",
-        """
-from .artifact import ArtifactMixin
-
-
-class Facade(ArtifactMixin):
-    def run(self, path):
-        return self._write_payload(path)
-""",
-    )
+    _write_module(tmp_path, 'pkg/artifact.py', f'\nclass ArtifactMixin:\n    def _write_payload(self, path):\n        payload = """{payload}"""\n{padding}\n        path.write_text(payload)\n        return payload\n')
+    _write_module(tmp_path, 'pkg/facade.py', '\nfrom .artifact import ArtifactMixin\n\n\nclass Facade(ArtifactMixin):\n    def run(self, path):\n        return self._write_payload(path)\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID
-        and "ArtifactMixin._write_payload" in finding.summary
-        for finding in findings
-    )
+    assert not any((finding.detector_id == DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID and 'ArtifactMixin._write_payload' in finding.summary for finding in findings))
 
 
 def test_detects_pass_through_composition_facade(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ReadRole:
-    pass
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ReadRole:\n    pass\n\n\nclass WriteRole:\n    pass\n\n\nclass CombinedRole(ReadRole, WriteRole):\n    """Composition only."""\n\n    pass\n')
 
-
-class WriteRole:
-    pass
-
-
-class CombinedRole(ReadRole, WriteRole):
-    \"\"\"Composition only.\"\"\"
-
-    pass
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "pass_through_composition_facade"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'pass_through_composition_facade'))
 
     assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
     assert "CombinedRole" in finding.summary
@@ -6761,38 +1938,9 @@ class CombinedRole(ReadRole, WriteRole):
 
 
 def test_detects_projection_property_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-from pathlib import Path
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\nfrom pathlib import Path\n\n\n@dataclass(frozen=True)\nclass ExportContext:\n    root: Path\n    name: str\n\n    @property\n    def graph(self) -> Path:\n        return self.root / "graph.json"\n\n    @property\n    def decls(self) -> Path:\n        return self.root / "decls.json"\n\n    @property\n    def named_report(self) -> Path:\n        return self.root / f"{self.name}.txt"\n')
 
-
-@dataclass(frozen=True)
-class ExportContext:
-    root: Path
-    name: str
-
-    @property
-    def graph(self) -> Path:
-        return self.root / "graph.json"
-
-    @property
-    def decls(self) -> Path:
-        return self.root / "decls.json"
-
-    @property
-    def named_report(self) -> Path:
-        return self.root / f"{self.name}.txt"
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "projection_property_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'projection_property_family'))
 
     assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
     assert "ExportContext" in finding.summary
@@ -6816,11 +1964,7 @@ class Templates:
 """,
     )
 
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "live_template_payload_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'live_template_payload_family'))
 
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
     assert "Templates" in finding.summary
@@ -6828,86 +1972,27 @@ class Templates:
 
 
 def test_ignores_small_class_role_quotient(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Builder:
-    def run(self):
-        self._build_pdf()
-        self._write_pdf()
-
-    def _build_pdf(self):
-        return self.root / "paper.pdf"
-
-    def _build_markdown(self):
-        return self.root / "paper.md"
-
-    def _write_pdf(self):
-        return self.output.write_text("pdf")
-
-    def _write_markdown(self):
-        return self.output.write_text("md")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Builder:\n    def run(self):\n        self._build_pdf()\n        self._write_pdf()\n\n    def _build_pdf(self):\n        return self.root / "paper.pdf"\n\n    def _build_markdown(self):\n        return self.root / "paper.md"\n\n    def _write_pdf(self):\n        return self.output.write_text("pdf")\n\n    def _write_markdown(self):\n        return self.output.write_text("md")\n')
 
     findings = analyze_path(tmp_path)
 
-    assert not any(
-        finding.detector_id == "class_role_quotient" for finding in findings
-    )
+    assert not any((finding.detector_id == 'class_role_quotient' for finding in findings))
 
 
 def test_detects_repeated_projection_helper_wrappers(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def dedupe(items):
-    return items
-
-
-def capability_labels(capabilities):
-    return tuple(dedupe(tag.label for tag in capabilities))
-
-
-def capability_distinctions(capabilities):
-    return tuple(dedupe(tag.distinction for tag in capabilities))
-
-
-def observation_labels(observations):
-    return tuple(dedupe(tag.label for tag in observations))
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef dedupe(items):\n    return items\n\n\ndef capability_labels(capabilities):\n    return tuple(dedupe(tag.label for tag in capabilities))\n\n\ndef capability_distinctions(capabilities):\n    return tuple(dedupe(tag.distinction for tag in capabilities))\n\n\ndef observation_labels(observations):\n    return tuple(dedupe(tag.label for tag in observations))\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_projection_helpers"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_projection_helpers'))
 
     assert "_render_projection" in (finding.scaffold or "")
 
 
 def test_detects_accessor_wrapper_smell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sample:
-    def get_status(self):
-        return self.status
-
-    def set_status(self, status):
-        self.status = status
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sample:\n    def get_status(self):\n        return self.status\n\n    def set_status(self, status):\n        self.status = status\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID))
 
     assert "structural accessor wrapper" in finding.title
     assert "replace `Sample.get_status()` with `status`" in (finding.scaffold or "")
@@ -6916,23 +2001,10 @@ class Sample:
 def test_detects_structural_accessor_wrappers_without_naming_convention(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sample:
-    def status(self):
-        return self._status
-
-    def store(self, status):
-        self._status = status
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sample:\n    def status(self):\n        return self._status\n\n    def store(self, status):\n        self._status = status\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID))
 
     assert "structural accessor wrapper" in finding.summary
     assert "read through" in finding.relation_context
@@ -6940,69 +2012,20 @@ class Sample:
 
 
 def test_detects_single_structural_computed_property_candidate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Sample:
-    def labels(self):
-        return tuple(self._labels)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Sample:\n    def labels(self):\n        return tuple(self._labels)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == ACCESSOR_WRAPPER_DETECTOR_ID))
 
     assert "computed tuple" in finding.relation_context
     assert "an `@property` exposing `tuple(self._labels)`" in (finding.scaffold or "")
 
 
 def test_detects_flattened_projection_property_local_minimum(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class AtomSet:
-    coords: object
-    radii: object
-    elements: object
-
-
-@dataclass(frozen=True)
-class PreparedComplex:
-    ligand: AtomSet
-    pocket: AtomSet
-
-    @property
-    def ligand_coords(self):
-        return self.ligand.coords
-
-    @property
-    def ligand_radii(self):
-        return self.ligand.radii
-
-    @property
-    def pocket_coords(self):
-        return self.pocket.coords
-
-    @property
-    def pocket_elements(self):
-        return self.pocket.elements
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AtomSet:\n    coords: object\n    radii: object\n    elements: object\n\n\n@dataclass(frozen=True)\nclass PreparedComplex:\n    ligand: AtomSet\n    pocket: AtomSet\n\n    @property\n    def ligand_coords(self):\n        return self.ligand.coords\n\n    @property\n    def ligand_radii(self):\n        return self.ligand.radii\n\n    @property\n    def pocket_coords(self):\n        return self.pocket.coords\n\n    @property\n    def pocket_elements(self):\n        return self.pocket.elements\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "flattened_projection_property"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'flattened_projection_property'))
 
     assert "PreparedComplex" in finding.summary
     assert "ligand_coords" in finding.summary
@@ -7012,53 +2035,10 @@ class PreparedComplex:
 
 
 def test_detects_transport_wrapper_chain(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class PocketRegion:
-    coords: object
-    elements: object
-
-
-def extract_local_pocket_region_view(protein_coords, receptor_elements, box_center, box_size):
-    return PocketRegion(coords=protein_coords, elements=receptor_elements)
-
-
-def extract_local_pocket_region(protein_coords, receptor_elements, box_center, box_size):
-    region = extract_local_pocket_region_view(
-        protein_coords,
-        receptor_elements,
-        box_center,
-        box_size,
-    )
-    return region.coords, region.elements
-
-
-def _extract_local_pocket_coords_and_elements(
-    *,
-    protein_coords,
-    receptor_elements,
-    box_center,
-    box_size,
-):
-    return extract_local_pocket_region(
-        protein_coords=protein_coords,
-        receptor_elements=receptor_elements,
-        box_center=box_center,
-        box_size=box_size,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PocketRegion:\n    coords: object\n    elements: object\n\n\ndef extract_local_pocket_region_view(protein_coords, receptor_elements, box_center, box_size):\n    return PocketRegion(coords=protein_coords, elements=receptor_elements)\n\n\ndef extract_local_pocket_region(protein_coords, receptor_elements, box_center, box_size):\n    region = extract_local_pocket_region_view(\n        protein_coords,\n        receptor_elements,\n        box_center,\n        box_size,\n    )\n    return region.coords, region.elements\n\n\ndef _extract_local_pocket_coords_and_elements(\n    *,\n    protein_coords,\n    receptor_elements,\n    box_center,\n    box_size,\n):\n    return extract_local_pocket_region(\n        protein_coords=protein_coords,\n        receptor_elements=receptor_elements,\n        box_center=box_center,\n        box_size=box_size,\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "wrapper_chain"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'wrapper_chain'))
 
     assert "extract_local_pocket_region" in finding.summary
     assert "_extract_local_pocket_coords_and_elements" in finding.summary
@@ -7066,27 +2046,10 @@ def _extract_local_pocket_coords_and_elements(
 
 
 def test_uses_nominal_metric_dataclasses(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def render(pattern_id):
-    if pattern_id == 3:
-        return "dispatch"
-    elif pattern_id == 5:
-        return "abc"
-    elif pattern_id == 14:
-        return "schema"
-    return "other"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef render(pattern_id):\n    if pattern_id == 3:\n        return "dispatch"\n    elif pattern_id == 5:\n        return "abc"\n    elif pattern_id == 14:\n        return "schema"\n    return "other"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "numeric_literal_dispatch"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'numeric_literal_dispatch'))
 
     assert isinstance(finding.metrics, DispatchCountMetrics)
     assert finding.metrics.dispatch_site_count == 3
@@ -7096,27 +2059,10 @@ def render(pattern_id):
 def test_detects_semantic_metrics_dict_bag_and_recommends_nominal_class(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class RefactorFinding:
-    metrics: object
-
-
-def build():
-    return RefactorFinding(metrics={"dispatch_site_count": len([1, 2, 3])})
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RefactorFinding:\n    metrics: object\n\n\ndef build():\n    return RefactorFinding(metrics={"dispatch_site_count": len([1, 2, 3])})\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "semantic_dict_bag"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'semantic_dict_bag'))
 
     assert "DispatchCountMetrics" in (finding.scaffold or "")
     assert "CountedDispatchMetrics" in (finding.scaffold or "")
@@ -7125,81 +2071,16 @@ def build():
 def test_detects_local_impact_dict_bag_and_recommends_impact_delta(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-def estimate():
-    impact = {
-        "lower_bound_removable_loc": 0,
-        "upper_bound_removable_loc": 0,
-        "loci_of_change_before": 0,
-        "loci_of_change_after": 0,
-        "repeated_mappings_centralized": 0,
-        "dispatch_sites_eliminated": 0,
-        "registration_sites_removed": 0,
-        "shared_algorithm_sites_centralized": 0,
-    }
-    impact["dispatch_sites_eliminated"] = 2
-    return impact
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\ndef estimate():\n    impact = {\n        "lower_bound_removable_loc": 0,\n        "upper_bound_removable_loc": 0,\n        "loci_of_change_before": 0,\n        "loci_of_change_after": 0,\n        "repeated_mappings_centralized": 0,\n        "dispatch_sites_eliminated": 0,\n        "registration_sites_removed": 0,\n        "shared_algorithm_sites_centralized": 0,\n    }\n    impact["dispatch_sites_eliminated"] = 2\n    return impact\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "semantic_dict_bag"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'semantic_dict_bag'))
 
     assert "ImpactDelta" in (finding.scaffold or "")
 
 
 def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-REGISTRY = {}
-
-
-class RuntimePlan:
-    def __init__(self, pose_id, score, label):
-        self.pose_id = pose_id
-        self.score = score
-        self.label = label
-
-
-class Alpha:
-    def _prepare(self, item):
-        ready = self.normalize(item)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def build(self, candidate):
-        return RuntimePlan(
-            pose_id=candidate.pose_id,
-            score=candidate.score,
-            label=candidate.label,
-        )
-
-
-class Beta:
-    def _assemble(self, value):
-        ready = self.normalize(value)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-    def build(self, entry):
-        return RuntimePlan(
-            pose_id=entry.pose_id,
-            score=entry.score,
-            label=entry.label,
-        )
-
-
-REGISTRY["alpha"] = Alpha
-REGISTRY["beta"] = Beta
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nREGISTRY = {}\n\n\nclass RuntimePlan:\n    def __init__(self, pose_id, score, label):\n        self.pose_id = pose_id\n        self.score = score\n        self.label = label\n\n\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def build(self, candidate):\n        return RuntimePlan(\n            pose_id=candidate.pose_id,\n            score=candidate.score,\n            label=candidate.label,\n        )\n\n\nclass Beta:\n    def _assemble(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n    def build(self, entry):\n        return RuntimePlan(\n            pose_id=entry.pose_id,\n            score=entry.score,\n            label=entry.label,\n        )\n\n\nREGISTRY["alpha"] = Alpha\nREGISTRY["beta"] = Beta\n')
 
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
@@ -7214,45 +2095,20 @@ REGISTRY["beta"] = Beta
     assert plan.outcome.repeated_mappings_centralized >= 3
     assert any(action.kind == "create_abc_base" for action in plan.actions)
     assert any(action.kind == "create_metaclass" for action in plan.actions)
-    extract_action = next(
-        action for action in plan.actions if action.kind == "extract_template_method"
-    )
+    extract_action = next((action for action in plan.actions if action.kind == 'extract_template_method'))
     assert extract_action.statement_operation == "move"
     assert extract_action.statement_sites
     assert "self.normalize" in extract_action.description
-    mapping_action = next(
-        action
-        for action in plan.actions
-        if action.kind == "create_authoritative_schema"
-    )
+    mapping_action = next((action for action in plan.actions if action.kind == 'create_authoritative_schema'))
     assert mapping_action.create_symbol == "RuntimePlan.from_source"
     assert "name-for-name boilerplate" in mapping_action.description
-    replace_action = next(
-        action for action in plan.actions if action.kind == "replace_mapping_sites"
-    )
+    replace_action = next((action for action in plan.actions if action.kind == 'replace_mapping_sites'))
     assert replace_action.statement_operation == "replace"
     assert replace_action.replace_with == "RuntimePlan.from_source(candidate)"
 
 
 def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    def _prepare(self, item):
-        ready = self.normalize(item)
-        checked = self.validate(ready)
-        return self.finish(checked)
-
-
-class Beta:
-    def _build(self, value):
-        ready = self.normalize(value)
-        checked = self.validate(ready)
-        return self.finish(checked)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n')
 
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
@@ -7266,34 +2122,10 @@ class Beta:
 
 
 def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class IssueDetector(ABC):
-    pass
-
-
-class AlphaDetector(IssueDetector):
-    pass
-
-
-class BetaDetector(IssueDetector):
-    pass
-
-
-def default_detectors():
-    return (AlphaDetector(), BetaDetector())
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass IssueDetector(ABC):\n    pass\n\n\nclass AlphaDetector(IssueDetector):\n    pass\n\n\nclass BetaDetector(IssueDetector):\n    pass\n\n\ndef default_detectors():\n    return (AlphaDetector(), BetaDetector())\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding for finding in findings if finding.detector_id == "manual_family_roster"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'manual_family_roster'))
 
     assert "default_detectors" in finding.summary
     assert "IssueDetector" in finding.summary
@@ -7303,44 +2135,10 @@ def default_detectors():
 
 
 def test_detects_fragmented_pattern_planning_tables(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class PatternId:
-    ABC_TEMPLATE_METHOD = "abc"
-    AUTHORITATIVE_SCHEMA = "schema"
-    AUTO_REGISTER_META = "auto"
-
-
-_PATTERN_DEPENDENCIES = {
-    PatternId.ABC_TEMPLATE_METHOD: {PatternId.AUTHORITATIVE_SCHEMA},
-    PatternId.AUTHORITATIVE_SCHEMA: {PatternId.AUTO_REGISTER_META},
-    PatternId.AUTO_REGISTER_META: set(),
-}
-
-
-_PATTERN_PRIORITY = {
-    PatternId.ABC_TEMPLATE_METHOD: 80,
-    PatternId.AUTHORITATIVE_SCHEMA: 60,
-    PatternId.AUTO_REGISTER_META: 50,
-}
-
-
-_PATTERN_BUILDERS = {
-    PatternId.ABC_TEMPLATE_METHOD: build_abc,
-    PatternId.AUTHORITATIVE_SCHEMA: build_schema,
-    PatternId.AUTO_REGISTER_META: build_registry,
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass PatternId:\n    ABC_TEMPLATE_METHOD = "abc"\n    AUTHORITATIVE_SCHEMA = "schema"\n    AUTO_REGISTER_META = "auto"\n\n\n_PATTERN_DEPENDENCIES = {\n    PatternId.ABC_TEMPLATE_METHOD: {PatternId.AUTHORITATIVE_SCHEMA},\n    PatternId.AUTHORITATIVE_SCHEMA: {PatternId.AUTO_REGISTER_META},\n    PatternId.AUTO_REGISTER_META: set(),\n}\n\n\n_PATTERN_PRIORITY = {\n    PatternId.ABC_TEMPLATE_METHOD: 80,\n    PatternId.AUTHORITATIVE_SCHEMA: 60,\n    PatternId.AUTO_REGISTER_META: 50,\n}\n\n\n_PATTERN_BUILDERS = {\n    PatternId.ABC_TEMPLATE_METHOD: build_abc,\n    PatternId.AUTHORITATIVE_SCHEMA: build_schema,\n    PatternId.AUTO_REGISTER_META: build_registry,\n}\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "fragmented_family_authority"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'fragmented_family_authority'))
 
     assert "_PATTERN_DEPENDENCIES" in finding.summary
     assert "PatternId" in finding.summary
@@ -7348,38 +2146,10 @@ _PATTERN_BUILDERS = {
 
 
 def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-from dataclasses import dataclass
-
-
-@dataclass(frozen=True)
-class EventCarrierBase(ABC):
-    file_path: str
-    line: int
-    subject_name: str
-    payload: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DetachedEventCarrier:
-    file_path: str
-    line: int
-    subject_name: str
-    payload: tuple[str, ...]
-    status: str
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass EventCarrierBase(ABC):\n    file_path: str\n    line: int\n    subject_name: str\n    payload: tuple[str, ...]\n\n\n@dataclass(frozen=True)\nclass DetachedEventCarrier:\n    file_path: str\n    line: int\n    subject_name: str\n    payload: tuple[str, ...]\n    status: str\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "existing_nominal_authority_reuse"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'existing_nominal_authority_reuse'))
 
     assert "DetachedEventCarrier" in finding.summary
     assert "EventCarrierBase" in finding.summary
@@ -7387,42 +2157,10 @@ class DetachedEventCarrier:
 
 
 def test_detects_pass_through_nominal_wrapper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-
-
-class ProbeRoute(ABC):
-    @abstractmethod
-    def generate(self, request):
-        raise NotImplementedError
-
-    @abstractmethod
-    def score(self, request, batch):
-        raise NotImplementedError
-
-
-@dataclass(frozen=True)
-class ProbeRouteWitness:
-    route: ProbeRoute
-
-    def generate(self, request):
-        return self.route.generate(request)
-
-    def score(self, request, batch):
-        return self.route.score(request, batch)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\nfrom dataclasses import dataclass\n\n\nclass ProbeRoute(ABC):\n    @abstractmethod\n    def generate(self, request):\n        raise NotImplementedError\n\n    @abstractmethod\n    def score(self, request, batch):\n        raise NotImplementedError\n\n\n@dataclass(frozen=True)\nclass ProbeRouteWitness:\n    route: ProbeRoute\n\n    def generate(self, request):\n        return self.route.generate(request)\n\n    def score(self, request, batch):\n        return self.route.score(request, batch)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "pass_through_nominal_wrapper"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'pass_through_nominal_wrapper'))
 
     assert "ProbeRouteWitness" in finding.summary
     assert "ProbeRoute" in finding.summary
@@ -7430,31 +2168,7 @@ class ProbeRouteWitness:
 
 
 def test_detects_trivial_forwarding_wrapper(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ModeRunner:
-    @classmethod
-    def for_mode(cls, mode):
-        return cls()
-
-    def attempt_modes(self):
-        return ("fast", "safe")
-
-
-class Owner:
-    def __init__(self, mode):
-        self.mode = mode
-
-    def attempt_modes(self):
-        return ModeRunner.for_mode(self.mode).attempt_modes()
-
-
-def refinement_mode_attempt_chain(mode):
-    return ModeRunner.for_mode(mode).attempt_modes()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ModeRunner:\n    @classmethod\n    def for_mode(cls, mode):\n        return cls()\n\n    def attempt_modes(self):\n        return ("fast", "safe")\n\n\nclass Owner:\n    def __init__(self, mode):\n        self.mode = mode\n\n    def attempt_modes(self):\n        return ModeRunner.for_mode(self.mode).attempt_modes()\n\n\ndef refinement_mode_attempt_chain(mode):\n    return ModeRunner.for_mode(mode).attempt_modes()\n')
 
     findings = [
         finding
@@ -7464,62 +2178,17 @@ def refinement_mode_attempt_chain(mode):
 
     assert len(findings) == 2
     assert any("Owner.attempt_modes" in finding.summary for finding in findings)
-    assert any(
-        "refinement_mode_attempt_chain" in finding.summary for finding in findings
-    )
-    assert all(
-        "call `ModeRunner.for_mode.attempt_modes` directly" in (finding.scaffold or "")
-        for finding in findings
-    )
+    assert any(('refinement_mode_attempt_chain' in finding.summary for finding in findings))
+    assert all(('call `ModeRunner.for_mode.attempt_modes` directly' in (finding.scaffold or '') for finding in findings))
 
 
 def test_detects_public_api_private_delegate_shell(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        """
-class _Router:
-    @classmethod
-    def for_engine(cls, engine):
-        return cls()
-
-    def score(self, kwargs):
-        return kwargs["value"]
-
-
-def route_scoring(engine, **kwargs):
-    return _Router.for_engine(engine).score(kwargs)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        """
-from pkg.scoring import route_scoring as score_route
-
-
-def run_pipeline():
-    return score_route("fast", value=1.0)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/api.py",
-        """
-import pkg.scoring as scoring
-
-
-def score_request():
-    return scoring.route_scoring("safe", value=2.0)
-""",
-    )
+    _write_module(tmp_path, 'pkg/scoring.py', '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, kwargs):\n        return kwargs["value"]\n\n\ndef route_scoring(engine, **kwargs):\n    return _Router.for_engine(engine).score(kwargs)\n')
+    _write_module(tmp_path, 'pkg/pipeline.py', '\nfrom pkg.scoring import route_scoring as score_route\n\n\ndef run_pipeline():\n    return score_route("fast", value=1.0)\n')
+    _write_module(tmp_path, 'pkg/api.py', '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    return scoring.route_scoring("safe", value=2.0)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "public_api_private_delegate_shell"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'public_api_private_delegate_shell'))
 
     assert "route_scoring" in finding.summary
     assert "_Router" in finding.summary
@@ -7528,63 +2197,12 @@ def score_request():
 
 
 def test_detects_public_api_private_delegate_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/scoring.py",
-        """
-class _Router:
-    @classmethod
-    def for_engine(cls, engine):
-        return cls()
-
-    def score(self, payload):
-        return payload["value"]
-
-    def requires_electrostatics(self):
-        return True
-
-
-def route_scoring(engine, **payload):
-    return _Router.for_engine(engine).score(payload)
-
-
-def scoring_engine_requires_electrostatics(engine):
-    return _Router.for_engine(engine).requires_electrostatics()
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/pipeline.py",
-        """
-from pkg.scoring import route_scoring, scoring_engine_requires_electrostatics
-
-
-def run_pipeline():
-    if scoring_engine_requires_electrostatics("fast"):
-        return route_scoring("fast", value=1.0)
-    return 0.0
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/api.py",
-        """
-import pkg.scoring as scoring
-
-
-def score_request():
-    if scoring.scoring_engine_requires_electrostatics("safe"):
-        return scoring.route_scoring("safe", value=2.0)
-    return 0.0
-""",
-    )
+    _write_module(tmp_path, 'pkg/scoring.py', '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, payload):\n        return payload["value"]\n\n    def requires_electrostatics(self):\n        return True\n\n\ndef route_scoring(engine, **payload):\n    return _Router.for_engine(engine).score(payload)\n\n\ndef scoring_engine_requires_electrostatics(engine):\n    return _Router.for_engine(engine).requires_electrostatics()\n')
+    _write_module(tmp_path, 'pkg/pipeline.py', '\nfrom pkg.scoring import route_scoring, scoring_engine_requires_electrostatics\n\n\ndef run_pipeline():\n    if scoring_engine_requires_electrostatics("fast"):\n        return route_scoring("fast", value=1.0)\n    return 0.0\n')
+    _write_module(tmp_path, 'pkg/api.py', '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    if scoring.scoring_engine_requires_electrostatics("safe"):\n        return scoring.route_scoring("safe", value=2.0)\n    return 0.0\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "public_api_private_delegate_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'public_api_private_delegate_family'))
 
     assert "route_scoring" in finding.summary
     assert "scoring_engine_requires_electrostatics" in finding.summary
@@ -7593,42 +2211,10 @@ def score_request():
 
 
 def test_detects_nominal_policy_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ProofCasePolicy:
-    @classmethod
-    def for_case(cls, proof_case):
-        return cls()
-
-    def decision(self):
-        return "certified"
-
-    def certificate_chain_error(self):
-        return None
-
-
-class CertifiedPlan:
-    def __init__(self, proof_case):
-        self.proof_case = proof_case
-
-    @property
-    def decision(self):
-        return ProofCasePolicy.for_case(self.proof_case).decision()
-
-    @property
-    def certificate_chain_error(self):
-        return ProofCasePolicy.for_case(self.proof_case).certificate_chain_error()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ProofCasePolicy:\n    @classmethod\n    def for_case(cls, proof_case):\n        return cls()\n\n    def decision(self):\n        return "certified"\n\n    def certificate_chain_error(self):\n        return None\n\n\nclass CertifiedPlan:\n    def __init__(self, proof_case):\n        self.proof_case = proof_case\n\n    @property\n    def decision(self):\n        return ProofCasePolicy.for_case(self.proof_case).decision()\n\n    @property\n    def certificate_chain_error(self):\n        return ProofCasePolicy.for_case(self.proof_case).certificate_chain_error()\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "nominal_policy_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'nominal_policy_surface'))
 
     assert "CertifiedPlan" in finding.summary
     assert "decision" in finding.summary
@@ -7638,183 +2224,30 @@ class CertifiedPlan:
 
 
 def test_detects_repeated_finding_assembly_pipeline(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class PerModuleIssueDetector:
-    pass
-
-
-class AlphaDetector(PerModuleIssueDetector):
-    def _findings_for_module(self, module, config):
-        findings = []
-        for candidate in alpha_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    summarize_alpha(candidate),
-                    alpha_evidence(candidate),
-                    scaffold=alpha_scaffold(candidate),
-                    codemod_patch=alpha_patch(candidate),
-                    metrics=AlphaMetrics(site_count=1),
-                )
-            )
-        return findings
-
-
-class BetaDetector(PerModuleIssueDetector):
-    def _findings_for_module(self, module, config):
-        findings = []
-        for entry in beta_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    summarize_beta(entry),
-                    beta_evidence(entry),
-                    scaffold=beta_scaffold(entry),
-                    codemod_patch=beta_patch(entry),
-                    metrics=BetaMetrics(site_count=1),
-                )
-            )
-        return findings
-
-
-class GammaDetector(PerModuleIssueDetector):
-    def _findings_for_module(self, module, config):
-        findings = []
-        for witness in gamma_candidates(module):
-            findings.append(
-                self.finding_spec.build(
-                    self.detector_id,
-                    summarize_gamma(witness),
-                    gamma_evidence(witness),
-                    scaffold=gamma_scaffold(witness),
-                    codemod_patch=gamma_patch(witness),
-                    metrics=GammaMetrics(site_count=1),
-                )
-            )
-        return findings
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass PerModuleIssueDetector:\n    pass\n\n\nclass AlphaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for candidate in alpha_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_alpha(candidate),\n                    alpha_evidence(candidate),\n                    scaffold=alpha_scaffold(candidate),\n                    codemod_patch=alpha_patch(candidate),\n                    metrics=AlphaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass BetaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for entry in beta_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_beta(entry),\n                    beta_evidence(entry),\n                    scaffold=beta_scaffold(entry),\n                    codemod_patch=beta_patch(entry),\n                    metrics=BetaMetrics(site_count=1),\n                )\n            )\n        return findings\n\n\nclass GammaDetector(PerModuleIssueDetector):\n    def _findings_for_module(self, module, config):\n        findings = []\n        for witness in gamma_candidates(module):\n            findings.append(\n                self.finding_spec.build(\n                    self.detector_id,\n                    summarize_gamma(witness),\n                    gamma_evidence(witness),\n                    scaffold=gamma_scaffold(witness),\n                    codemod_patch=gamma_patch(witness),\n                    metrics=GammaMetrics(site_count=1),\n                )\n            )\n        return findings\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "finding_assembly_pipeline"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'finding_assembly_pipeline'))
 
     assert "AlphaDetector" in finding.summary
     assert "CandidateFindingDetector" in (finding.scaffold or "")
 
 
 def test_detects_guarded_delegator_spec_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class FunctionObservationSpec:
-    pass
-
-
-class ProjectionObservationSpec(FunctionObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        if observation.class_name is not None:
-            return None
-        return _projection_helper_shape_from_function(parsed_module, function)
-
-
-class AccessorObservationSpec(FunctionObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        if observation.class_name is None:
-            return None
-        return _accessor_wrapper_candidate_from_function(parsed_module, observation.class_name, function)
-
-
-class SpecAssignmentObservationSpec(FunctionObservationSpec):
-    def build_from_function(self, parsed_module, function, observation):
-        if observation.function_name is None:
-            return None
-        return _spec_candidate_from_function(parsed_module, function)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass FunctionObservationSpec:\n    pass\n\n\nclass ProjectionObservationSpec(FunctionObservationSpec):\n    def build_from_function(self, parsed_module, function, observation):\n        if observation.class_name is not None:\n            return None\n        return _projection_helper_shape_from_function(parsed_module, function)\n\n\nclass AccessorObservationSpec(FunctionObservationSpec):\n    def build_from_function(self, parsed_module, function, observation):\n        if observation.class_name is None:\n            return None\n        return _accessor_wrapper_candidate_from_function(parsed_module, observation.class_name, function)\n\n\nclass SpecAssignmentObservationSpec(FunctionObservationSpec):\n    def build_from_function(self, parsed_module, function, observation):\n        if observation.function_name is None:\n            return None\n        return _spec_candidate_from_function(parsed_module, function)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "guarded_delegator_spec"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'guarded_delegator_spec'))
 
     assert "Observation specs" in finding.summary
     assert "ScopeFilteredSpec" in (finding.scaffold or "")
 
 
 def test_detects_projection_style_builder_authority(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class SearchContext:
-    def __init__(
-        self,
-        *,
-        base_coords,
-        score_fn,
-        batch_fn,
-        pruning_energy,
-        local_mask,
-        score_is_exact,
-    ):
-        self.base_coords = base_coords
-        self.score_fn = score_fn
-        self.batch_fn = batch_fn
-        self.pruning_energy = pruning_energy
-        self.local_mask = local_mask
-        self.score_is_exact = score_is_exact
-
-
-def build_from_runtime(prepared, runtime):
-    return SearchContext(
-        base_coords=prepared.base_coords,
-        score_fn=prepared.score_fn,
-        batch_fn=prepared.batch_fn,
-        pruning_energy=None if runtime is None else runtime.pruning_energy,
-        local_mask=None if runtime is None else runtime.local_mask,
-        score_is_exact=True if runtime is None else runtime.score_is_exact,
-    )
-
-
-def build_from_request(request, runtime):
-    return SearchContext(
-        base_coords=request.base_coords,
-        score_fn=request.score_fn,
-        batch_fn=request.batch_fn,
-        pruning_energy=runtime.pruning_energy,
-        local_mask=runtime.local_mask,
-        score_is_exact=runtime.score_is_exact,
-    )
-
-
-def build_sequential(prepared):
-    return SearchContext(
-        base_coords=prepared.base_coords,
-        score_fn=prepared.score_fn,
-        batch_fn=prepared.batch_fn,
-        pruning_energy=None,
-        local_mask=None,
-        score_is_exact=True,
-    )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass SearchContext:\n    def __init__(\n        self,\n        *,\n        base_coords,\n        score_fn,\n        batch_fn,\n        pruning_energy,\n        local_mask,\n        score_is_exact,\n    ):\n        self.base_coords = base_coords\n        self.score_fn = score_fn\n        self.batch_fn = batch_fn\n        self.pruning_energy = pruning_energy\n        self.local_mask = local_mask\n        self.score_is_exact = score_is_exact\n\n\ndef build_from_runtime(prepared, runtime):\n    return SearchContext(\n        base_coords=prepared.base_coords,\n        score_fn=prepared.score_fn,\n        batch_fn=prepared.batch_fn,\n        pruning_energy=None if runtime is None else runtime.pruning_energy,\n        local_mask=None if runtime is None else runtime.local_mask,\n        score_is_exact=True if runtime is None else runtime.score_is_exact,\n    )\n\n\ndef build_from_request(request, runtime):\n    return SearchContext(\n        base_coords=request.base_coords,\n        score_fn=request.score_fn,\n        batch_fn=request.batch_fn,\n        pruning_energy=runtime.pruning_energy,\n        local_mask=runtime.local_mask,\n        score_is_exact=runtime.score_is_exact,\n    )\n\n\ndef build_sequential(prepared):\n    return SearchContext(\n        base_coords=prepared.base_coords,\n        score_fn=prepared.score_fn,\n        batch_fn=prepared.batch_fn,\n        pruning_energy=None,\n        local_mask=None,\n        score_is_exact=True,\n    )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "projection_builder_authority"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'projection_builder_authority'))
 
     assert "SearchContext" in finding.summary
     assert "projection sites" in finding.summary
@@ -7822,64 +2255,10 @@ def build_sequential(prepared):
 
 
 def test_detects_repeated_structural_observation_projection(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ProjectionRecord:
-    def __init__(self, **kwargs):
-        self.kwargs = kwargs
-
-
-class MethodShape:
-    @property
-    def projection_record(self):
-        return ProjectionRecord(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            primary_name=self.class_name,
-            line=self.lineno,
-            category=self.observation_kind,
-            observed_name=self.method_name,
-            fiber_key=self.method_name,
-        )
-
-
-class BuilderShape:
-    @property
-    def projection_record(self):
-        return ProjectionRecord(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            primary_name=self.class_name,
-            line=self.lineno,
-            category=self.observation_kind,
-            observed_name=self.builder_name,
-            fiber_key=self.builder_name,
-        )
-
-
-class ExportShape:
-    @property
-    def projection_record(self):
-        return ProjectionRecord(
-            file_path=self.file_path,
-            owner_symbol=self.symbol,
-            primary_name=self.class_name,
-            line=self.lineno,
-            category=self.observation_kind,
-            observed_name=self.export_name,
-            fiber_key=self.export_name,
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ProjectionRecord:\n    def __init__(self, **kwargs):\n        self.kwargs = kwargs\n\n\nclass MethodShape:\n    @property\n    def projection_record(self):\n        return ProjectionRecord(\n            file_path=self.file_path,\n            owner_symbol=self.symbol,\n            primary_name=self.class_name,\n            line=self.lineno,\n            category=self.observation_kind,\n            observed_name=self.method_name,\n            fiber_key=self.method_name,\n        )\n\n\nclass BuilderShape:\n    @property\n    def projection_record(self):\n        return ProjectionRecord(\n            file_path=self.file_path,\n            owner_symbol=self.symbol,\n            primary_name=self.class_name,\n            line=self.lineno,\n            category=self.observation_kind,\n            observed_name=self.builder_name,\n            fiber_key=self.builder_name,\n        )\n\n\nclass ExportShape:\n    @property\n    def projection_record(self):\n        return ProjectionRecord(\n            file_path=self.file_path,\n            owner_symbol=self.symbol,\n            primary_name=self.class_name,\n            line=self.lineno,\n            category=self.observation_kind,\n            observed_name=self.export_name,\n            fiber_key=self.export_name,\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "structural_observation_projection"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'structural_observation_projection'))
 
     assert "ProjectionRecord" in finding.summary
     assert "projection_record" in finding.summary
@@ -7889,38 +2268,10 @@ class ExportShape:
 def test_detects_repeated_property_alias_hooks_across_subclasses(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class ProjectionTemplate(ABC):
-    @property
-    def observation_kind(self):
-        raise NotImplementedError
-
-
-class AlphaProjection(ProjectionTemplate):
-    @property
-    def observation_line(self):
-        return self.lineno
-
-
-class BetaProjection(ProjectionTemplate):
-    @property
-    def observation_line(self):
-        return self.lineno
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass ProjectionTemplate(ABC):\n    @property\n    def observation_kind(self):\n        raise NotImplementedError\n\n\nclass AlphaProjection(ProjectionTemplate):\n    @property\n    def observation_line(self):\n        return self.lineno\n\n\nclass BetaProjection(ProjectionTemplate):\n    @property\n    def observation_line(self):\n        return self.lineno\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "repeated_property_alias_hooks"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'repeated_property_alias_hooks'))
 
     assert "ProjectionTemplate" in finding.summary
     assert "observation_line" in finding.summary
@@ -7928,43 +2279,10 @@ class BetaProjection(ProjectionTemplate):
 
 
 def test_detects_constant_property_hooks_across_subclasses(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class ObservationKind:
-    FIELD = "field"
-    METHOD = "method"
-
-
-class ProjectionTemplate(ABC):
-    @property
-    def observation_kind(self):
-        raise NotImplementedError
-
-
-class AlphaProjection(ProjectionTemplate):
-    @property
-    def observation_kind(self):
-        return ObservationKind.FIELD
-
-
-class BetaProjection(ProjectionTemplate):
-    @property
-    def observation_kind(self):
-        return ObservationKind.METHOD
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass ObservationKind:\n    FIELD = "field"\n    METHOD = "method"\n\n\nclass ProjectionTemplate(ABC):\n    @property\n    def observation_kind(self):\n        raise NotImplementedError\n\n\nclass AlphaProjection(ProjectionTemplate):\n    @property\n    def observation_kind(self):\n        return ObservationKind.FIELD\n\n\nclass BetaProjection(ProjectionTemplate):\n    @property\n    def observation_kind(self):\n        return ObservationKind.METHOD\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "constant_property_hooks"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'constant_property_hooks'))
 
     assert "ProjectionTemplate" in finding.summary
     assert "observation_kind" in finding.summary
@@ -7973,74 +2291,20 @@ class BetaProjection(ProjectionTemplate):
 
 
 def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class ProjectionTemplate(ABC):
-    @property
-    def path_text(self):
-        return getattr(self, "file_path")
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass ProjectionTemplate(ABC):\n    @property\n    def path_text(self):\n        return getattr(self, "file_path")\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "reflective_self_attribute_escape"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'reflective_self_attribute_escape'))
 
     assert "getattr(self, 'file_path')" in finding.summary
     assert "file_path" in (finding.scaffold or "")
 
 
 def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class TaskAdapter(ABC):
-    pass
-
-
-class HelperBackedTaskAdapter(TaskAdapter, ABC):
-    pass
-
-
-class ClassTaskAdapter(HelperBackedTaskAdapter):
-    def build(self, parsed_module, function, observation):
-        return tuple(class_marker_events(parsed_module, function))
-
-
-class InterfaceTaskAdapter(HelperBackedTaskAdapter):
-    def build(self, parsed_module, function, observation):
-        return interface_event(parsed_module, function)
-
-
-class DynamicTaskAdapter(HelperBackedTaskAdapter):
-    def build(self, parsed_module, function, observation):
-        return tuple(dynamic_events(parsed_module, function))
-
-
-class ProjectionTaskAdapter(HelperBackedTaskAdapter):
-    def build(self, parsed_module, function, observation):
-        return projection_event(parsed_module, function)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass TaskAdapter(ABC):\n    pass\n\n\nclass HelperBackedTaskAdapter(TaskAdapter, ABC):\n    pass\n\n\nclass ClassTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return tuple(class_marker_events(parsed_module, function))\n\n\nclass InterfaceTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return interface_event(parsed_module, function)\n\n\nclass DynamicTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return tuple(dynamic_events(parsed_module, function))\n\n\nclass ProjectionTaskAdapter(HelperBackedTaskAdapter):\n    def build(self, parsed_module, function, observation):\n        return projection_event(parsed_module, function)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "helper_backed_observation_spec"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'helper_backed_observation_spec'))
 
     assert "ClassTaskAdapter" in finding.summary
     assert "HelperBackedTaskAdapter" in finding.summary
@@ -8048,27 +2312,10 @@ class ProjectionTaskAdapter(HelperBackedTaskAdapter):
 
 
 def test_detects_dynamic_self_field_selection(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class CountedDispatchMetrics(ABC):
-    count_field_name = "branch_site_count"
-
-    def _count_value(self):
-        return int(getattr(self, self.count_field_name))
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass CountedDispatchMetrics(ABC):\n    count_field_name = "branch_site_count"\n\n    def _count_value(self):\n        return int(getattr(self, self.count_field_name))\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "dynamic_self_field_selection"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'dynamic_self_field_selection'))
 
     assert "getattr(self, self.count_field_name)" in finding.summary
     assert "count_value" in (finding.scaffold or "")
@@ -8077,47 +2324,10 @@ class CountedDispatchMetrics(ABC):
 def test_detects_string_backed_reflective_nominal_lookup_via_globals(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class Route:
-    pass
-
-
-class DirectRoute(Route):
-    pass
-
-
-class GuidedRoute(Route):
-    pass
-
-
-class RoutedRequest(ABC):
-    route_type_name = None
-
-    def create_route(self):
-        return globals()[self.route_type_name]()
-
-
-class DirectRequest(RoutedRequest):
-    route_type_name = "DirectRoute"
-
-
-class GuidedRequest(RoutedRequest):
-    route_type_name = "GuidedRoute"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass Route:\n    pass\n\n\nclass DirectRoute(Route):\n    pass\n\n\nclass GuidedRoute(Route):\n    pass\n\n\nclass RoutedRequest(ABC):\n    route_type_name = None\n\n    def create_route(self):\n        return globals()[self.route_type_name]()\n\n\nclass DirectRequest(RoutedRequest):\n    route_type_name = "DirectRoute"\n\n\nclass GuidedRequest(RoutedRequest):\n    route_type_name = "GuidedRoute"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID))
 
     assert "route_type_name" in finding.summary
     assert "globals[]" in finding.summary
@@ -8126,40 +2336,10 @@ class GuidedRequest(RoutedRequest):
 def test_detects_string_backed_reflective_nominal_lookup_via_getattr(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class BackendFamily:
-    ALPHA = object()
-    BETA = object()
-
-
-class Router(ABC):
-    backend_name = None
-
-    def resolve(self):
-        return getattr(BackendFamily, self.backend_name)
-
-
-class AlphaRouter(Router):
-    backend_name = "ALPHA"
-
-
-class BetaRouter(Router):
-    backend_name = "BETA"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass BackendFamily:\n    ALPHA = object()\n    BETA = object()\n\n\nclass Router(ABC):\n    backend_name = None\n\n    def resolve(self):\n        return getattr(BackendFamily, self.backend_name)\n\n\nclass AlphaRouter(Router):\n    backend_name = "ALPHA"\n\n\nclass BetaRouter(Router):\n    backend_name = "BETA"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID))
 
     assert "backend_name" in finding.summary
     assert "getattr" in finding.summary
@@ -8168,74 +2348,20 @@ class BetaRouter(Router):
 def test_detects_string_backed_reflective_nominal_lookup_via_dict_get(
     tmp_path: Path,
 ) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class WitnessSelector(ABC):
-    witness_field_name = None
-
-    def witness(self, state):
-        return state.__dict__.get(type(self).witness_field_name)
-
-
-class AlphaWitnessSelector(WitnessSelector):
-    witness_field_name = "alpha"
-
-
-class BetaWitnessSelector(WitnessSelector):
-    witness_field_name = "beta"
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass WitnessSelector(ABC):\n    witness_field_name = None\n\n    def witness(self, state):\n        return state.__dict__.get(type(self).witness_field_name)\n\n\nclass AlphaWitnessSelector(WitnessSelector):\n    witness_field_name = "alpha"\n\n\nclass BetaWitnessSelector(WitnessSelector):\n    witness_field_name = "beta"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID
-    )
+    finding = next((finding for finding in findings if finding.detector_id == STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID))
 
     assert "witness_field_name" in finding.summary
     assert "dict.get" in finding.summary
 
 
 def test_detects_classvar_only_sibling_leaf(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class ProjectionLeaf(ABC):
-    pass
-
-
-class AlphaProjection(ProjectionLeaf):
-    payload_cls = Alpha
-    renderer_cls = AlphaRenderer
-
-
-class BetaProjection(ProjectionLeaf):
-    payload_cls = Beta
-    renderer_cls = BetaRenderer
-
-
-class GammaProjection(ProjectionLeaf):
-    payload_cls = Gamma
-    renderer_cls = GammaRenderer
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass ProjectionLeaf(ABC):\n    pass\n\n\nclass AlphaProjection(ProjectionLeaf):\n    payload_cls = Alpha\n    renderer_cls = AlphaRenderer\n\n\nclass BetaProjection(ProjectionLeaf):\n    payload_cls = Beta\n    renderer_cls = BetaRenderer\n\n\nclass GammaProjection(ProjectionLeaf):\n    payload_cls = Gamma\n    renderer_cls = GammaRenderer\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "classvar_only_sibling_leaf"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'classvar_only_sibling_leaf'))
 
     assert "AlphaProjection" in finding.summary
     assert "payload_cls" in finding.summary
@@ -8244,52 +2370,10 @@ class GammaProjection(ProjectionLeaf):
 
 
 def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class CollectedFamily(ABC):
-    pass
-
-
-class RegisteredObservationFamilyDefinition(ABC):
-    pass
-
-
-class AlphaFamilyDefinition(RegisteredObservationFamilyDefinition):
-    item_type = Alpha
-    spec_root = AlphaSpec
-
-
-AlphaFamily = AlphaFamilyDefinition.family_type
-
-
-class BetaFamilyDefinition(RegisteredObservationFamilyDefinition):
-    item_type = Beta
-    spec_root = BetaSpec
-
-
-BetaFamily = BetaFamilyDefinition.family_type
-
-
-class GammaFamilyDefinition(RegisteredObservationFamilyDefinition):
-    item_type = Gamma
-    spec_root = GammaSpec
-
-
-GammaFamily = GammaFamilyDefinition.family_type
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass CollectedFamily(ABC):\n    pass\n\n\nclass RegisteredObservationFamilyDefinition(ABC):\n    pass\n\n\nclass AlphaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Alpha\n    spec_root = AlphaSpec\n\n\nAlphaFamily = AlphaFamilyDefinition.family_type\n\n\nclass BetaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Beta\n    spec_root = BetaSpec\n\n\nBetaFamily = BetaFamilyDefinition.family_type\n\n\nclass GammaFamilyDefinition(RegisteredObservationFamilyDefinition):\n    item_type = Gamma\n    spec_root = GammaSpec\n\n\nGammaFamily = GammaFamilyDefinition.family_type\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "type_indexed_definition_boilerplate"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'type_indexed_definition_boilerplate'))
 
     assert "AlphaFamilyDefinition" in finding.summary
     assert "AlphaFamily" in finding.summary
@@ -8297,62 +2381,10 @@ GammaFamily = GammaFamilyDefinition.family_type
 
 
 def test_detects_manual_derived_export_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class PublicSpecRoot(ABC):
-    pass
-
-
-class HandlerFamilyRoot(ABC):
-    pass
-
-
-class AlphaSpec(PublicSpecRoot):
-    pass
-
-
-class BetaSpec(PublicSpecRoot):
-    pass
-
-
-class GammaSpec(PublicSpecRoot):
-    pass
-
-
-class DeltaHandler(HandlerFamilyRoot):
-    pass
-
-
-class EpsilonHandler(HandlerFamilyRoot):
-    pass
-
-
-class ZetaHandler(HandlerFamilyRoot):
-    pass
-
-
-_STATIC_EXPORT_NAMES = (
-    "AlphaSpec",
-    "BetaSpec",
-    "GammaSpec",
-    "DeltaHandler",
-    "EpsilonHandler",
-    "ZetaHandler",
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass PublicSpecRoot(ABC):\n    pass\n\n\nclass HandlerFamilyRoot(ABC):\n    pass\n\n\nclass AlphaSpec(PublicSpecRoot):\n    pass\n\n\nclass BetaSpec(PublicSpecRoot):\n    pass\n\n\nclass GammaSpec(PublicSpecRoot):\n    pass\n\n\nclass DeltaHandler(HandlerFamilyRoot):\n    pass\n\n\nclass EpsilonHandler(HandlerFamilyRoot):\n    pass\n\n\nclass ZetaHandler(HandlerFamilyRoot):\n    pass\n\n\n_STATIC_EXPORT_NAMES = (\n    "AlphaSpec",\n    "BetaSpec",\n    "GammaSpec",\n    "DeltaHandler",\n    "EpsilonHandler",\n    "ZetaHandler",\n)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "derived_export_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'derived_export_surface'))
 
     assert "_STATIC_EXPORT_NAMES" in finding.summary
     assert (
@@ -8363,43 +2395,10 @@ _STATIC_EXPORT_NAMES = (
 
 
 def test_detects_manual_derived_index_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC
-
-
-class CommandRoot(ABC):
-    pass
-
-
-class AlphaCommand(CommandRoot):
-    pass
-
-
-class BetaCommand(CommandRoot):
-    pass
-
-
-class GammaCommand(CommandRoot):
-    pass
-
-
-COMMAND_BY_NAME = {
-    "alpha": AlphaCommand,
-    "beta": BetaCommand,
-    "gamma": GammaCommand,
-}
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC\n\n\nclass CommandRoot(ABC):\n    pass\n\n\nclass AlphaCommand(CommandRoot):\n    pass\n\n\nclass BetaCommand(CommandRoot):\n    pass\n\n\nclass GammaCommand(CommandRoot):\n    pass\n\n\nCOMMAND_BY_NAME = {\n    "alpha": AlphaCommand,\n    "beta": BetaCommand,\n    "gamma": GammaCommand,\n}\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "derived_indexed_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'derived_indexed_surface'))
 
     assert "COMMAND_BY_NAME" in finding.summary
     assert "CommandRoot" in finding.summary
@@ -8407,36 +2406,10 @@ COMMAND_BY_NAME = {
 
 
 def test_detects_manual_public_api_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Alpha:
-    pass
-
-
-class Beta:
-    pass
-
-
-def gamma():
-    return 1
-
-
-def delta():
-    return 2
-
-
-__all__ = ["Alpha", "Beta", "gamma", "delta"]
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Alpha:\n    pass\n\n\nclass Beta:\n    pass\n\n\ndef gamma():\n    return 1\n\n\ndef delta():\n    return 2\n\n\n__all__ = ["Alpha", "Beta", "gamma", "delta"]\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "manual_public_api_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'manual_public_api_surface'))
 
     assert "__all__" in finding.summary
     assert "public API" in finding.title
@@ -8444,55 +2417,11 @@ __all__ = ["Alpha", "Beta", "gamma", "delta"]
 
 
 def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/alpha.py",
-        """
-class Root:
-    pass
-
-
-def _is_public_alpha_export(name, value):
-    if name.startswith("_"):
-        return False
-    if not isinstance(value, type) or value.__module__ != __name__:
-        return False
-    return issubclass(value, Root)
-
-
-__all__ = sorted(
-    name for name, value in globals().items() if _is_public_alpha_export(name, value)
-)
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/beta.py",
-        """
-class Root:
-    pass
-
-
-def _is_public_beta_export(name, value):
-    if name.startswith("_"):
-        return False
-    if not isinstance(value, type) or value.__module__ != __name__:
-        return False
-    return issubclass(value, Root)
-
-
-__all__ = sorted(
-    name for name, value in globals().items() if _is_public_beta_export(name, value)
-)
-""",
-    )
+    _write_module(tmp_path, 'pkg/alpha.py', '\nclass Root:\n    pass\n\n\ndef _is_public_alpha_export(name, value):\n    if name.startswith("_"):\n        return False\n    if not isinstance(value, type) or value.__module__ != __name__:\n        return False\n    return issubclass(value, Root)\n\n\n__all__ = sorted(\n    name for name, value in globals().items() if _is_public_alpha_export(name, value)\n)\n')
+    _write_module(tmp_path, 'pkg/beta.py', '\nclass Root:\n    pass\n\n\ndef _is_public_beta_export(name, value):\n    if name.startswith("_"):\n        return False\n    if not isinstance(value, type) or value.__module__ != __name__:\n        return False\n    return issubclass(value, Root)\n\n\n__all__ = sorted(\n    name for name, value in globals().items() if _is_public_beta_export(name, value)\n)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "export_policy_predicate"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'export_policy_predicate'))
 
     assert "_is_public_alpha_export" in finding.summary
     assert "_is_public_beta_export" in finding.summary
@@ -8500,34 +2429,10 @@ __all__ = sorted(
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class PluginRegistry:
-    @classmethod
-    def registered_plugins(cls):
-        return ()
-
-
-class HandlerRegistry:
-    @classmethod
-    def registered_plugins(cls):
-        return ()
-
-
-def collect_everything():
-    for item in PluginRegistry.registered_plugins() + HandlerRegistry.registered_plugins():
-        yield item
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass PluginRegistry:\n    @classmethod\n    def registered_plugins(cls):\n        return ()\n\n\nclass HandlerRegistry:\n    @classmethod\n    def registered_plugins(cls):\n        return ()\n\n\ndef collect_everything():\n    for item in PluginRegistry.registered_plugins() + HandlerRegistry.registered_plugins():\n        yield item\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "registered_union_surface"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'registered_union_surface'))
 
     assert "collect_everything" in finding.summary
     assert "registered_plugins" in finding.summary
@@ -8538,57 +2443,10 @@ def collect_everything():
 
 
 def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class PluginRegistry:
-    @classmethod
-    def all_registered_plugins(cls):
-        seen = set()
-        ordered = []
-        queue = list(cls.__subclasses__())
-        while queue:
-            current = queue.pop(0)
-            queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_plugin_types")
-            if registry is None:
-                continue
-            for plugin_type in registry:
-                if plugin_type in seen:
-                    continue
-                seen.add(plugin_type)
-                ordered.append(plugin_type())
-        return tuple(ordered)
-
-
-class HandlerRegistry:
-    @classmethod
-    def all_registered_handlers(cls):
-        seen = set()
-        ordered = []
-        queue = list(cls.__subclasses__())
-        while queue:
-            current = queue.pop(0)
-            queue.extend(current.__subclasses__())
-            registry = current.__dict__.get("_registered_handler_types")
-            if registry is None:
-                continue
-            for handler_type in registry:
-                if handler_type in seen:
-                    continue
-                seen.add(handler_type)
-                ordered.append(handler_type)
-        return tuple(ordered)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass PluginRegistry:\n    @classmethod\n    def all_registered_plugins(cls):\n        seen = set()\n        ordered = []\n        queue = list(cls.__subclasses__())\n        while queue:\n            current = queue.pop(0)\n            queue.extend(current.__subclasses__())\n            registry = current.__dict__.get("_registered_plugin_types")\n            if registry is None:\n                continue\n            for plugin_type in registry:\n                if plugin_type in seen:\n                    continue\n                seen.add(plugin_type)\n                ordered.append(plugin_type())\n        return tuple(ordered)\n\n\nclass HandlerRegistry:\n    @classmethod\n    def all_registered_handlers(cls):\n        seen = set()\n        ordered = []\n        queue = list(cls.__subclasses__())\n        while queue:\n            current = queue.pop(0)\n            queue.extend(current.__subclasses__())\n            registry = current.__dict__.get("_registered_handler_types")\n            if registry is None:\n                continue\n            for handler_type in registry:\n                if handler_type in seen:\n                    continue\n                seen.add(handler_type)\n                ordered.append(handler_type)\n        return tuple(ordered)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "registry_traversal_substrate"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'registry_traversal_substrate'))
 
     assert "all_registered_plugins" in finding.summary
     assert "all_registered_handlers" in finding.summary
@@ -8598,117 +2456,21 @@ class HandlerRegistry:
 
 
 def test_detects_cross_module_registry_traversal_substrate(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/plugins.py",
-        """
-class PluginBase:
-    pass
-
-
-def all_plugins():
-    seen = set()
-    ordered = []
-    queue = list(PluginBase.__subclasses__())
-    while queue:
-        current = queue.pop(0)
-        queue.extend(current.__subclasses__())
-        if not current.__dict__.get("plugin_name"):
-            continue
-        if current in seen:
-            continue
-        seen.add(current)
-        ordered.append(current)
-    return tuple(sorted(ordered, key=lambda item: item.__name__))
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/metrics.py",
-        """
-from dataclasses import is_dataclass
-
-
-class MetricBase:
-    pass
-
-
-def all_metrics():
-    discovered = []
-    queue = list(MetricBase.__subclasses__())
-    while queue:
-        current = queue.pop(0)
-        queue.extend(current.__subclasses__())
-        if not is_dataclass(current):
-            continue
-        discovered.append(current)
-    return tuple(sorted(discovered, key=lambda item: item.__name__))
-""",
-    )
+    _write_module(tmp_path, 'pkg/plugins.py', '\nclass PluginBase:\n    pass\n\n\ndef all_plugins():\n    seen = set()\n    ordered = []\n    queue = list(PluginBase.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not current.__dict__.get("plugin_name"):\n            continue\n        if current in seen:\n            continue\n        seen.add(current)\n        ordered.append(current)\n    return tuple(sorted(ordered, key=lambda item: item.__name__))\n')
+    _write_module(tmp_path, 'pkg/metrics.py', '\nfrom dataclasses import is_dataclass\n\n\nclass MetricBase:\n    pass\n\n\ndef all_metrics():\n    discovered = []\n    queue = list(MetricBase.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not is_dataclass(current):\n            continue\n        discovered.append(current)\n    return tuple(sorted(discovered, key=lambda item: item.__name__))\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "registry_traversal_substrate"
-        and "all_plugins" in finding.summary
-        and "all_metrics" in finding.summary
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'registry_traversal_substrate' and 'all_plugins' in finding.summary and ('all_metrics' in finding.summary)))
 
     assert "materialize_family" in (finding.scaffold or "")
     assert "root.__registry__.values()" in (finding.scaffold or "")
 
 
 def test_detects_alternate_constructor_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class RegistrationShape:
-    @classmethod
-    def from_assignment(cls, parsed_module, node: Assign, registry_name, key_fingerprint):
-        return cls(
-            file_path=parsed_module.path,
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=node.value.id,
-            key_fingerprint=key_fingerprint,
-            key_expression=node.target,
-            registration_style="assignment",
-        )
-
-    @classmethod
-    def from_registration_call(cls, parsed_module, node: Call, registry_name, key_fingerprint):
-        return cls(
-            file_path=parsed_module.path,
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=node.func.id,
-            key_fingerprint=key_fingerprint,
-            key_expression=node.args[0],
-            registration_style="call",
-        )
-
-    @classmethod
-    def from_decorator(cls, parsed_module, node: ClassDef, registry_name, key_fingerprint):
-        return cls(
-            file_path=parsed_module.path,
-            lineno=node.lineno,
-            registry_name=registry_name,
-            registered_class=node.name,
-            key_fingerprint=key_fingerprint,
-            key_expression=node.name,
-            registration_style="decorator",
-        )
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass RegistrationShape:\n    @classmethod\n    def from_assignment(cls, parsed_module, node: Assign, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.value.id,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.target,\n            registration_style="assignment",\n        )\n\n    @classmethod\n    def from_registration_call(cls, parsed_module, node: Call, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.func.id,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.args[0],\n            registration_style="call",\n        )\n\n    @classmethod\n    def from_decorator(cls, parsed_module, node: ClassDef, registry_name, key_fingerprint):\n        return cls(\n            file_path=parsed_module.path,\n            lineno=node.lineno,\n            registry_name=registry_name,\n            registered_class=node.name,\n            key_fingerprint=key_fingerprint,\n            key_expression=node.name,\n            registration_style="decorator",\n        )\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "alternate_constructor_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'alternate_constructor_family'))
 
     assert "RegistrationShape" in finding.summary
     assert "from_assignment" in finding.summary
@@ -8716,27 +2478,10 @@ class RegistrationShape:
 
 
 def test_detects_constructor_variant_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class ArchiveSpec:
-    @classmethod
-    def alpha(cls, root, package, prefix):
-        return cls(root, package, f"{prefix}_alpha", prefix)
-
-    @classmethod
-    def beta(cls, root, package, prefix):
-        return cls(root, package, f"{prefix}_beta", prefix)
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass ArchiveSpec:\n    @classmethod\n    def alpha(cls, root, package, prefix):\n        return cls(root, package, f"{prefix}_alpha", prefix)\n\n    @classmethod\n    def beta(cls, root, package, prefix):\n        return cls(root, package, f"{prefix}_beta", prefix)\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "constructor_variant_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'constructor_variant_family'))
 
     assert "ArchiveSpec" in finding.summary
     assert "alpha" in finding.summary
@@ -8744,33 +2489,10 @@ class ArchiveSpec:
 
 
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Stats:
-    @classmethod
-    def from_files(cls, files):
-        accumulator = StatsAccumulator()
-        for item in files:
-            accumulator.add_file(item)
-        return accumulator.to_stats()
-
-    @classmethod
-    def from_parts(cls, parts):
-        accumulator = StatsAccumulator()
-        for item in parts:
-            accumulator.add_part(item)
-        return accumulator.to_stats()
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Stats:\n    @classmethod\n    def from_files(cls, files):\n        accumulator = StatsAccumulator()\n        for item in files:\n            accumulator.add_file(item)\n        return accumulator.to_stats()\n\n    @classmethod\n    def from_parts(cls, parts):\n        accumulator = StatsAccumulator()\n        for item in parts:\n            accumulator.add_part(item)\n        return accumulator.to_stats()\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "accumulator_fold_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'accumulator_fold_family'))
 
     assert "StatsAccumulator" in finding.summary
     assert "add_file" in finding.summary
@@ -8778,55 +2500,10 @@ class Stats:
 
 
 def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from __future__ import annotations
-
-from dataclasses import dataclass
-from typing import Any, cast
-
-
-class RequestContract:
-    payload: object
-    cache: object
-
-
-class PreparationBase:
-    pass
-
-
-class PayloadPreparationMixin:
-    def prepare(self):
-        request = cast(Any, self)
-        payload = request.payload
-        return ("prepared", payload, request.cache)
-
-    def prepare_typed(self):
-        request = cast(RequestContract, self)
-        return ("typed", request.payload, request.cache)
-
-
-@dataclass(frozen=True)
-class AlphaPreparation(PayloadPreparationMixin, PreparationBase):
-    payload: object
-    cache: object
-
-
-@dataclass(frozen=True)
-class BetaPreparation(PayloadPreparationMixin, PreparationBase):
-    payload: object
-    cache: object
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass\nfrom typing import Any, cast\n\n\nclass RequestContract:\n    payload: object\n    cache: object\n\n\nclass PreparationBase:\n    pass\n\n\nclass PayloadPreparationMixin:\n    def prepare(self):\n        request = cast(Any, self)\n        payload = request.payload\n        return ("prepared", payload, request.cache)\n\n    def prepare_typed(self):\n        request = cast(RequestContract, self)\n        return ("typed", request.payload, request.cache)\n\n\n@dataclass(frozen=True)\nclass AlphaPreparation(PayloadPreparationMixin, PreparationBase):\n    payload: object\n    cache: object\n\n\n@dataclass(frozen=True)\nclass BetaPreparation(PayloadPreparationMixin, PreparationBase):\n    payload: object\n    cache: object\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "implicit_self_contract_mixin"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'implicit_self_contract_mixin'))
 
     assert "PayloadPreparationMixin" in finding.summary
     assert "cast(..., self)" in (finding.codemod_patch or "")
@@ -8835,69 +2512,10 @@ class BetaPreparation(PayloadPreparationMixin, PreparationBase):
 
 
 def test_detects_empty_leaf_product_families(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from abc import ABC, abstractmethod
-
-
-class DispatchFamily(ABC):
-    @classmethod
-    @abstractmethod
-    def matches_mode(cls, request) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def run(self, request):
-        raise NotImplementedError
-
-
-class GuidedPolicy(DispatchFamily, ABC):
-    @classmethod
-    def matches_mode(cls, request) -> bool:
-        return request.mode == "guided"
-
-
-class HybridPolicy(DispatchFamily, ABC):
-    @classmethod
-    def matches_mode(cls, request) -> bool:
-        return request.mode == "hybrid"
-
-
-class LocalTemplatesMixin(ABC):
-    def templates(self, request):
-        return request.local_templates
-
-
-class RemoteTemplatesMixin(ABC):
-    def templates(self, request):
-        return request.remote_templates
-
-
-class LocalGuidedPolicy(LocalTemplatesMixin, GuidedPolicy):
-    pass
-
-
-class RemoteGuidedPolicy(RemoteTemplatesMixin, GuidedPolicy):
-    pass
-
-
-class LocalHybridPolicy(LocalTemplatesMixin, HybridPolicy):
-    pass
-
-
-class RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):
-    pass
-""",
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom abc import ABC, abstractmethod\n\n\nclass DispatchFamily(ABC):\n    @classmethod\n    @abstractmethod\n    def matches_mode(cls, request) -> bool:\n        raise NotImplementedError\n\n    @abstractmethod\n    def run(self, request):\n        raise NotImplementedError\n\n\nclass GuidedPolicy(DispatchFamily, ABC):\n    @classmethod\n    def matches_mode(cls, request) -> bool:\n        return request.mode == "guided"\n\n\nclass HybridPolicy(DispatchFamily, ABC):\n    @classmethod\n    def matches_mode(cls, request) -> bool:\n        return request.mode == "hybrid"\n\n\nclass LocalTemplatesMixin(ABC):\n    def templates(self, request):\n        return request.local_templates\n\n\nclass RemoteTemplatesMixin(ABC):\n    def templates(self, request):\n        return request.remote_templates\n\n\nclass LocalGuidedPolicy(LocalTemplatesMixin, GuidedPolicy):\n    pass\n\n\nclass RemoteGuidedPolicy(RemoteTemplatesMixin, GuidedPolicy):\n    pass\n\n\nclass LocalHybridPolicy(LocalTemplatesMixin, HybridPolicy):\n    pass\n\n\nclass RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):\n    pass\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "empty_leaf_product_family"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'empty_leaf_product_family'))
 
     assert "LocalTemplatesMixin" in finding.summary
     assert "GuidedPolicy" in finding.summary
@@ -8905,57 +2523,11 @@ class RemoteHybridPolicy(RemoteTemplatesMixin, HybridPolicy):
 
 
 def test_detects_residual_closed_axis_branching(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/authority.py",
-        """
-from abc import ABC
-from enum import Enum
-from typing import ClassVar
-
-
-class KeyedNominalFamily(ABC):
-    registry_key_attr: ClassVar[str]
-
-
-class ScoringFamily(Enum):
-    FAST = "fast"
-    ACCURATE = "accurate"
-
-
-class ScoringPolicy(KeyedNominalFamily[ScoringFamily], ABC):
-    registry_key_attr = "scoring_family"
-    scoring_family: ClassVar[ScoringFamily]
-
-
-class FastPolicy(ScoringPolicy):
-    scoring_family = ScoringFamily.FAST
-
-
-class AccuratePolicy(ScoringPolicy):
-    scoring_family = ScoringFamily.ACCURATE
-""",
-    )
-    _write_module(
-        tmp_path,
-        "pkg/consumer.py",
-        """
-from pkg.authority import ScoringFamily
-
-
-def resolve_backend(scoring_family: ScoringFamily) -> str:
-    if scoring_family == ScoringFamily.FAST:
-        return "jit"
-    return "exact"
-""",
-    )
+    _write_module(tmp_path, 'pkg/authority.py', '\nfrom abc import ABC\nfrom enum import Enum\nfrom typing import ClassVar\n\n\nclass KeyedNominalFamily(ABC):\n    registry_key_attr: ClassVar[str]\n\n\nclass ScoringFamily(Enum):\n    FAST = "fast"\n    ACCURATE = "accurate"\n\n\nclass ScoringPolicy(KeyedNominalFamily[ScoringFamily], ABC):\n    registry_key_attr = "scoring_family"\n    scoring_family: ClassVar[ScoringFamily]\n\n\nclass FastPolicy(ScoringPolicy):\n    scoring_family = ScoringFamily.FAST\n\n\nclass AccuratePolicy(ScoringPolicy):\n    scoring_family = ScoringFamily.ACCURATE\n')
+    _write_module(tmp_path, 'pkg/consumer.py', '\nfrom pkg.authority import ScoringFamily\n\n\ndef resolve_backend(scoring_family: ScoringFamily) -> str:\n    if scoring_family == ScoringFamily.FAST:\n        return "jit"\n    return "exact"\n')
 
     findings = analyze_path(tmp_path)
-    finding = next(
-        finding
-        for finding in findings
-        if finding.detector_id == "residual_closed_axis_branching"
-    )
+    finding = next((finding for finding in findings if finding.detector_id == 'residual_closed_axis_branching'))
 
     assert "resolve_backend" in finding.summary
     assert "ScoringFamily" in finding.summary
@@ -8965,86 +2537,26 @@ def resolve_backend(scoring_family: ScoringFamily) -> str:
 
 
 def test_detects_excessive_blank_line_runs(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "def alpha():",
-                "    return 1",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "def beta():",
-                "    return 2",
-            ]
-        ),
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\n'.join(['def alpha():', '    return 1', '', '', '', '', '', 'def beta():', '    return 2']))
 
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "excessive_blank_line_run"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'excessive_blank_line_run'))
 
     assert "5 contiguous blank lines" in finding.summary
     assert "Collapse blank lines" in (finding.codemod_patch or "")
 
 
 def test_detects_intra_class_blank_line_runs(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\n".join(
-            [
-                "class Alpha:",
-                "    marker = True",
-                "",
-                "",
-                "    def run(self):",
-                "        return 1",
-            ]
-        ),
-    )
+    _write_module(tmp_path, 'pkg/mod.py', '\n'.join(['class Alpha:', '    marker = True', '', '', '    def run(self):', '        return 1']))
 
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "excessive_blank_line_run"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'excessive_blank_line_run'))
 
     assert "2 contiguous blank lines" in finding.summary
 
 
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class AlphaMixin:
-    __alpha_catalog__ = AlphaCatalog()
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass AlphaMixin:\n    __alpha_catalog__ = AlphaCatalog()\n\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        cls.__alpha_catalog__.install(cls)\n\n\nclass BetaMixin:\n    __beta_catalog__ = BetaCatalog()\n\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        cls.__beta_catalog__.install(cls)\n')
 
-    def __init_subclass__(cls):
-        super().__init_subclass__()
-        cls.__alpha_catalog__.install(cls)
-
-
-class BetaMixin:
-    __beta_catalog__ = BetaCatalog()
-
-    def __init_subclass__(cls):
-        super().__init_subclass__()
-        cls.__beta_catalog__.install(cls)
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "catalog_installing_mixin_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'catalog_installing_mixin_family'))
 
     assert "AlphaMixin" in finding.summary
     assert "__beta_catalog__" in finding.summary
@@ -9052,26 +2564,9 @@ class BetaMixin:
 
 
 def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-class Syntax:
-    def declaration_name(self, line):
-        match = self.declaration.search(line)
-        return match.group(1) if match else None
+    _write_module(tmp_path, 'pkg/mod.py', '\nclass Syntax:\n    def declaration_name(self, line):\n        match = self.declaration.search(line)\n        return match.group(1) if match else None\n\n    def namespace_name(self, line):\n        match = self.namespace.match(line)\n        return match.group(1) if match else None\n')
 
-    def namespace_name(self, line):
-        match = self.namespace.match(line)
-        return match.group(1) if match else None
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "regex_group_extractor_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'regex_group_extractor_family'))
 
     assert "declaration_name" in finding.summary
     assert "namespace" in finding.summary
@@ -9079,34 +2574,9 @@ class Syntax:
 
 
 def test_detects_sparse_constructor_variant_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ParsePolicy:\n    verbose_prefix: str = ""\n    collect_unknown: bool = False\n    count_unknown: bool = False\n\n    @classmethod\n    def primary(cls):\n        return cls(collect_unknown=True)\n\n    @classmethod\n    def retry(cls):\n        return cls(verbose_prefix="(retry) ", count_unknown=True)\n')
 
-
-@dataclass(frozen=True)
-class ParsePolicy:
-    verbose_prefix: str = ""
-    collect_unknown: bool = False
-    count_unknown: bool = False
-
-    @classmethod
-    def primary(cls):
-        return cls(collect_unknown=True)
-
-    @classmethod
-    def retry(cls):
-        return cls(verbose_prefix="(retry) ", count_unknown=True)
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "sparse_constructor_variant_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'sparse_constructor_variant_family'))
 
     assert "ParsePolicy" in finding.summary
     assert "collect_unknown" in finding.summary
@@ -9114,31 +2584,11 @@ class ParsePolicy:
 
 
 def test_detects_support_prelude_module_family_without_manifest(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/support.py",
-        """
-from pathlib import Path
-""",
-    )
+    _write_module(tmp_path, 'pkg/support.py', '\nfrom pathlib import Path\n')
     for name in ("alpha", "beta", "gamma"):
-        _write_module(
-            tmp_path,
-            f"pkg/{name}.py",
-            f"""
-from .support import *
+        _write_module(tmp_path, f'pkg/{name}.py', f'\nfrom .support import *\n\n\nclass {name.title()}Mixin:\n    pass\n')
 
-
-class {name.title()}Mixin:
-    pass
-""",
-        )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "support_prelude_module_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'support_prelude_module_family'))
 
     assert "3 one-class modules" in finding.summary
     assert "support" in finding.summary
@@ -9146,40 +2596,9 @@ class {name.title()}Mixin:
 
 
 def test_detects_module_constructor_policy_family(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        """
-from dataclasses import dataclass
+    _write_module(tmp_path, 'pkg/mod.py', '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SelectionPolicy:\n    names: frozenset[str]\n    suffixes: tuple[str, ...]\n    predicate: object\n\n\nALPHA_SELECTION_POLICY = SelectionPolicy(\n    ALPHA_NAMES,\n    ALPHA_SUFFIXES,\n    is_alpha,\n)\n\n\nBETA_SELECTION_POLICY = SelectionPolicy(\n    BETA_NAMES,\n    BETA_SUFFIXES,\n    is_beta,\n)\n')
 
-
-@dataclass(frozen=True)
-class SelectionPolicy:
-    names: frozenset[str]
-    suffixes: tuple[str, ...]
-    predicate: object
-
-
-ALPHA_SELECTION_POLICY = SelectionPolicy(
-    ALPHA_NAMES,
-    ALPHA_SUFFIXES,
-    is_alpha,
-)
-
-
-BETA_SELECTION_POLICY = SelectionPolicy(
-    BETA_NAMES,
-    BETA_SUFFIXES,
-    is_beta,
-)
-""",
-    )
-
-    finding = next(
-        finding
-        for finding in analyze_path(tmp_path)
-        if finding.detector_id == "module_constructor_policy_family"
-    )
+    finding = next((finding for finding in analyze_path(tmp_path) if finding.detector_id == 'module_constructor_policy_family'))
 
     assert "SelectionPolicy" in finding.summary
     assert "ALPHA_SELECTION_POLICY" in finding.summary

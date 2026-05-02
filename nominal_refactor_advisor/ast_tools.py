@@ -30,27 +30,7 @@ from .observation_shapes import AccessorWrapperCandidate, AttributeProbeObservat
 _TYPE_BUILTIN = "type"
 _SETATTR_BUILTIN = "setattr"
 _RUNTIME_TYPE_GENERATORS = frozenset({_TYPE_BUILTIN, "make_dataclass", "new_class"})
-_IGNORED_PYTHON_TREE_DIRS = frozenset(
-    {
-        ".eggs",
-        ".git",
-        ".hg",
-        ".mypy_cache",
-        ".nox",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".tox",
-        ".venv",
-        ".svn",
-        "__pycache__",
-        "build",
-        "dist",
-        "htmlcov",
-        "node_modules",
-        "site-packages",
-        "venv",
-    }
-)
+_IGNORED_PYTHON_TREE_DIRS = frozenset({'.eggs', '.git', '.hg', '.mypy_cache', '.nox', '.pytest_cache', '.ruff_cache', '.tox', '.venv', '.svn', '__pycache__', 'build', 'dist', 'htmlcov', 'node_modules', 'site-packages', 'venv'})
 
 
 ParsedModule = product_record('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.')
@@ -90,11 +70,7 @@ def _descendant_types(root: type[object]) -> tuple[type[object], ...]:
 
 
 def _registry_member_key(registered_type: type[object]) -> tuple[str, int, str]:
-    return (
-        registered_type.__module__,
-        cast(int, registered_type.__dict__.get("__firstlineno__", 0)),
-        registered_type.__qualname__,
-    )
+    return (registered_type.__module__, cast(int, registered_type.__dict__.get('__firstlineno__', 0)), registered_type.__qualname__)
 
 
 def _registered_type_token(_name: str, cls: type[object]) -> str | None:
@@ -109,10 +85,7 @@ def _ordered_registered_types(
     registry = root.__registry__
     seen: set[type[object]] = set()
     ordered: list[type[_TRegisteredType]] = []
-    for registered_type in sorted(
-        registry.values(),
-        key=lambda candidate: _registry_member_key(cast(type[object], candidate)),
-    ):
+    for registered_type in sorted(registry.values(), key=lambda candidate: _registry_member_key(cast(type[object], candidate))):
         registered_class = cast(type[_TRegisteredType], registered_type)
         if registered_class in seen or not issubclass(registered_class, root):
             continue
@@ -146,15 +119,7 @@ def _direct_registered_types(
     *,
     registry_base: type[object],
 ) -> tuple[type[_TRegisteredType], ...]:
-    return tuple(
-        registered_type
-        for registered_type in _ordered_registered_types(root)
-        if _is_direct_registered_descendant(
-            registered_type,
-            root,
-            registry_base=registry_base,
-        )
-    )
+    return tuple((registered_type for registered_type in _ordered_registered_types(root) if _is_direct_registered_descendant(registered_type, root, registry_base=registry_base)))
 
 
 class ModuleShapeSpec(ABC):
@@ -177,20 +142,12 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
     @classmethod
     def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         """Return concrete specs registered directly under this root."""
-        return tuple(
-            spec_type()
-            for spec_type in _direct_registered_types(
-                cls,
-                registry_base=AutoRegisteredModuleShapeSpec,
-            )
-        )
+        return tuple((spec_type() for spec_type in _direct_registered_types(cls, registry_base=AutoRegisteredModuleShapeSpec)))
 
     @classmethod
     def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         """Return all concrete specs reachable from descendant registry roots."""
-        return tuple(
-            spec_type() for spec_type in _ordered_registered_types(cls)
-        )
+        return tuple((spec_type() for spec_type in _ordered_registered_types(cls)))
 
 
 class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
@@ -206,10 +163,7 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
         """Return concrete families registered directly under this root."""
-        return _direct_registered_types(
-            cls,
-            registry_base=CollectedFamily,
-        )
+        return _direct_registered_types(cls, registry_base=CollectedFamily)
 
     @classmethod
     def all_registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
@@ -227,11 +181,7 @@ def _collect_family_items_cached(
     parsed_module: ParsedModule,
     family: type[CollectedFamily],
 ) -> tuple[object, ...]:
-    return tuple(
-        item
-        for item in _flatten_collected_items(family.collect(parsed_module))
-        if isinstance(item, family.item_type)
-    )
+    return tuple((item for item in _flatten_collected_items(family.collect(parsed_module)) if isinstance(item, family.item_type)))
 
 
 def collect_family_items(
@@ -250,11 +200,7 @@ class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[object]:
-        return _collect_items_from_spec_root(
-            cls.spec_root,
-            parsed_module,
-            cls.item_type,
-        )
+        return _collect_items_from_spec_root(cls.spec_root, parsed_module, cls.item_type)
 
 
 class SingleSpecCollectedFamily(CollectedFamily, ABC):
@@ -322,10 +268,7 @@ class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
         assert isinstance(node, type(self).node_type)
         helper = getattr(type(self), "shape_helper", None)
         if helper is not None:
-            return helper(
-                parsed_module,
-                *self.shape_helper_args(node, observation),
-            )
+            return helper(parsed_module, *self.shape_helper_args(node, observation))
         return self.build_from_context(parsed_module, node, observation)
 
     def shape_helper_args(
@@ -413,12 +356,7 @@ def _python_source_paths(root: Path) -> tuple[Path, ...]:
 
     paths: list[Path] = []
     for directory, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            dirname
-            for dirname in dirnames
-            if dirname not in _IGNORED_PYTHON_TREE_DIRS
-            and not dirname.endswith((".egg-info", ".dist-info"))
-        )
+        dirnames[:] = sorted((dirname for dirname in dirnames if dirname not in _IGNORED_PYTHON_TREE_DIRS and (not dirname.endswith(('.egg-info', '.dist-info')))))
         directory_path = Path(directory)
         for filename in sorted(filenames):
             if filename.endswith(".py"):
@@ -443,15 +381,7 @@ def parse_python_modules(root: Path) -> list[ParsedModule]:
     for path in _python_source_paths(root):
         source = path.read_text(encoding="utf-8")
         module_name, is_package_init = module_name_for_path(path)
-        modules.append(
-            ParsedModule(
-                path=path,
-                module_name=module_name,
-                is_package_init=is_package_init,
-                module=ast.parse(source),
-                source=source,
-            )
-        )
+        modules.append(ParsedModule(path=path, module_name=module_name, is_package_init=is_package_init, module=ast.parse(source), source=source))
     return modules
 
 
@@ -469,21 +399,9 @@ def _normalized_constant(value: object) -> object:
 
 def _normalized_ast_key(node: object) -> object:
     if isinstance(node, ast.FunctionDef):
-        return (
-            "FunctionDef",
-            "FUNC",
-            _normalized_ast_key(node.args),
-            tuple(_normalized_ast_key(stmt) for stmt in node.body),
-            tuple(_normalized_ast_key(dec) for dec in node.decorator_list),
-        )
+        return ('FunctionDef', 'FUNC', _normalized_ast_key(node.args), tuple((_normalized_ast_key(stmt) for stmt in node.body)), tuple((_normalized_ast_key(dec) for dec in node.decorator_list)))
     if isinstance(node, ast.AsyncFunctionDef):
-        return (
-            "AsyncFunctionDef",
-            "FUNC",
-            _normalized_ast_key(node.args),
-            tuple(_normalized_ast_key(stmt) for stmt in node.body),
-            tuple(_normalized_ast_key(dec) for dec in node.decorator_list),
-        )
+        return ('AsyncFunctionDef', 'FUNC', _normalized_ast_key(node.args), tuple((_normalized_ast_key(stmt) for stmt in node.body)), tuple((_normalized_ast_key(dec) for dec in node.decorator_list)))
     if isinstance(node, ast.arg):
         return ("arg", "ARG")
     if isinstance(node, ast.Name):
@@ -491,20 +409,9 @@ def _normalized_ast_key(node: object) -> object:
     if isinstance(node, ast.Constant):
         return ("Constant", _normalized_constant(node.value))
     if isinstance(node, ast.Attribute):
-        return (
-            "Attribute",
-            _normalized_ast_key(node.value),
-            "ATTR",
-            node.ctx.__class__.__name__,
-        )
+        return ('Attribute', _normalized_ast_key(node.value), 'ATTR', node.ctx.__class__.__name__)
     if isinstance(node, ast.AST):
-        return (
-            node.__class__.__name__,
-            tuple(
-                (field_name, _normalized_ast_key(value))
-                for field_name, value in ast.iter_fields(node)
-            ),
-        )
+        return (node.__class__.__name__, tuple(((field_name, _normalized_ast_key(value)) for field_name, value in ast.iter_fields(node))))
     if isinstance(node, list):
         return tuple(_normalized_ast_key(item) for item in node)
     if isinstance(node, tuple):
@@ -536,12 +443,8 @@ _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
 _ATTRIBUTE_ERROR_FAMILY = AstNameFamily(frozenset({"AttributeError"}))
 _HASATTR_CALL_FAMILY = AstNameFamily(frozenset({"hasattr"}))
 _GETATTR_CALL_FAMILY = AstNameFamily(frozenset({"getattr"}))
-_REGISTRATION_CALL_FAMILY = AstNameFamily(
-    frozenset({"register", "add", "register_class", "register_type"})
-)
-_REGISTRATION_DECORATOR_FAMILY = AstNameFamily(
-    _REGISTRATION_CALL_FAMILY.names | frozenset({"auto_register"})
-)
+_REGISTRATION_CALL_FAMILY = AstNameFamily(frozenset({'register', 'add', 'register_class', 'register_type'}))
+_REGISTRATION_DECORATOR_FAMILY = AstNameFamily(_REGISTRATION_CALL_FAMILY.names | frozenset({'auto_register'}))
 
 
 def _node_matches_family(node: ast.AST, family: AstNameFamily) -> bool:
@@ -622,15 +525,7 @@ def _collect_all_scoped_observations(
             self.function_stack: list[str] = []
 
         def _record(self, node: ast.AST) -> None:
-            observations.append(
-                ScopedAstObservation(
-                    node=node,
-                    class_name=self.class_stack[-1] if self.class_stack else None,
-                    function_name=(
-                        self.function_stack[-1] if self.function_stack else None
-                    ),
-                )
-            )
+            observations.append(ScopedAstObservation(node=node, class_name=self.class_stack[-1] if self.class_stack else None, function_name=self.function_stack[-1] if self.function_stack else None))
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             self._record(node)
@@ -647,9 +542,7 @@ def _collect_all_scoped_observations(
         visit_AsyncFunctionDef = visit_FunctionDef
 
         def generic_visit(self, node: ast.AST) -> None:
-            if not isinstance(
-                node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-            ):
+            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
                 self._record(node)
             super().generic_visit(node)
 
@@ -662,11 +555,7 @@ def collect_scoped_observations(
     parsed_module: ParsedModule,
     node_types: tuple[type[ast.AST], ...],
 ) -> tuple[ScopedAstObservation, ...]:
-    return tuple(
-        observation
-        for observation in _collect_all_scoped_observations(parsed_module)
-        if isinstance(observation.node, node_types)
-    )
+    return tuple((observation for observation in _collect_all_scoped_observations(parsed_module) if isinstance(observation.node, node_types)))
 
 
 def collect_scoped_shapes(
@@ -693,11 +582,7 @@ def _collect_items_from_spec_root(
 ) -> list[object]:
     items: list[object] = []
     for spec in spec_root.registered_specs():
-        items.extend(
-            item
-            for item in _flatten_collected_items(spec.collect(parsed_module))
-            if isinstance(item, item_type)
-        )
+        items.extend((item for item in _flatten_collected_items(spec.collect(parsed_module)) if isinstance(item, item_type)))
     return items
 
 
@@ -712,15 +597,7 @@ def _class_observations(parsed_module: ParsedModule) -> tuple[ClassAstObservatio
     for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
         node = observation.node
         assert isinstance(node, ast.ClassDef)
-        observations.append(
-            ClassAstObservation(
-                node=node,
-                is_dataclass_family=any(
-                    _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
-                    for decorator in node.decorator_list
-                ),
-            )
-        )
+        observations.append(ClassAstObservation(node=node, is_dataclass_family=any((_node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY) for decorator in node.decorator_list))))
     return tuple(observations)
 
 
@@ -742,37 +619,9 @@ def _class_body_field_observation(
     if isinstance(stmt, ast.AnnAssign):
         if _node_matches_family(stmt.annotation, _CLASSVAR_REFERENCE_FAMILY):
             return None
-        return FieldObservation(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            field_name=binding.name,
-            lineno=binding.line,
-            execution_level=StructuralExecutionLevel.CLASS_BODY,
-            origin_kind=(
-                FieldOriginKind.DATACLASS_FIELD
-                if is_dataclass_family
-                else FieldOriginKind.CLASS_ANNOTATION
-            ),
-            is_dataclass_family=is_dataclass_family,
-            value_fingerprint=(
-                _fingerprint_builder_value(binding.value)
-                if binding.value is not None
-                else None
-            ),
-            annotation_text=ast.unparse(stmt.annotation),
-            annotation_fingerprint=_annotation_fingerprint(stmt.annotation),
-        )
+        return FieldObservation(file_path=str(parsed_module.path), class_name=class_name, field_name=binding.name, lineno=binding.line, execution_level=StructuralExecutionLevel.CLASS_BODY, origin_kind=FieldOriginKind.DATACLASS_FIELD if is_dataclass_family else FieldOriginKind.CLASS_ANNOTATION, is_dataclass_family=is_dataclass_family, value_fingerprint=_fingerprint_builder_value(binding.value) if binding.value is not None else None, annotation_text=ast.unparse(stmt.annotation), annotation_fingerprint=_annotation_fingerprint(stmt.annotation))
     if isinstance(stmt, ast.Assign):
-        return FieldObservation(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            field_name=binding.name,
-            lineno=binding.line,
-            execution_level=StructuralExecutionLevel.CLASS_BODY,
-            origin_kind=FieldOriginKind.CLASS_ASSIGNMENT,
-            is_dataclass_family=is_dataclass_family,
-            value_fingerprint=_fingerprint_builder_value(binding.value),
-        )
+        return FieldObservation(file_path=str(parsed_module.path), class_name=class_name, field_name=binding.name, lineno=binding.line, execution_level=StructuralExecutionLevel.CLASS_BODY, origin_kind=FieldOriginKind.CLASS_ASSIGNMENT, is_dataclass_family=is_dataclass_family, value_fingerprint=_fingerprint_builder_value(binding.value))
     return None
 
 
@@ -787,10 +636,7 @@ def _parameter_annotation_map(
     for arg in function.args.args:
         if arg.annotation is None:
             continue
-        annotations[arg.arg] = (
-            ast.unparse(arg.annotation),
-            _annotation_fingerprint(arg.annotation),
-        )
+        annotations[arg.arg] = (ast.unparse(arg.annotation), _annotation_fingerprint(arg.annotation))
     return annotations
 
 
@@ -819,30 +665,7 @@ def _init_field_observations(
             and target.value.id == "self"
         ):
             continue
-        observations.append(
-            FieldObservation(
-                file_path=str(parsed_module.path),
-                class_name=class_name,
-                field_name=target.attr,
-                lineno=stmt.lineno,
-                execution_level=StructuralExecutionLevel.INIT_BODY,
-                origin_kind=FieldOriginKind.INIT_ASSIGNMENT,
-                is_dataclass_family=is_dataclass_family,
-                value_fingerprint=(
-                    _fingerprint_builder_value(value) if value is not None else None
-                ),
-                annotation_text=(
-                    parameter_annotations[value.id][0]
-                    if isinstance(value, ast.Name) and value.id in parameter_annotations
-                    else None
-                ),
-                annotation_fingerprint=(
-                    parameter_annotations[value.id][1]
-                    if isinstance(value, ast.Name) and value.id in parameter_annotations
-                    else None
-                ),
-            )
-        )
+        observations.append(FieldObservation(file_path=str(parsed_module.path), class_name=class_name, field_name=target.attr, lineno=stmt.lineno, execution_level=StructuralExecutionLevel.INIT_BODY, origin_kind=FieldOriginKind.INIT_ASSIGNMENT, is_dataclass_family=is_dataclass_family, value_fingerprint=_fingerprint_builder_value(value) if value is not None else None, annotation_text=parameter_annotations[value.id][0] if isinstance(value, ast.Name) and value.id in parameter_annotations else None, annotation_fingerprint=parameter_annotations[value.id][1] if isinstance(value, ast.Name) and value.id in parameter_annotations else None))
     return observations
 
 
@@ -869,10 +692,7 @@ def _literal_dispatch_case(
     test: ast.AST, literal_type: type[object]
 ) -> tuple[str, str, str] | None:
     return (
-        Maybe.of(test)
-        .bind(_LiteralDispatchCompareStep())
-        .bind(_LiteralDispatchCaseStep(literal_type))
-        .unwrap_or_none()
+        Maybe.of(test).bind(_LiteralDispatchCompareStep()).bind(_LiteralDispatchCaseStep(literal_type)).unwrap_or_none()
     )
 
 
@@ -903,15 +723,9 @@ class _LiteralDispatchCaseStep(
 def _literal_dispatch_side(
     axis: ast.AST, literal: ast.AST, literal_type: type[object]
 ) -> tuple[str, str, str] | None:
-    if not isinstance(literal, ast.Constant) or not isinstance(
-        literal.value, literal_type
-    ):
+    if not isinstance(literal, ast.Constant) or not isinstance(literal.value, literal_type):
         return None
-    return (
-        ast.dump(axis, include_attributes=False),
-        ast.unparse(axis),
-        repr(literal.value),
-    )
+    return (ast.dump(axis, include_attributes=False), ast.unparse(axis), repr(literal.value))
 
 
 def _literal_dispatch_observation_from_if(
@@ -942,18 +756,7 @@ def _literal_dispatch_observation_from_if(
     if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
         return None
     function_name = _enclosing_function_name(node, parent_map)
-    return LiteralDispatchObservation(
-        file_path=str(parsed_module.path),
-        line=node.lineno,
-        symbol=(function_name or "<module>") + ":literal-dispatch",
-        axis_fingerprint=axis_fingerprint,
-        axis_expression=axis_expression,
-        literal_cases=tuple(literal_cases),
-        literal_kind=literal_kind,
-        execution_level=_execution_level_for_scope(function_name),
-        branch_lines=tuple(branch_lines),
-        scope_owner=function_name,
-    )
+    return LiteralDispatchObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=(function_name or '<module>') + ':literal-dispatch', axis_fingerprint=axis_fingerprint, axis_expression=axis_expression, literal_cases=tuple(literal_cases), literal_kind=literal_kind, execution_level=_execution_level_for_scope(function_name), branch_lines=tuple(branch_lines), scope_owner=function_name)
 
 
 def _iter_statement_blocks(
@@ -981,35 +784,17 @@ def _inline_literal_dispatch_groups(
         if case is None:
             continue
         axis_fingerprint, axis_expression, literal_case = case
-        groups.setdefault(axis_fingerprint, []).append(
-            (stmt.lineno, axis_expression, literal_case)
-        )
+        groups.setdefault(axis_fingerprint, []).append((stmt.lineno, axis_expression, literal_case))
     observations: list[LiteralDispatchObservation] = []
     for axis_fingerprint, items in groups.items():
         literal_cases = sorted_tuple({literal_case for _, _, literal_case in items}, key=str)
         if len(literal_cases) < 2:
             continue
-        observations.append(
-            LiteralDispatchObservation(
-                file_path=str(parsed_module.path),
-                line=min(line for line, _, _ in items),
-                symbol=(owner_name or "<module>") + ":inline-literal-dispatch",
-                axis_fingerprint=axis_fingerprint,
-                axis_expression=items[0][1],
-                literal_cases=literal_cases,
-                literal_kind=literal_kind,
-                execution_level=_execution_level_for_scope(owner_name),
-                branch_lines=sorted_tuple((line for line, _, _ in items)),
-                scope_owner=owner_name,
-            )
-        )
+        observations.append(LiteralDispatchObservation(file_path=str(parsed_module.path), line=min((line for line, _, _ in items)), symbol=(owner_name or '<module>') + ':inline-literal-dispatch', axis_fingerprint=axis_fingerprint, axis_expression=items[0][1], literal_cases=literal_cases, literal_kind=literal_kind, execution_level=_execution_level_for_scope(owner_name), branch_lines=sorted_tuple((line for line, _, _ in items)), scope_owner=owner_name))
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-_LITERAL_DISPATCH_KINDS: tuple[tuple[type[object], LiteralKind], ...] = (
-    (str, LiteralKind.STRING),
-    (int, LiteralKind.NUMERIC),
-)
+_LITERAL_DISPATCH_KINDS: tuple[tuple[type[object], LiteralKind], ...] = ((str, LiteralKind.STRING), (int, LiteralKind.NUMERIC))
 
 
 @lru_cache(maxsize=None)
@@ -1029,13 +814,7 @@ def _literal_dispatch_observations(
         ):
             continue
         for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
-            observation = _literal_dispatch_observation_from_if(
-                parsed_module,
-                node,
-                literal_type,
-                literal_kind,
-                parent_map,
-            )
+            observation = _literal_dispatch_observation_from_if(parsed_module, node, literal_type, literal_kind, parent_map)
             if observation is not None:
                 observations.append(observation)
     return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
@@ -1045,11 +824,7 @@ def _literal_dispatch_observations_for_kind(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    return tuple(
-        item
-        for item in _literal_dispatch_observations(parsed_module)
-        if item.literal_kind is literal_kind
-    )
+    return tuple((item for item in _literal_dispatch_observations(parsed_module) if item.literal_kind is literal_kind))
 
 
 @lru_cache(maxsize=None)
@@ -1059,15 +834,7 @@ def _inline_literal_dispatch_observations(
     observations: list[LiteralDispatchObservation] = []
     for owner_name, block in _iter_statement_blocks(parsed_module.module):
         for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
-            observations.extend(
-                _inline_literal_dispatch_groups(
-                    parsed_module,
-                    owner_name,
-                    block,
-                    literal_type,
-                    literal_kind,
-                )
-            )
+            observations.extend(_inline_literal_dispatch_groups(parsed_module, owner_name, block, literal_type, literal_kind))
     return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
 
 
@@ -1075,11 +842,7 @@ def _inline_literal_dispatch_observations_for_kind(
     parsed_module: ParsedModule,
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
-    return tuple(
-        item
-        for item in _inline_literal_dispatch_observations(parsed_module)
-        if item.literal_kind is literal_kind
-    )
+    return tuple((item for item in _inline_literal_dispatch_observations(parsed_module) if item.literal_kind is literal_kind))
 
 
 def _is_docstring_expr(node: ast.stmt) -> bool:
@@ -1135,9 +898,7 @@ def _projection_outer_inner_calls(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ast.Call] | None:
     outer_call = (
-        Maybe.of(_trim_docstring_body(function.body))
-        .bind_all(registered_effect_steps(_ProjectionOuterCallStep))
-        .unwrap_or_none()
+        Maybe.of(_trim_docstring_body(function.body)).bind_all(registered_effect_steps(_ProjectionOuterCallStep)).unwrap_or_none()
     )
     if outer_call is None:
         return None
@@ -1209,12 +970,7 @@ class _ProjectedAttributeStep(
 
 
 def _projection_generator_attribute(node: ast.AST) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(node)
-        .bind_all(registered_effect_steps(_ProjectionGeneratorAttributeStep))
-        .unwrap_or_none(),
-    )
+    return cast(str | None, Maybe.of(node).bind_all(registered_effect_steps(_ProjectionGeneratorAttributeStep)).unwrap_or_none())
 
 
 def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:
@@ -1239,15 +995,7 @@ def _projection_helper_shape_from_function(
     if inner_shape is None:
         return None
     aggregator_name, projected_attribute = inner_shape
-    return ProjectionHelperShape(
-        file_path=str(parsed_module.path),
-        function_name=function.name,
-        lineno=function.lineno,
-        outer_call_name=outer_call_name,
-        aggregator_name=aggregator_name,
-        iterable_fingerprint=fingerprint_function(function),
-        projected_attribute=projected_attribute,
-    )
+    return ProjectionHelperShape(file_path=str(parsed_module.path), function_name=function.name, lineno=function.lineno, outer_call_name=outer_call_name, aggregator_name=aggregator_name, iterable_fingerprint=fingerprint_function(function), projected_attribute=projected_attribute)
 
 
 def _accessor_wrapper_candidate_from_function(
@@ -1265,29 +1013,11 @@ def _accessor_wrapper_candidate_from_function(
     getter_candidate = _getter_wrapper_candidate(function, body)
     if getter_candidate is not None:
         target_expression, observed_attribute, wrapper_shape = getter_candidate
-        return AccessorWrapperCandidate(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            method_name=function.name,
-            lineno=function.lineno,
-            target_expression=target_expression,
-            observed_attribute=observed_attribute,
-            accessor_kind="getter",
-            wrapper_shape=wrapper_shape,
-        )
+        return AccessorWrapperCandidate(file_path=str(parsed_module.path), class_name=class_name, method_name=function.name, lineno=function.lineno, target_expression=target_expression, observed_attribute=observed_attribute, accessor_kind='getter', wrapper_shape=wrapper_shape)
     setter_candidate = _setter_wrapper_candidate(function, body)
     if setter_candidate is not None:
         target_expression, observed_attribute = setter_candidate
-        return AccessorWrapperCandidate(
-            file_path=str(parsed_module.path),
-            class_name=class_name,
-            method_name=function.name,
-            lineno=function.lineno,
-            target_expression=target_expression,
-            observed_attribute=observed_attribute,
-            accessor_kind="setter",
-            wrapper_shape="write_through",
-        )
+        return AccessorWrapperCandidate(file_path=str(parsed_module.path), class_name=class_name, method_name=function.name, lineno=function.lineno, target_expression=target_expression, observed_attribute=observed_attribute, accessor_kind='setter', wrapper_shape='write_through')
     return None
 
 
@@ -1309,25 +1039,11 @@ def _scoped_shape_wrapper_node_types(
 
 
 def _assigns_observation_node(statement: ast.stmt, observation_arg_name: str) -> bool:
-    return bool(
-        isinstance(statement, ast.Assign)
-        and len(statement.targets) == 1
-        and isinstance(statement.targets[0], ast.Name)
-        and statement.targets[0].id == "node"
-        and isinstance(statement.value, ast.Attribute)
-        and isinstance(statement.value.value, ast.Name)
-        and statement.value.value.id == observation_arg_name
-        and statement.value.attr == "node"
-    )
+    return bool(isinstance(statement, ast.Assign) and len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name) and (statement.targets[0].id == 'node') and isinstance(statement.value, ast.Attribute) and isinstance(statement.value.value, ast.Name) and (statement.value.value.id == observation_arg_name) and (statement.value.attr == 'node'))
 
 
 def _if_returns_none(statement: ast.If) -> bool:
-    return bool(
-        len(statement.body) == 1
-        and isinstance(statement.body[0], ast.Return)
-        and isinstance(statement.body[0].value, ast.Constant)
-        and statement.body[0].value.value is None
-    )
+    return bool(len(statement.body) == 1 and isinstance(statement.body[0], ast.Return) and isinstance(statement.body[0].value, ast.Constant) and (statement.body[0].value.value is None))
 
 
 def _scoped_shape_wrapper_function_from_function(
@@ -1338,12 +1054,7 @@ def _scoped_shape_wrapper_function_from_function(
     node_types = _scoped_shape_wrapper_node_types(function, body)
     if node_types is None or not isinstance(body[-1], ast.Return) or body[-1].value is None:
         return None
-    return ScopedShapeWrapperFunction(
-        file_path=str(parsed_module.path),
-        function_name=function.name,
-        lineno=function.lineno,
-        node_types=node_types,
-    )
+    return ScopedShapeWrapperFunction(file_path=str(parsed_module.path), function_name=function.name, lineno=function.lineno, node_types=node_types)
 
 
 def _scoped_shape_spec_call(node: ast.Assign) -> tuple[str, ast.Call] | None:
@@ -1381,13 +1092,7 @@ def _scoped_shape_wrapper_spec_from_assign(
     if keywords is None:
         return None
     function_name, node_types = keywords
-    return ScopedShapeWrapperSpec(
-        file_path=str(parsed_module.path),
-        spec_name=spec_name,
-        lineno=node.lineno,
-        function_name=function_name,
-        node_types=node_types,
-    )
+    return ScopedShapeWrapperSpec(file_path=str(parsed_module.path), spec_name=spec_name, lineno=node.lineno, function_name=function_name, node_types=node_types)
 
 
 def _getter_wrapper_candidate(
@@ -1453,17 +1158,7 @@ def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
     arg = single_call_arg(node)
     if call is None or arg is None or not isinstance(call.func, ast.Name):
         return None
-    if call.func.id not in {
-        "tuple",
-        "list",
-        "set",
-        "frozenset",
-        "str",
-        "int",
-        "bool",
-        "len",
-        "sorted",
-    }:
+    if call.func.id not in {'tuple', 'list', 'set', 'frozenset', 'str', 'int', 'bool', 'len', 'sorted'}:
         return None
     observed_attribute = _self_attribute_name(arg)
     if observed_attribute is None:
@@ -1533,49 +1228,27 @@ def _config_dispatch_observations(
                 if key in seen:
                     continue
                 seen.add(key)
-                observations.append(
-                    ConfigDispatchObservation(
-                        file_path=str(parsed_module.path),
-                        line=node.lineno,
-                        symbol=function.name,
-                        observed_attribute=attr_name,
-                    )
-                )
+                observations.append(ConfigDispatchObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, observed_attribute=attr_name))
         if isinstance(node, ast.Match):
             for attr_name in _match_config_dispatch_attributes(node.subject):
                 key = (node.lineno, attr_name)
                 if key in seen:
                     continue
                 seen.add(key)
-                observations.append(
-                    ConfigDispatchObservation(
-                        file_path=str(parsed_module.path),
-                        line=node.lineno,
-                        symbol=function.name,
-                        observed_attribute=attr_name,
-                    )
-                )
+                observations.append(ConfigDispatchObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, observed_attribute=attr_name))
     return sorted_tuple(observations, key=lambda item: (item.line, item.observed_attribute))
 
 
 def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
     attrs: set[str] = set()
     for node in _walk_nodes(test):
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _HASATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _terminal_name_in_family(node.func, _HASATTR_CALL_FAMILY):
             if _call_targets_name(node, "config") and len(node.args) >= 2:
-                if isinstance(node.args[1], ast.Constant) and isinstance(
-                    node.args[1].value, str
-                ):
+                if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
                     attrs.add(node.args[1].value)
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _GETATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _terminal_name_in_family(node.func, _GETATTR_CALL_FAMILY):
             if _call_targets_name(node, "config") and len(node.args) >= 2:
-                if isinstance(node.args[1], ast.Constant) and isinstance(
-                    node.args[1].value, str
-                ):
+                if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
                     attrs.add(node.args[1].value)
         if isinstance(node, ast.Compare):
             if len(node.ops) != 1 or len(node.comparators) != 1:
@@ -1607,9 +1280,7 @@ def _class_marker_observations(
     seen: set[tuple[int, str]] = set()
     observations: list[ClassMarkerObservation] = []
     for node in _walk_nodes(function):
-        if isinstance(node, ast.Call) and _terminal_name_in_family(
-            node.func, _HASATTR_CALL_FAMILY
-        ):
+        if isinstance(node, ast.Call) and _terminal_name_in_family(node.func, _HASATTR_CALL_FAMILY):
             target = node.args[0] if node.args else None
             marker_name = None
             if _is_class_target(target):
@@ -1620,26 +1291,12 @@ def _class_marker_observations(
                 key = (node.lineno, marker_name)
                 if key not in seen:
                     seen.add(key)
-                    observations.append(
-                        ClassMarkerObservation(
-                            file_path=str(parsed_module.path),
-                            line=node.lineno,
-                            symbol=function.name,
-                            marker_name=marker_name,
-                        )
-                    )
+                    observations.append(ClassMarkerObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, marker_name=marker_name))
         if isinstance(node, ast.Attribute) and node.attr.startswith("_is_"):
             key = (node.lineno, node.attr)
             if key not in seen:
                 seen.add(key)
-                observations.append(
-                    ClassMarkerObservation(
-                        file_path=str(parsed_module.path),
-                        line=node.lineno,
-                        symbol=function.name,
-                        marker_name=node.attr,
-                    )
-                )
+                observations.append(ClassMarkerObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, marker_name=node.attr))
     return sorted_tuple(observations, key=lambda item: (item.line, item.marker_name))
 
 
@@ -1661,12 +1318,7 @@ def _interface_generation_observation(
         if not isinstance(bases, ast.Tuple):
             continue
         if any(_terminal_name(base) == "ABC" for base in bases.elts):
-            return InterfaceGenerationObservation(
-                file_path=str(parsed_module.path),
-                line=node.lineno,
-                symbol=function.name,
-                generator_name=_TYPE_BUILTIN,
-            )
+            return InterfaceGenerationObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, generator_name=_TYPE_BUILTIN)
     return None
 
 
@@ -1677,20 +1329,11 @@ def _sentinel_type_observation(
     target = single_item(node.targets)
     if not isinstance(target, ast.Name) or not _is_type_call_constructor(node.value):
         return None
-    return SentinelTypeObservation(
-        file_path=str(parsed_module.path),
-        line=node.lineno,
-        symbol=target.id,
-        sentinel_name=target.id,
-    )
+    return SentinelTypeObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=target.id, sentinel_name=target.id)
 
 
 def _is_type_call_constructor(node: ast.AST) -> bool:
-    return bool(
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Call)
-        and _terminal_name(node.func.func) == _TYPE_BUILTIN
-    )
+    return bool(isinstance(node, ast.Call) and isinstance(node.func, ast.Call) and (_terminal_name(node.func.func) == _TYPE_BUILTIN))
 
 
 def _sentinel_type_usage_observations(
@@ -1716,14 +1359,7 @@ def _sentinel_type_usage_observations(
                 if key in seen:
                     continue
                 seen.add(key)
-                observations.append(
-                    SentinelTypeObservation(
-                        file_path=str(parsed_module.path),
-                        line=node.lineno,
-                        symbol=f"sentinel:{name}",
-                        sentinel_name=name,
-                    )
-                )
+                observations.append(SentinelTypeObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=f'sentinel:{name}', sentinel_name=name))
     return sorted_tuple(observations, key=lambda item: (item.line, item.sentinel_name))
 
 
@@ -1741,14 +1377,7 @@ def _dynamic_method_injection_observations(
             continue
         target = node.args[0]
         if isinstance(target, ast.Name) and target.id.endswith("type"):
-            observations.append(
-                DynamicMethodInjectionObservation(
-                    file_path=str(parsed_module.path),
-                    line=node.lineno,
-                    symbol=function.name,
-                    mutator_name=_SETATTR_BUILTIN,
-                )
-            )
+            observations.append(DynamicMethodInjectionObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, mutator_name=_SETATTR_BUILTIN))
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
@@ -1764,12 +1393,7 @@ def _runtime_type_generation_observation(
     # Only the 3-argument `type(name, bases, namespace)` form constructs a type.
     if generator_name == _TYPE_BUILTIN and len(node.args) < 3:
         return None
-    return RuntimeTypeGenerationObservation(
-        file_path=str(parsed_module.path),
-        line=node.lineno,
-        symbol=observation.function_name or generator_name,
-        generator_name=generator_name,
-    )
+    return RuntimeTypeGenerationObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=observation.function_name or generator_name, generator_name=generator_name)
 
 
 def _lineage_mapping_observation(
@@ -1780,16 +1404,8 @@ def _lineage_mapping_observation(
         if not isinstance(target, ast.Subscript):
             continue
         name = _terminal_name(target.value)
-        if name and any(
-            token in name.lower()
-            for token in ("lazy", "base", "type", "mapping", "registry")
-        ):
-            return LineageMappingObservation(
-                file_path=str(parsed_module.path),
-                line=node.lineno,
-                symbol=name,
-                mapping_name=name,
-            )
+        if name and any((token in name.lower() for token in ('lazy', 'base', 'type', 'mapping', 'registry'))):
+            return LineageMappingObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=name, mapping_name=name)
     return None
 
 
@@ -1807,16 +1423,8 @@ def _dual_axis_resolution_observation(
         inner_name = _loop_target_name(inner_loops[0].target)
         text = ast.dump(inner_loops[0].iter, include_attributes=False)
         if "__mro__" in text or "mro" in text.lower() or "type" in text.lower():
-            if outer_name and any(
-                token in outer_name.lower() for token in ("scope", "context", "level")
-            ):
-                return DualAxisResolutionObservation(
-                    file_path=str(parsed_module.path),
-                    line=node.lineno,
-                    symbol=function.name,
-                    outer_axis_name=outer_name,
-                    inner_axis_name=inner_name or "mro_type",
-                )
+            if outer_name and any((token in outer_name.lower() for token in ('scope', 'context', 'level'))):
+                return DualAxisResolutionObservation(file_path=str(parsed_module.path), line=node.lineno, symbol=function.name, outer_axis_name=outer_name, inner_axis_name=inner_name or 'mro_type')
     return None
 
 
@@ -1827,11 +1435,7 @@ def _loop_target_name(node: ast.AST) -> str | None:
 
 
 def _call_targets_name(node: ast.Call, expected_name: str) -> bool:
-    return bool(
-        node.args
-        and isinstance(node.args[0], ast.Name)
-        and node.args[0].id == expected_name
-    )
+    return bool(node.args and isinstance(node.args[0], ast.Name) and (node.args[0].id == expected_name))
 
 
 def _constant_string(node: ast.AST | None) -> str | None:
@@ -1852,9 +1456,7 @@ def _config_subject_name(node: ast.AST) -> str | None:
     attr_name = _attribute_name_if_root(node, "config")
     if attr_name is not None:
         return attr_name
-    if isinstance(node, ast.Call) and _terminal_name_in_family(
-        node.func, _GETATTR_CALL_FAMILY
-    ):
+    if isinstance(node, ast.Call) and _terminal_name_in_family(node.func, _GETATTR_CALL_FAMILY):
         if _call_targets_name(node, "config") and len(node.args) >= 2:
             return _constant_string(node.args[1])
     return None
@@ -1893,28 +1495,13 @@ def _builder_call_shape(
     if callee_name is None:
         return None
     keyword_names = tuple(name for name, _ in keyword_pairs)
-    value_fingerprint = tuple(
-        _fingerprint_builder_value(value) for _, value in keyword_pairs
-    )
+    value_fingerprint = tuple((_fingerprint_builder_value(value) for _, value in keyword_pairs))
     source_roots = set()
     for _, value in keyword_pairs:
         source_roots.update(_root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
-    identity_field_names = tuple(
-        name for name, value in keyword_pairs if _terminal_name(value) == name
-    )
-    return BuilderCallShape(
-        file_path=str(parsed_module.path),
-        class_name=class_name,
-        function_name=function_name,
-        lineno=node.lineno,
-        callee_name=callee_name,
-        keyword_names=keyword_names,
-        value_fingerprint=value_fingerprint,
-        source_arity=len(source_roots),
-        source_name=source_name,
-        identity_field_names=identity_field_names,
-    )
+    identity_field_names = tuple((name for name, value in keyword_pairs if _terminal_name(value) == name))
+    return BuilderCallShape(file_path=str(parsed_module.path), class_name=class_name, function_name=function_name, lineno=node.lineno, callee_name=callee_name, keyword_names=keyword_names, value_fingerprint=value_fingerprint, source_arity=len(source_roots), source_name=source_name, identity_field_names=identity_field_names)
 
 
 def _export_dict_shape(
@@ -1935,29 +1522,15 @@ def _export_dict_shape(
     if len(key_pairs) < 3 or len(key_pairs) != len(node.keys):
         return None
     key_names = tuple(name for name, _ in key_pairs)
-    value_fingerprint = tuple(
-        _fingerprint_builder_value(value) for _, value in key_pairs
-    )
+    value_fingerprint = tuple((_fingerprint_builder_value(value) for _, value in key_pairs))
     source_roots = set()
     for _, value in key_pairs:
         source_roots.update(_root_names(value))
     if not source_roots:
         return None
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
-    identity_field_names = tuple(
-        name for name, value in key_pairs if _terminal_name(value) == name
-    )
-    return ExportDictShape(
-        file_path=str(parsed_module.path),
-        class_name=class_name,
-        function_name=function_name,
-        lineno=node.lineno,
-        key_names=key_names,
-        value_fingerprint=value_fingerprint,
-        source_arity=len(source_roots),
-        source_name=source_name,
-        identity_field_names=identity_field_names,
-    )
+    identity_field_names = tuple((name for name, value in key_pairs if _terminal_name(value) == name))
+    return ExportDictShape(file_path=str(parsed_module.path), class_name=class_name, function_name=function_name, lineno=node.lineno, key_names=key_names, value_fingerprint=value_fingerprint, source_arity=len(source_roots), source_name=source_name, identity_field_names=identity_field_names)
 
 
 class _BuilderValueNormalizer(ast.NodeTransformer):

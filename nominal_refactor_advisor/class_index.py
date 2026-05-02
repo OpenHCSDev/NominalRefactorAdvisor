@@ -55,9 +55,7 @@ def _iter_class_defs(
             else f"{parent_qualname}.{statement.name}"
         )
         classes.append((qualname, statement))
-        classes.extend(
-            _iter_class_defs(list(statement.body), parent_qualname=qualname)
-        )
+        classes.extend(_iter_class_defs(list(statement.body), parent_qualname=qualname))
     return tuple(classes)
 
 
@@ -103,11 +101,7 @@ def _module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
                     alias.name if alias.asname else alias.name.split(".", 1)[0]
                 )
         elif isinstance(statement, ast.ImportFrom):
-            resolved_module = _resolve_relative_module(
-                parsed_module,
-                imported_module=statement.module,
-                level=statement.level,
-            )
+            resolved_module = _resolve_relative_module(parsed_module, imported_module=statement.module, level=statement.level)
             if resolved_module is None:
                 continue
             for alias in statement.names:
@@ -157,12 +151,7 @@ def _build_class_family_index_cached(
             raw_classes.append((parsed_module, qualname, node))
 
     class_records = [
-        (
-            parsed_module,
-            qualname,
-            node,
-            f"{parsed_module.module_name}.{qualname}",
-        )
+        (parsed_module, qualname, node, f'{parsed_module.module_name}.{qualname}')
         for parsed_module, qualname, node in raw_classes
     ]
     known_symbols = frozenset(symbol for _, _, _, symbol in class_records)
@@ -181,35 +170,8 @@ def _build_class_family_index_cached(
 
     for parsed_module, qualname, node, symbol in class_records:
         import_aliases = _module_import_aliases(parsed_module)
-        resolved_base_symbols = tuple(
-            resolved
-            for base in node.bases
-            if (
-                resolved := _resolve_base_symbol(
-                    parsed_module,
-                    base_node=base,
-                    import_aliases=import_aliases,
-                    known_symbols=known_symbols,
-                    unique_symbols_by_name=unique_symbols_by_name,
-                )
-            )
-            is not None
-        )
-        indexed_class = IndexedClass(
-            symbol=symbol,
-            module_name=parsed_module.module_name,
-            qualname=qualname,
-            simple_name=qualname.rsplit(".", 1)[-1],
-            file_path=str(parsed_module.path),
-            line=node.lineno,
-            node=node,
-            declared_base_names=tuple(
-                ast.unparse(base)
-                for base in node.bases
-                if _attribute_chain(base) is not None
-            ),
-            resolved_base_symbols=resolved_base_symbols,
-        )
+        resolved_base_symbols = tuple((resolved for base in node.bases if (resolved := _resolve_base_symbol(parsed_module, base_node=base, import_aliases=import_aliases, known_symbols=known_symbols, unique_symbols_by_name=unique_symbols_by_name)) is not None))
+        indexed_class = IndexedClass(symbol=symbol, module_name=parsed_module.module_name, qualname=qualname, simple_name=qualname.rsplit('.', 1)[-1], file_path=str(parsed_module.path), line=node.lineno, node=node, declared_base_names=tuple((ast.unparse(base) for base in node.bases if _attribute_chain(base) is not None)), resolved_base_symbols=resolved_base_symbols)
         classes_by_symbol[symbol] = indexed_class
         symbols_by_file_and_qualname[(str(parsed_module.path), qualname)] = symbol
         for base_symbol in resolved_base_symbols:
@@ -237,10 +199,4 @@ def _build_class_family_index_cached(
             queue.extend(children_by_symbol.get(current, ()))
         if descendants:
             descendants_by_symbol[symbol] = tuple(descendants)
-    return ClassFamilyIndex(
-        classes_by_symbol=classes_by_symbol,
-        symbols_by_simple_name=symbols_by_simple_name,
-        symbols_by_file_and_qualname=symbols_by_file_and_qualname,
-        children_by_symbol=children_by_symbol,
-        descendants_by_symbol=descendants_by_symbol,
-    )
+    return ClassFamilyIndex(classes_by_symbol=classes_by_symbol, symbols_by_simple_name=symbols_by_simple_name, symbols_by_file_and_qualname=symbols_by_file_and_qualname, children_by_symbol=children_by_symbol, descendants_by_symbol=descendants_by_symbol)

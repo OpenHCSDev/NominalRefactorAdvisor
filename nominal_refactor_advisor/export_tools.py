@@ -46,8 +46,4 @@ def derive_public_exports(
 ) -> list[str]:
     """Derive a sorted ``__all__``-style export list from a module namespace."""
 
-    return sorted(
-        name
-        for name, value in namespace.items()
-        if matches_public_export_policy(name, value, policy)
-    )
+    return sorted((name for name, value in namespace.items() if matches_public_export_policy(name, value, policy)))

@@ -23,11 +23,7 @@ project = "Nominal Refactor Advisor"
 author = "OpenHCSDev"
 copyright = "2026, OpenHCSDev"
 
-extensions = [
-    "sphinx.ext.autodoc",
-    "sphinx.ext.autosummary",
-    "sphinx.ext.intersphinx",
-]
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.autosummary', 'sphinx.ext.intersphinx']
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "api/_generated"]
@@ -41,6 +37,4 @@ add_module_names = False
 
 html_theme = "alabaster"
 
-intersphinx_mapping = {
-    "python": ("https://docs.python.org/3", None),
-}
+intersphinx_mapping = {'python': ('https://docs.python.org/3', None)}

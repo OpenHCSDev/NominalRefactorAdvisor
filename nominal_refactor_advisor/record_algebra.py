@@ -45,10 +45,7 @@ def product_record(
 ) -> type[Any]:
     """Build a frozen dataclass from a compact nominal product schema."""
 
-    namespace = {
-        "__annotations__": _field_annotations(field_spec),
-        "__module__": module_name or _caller_module_name(),
-    }
+    namespace = {'__annotations__': _field_annotations(field_spec), '__module__': module_name or _caller_module_name()}
     if doc is not None:
         namespace["__doc__"] = doc
     if defaults is not None:

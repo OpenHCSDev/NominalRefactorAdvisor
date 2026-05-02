@@ -26,20 +26,10 @@ def _witness_mixin_enforcement_candidate(
     for candidate in all_classes:
         for token in candidate.family_tokens:
             grouped[token].append(candidate)
-    classes = max(
-        (
-            sorted_tuple(items, key=lambda item: (item.line, item.class_name))
-            for items in grouped.values()
-            if len(items) >= 3
-        ),
-        key=len,
-        default=(),
-    )
+    classes = max((sorted_tuple(items, key=lambda item: (item.line, item.class_name)) for items in grouped.values() if len(items) >= 3), key=len, default=())
     if len(classes) < 2:
         return None
-    role_to_classes: dict[str, dict[str, WitnessCarrierClassCandidate]] = defaultdict(
-        dict
-    )
+    role_to_classes: dict[str, dict[str, WitnessCarrierClassCandidate]] = defaultdict(dict)
     role_to_fields: dict[str, set[str]] = defaultdict(set)
     line_by_class: dict[str, int] = {}
     for candidate in classes:
@@ -49,29 +39,14 @@ def _witness_mixin_enforcement_candidate(
                 continue
             role_to_classes[role_name][candidate.class_name] = candidate
             role_to_fields[role_name].update(field_names)
-    role_field_names = tuple(
-        (role_name, sorted_tuple(role_to_fields[role_name]))
-        for role_name in _WITNESS_MIXIN_ROLE_NAMES
-        if len(role_to_classes[role_name]) >= 2 and len(role_to_fields[role_name]) >= 2
-    )
+    role_field_names = tuple(((role_name, sorted_tuple(role_to_fields[role_name])) for role_name in _WITNESS_MIXIN_ROLE_NAMES if len(role_to_classes[role_name]) >= 2 and len(role_to_fields[role_name]) >= 2))
     if not role_field_names:
         return None
     class_names = sorted_tuple({class_name for role_name, _ in role_field_names for class_name in role_to_classes[role_name]})
-    return WitnessMixinEnforcementCandidate(
-        file_path=str(module.path),
-        class_names=class_names,
-        line_numbers=tuple(line_by_class[class_name] for class_name in class_names),
-        role_field_names=role_field_names,
-    )
+    return WitnessMixinEnforcementCandidate(file_path=str(module.path), class_names=class_names, line_numbers=tuple((line_by_class[class_name] for class_name in class_names)), role_field_names=role_field_names)
 
 class MixinEnforcementDetector(PerModuleIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.NOMINAL_WITNESS_CARRIER, "Renamed orthogonal semantic slices should become mixins",
-        'Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.',
-        "one authoritative semantic carrier spine plus reusable semantic-role mixins",
-        "same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers",
-        _NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.NOMINAL_WITNESS_CARRIER, 'Renamed orthogonal semantic slices should become mixins', 'Several carrier classes repeat the same semantic slice under renamed fields such as `line` vs `method_line` or `name_family` vs `class_names`. One shared base is not enough when those slices are orthogonal; the architecture wants reusable mixins composed through multiple inheritance.', 'one authoritative semantic carrier spine plus reusable semantic-role mixins', 'same carrier family repeats renamed semantic slices that overlap orthogonally across sibling carriers', _NOMINAL_IDENTITY_AUTHORITATIVE_MRO_ORDERING_CAPABILITY_TAGS)
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -80,34 +55,9 @@ class MixinEnforcementDetector(PerModuleIssueDetector):
         candidate = _witness_mixin_enforcement_candidate(module)
         if candidate is None:
             return []
-        evidence = tuple(
-            SourceLocation(candidate.file_path, line, class_name)
-            for class_name, line in zip(
-                candidate.class_names, candidate.line_numbers, strict=True
-            )
-        )
-        role_summary = "; ".join(
-            f"{role_name} via {field_names}"
-            for role_name, field_names in candidate.role_field_names
-        )
-        return [
-            self.build_finding(
-                (
-                    f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance."
-                ),
-                evidence,
-                scaffold=_witness_mixin_enforcement_scaffold(candidate),
-                codemod_patch=_witness_mixin_enforcement_patch(candidate),
-                metrics=WitnessCarrierMetrics(
-                    class_count=len(candidate.class_names),
-                    shared_role_count=len(candidate.role_field_names),
-                    class_names=candidate.class_names,
-                    shared_role_names=tuple(
-                        role_name for role_name, _ in candidate.role_field_names
-                    ),
-                ),
-            )
-        ]
+        evidence = tuple((SourceLocation(candidate.file_path, line, class_name) for class_name, line in zip(candidate.class_names, candidate.line_numbers, strict=True)))
+        role_summary = '; '.join((f'{role_name} via {field_names}' for role_name, field_names in candidate.role_field_names))
+        return [self.build_finding(f"Carrier classes {', '.join(candidate.class_names)} repeat renamed semantic slices {role_summary}; enforce reusable mixins and compose them through multiple inheritance.", evidence, scaffold=_witness_mixin_enforcement_scaffold(candidate), codemod_patch=_witness_mixin_enforcement_patch(candidate), metrics=WitnessCarrierMetrics(class_count=len(candidate.class_names), shared_role_count=len(candidate.role_field_names), class_names=candidate.class_names, shared_role_names=tuple((role_name for role_name, _ in candidate.role_field_names))))]
 
 def _shared_field_type_map(
     observations: tuple[FieldObservation, ...], field_names: tuple[str, ...]
@@ -128,105 +78,45 @@ def _shared_field_type_map(
     return tuple(typed_fields)
 
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
-    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
-        module, FieldObservationFamily, FieldObservation
-    )
-    graph = ObservationGraph(
-        observations=tuple(item.structural_observation for item in observations)
-    )
+    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(module, FieldObservationFamily, FieldObservation)
+    graph = ObservationGraph(observations=tuple((item.structural_observation for item in observations)))
     candidates: list[FieldFamilyCandidate] = []
-    for execution_level in (
-        StructuralExecutionLevel.CLASS_BODY,
-        StructuralExecutionLevel.INIT_BODY,
-    ):
+    for execution_level in (StructuralExecutionLevel.CLASS_BODY, StructuralExecutionLevel.INIT_BODY):
         grouped_by_level = {
             group.nominal_witness: set(group.observed_names)
-            for group in graph.witness_groups_for(
-                ObservationKind.FIELD, execution_level
-            )
+            for group in graph.witness_groups_for(ObservationKind.FIELD, execution_level)
         }
-        for cohort in graph.coherence_cohorts_for(
-            ObservationKind.FIELD,
-            execution_level,
-            minimum_witnesses=2,
-            minimum_fibers=2,
-        ):
+        for cohort in graph.coherence_cohorts_for(ObservationKind.FIELD, execution_level, minimum_witnesses=2, minimum_fibers=2):
             field_names = sorted_tuple(cohort.observed_names)
             supporting_classes = cohort.nominal_witnesses
             shared_field_set = set(field_names)
-            if any(
-                len(shared_field_set) / max(len(grouped_by_level[class_name]), 1) < 0.5
-                for class_name in supporting_classes
-            ):
+            if any((len(shared_field_set) / max(len(grouped_by_level[class_name]), 1) < 0.5 for class_name in supporting_classes)):
                 continue
-            if any(
-                not (grouped_by_level[class_name] - shared_field_set)
-                for class_name in supporting_classes
-            ):
+            if any((not grouped_by_level[class_name] - shared_field_set for class_name in supporting_classes)):
                 continue
             supporting_observations: tuple[FieldObservation, ...] = sorted_tuple((item for item in observations if item.execution_level == execution_level and item.class_name in supporting_classes and (item.field_name in field_names)), key=lambda item: (item.file_path, item.lineno, item.symbol))
-            field_type_map = _shared_field_type_map(
-                supporting_observations,
-                field_names,
-            )
+            field_type_map = _shared_field_type_map(supporting_observations, field_names)
             if field_type_map is None:
                 continue
-            candidates.append(
-                FieldFamilyCandidate(
-                    class_names=supporting_classes,
-                    field_names=field_names,
-                    execution_level=execution_level,
-                    observations=supporting_observations,
-                    dataclass_count=sum(
-                        1
-                        for class_name in supporting_classes
-                        if any(
-                            item.class_name == class_name and item.is_dataclass_family
-                            for item in supporting_observations
-                        )
-                    ),
-                    field_type_map=field_type_map,
-                )
-            )
+            candidates.append(FieldFamilyCandidate(class_names=supporting_classes, field_names=field_names, execution_level=execution_level, observations=supporting_observations, dataclass_count=sum((1 for class_name in supporting_classes if any((item.class_name == class_name and item.is_dataclass_family for item in supporting_observations)))), field_type_map=field_type_map))
 
     maximal_candidates: list[FieldFamilyCandidate] = []
-    for candidate in sorted(
-        candidates,
-        key=lambda item: (
-            item.execution_level,
-            len(item.class_names),
-            len(item.field_names),
-        ),
-        reverse=True,
-    ):
-        if any(
-            candidate.execution_level == other.execution_level
-            and set(candidate.class_names) == set(other.class_names)
-            and set(candidate.field_names) < set(other.field_names)
-            for other in maximal_candidates
-        ):
+    for candidate in sorted(candidates, key=lambda item: (item.execution_level, len(item.class_names), len(item.field_names)), reverse=True):
+        if any((candidate.execution_level == other.execution_level and set(candidate.class_names) == set(other.class_names) and (set(candidate.field_names) < set(other.field_names)) for other in maximal_candidates)):
             continue
         maximal_candidates.append(candidate)
-    return sorted_tuple(
-        maximal_candidates,
-        key=lambda item: (item.execution_level, item.class_names, item.field_names),
-    )
+    return sorted_tuple(maximal_candidates, key=lambda item: (item.execution_level, item.class_names, item.field_names))
 
 def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
     base_name = _shared_field_base_name(candidate.class_names)
     field_type_lookup = dict(candidate.field_type_map)
-    field_block = "\n".join(
-        f"    {field}: {field_type_lookup.get(field, 'object')}"
-        for field in candidate.field_names
-    )
+    field_block = '\n'.join((f"    {field}: {field_type_lookup.get(field, 'object')}" for field in candidate.field_names))
     if candidate.dataclass_count == len(candidate.class_names):
         return (
             f"@dataclass(frozen=True)\nclass {base_name}(ABC):\n{field_block}\n\n# Move shared dataclass fields from {', '.join(candidate.class_names)} into {base_name}."
         )
     init_params = ", ".join(candidate.field_names)
-    assignments = "\n".join(
-        f"        self.{field} = {field}" for field in candidate.field_names
-    )
+    assignments = '\n'.join((f'        self.{field} = {field}' for field in candidate.field_names))
     return (
         f"class {base_name}(ABC):\n"
         f"    def __init__(self, {init_params}):\n"
@@ -234,14 +124,7 @@ def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
         f"# Move shared fields from {', '.join(candidate.class_names)} at {candidate.execution_level} into {base_name}."
     )
 
-_PYTREE_TRANSPORT_METHOD_NAMES = frozenset(
-    {
-        "_tree_children",
-        "_tree_aux_data",
-        "tree_flatten",
-        "tree_unflatten",
-    }
-)
+_PYTREE_TRANSPORT_METHOD_NAMES = frozenset({'_tree_children', '_tree_aux_data', 'tree_flatten', 'tree_unflatten'})
 
 def _role_member_name(tokens: tuple[str, ...]) -> str:
     return "_".join(tokens)
@@ -267,11 +150,7 @@ def _prefixed_role_field_groups(
     return groups
 
 def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        base_name
-        for base_name in _declared_base_names(node)
-        if "pytree" in base_name.lower()
-    )
+    return tuple((base_name for base_name in _declared_base_names(node) if 'pytree' in base_name.lower()))
 
 def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
     return sorted_tuple(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
@@ -325,81 +204,40 @@ def _prefixed_role_bundle_candidate_for_class(
 
     candidates: list[PrefixedRoleFieldBundleCandidate] = []
     for prefix_token_count in (1, 2):
-        role_to_members = _prefixed_role_field_groups(
-            observations,
-            prefix_token_count=prefix_token_count,
-        )
+        role_to_members = _prefixed_role_field_groups(observations, prefix_token_count=prefix_token_count)
         role_to_members = {
             role: members
             for role, members in role_to_members.items()
             if len(members) >= config.min_prefixed_role_shared_fields
         }
-        for role_names in _connected_role_components(
-            role_to_members,
-            min_shared_members=config.min_prefixed_role_shared_fields,
-        ):
+        for role_names in _connected_role_components(role_to_members, min_shared_members=config.min_prefixed_role_shared_fields):
             shared_member_names = sorted_tuple((member_name for member_name in {member_name for role_name in role_names for member_name in role_to_members[role_name]} if sum((member_name in role_to_members[role_name] for role_name in role_names)) >= 2))
             if len(shared_member_names) < config.min_prefixed_role_shared_fields:
                 continue
-            if all(
-                _is_numeric_role_member_name(member_name)
-                for member_name in shared_member_names
-            ):
+            if all((_is_numeric_role_member_name(member_name) for member_name in shared_member_names)):
                 continue
             if (
                 len(shared_member_names) < config.min_prefixed_role_bundle_fields
                 and not (manual_transport_methods or pytree_base_names)
             ):
                 continue
-            role_field_map = tuple(
-                (
-                    role_name,
-                    tuple(
-                        role_to_members[role_name][member_name].field_name
-                        for member_name in shared_member_names
-                        if member_name in role_to_members[role_name]
-                    ),
-                )
-                for role_name in role_names
-            )
+            role_field_map = tuple(((role_name, tuple((role_to_members[role_name][member_name].field_name for member_name in shared_member_names if member_name in role_to_members[role_name]))) for role_name in role_names))
             candidate_field_names = {
                 field_name
                 for _, field_names in role_field_map
                 for field_name in field_names
             }
             candidate_observations = sorted_tuple((observation for observation in observations if observation.field_name in candidate_field_names), key=lambda item: (item.lineno, item.field_name))
-            candidates.append(
-                PrefixedRoleFieldBundleCandidate(
-                    file_path=str(module.path),
-                    class_name=class_node.name,
-                    line=class_node.lineno,
-                    role_names=role_names,
-                    shared_member_names=shared_member_names,
-                    role_field_map=role_field_map,
-                    manual_transport_methods=manual_transport_methods,
-                    pytree_base_names=pytree_base_names,
-                    is_dataclass_family=is_dataclass_family,
-                    observations=candidate_observations,
-                )
-            )
+            candidates.append(PrefixedRoleFieldBundleCandidate(file_path=str(module.path), class_name=class_node.name, line=class_node.lineno, role_names=role_names, shared_member_names=shared_member_names, role_field_map=role_field_map, manual_transport_methods=manual_transport_methods, pytree_base_names=pytree_base_names, is_dataclass_family=is_dataclass_family, observations=candidate_observations))
 
     if not candidates:
         return None
-    return max(
-        candidates,
-        key=lambda item: (
-            len(item.shared_member_names),
-            len(item.role_names),
-            sum(len(field_names) for _, field_names in item.role_field_map),
-        ),
-    )
+    return max(candidates, key=lambda item: (len(item.shared_member_names), len(item.role_names), sum((len(field_names) for _, field_names in item.role_field_map))))
 
 def _prefixed_role_field_bundle_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[PrefixedRoleFieldBundleCandidate, ...]:
-    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
-        module, FieldObservationFamily, FieldObservation
-    )
+    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(module, FieldObservationFamily, FieldObservation)
     observations_by_class: dict[str, list[FieldObservation]] = defaultdict(list)
     for observation in observations:
         if not observation.execution_level.allows_prefixed_role_field_bundle:
@@ -411,12 +249,7 @@ def _prefixed_role_field_bundle_candidates(
         node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         class_observations = tuple(observations_by_class.get(class_node.name, ()))
-        candidate = _prefixed_role_bundle_candidate_for_class(
-            module,
-            class_node,
-            class_observations,
-            config,
-        )
+        candidate = _prefixed_role_bundle_candidate_for_class(module, class_node, class_observations, config)
         if candidate is not None:
             candidates.append(candidate)
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
@@ -425,13 +258,8 @@ def _prefixed_role_bundle_scaffold(
     candidate: PrefixedRoleFieldBundleCandidate,
 ) -> str:
     base_name = f"{candidate.class_name}Role"
-    member_block = "\n".join(
-        f"    {member_name}: object" for member_name in candidate.shared_member_names
-    )
-    role_classes = "\n\n".join(
-        f"@dataclass(frozen=True)\nclass {_public_class_name(role_name)}{base_name}({base_name}):\n    pass"
-        for role_name in candidate.role_names
-    )
+    member_block = '\n'.join((f'    {member_name}: object' for member_name in candidate.shared_member_names))
+    role_classes = '\n\n'.join((f'@dataclass(frozen=True)\nclass {_public_class_name(role_name)}{base_name}({base_name}):\n    pass' for role_name in candidate.role_names))
     return (
         f'from abc import ABC\n\n@dataclass(frozen=True)\nclass {base_name}(ABC):\n{member_block}\n\n{role_classes}\n\n# Replace role-prefixed fields on `{candidate.class_name}` with explicit role records.'
     )
@@ -449,62 +277,20 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
     return "SharedFieldsBase"
 
 class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
-    finding_spec = high_confidence_certified_spec(
-        PatternId.ABC_TEMPLATE_METHOD, "Shared field family across sibling classes should move to an ABC base",
-        'The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative base rather than being duplicated in each leaf class.',
-        "single authoritative state component for a nominal class family",
-        "same field family repeats across sibling classes at one structural execution level",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
+    finding_spec = high_confidence_certified_spec(PatternId.ABC_TEMPLATE_METHOD, 'Shared field family across sibling classes should move to an ABC base', 'The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative base rather than being duplicated in each leaf class.', 'single authoritative state component for a nominal class family', 'same field family repeats across sibling classes at one structural execution level', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS)
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
     ) -> Sequence[object]:
         del config
-        return tuple(
-            candidate
-            for candidate in _field_family_candidates(module)
-            if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2
-        )
+        return tuple((candidate for candidate in _field_family_candidates(module) if len(candidate.class_names) >= 2 and len(candidate.field_names) >= 2))
 
     def _finding_for_candidate(self, field_candidate: FieldFamilyCandidate) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(
-                item.file_path,
-                item.lineno,
-                item.symbol,
-            )
-            for item in field_candidate.observations[:8]
-        )
-        return self.build_finding(
-            (
-                f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`."
-            ),
-            evidence,
-            relation_context=(
-                f"same field family repeats across sibling classes at `{field_candidate.execution_level}`"
-            ),
-            scaffold=_field_family_scaffold(field_candidate),
-            metrics=FieldFamilyMetrics(
-                class_count=len(field_candidate.class_names),
-                field_count=len(field_candidate.field_names),
-                class_names=field_candidate.class_names,
-                field_names=field_candidate.field_names,
-                execution_level=field_candidate.execution_level,
-                dataclass_count=field_candidate.dataclass_count,
-            ),
-        )
+        evidence = tuple((SourceLocation(item.file_path, item.lineno, item.symbol) for item in field_candidate.observations[:8]))
+        return self.build_finding(f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`.", evidence, relation_context=f'same field family repeats across sibling classes at `{field_candidate.execution_level}`', scaffold=_field_family_scaffold(field_candidate), metrics=FieldFamilyMetrics(class_count=len(field_candidate.class_names), field_count=len(field_candidate.field_names), class_names=field_candidate.class_names, field_names=field_candidate.field_names, execution_level=field_candidate.execution_level, dataclass_count=field_candidate.dataclass_count))
 
 class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector[PrefixedRoleFieldBundleCandidate]):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA, "Role-prefixed field bundle should become nominal subrecords",
-        'A record that repeats the same member family behind role prefixes is encoding nominal role identity in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so the schema, PyTree behavior, and type-level role identity have one authoritative boundary.',
-        "explicit nominal role records instead of parallel role-prefixed fields",
-        "same semantic member family repeats under several leading role prefixes in one record",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Role-prefixed field bundle should become nominal subrecords', 'A record that repeats the same member family behind role prefixes is encoding nominal role identity in string-shaped field names. The docs prefer explicit role records or ABC/dataclass side objects so the schema, PyTree behavior, and type-level role identity have one authoritative boundary.', 'explicit nominal role records instead of parallel role-prefixed fields', 'same semantic member family repeats under several leading role prefixes in one record', _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS, _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS)
 
     def _finding_for_candidate(self, bundle_candidate: PrefixedRoleFieldBundleCandidate) -> RefactorFinding:
         role_summary = ", ".join(bundle_candidate.role_names)
@@ -542,26 +328,10 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
 class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[PropertyAliasHookGroup]):
     detector_id = "repeated_property_alias_hooks"
     candidate_collector = _property_alias_hook_groups
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD, "Repeated property hook aliases should move into a shared base or mixin",
-        'Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.',
-        "single authoritative hook property implementation for a nominal subclass family",
-        "same property hook alias repeats across siblings of one base family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Repeated property hook aliases should move into a shared base or mixin', 'Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.', 'single authoritative hook property implementation for a nominal subclass family', 'same property hook alias repeats across siblings of one base family', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS)
 
     def _finding_for_candidate(self, hook_group: PropertyAliasHookGroup) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(
-                hook_group.file_path, line, f"{class_name}.{hook_group.property_name}"
-            )
-            for class_name, line in zip(
-                hook_group.class_names,
-                hook_group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(hook_group.file_path, line, f'{class_name}.{hook_group.property_name}') for class_name, line in zip(hook_group.class_names, hook_group.line_numbers, strict=True)))
         mixin_name = f"{_camel_case(hook_group.returned_attribute)}{_camel_case(hook_group.property_name)}Mixin"
         return self.build_finding(
             (
@@ -585,28 +355,10 @@ class RepeatedPropertyAliasHookDetector(ModuleCollectorCandidateDetector[Propert
 class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantPropertyHookGroup]):
     detector_id = "constant_property_hooks"
     candidate_collector = _constant_property_hook_groups
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD, "Constant property hooks should move into classvars or fixed mixins",
-        'Several subclasses implement the same property as a one-line constant return. That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.',
-        "single authoritative constant hook implementation for a nominal subclass family",
-        "same property hook is re-declared as a constant return across one subclass family",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
-        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Constant property hooks should move into classvars or fixed mixins', 'Several subclasses implement the same property as a one-line constant return. That is nominal hook boilerplate and should collapse into one classvar-backed base or one fixed-value mixin.', 'single authoritative constant hook implementation for a nominal subclass family', 'same property hook is re-declared as a constant return across one subclass family', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS)
 
     def _finding_for_candidate(self, hook_group: ConstantPropertyHookGroup) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(
-                hook_group.file_path,
-                line,
-                f"{class_name}.{hook_group.property_name}",
-            )
-            for class_name, line in zip(
-                hook_group.class_names,
-                hook_group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(hook_group.file_path, line, f'{class_name}.{hook_group.property_name}') for class_name, line in zip(hook_group.class_names, hook_group.line_numbers, strict=True)))
         unique_returns = tuple(dict.fromkeys(hook_group.return_expressions))
         constant_name = hook_group.property_name.upper()
         if len(unique_returns) == 1:
@@ -623,28 +375,11 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantProp
                 f"        return type(self).{constant_name}"
             )
             patch = f"# Replace repeated constant `{hook_group.property_name}` hooks with one classvar-backed base for `{hook_group.base_name}`."
-        return self.build_finding(
-            (
-                f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as constant returns {unique_returns}."
-            ),
-            evidence,
-            scaffold=scaffold,
-            codemod_patch=patch,
-            metrics=_repeated_property_hook_metrics(
-                hook_group.class_names, hook_group.property_name
-            ),
-        )
+        return self.build_finding(f"Subclasses {', '.join(hook_group.class_names)} of `{hook_group.base_name}` all implement `{hook_group.property_name}` as constant returns {unique_returns}.", evidence, scaffold=scaffold, codemod_patch=patch, metrics=_repeated_property_hook_metrics(hook_group.class_names, hook_group.property_name))
 
 class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]):
     candidate_collector = _reflective_self_attribute_candidates
-    finding_spec = high_confidence_spec(
-        PatternId.CONFIG_CONTRACTS, "Reflective self-attribute access hides a nominal contract",
-        'A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. That keeps the contract partial, stringly, and fail-soft.',
-        "declared fail-loud nominal attribute contract on the carrier family",
-        "class template probes its own required state through reflective string access",
-        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
-        _PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.CONFIG_CONTRACTS, 'Reflective self-attribute access hides a nominal contract', 'A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. That keeps the contract partial, stringly, and fail-soft.', 'declared fail-loud nominal attribute contract on the carrier family', 'class template probes its own required state through reflective string access', _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS, _PARTIAL_VIEW_NORMALIZED_AST_OBSERVATION_TAGS)
 
     def _finding_for_candidate(self, reflective_candidate: ReflectiveSelfAttributeCandidate) -> RefactorFinding:
         carrier_name = f"{reflective_candidate.class_name}Carrier"
@@ -652,13 +387,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
             (
                 f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` uses `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')` instead of declaring `{reflective_candidate.attribute_name}` on the nominal carrier."
             ),
-            (
-                SourceLocation(
-                    reflective_candidate.file_path,
-                    reflective_candidate.line,
-                    f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
-                ),
-            ),
+            (SourceLocation(reflective_candidate.file_path, reflective_candidate.line, f'{reflective_candidate.class_name}.{reflective_candidate.method_name}'),),
             scaffold=(
                 "@dataclass(frozen=True)\n"
                 f"class {carrier_name}(ABC):\n"
@@ -671,13 +400,7 @@ class ReflectiveSelfAttributeEscapeDetector(ModuleCollectorCandidateDetector[Ref
         )
 
 class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.ABC_TEMPLATE_METHOD, "Helper-backed wrapper classes should use a declarative substrate",
-        'Several sibling wrapper classes do nothing except forward one entrypoint to one helper. That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.',
-        "one declarative helper-backed wrapper family with class-level registration",
-        "same helper-backed wrapper shape repeats across sibling classes",
-        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Helper-backed wrapper classes should use a declarative substrate', 'Several sibling wrapper classes do nothing except forward one entrypoint to one helper. That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.', 'one declarative helper-backed wrapper family with class-level registration', 'same helper-backed wrapper shape repeats across sibling classes', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS)
 
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
@@ -686,14 +409,7 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
         group = _helper_backed_observation_spec_group(module)
         if group is None:
             return []
-        evidence = tuple(
-            SourceLocation(group.file_path, line, class_name)
-            for class_name, line in zip(
-                group.class_names,
-                group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(group.file_path, line, class_name) for class_name, line in zip(group.class_names, group.line_numbers, strict=True)))
         helper_names = tuple(dict.fromkeys(group.helper_names))
         wrapper_kinds = tuple(dict.fromkeys(group.wrapper_kinds))
         return [
@@ -726,24 +442,10 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
 
 class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[DeclarativeFamilyBoilerplateGroup]):
     candidate_collector = _classvar_only_sibling_leaf_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Classvar-only sibling leaves should come from one metaprogrammed family table",
-        'Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation or registration.',
-        "one authoritative declarative family-definition table with class-generation or metaclass support",
-        "same class-level family declaration boilerplate repeats across sibling family leaves",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Classvar-only sibling leaves should come from one metaprogrammed family table', 'Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation or registration.', 'one authoritative declarative family-definition table with class-generation or metaclass support', 'same class-level family declaration boilerplate repeats across sibling family leaves', _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS)
 
     def _finding_for_candidate(self, group: DeclarativeFamilyBoilerplateGroup) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(group.file_path, line, class_name)
-            for class_name, line in zip(
-                group.class_names,
-                group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(group.file_path, line, class_name) for class_name, line in zip(group.class_names, group.line_numbers, strict=True)))
         spec_name = _camel_case(group.base_names[0]) + "Declaration"
         return self.build_finding(
             (
@@ -767,24 +469,10 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[Declarati
 
 class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[TypeIndexedDefinitionBoilerplateGroup]):
     candidate_collector = _type_indexed_definition_boilerplate_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Type-indexed family definitions should derive from one typed declaration table",
-        'Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. That metadata should live once in a typed declaration table and definition-time materializer.',
-        "one authoritative typed declaration table for family generation and export derivation",
-        "same type-indexed family definition and alias boilerplate repeats across sibling declarations",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Type-indexed family definitions should derive from one typed declaration table', 'Several `*Definition` classes plus `family_type` aliases restate the same type-indexed family metadata. That metadata should live once in a typed declaration table and definition-time materializer.', 'one authoritative typed declaration table for family generation and export derivation', 'same type-indexed family definition and alias boilerplate repeats across sibling declarations', _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS)
 
     def _finding_for_candidate(self, group: TypeIndexedDefinitionBoilerplateGroup) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(group.file_path, line, class_name)
-            for class_name, line in zip(
-                group.definition_class_names,
-                group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(group.file_path, line, class_name) for class_name, line in zip(group.definition_class_names, group.line_numbers, strict=True)))
         return self.build_finding(
             (
                 f"Definition classes {', '.join(group.definition_class_names[:6])} plus aliases {', '.join(group.alias_names[:6])} all repeat typed family metadata {group.assigned_names} under bases {group.base_names}."
@@ -806,14 +494,7 @@ class TypeIndexedDefinitionBoilerplateDetector(ModuleCollectorCandidateDetector[
         )
 
 class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExportSurfaceCandidate]):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual export surfaces should derive from the authoritative type family",
-        'A module manually enumerates export names even though those exports are derivable from one local nominal class family. That creates a second authority for the public surface.',
-        "one derived export surface projected from the authoritative class family",
-        "manual export tuple/list repeats names already implied by local type families",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Manual export surfaces should derive from the authoritative type family', 'A module manually enumerates export names even though those exports are derivable from one local nominal class family. That creates a second authority for the public surface.', 'one derived export surface projected from the authoritative class family', 'manual export tuple/list repeats names already implied by local type families', _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS)
 
     def _finding_for_candidate(self, export_candidate: DerivedExportSurfaceCandidate) -> RefactorFinding:
         root_names = ", ".join(export_candidate.derivable_root_names)
@@ -821,13 +502,7 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
             (
                 f"`{export_candidate.export_symbol}` manually enumerates {len(export_candidate.exported_names)} exported names that are derivable from local `{root_names}` families."
             ),
-            (
-                SourceLocation(
-                    export_candidate.file_path,
-                    export_candidate.line,
-                    export_candidate.export_symbol,
-                ),
-            ),
+            (SourceLocation(export_candidate.file_path, export_candidate.line, export_candidate.export_symbol),),
             scaffold=(
                 'def public_exports() -> tuple[str, ...]:\n    return tuple(\n        sorted(\n            name\n            for name, value in globals().items()\n            if is_public_export(name, value)\n        )\n    )'
             ),
@@ -845,31 +520,16 @@ class DerivedExportSurfaceDetector(ModuleCollectorCandidateDetector[DerivedExpor
 declare_module_detector(ManualPublicApiSurfaceCandidate, high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Manual public API surfaces should derive from the module authority', "A module hand-maintains `__all__` even though the exported names are derivable from the module's own public declarations. That creates a second authority for the public surface.", "one derived public API surface projected from the module's authoritative declarations", 'manual public export list repeats names already present in module bindings', _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS), CandidateFindingRenderer[ManualPublicApiSurfaceCandidate](summary=lambda api_candidate: f'`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings.', evidence=lambda api_candidate: (SourceLocation(api_candidate.file_path, api_candidate.line, api_candidate.export_symbol),), scaffold=lambda api_candidate: "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)", codemod_patch=lambda api_candidate: f'# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface.', metrics=lambda api_candidate: MappingMetrics(mapping_site_count=len(api_candidate.exported_names), field_count=api_candidate.source_name_count, mapping_name=api_candidate.export_symbol, field_names=('module_public_bindings',))), candidate_collector=_manual_public_api_surface_candidates)
 
 class ExportPolicyPredicateDetector(IssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated derived-surface policy predicates should collapse into one declarative policy",
-        "Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper.",
-        "one declarative policy substrate for derived module surfaces",
-        "surface-policy helper logic repeats across multiple modules with only orthogonal policy residue",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Repeated derived-surface policy predicates should collapse into one declarative policy', 'Several modules hand-code derived-surface policy predicates instead of routing those surfaces through one declarative policy helper.', 'one declarative policy substrate for derived module surfaces', 'surface-policy helper logic repeats across multiple modules with only orthogonal policy residue', _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        candidates = tuple(
-            candidate
-            for module in modules
-            if (candidate := _module_export_policy_predicate_candidate(module))
-            is not None
-        )
+        candidates = tuple((candidate for module in modules if (candidate := _module_export_policy_predicate_candidate(module)) is not None))
         if len(candidates) < 2:
             return []
-        evidence = tuple(
-            SourceLocation(candidate.file_path, candidate.line, candidate.function_name)
-            for candidate in candidates[:6]
-        )
+        evidence = tuple((SourceLocation(candidate.file_path, candidate.line, candidate.function_name) for candidate in candidates[:6]))
         all_roles = sorted_tuple({role for candidate in candidates for role in candidate.role_names})
         root_type_names = sorted_tuple({type_name for candidate in candidates for type_name in candidate.root_type_names})
         return [
@@ -896,14 +556,7 @@ class ExportPolicyPredicateDetector(IssueDetector):
         ]
 
 class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedIndexedSurfaceCandidate]):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual indexed module surfaces should derive from the authoritative type family",
-        'A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. That splits authority between the family and a second registry projection.',
-        "one derived index projected from the authoritative local type family",
-        "manual dict index repeats keys and values already implied by local type families",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Manual indexed module surfaces should derive from the authoritative type family', 'A module hand-builds an index surface over local types even though that index is derivable from the same nominal family. That splits authority between the family and a second registry projection.', 'one derived index projected from the authoritative local type family', 'manual dict index repeats keys and values already implied by local type families', _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS)
 
     def _finding_for_candidate(self, index_candidate: DerivedIndexedSurfaceCandidate) -> RefactorFinding:
         root_names = ", ".join(index_candidate.derivable_root_names)
@@ -911,13 +564,7 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
             (
                 f"`{index_candidate.surface_name}` manually indexes {len(index_candidate.value_names)} local types by `{index_candidate.key_kind}` even though that surface is derivable from local `{root_names}` families."
             ),
-            (
-                SourceLocation(
-                    index_candidate.file_path,
-                    index_candidate.line,
-                    index_candidate.surface_name,
-                ),
-            ),
+            (SourceLocation(index_candidate.file_path, index_candidate.line, index_candidate.surface_name),),
             scaffold=(
                 'def derived_index() -> dict[object, type[object]]:\n    return {project_key(item): item for item in authoritative_family()}'
             ),
@@ -935,14 +582,7 @@ class DerivedIndexedSurfaceDetector(ModuleCollectorCandidateDetector[DerivedInde
 declare_module_detector(RegisteredUnionSurfaceCandidate, high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Manual sibling-registry unions should derive from one authoritative query', 'A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set.', 'one derived registry-union query on an authoritative metaclass-registry root or traversal helper', 'manual union of sibling registry queries repeats information already present in class-time registration', _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS), CandidateFindingRenderer[RegisteredUnionSurfaceCandidate](summary=lambda union_candidate: f'`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}.', evidence=lambda union_candidate: (SourceLocation(union_candidate.file_path, union_candidate.line, union_candidate.owner_name),), scaffold=lambda union_candidate: f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())', codemod_patch=lambda union_candidate: f'# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.', metrics=lambda union_candidate: RegistrationMetrics.from_class_names(registration_site_count=len(union_candidate.root_names), registry_name=union_candidate.accessor_name, class_names=union_candidate.root_names)), candidate_collector=_registered_union_surface_candidates)
 
 class RegistryTraversalSubstrateDetector(IssueDetector):
-    finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
-        "Repeated subclass-family traversal should collapse into one discovery substrate",
-        "Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate.",
-        "one authoritative subclass-family discovery substrate with declarative materialization hooks",
-        "same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing",
-        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Repeated subclass-family traversal should collapse into one discovery substrate', 'Several helpers re-implement the same subclass traversal and materialization algorithm instead of sharing one authoritative family-discovery substrate.', 'one authoritative subclass-family discovery substrate with declarative materialization hooks', 'same subclass traversal algorithm repeats across roots, helpers, or modules with only filter/materialization residue differing', _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -951,15 +591,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         group = _registry_traversal_group(modules)
         if group is None:
             return []
-        evidence = tuple(
-            SourceLocation(file_path, line, symbol)
-            for file_path, line, symbol in zip(
-                group.file_paths,
-                group.line_numbers,
-                group.symbols,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(file_path, line, symbol) for file_path, line, symbol in zip(group.file_paths, group.line_numbers, group.symbols, strict=True)))
         registry_clause = (
             ""
             if not group.registry_attribute_names
@@ -1013,11 +645,7 @@ class ExcessiveBlankLineRunCandidate:
 
     @property
     def evidence(self) -> SourceLocation:
-        return SourceLocation(
-            self.file_path,
-            self.start_line,
-            f"blank-lines:{self.blank_line_count}",
-        )
+        return SourceLocation(self.file_path, self.start_line, f'blank-lines:{self.blank_line_count}')
 
 
 CatalogInstallingMixinFamilyCandidate = product_record('CatalogInstallingMixinFamilyCandidate', 'catalog_attribute_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
@@ -1044,14 +672,7 @@ class ModuleConstructorPolicyFamilyCandidate:
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, row_name)
-            for row_name, line in zip(
-                self.row_names,
-                self.line_numbers,
-                strict=True,
-            )
-        )
+        return tuple((SourceLocation(self.file_path, line, row_name) for row_name, line in zip(self.row_names, self.line_numbers, strict=True)))
 
 
 @dataclass(frozen=True)
@@ -1112,10 +733,7 @@ def _call_coordinate_fingerprints(call: ast.Call) -> tuple[str, ...] | None:
     if any(keyword.arg is None for keyword in call.keywords):
         return None
     positional = tuple(ast.dump(arg, annotate_fields=False) for arg in call.args)
-    keywords = tuple(
-        ast.dump(keyword.value, annotate_fields=False)
-        for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
-    )
+    keywords = tuple((ast.dump(keyword.value, annotate_fields=False) for keyword in sorted(call.keywords, key=lambda item: item.arg or '')))
     return positional + keywords
 
 
@@ -1131,17 +749,7 @@ def _constructor_variant_method(
     coordinate_fingerprints = _call_coordinate_fingerprints(call)
     if coordinate_fingerprints is None:
         return None
-    return _ConstructorVariantMethod(
-        method_name=method.name,
-        line=method.lineno,
-        callee_name=callee_name,
-        positional_count=len(call.args),
-        keyword_names=tuple(
-            keyword.arg or ""
-            for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
-        ),
-        coordinate_fingerprints=coordinate_fingerprints,
-    )
+    return _ConstructorVariantMethod(method_name=method.name, line=method.lineno, callee_name=callee_name, positional_count=len(call.args), keyword_names=tuple((keyword.arg or '' for keyword in sorted(call.keywords, key=lambda item: item.arg or ''))), coordinate_fingerprints=coordinate_fingerprints)
 
 
 def _varying_coordinate_names(
@@ -1184,12 +792,7 @@ def _class_method_shape_groups(
         for methods in grouped.values():
             if len(methods) < 2:
                 continue
-            groups.append(
-                (
-                    class_node,
-                    sorted_tuple(methods, key=lambda item: (item.line, item.method_name)),
-                )
-            )
+            groups.append((class_node, sorted_tuple(methods, key=lambda item: (item.line, item.method_name))))
     return tuple(groups)
 
 
@@ -1197,25 +800,11 @@ def _constructor_variant_family_candidates(
     module: ParsedModule,
 ) -> tuple[ConstructorVariantFamilyCandidate, ...]:
     candidates: list[ConstructorVariantFamilyCandidate] = []
-    for class_node, ordered in _class_method_shape_groups(
-        module,
-        _constructor_variant_method,
-        lambda method: method.shape_key,
-    ):
+    for class_node, ordered in _class_method_shape_groups(module, _constructor_variant_method, lambda method: method.shape_key):
         varying_coordinates = _varying_coordinate_names(ordered)
         if not varying_coordinates:
             continue
-        candidates.append(
-            ConstructorVariantFamilyCandidate(
-                file_path=str(module.path),
-                class_name=class_node.name,
-                callee_name=ordered[0].callee_name,
-                method_names=tuple(method.method_name for method in ordered),
-                line_numbers=tuple(method.line for method in ordered),
-                coordinate_count=len(ordered[0].coordinate_fingerprints),
-                varying_coordinate_names=varying_coordinates,
-            )
-        )
+        candidates.append(ConstructorVariantFamilyCandidate(file_path=str(module.path), class_name=class_node.name, callee_name=ordered[0].callee_name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), coordinate_count=len(ordered[0].coordinate_fingerprints), varying_coordinate_names=varying_coordinates))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
 
@@ -1234,14 +823,7 @@ def _accumulator_fold_method(
     source_parameter = args[offset].arg
     if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter):
         return None
-    return _AccumulatorFoldMethod(
-        method_name=method.name,
-        line=method.lineno,
-        source_parameter_name=source_parameter,
-        accumulator_type_name=accumulator_type_name,
-        step_method_name=step_call.func.attr,
-        result_method_name=result_call.func.attr,
-    )
+    return _AccumulatorFoldMethod(method_name=method.name, line=method.lineno, source_parameter_name=source_parameter, accumulator_type_name=accumulator_type_name, step_method_name=step_call.func.attr, result_method_name=result_call.func.attr)
 
 
 def _accumulator_fold_shape(
@@ -1310,27 +892,10 @@ def _accumulator_fold_family_candidates(
     module: ParsedModule,
 ) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
     candidates: list[AccumulatorFoldFamilyCandidate] = []
-    for class_node, ordered in _class_method_shape_groups(
-        module,
-        _accumulator_fold_method,
-        lambda method: method.shape_key,
-    ):
+    for class_node, ordered in _class_method_shape_groups(module, _accumulator_fold_method, lambda method: method.shape_key):
         if len({method.step_method_name for method in ordered}) < 2:
             continue
-        candidates.append(
-            AccumulatorFoldFamilyCandidate(
-                file_path=str(module.path),
-                class_name=class_node.name,
-                accumulator_type_name=ordered[0].accumulator_type_name,
-                result_method_name=ordered[0].result_method_name,
-                method_names=tuple(method.method_name for method in ordered),
-                line_numbers=tuple(method.line for method in ordered),
-                source_parameter_names=tuple(
-                    method.source_parameter_name for method in ordered
-                ),
-                step_method_names=tuple(method.step_method_name for method in ordered),
-            )
-        )
+        candidates.append(AccumulatorFoldFamilyCandidate(file_path=str(module.path), class_name=class_node.name, accumulator_type_name=ordered[0].accumulator_type_name, result_method_name=ordered[0].result_method_name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), source_parameter_names=tuple((method.source_parameter_name for method in ordered)), step_method_names=tuple((method.step_method_name for method in ordered))))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
 
@@ -1369,14 +934,7 @@ def _excessive_blank_line_run_candidates(
                 and _line_range_is_nested_in(run_start, end_line, class_body_ranges)
             )
         ):
-            candidates.append(
-                ExcessiveBlankLineRunCandidate(
-                    file_path=str(module.path),
-                    start_line=run_start,
-                    end_line=end_line,
-                    blank_line_count=run_length,
-                )
-            )
+            candidates.append(ExcessiveBlankLineRunCandidate(file_path=str(module.path), start_line=run_start, end_line=end_line, blank_line_count=run_length))
         run_start = None
         run_length = 0
 
@@ -1392,31 +950,19 @@ def _excessive_blank_line_run_candidates(
 
 
 def _class_body_line_ranges(module: ast.Module) -> tuple[range, ...]:
-    return tuple(
-        range(node.body[0].lineno, (node.end_lineno or node.body[-1].lineno) + 1)
-        for node in _walk_nodes(module)
-        if isinstance(node, ast.ClassDef) and node.body
-    )
+    return tuple((range(node.body[0].lineno, (node.end_lineno or node.body[-1].lineno) + 1) for node in _walk_nodes(module) if isinstance(node, ast.ClassDef) and node.body))
 
 
 def _line_range_is_nested_in(
     start_line: int, end_line: int, ranges: tuple[range, ...]
 ) -> bool:
-    return any(
-        start_line in line_range and end_line in line_range
-        for line_range in ranges
-    )
+    return any((start_line in line_range and end_line in line_range for line_range in ranges))
 
 
 def _catalog_installing_mixin_candidate(
     method: ast.FunctionDef,
 ) -> str | None:
-    return cast(
-        str | None,
-        Maybe.of(method)
-        .bind_all(registered_effect_steps(_CatalogInstallingMixinStep))
-        .unwrap_or_none(),
-    )
+    return cast(str | None, Maybe.of(method).bind_all(registered_effect_steps(_CatalogInstallingMixinStep)).unwrap_or_none())
 
 
 _CatalogInstallingMixinShape = product_record('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call')
@@ -1481,13 +1027,7 @@ class _CatalogSuperInitSubclassStep(
     def project(
         self, value: _CatalogInstallingMixinShape
     ) -> _CatalogInstallingMixinShape | None:
-        match = attribute_call_match(
-            value.first_call,
-            method_name="__init_subclass__",
-            owner_type=ast.Call,
-            argument_count=0,
-            allow_keywords=False,
-        )
+        match = attribute_call_match(value.first_call, method_name='__init_subclass__', owner_type=ast.Call, argument_count=0, allow_keywords=False)
         if match is None or name_id(match.owner.func) != "super":
             return None
         return value
@@ -1501,13 +1041,7 @@ class _CatalogInstallAttributeStep(
     registration_order = 30
 
     def project(self, value: _CatalogInstallingMixinShape) -> str | None:
-        match = attribute_call_match(
-            value.second_call,
-            method_name="install",
-            owner_type=ast.Attribute,
-            owner_name="cls",
-            single_argument_name="cls",
-        )
+        match = attribute_call_match(value.second_call, method_name='install', owner_type=ast.Attribute, owner_name='cls', single_argument_name='cls')
         if match is None:
             return None
         return match.owner.attr
@@ -1529,14 +1063,7 @@ def _catalog_installing_mixin_family_candidates(
     if len(items) < 2:
         return ()
     ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
-    return (
-        CatalogInstallingMixinFamilyCandidate(
-            file_path=str(module.path),
-            class_names=tuple(item[0] for item in ordered),
-            catalog_attribute_names=tuple(item[1] for item in ordered),
-            line_numbers=tuple(item[2] for item in ordered),
-        ),
-    )
+    return (CatalogInstallingMixinFamilyCandidate(file_path=str(module.path), class_names=tuple((item[0] for item in ordered)), catalog_attribute_names=tuple((item[1] for item in ordered)), line_numbers=tuple((item[2] for item in ordered))),)
 
 
 _RegexGroupExtractorMethod = product_record('_RegexGroupExtractorMethod', 'method_name: str; line: int; pattern_attribute_name: str; matcher_name: str; group_index: int')
@@ -1576,9 +1103,7 @@ class _RegexExtractorBodyStep(
     node_type = ast.FunctionDef
 
     def project_ast(self, value: ast.FunctionDef) -> _RegexExtractorBody | None:
-        statements = ast_sequence(
-            _trim_docstring_body(value.body), ast.Assign, ast.Return
-        )
+        statements = ast_sequence(_trim_docstring_body(value.body), ast.Assign, ast.Return)
         if statements is None:
             return None
         assign, returned = statements
@@ -1596,12 +1121,7 @@ class _RegexExtractorAssignmentStep(
         assignment = named_call_assignment(value.assign)
         if assignment is None:
             return None
-        return _RegexExtractorAssignment(
-            method=value.method,
-            match_name=assignment.target_name,
-            returned=value.returned,
-            call=assignment.call,
-        )
+        return _RegexExtractorAssignment(method=value.method, match_name=assignment.target_name, returned=value.returned, call=assignment.call)
 
 
 class _RegexExtractorMatcherCallStep(
@@ -1614,22 +1134,10 @@ class _RegexExtractorMatcherCallStep(
     def project(
         self, value: _RegexExtractorAssignment
     ) -> _RegexExtractorMatcherCall | None:
-        match = attribute_call_match(
-            value.call,
-            method_names=_REGEX_MATCHER_NAMES,
-            owner_type=ast.Attribute,
-            owner_name="self",
-            single_argument_required=True,
-        )
+        match = attribute_call_match(value.call, method_names=_REGEX_MATCHER_NAMES, owner_type=ast.Attribute, owner_name='self', single_argument_required=True)
         if match is None:
             return None
-        return _RegexExtractorMatcherCall(
-            method=value.method,
-            match_name=value.match_name,
-            returned=value.returned,
-            pattern_attribute_name=match.owner.attr,
-            matcher_name=match.attribute.attr,
-        )
+        return _RegexExtractorMatcherCall(method=value.method, match_name=value.match_name, returned=value.returned, pattern_attribute_name=match.owner.attr, matcher_name=match.attribute.attr)
 
 
 def _regex_conditional_group_call(
@@ -1662,14 +1170,7 @@ class _RegexExtractorConditionalReturnStep(
         group_call = _regex_conditional_group_call(value)
         if group_call is None:
             return None
-        return _RegexExtractorConditionalReturn(
-            method=value.method,
-            match_name=value.match_name,
-            returned=value.returned,
-            pattern_attribute_name=value.pattern_attribute_name,
-            matcher_name=value.matcher_name,
-            group_call=group_call,
-        )
+        return _RegexExtractorConditionalReturn(method=value.method, match_name=value.match_name, returned=value.returned, pattern_attribute_name=value.pattern_attribute_name, matcher_name=value.matcher_name, group_call=group_call)
 
 
 class _RegexExtractorGroupCallStep(
@@ -1682,34 +1183,17 @@ class _RegexExtractorGroupCallStep(
     def project(
         self, value: _RegexExtractorConditionalReturn
     ) -> _RegexGroupExtractorMethod | None:
-        match = attribute_call_match(
-            value.group_call,
-            method_name="group",
-            owner_type=ast.Name,
-            owner_name=value.match_name,
-            single_argument_required=True,
-        )
+        match = attribute_call_match(value.group_call, method_name='group', owner_type=ast.Name, owner_name=value.match_name, single_argument_required=True)
         group_index = constant_value(match.single_argument) if match else None
         if not isinstance(group_index, int):
             return None
-        return _RegexGroupExtractorMethod(
-            method_name=value.method.name,
-            line=value.method.lineno,
-            pattern_attribute_name=value.pattern_attribute_name,
-            matcher_name=value.matcher_name,
-            group_index=group_index,
-        )
+        return _RegexGroupExtractorMethod(method_name=value.method.name, line=value.method.lineno, pattern_attribute_name=value.pattern_attribute_name, matcher_name=value.matcher_name, group_index=group_index)
 
 
 def _regex_group_extractor_method(
     method: ast.FunctionDef,
 ) -> _RegexGroupExtractorMethod | None:
-    return cast(
-        _RegexGroupExtractorMethod | None,
-        Maybe.of(method)
-        .bind_all(registered_effect_steps(_RegexGroupExtractorStep))
-        .unwrap_or_none(),
-    )
+    return cast(_RegexGroupExtractorMethod | None, Maybe.of(method).bind_all(registered_effect_steps(_RegexGroupExtractorStep)).unwrap_or_none())
 
 
 def _regex_group_extractor_family_candidates(
@@ -1719,13 +1203,7 @@ def _regex_group_extractor_family_candidates(
     for class_node in (
         node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
-        methods = tuple(
-            extractor
-            for statement in class_node.body
-            if isinstance(statement, ast.FunctionDef)
-            for extractor in (_regex_group_extractor_method(statement),)
-            if extractor is not None
-        )
+        methods = tuple((extractor for statement in class_node.body if isinstance(statement, ast.FunctionDef) for extractor in (_regex_group_extractor_method(statement),) if extractor is not None))
         grouped: dict[int, list[_RegexGroupExtractorMethod]] = defaultdict(list)
         for method in methods:
             grouped[method.group_index].append(method)
@@ -1733,19 +1211,7 @@ def _regex_group_extractor_family_candidates(
             if len(grouped_methods) < 2:
                 continue
             ordered = sorted_tuple(grouped_methods, key=lambda item: (item.line, item.method_name))
-            candidates.append(
-                RegexGroupExtractorFamilyCandidate(
-                    file_path=str(module.path),
-                    class_name=class_node.name,
-                    method_names=tuple(method.method_name for method in ordered),
-                    line_numbers=tuple(method.line for method in ordered),
-                    pattern_attribute_names=tuple(
-                        method.pattern_attribute_name for method in ordered
-                    ),
-                    matcher_names=tuple(method.matcher_name for method in ordered),
-                    group_index=group_index,
-                )
-            )
+            candidates.append(RegexGroupExtractorFamilyCandidate(file_path=str(module.path), class_name=class_node.name, method_names=tuple((method.method_name for method in ordered)), line_numbers=tuple((method.line for method in ordered)), pattern_attribute_names=tuple((method.pattern_attribute_name for method in ordered)), matcher_names=tuple((method.matcher_name for method in ordered)), group_index=group_index))
     return tuple(candidates)
 
 
@@ -1770,9 +1236,7 @@ def _sparse_constructor_variant_family_candidates(
             call = _constructor_return_call(statement)
             if call is None or call.args:
                 continue
-            keyword_names = tuple(
-                keyword.arg or "" for keyword in call.keywords if keyword.arg is not None
-            )
+            keyword_names = tuple((keyword.arg or '' for keyword in call.keywords if keyword.arg is not None))
             if not keyword_names or not set(keyword_names) <= field_names:
                 continue
             methods.append((statement, keyword_names))
@@ -1782,15 +1246,7 @@ def _sparse_constructor_variant_family_candidates(
         if not union_keywords:
             continue
         ordered = sorted_tuple(methods, key=lambda item: (item[0].lineno, item[0].name))
-        candidates.append(
-            SparseConstructorVariantFamilyCandidate(
-                file_path=str(module.path),
-                class_name=class_node.name,
-                method_names=tuple(method.name for method, _ in ordered),
-                line_numbers=tuple(method.lineno for method, _ in ordered),
-                keyword_names=union_keywords,
-            )
-        )
+        candidates.append(SparseConstructorVariantFamilyCandidate(file_path=str(module.path), class_name=class_node.name, method_names=tuple((method.name for method, _ in ordered)), line_numbers=tuple((method.lineno for method, _ in ordered)), keyword_names=union_keywords))
     return tuple(candidates)
 
 
@@ -1817,12 +1273,7 @@ def _module_has_family_catalog(module_path: Path) -> bool:
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
-        if not any(
-            isinstance(target, ast.Name)
-            and "MODULE" in target.id
-            and ("CATALOG" in target.id or "MANIFEST" in target.id)
-            for target in node.targets
-        ):
+        if not any((isinstance(target, ast.Name) and 'MODULE' in target.id and ('CATALOG' in target.id or 'MANIFEST' in target.id) for target in node.targets)):
             continue
         if isinstance(node.value, (ast.Tuple, ast.List, ast.Set, ast.Call)):
             return True
@@ -1857,22 +1308,13 @@ def _support_prelude_module_family_candidates(
         support_path = _support_module_path(module, support_import)
         if support_path is not None and _module_has_family_catalog(support_path):
             continue
-        grouped[(str(module.path.parent), support_import)].append(
-            (module, top_level_classes[0])
-        )
+        grouped[str(module.path.parent), support_import].append((module, top_level_classes[0]))
     candidates: list[SupportPreludeModuleFamilyCandidate] = []
     for (_, support_import), items in grouped.items():
         if len(items) < 3:
             continue
         ordered = sorted_tuple(items, key=lambda item: str(item[0].path))
-        candidates.append(
-            SupportPreludeModuleFamilyCandidate(
-                support_module_name=support_import,
-                file_paths=tuple(str(item[0].path) for item in ordered),
-                class_names=tuple(item[1].name for item in ordered),
-                line_numbers=tuple(item[1].lineno for item in ordered),
-            )
-        )
+        candidates.append(SupportPreludeModuleFamilyCandidate(support_module_name=support_import, file_paths=tuple((str(item[0].path) for item in ordered)), class_names=tuple((item[1].name for item in ordered)), line_numbers=tuple((item[1].lineno for item in ordered))))
     return tuple(candidates)
 
 
@@ -1881,10 +1323,7 @@ def _is_module_policy_row_name(name: str) -> bool:
 
 
 def _constructor_call_schema(call: ast.Call) -> tuple[str, ...]:
-    return (
-        *(f"arg{index}" for index, _arg in enumerate(call.args)),
-        *(keyword.arg or "**" for keyword in call.keywords),
-    )
+    return (*(f'arg{index}' for index, _arg in enumerate(call.args)), *(keyword.arg or '**' for keyword in call.keywords))
 
 
 def _module_constructor_policy_family_candidates(
@@ -1904,38 +1343,16 @@ def _module_constructor_policy_family_candidates(
         if len(rows) < 2:
             continue
         ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
-        candidates.append(
-            ModuleConstructorPolicyFamilyCandidate(
-                file_path=str(module.path),
-                constructor_name=constructor_name,
-                row_names=tuple(row_name for row_name, _line in ordered),
-                line_numbers=tuple(line for _row_name, line in ordered),
-                field_names=field_names,
-            )
-        )
+        candidates.append(ModuleConstructorPolicyFamilyCandidate(file_path=str(module.path), constructor_name=constructor_name, row_names=tuple((row_name for row_name, _line in ordered)), line_numbers=tuple((line for _row_name, line in ordered)), field_names=field_names))
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.constructor_name))
 
 
 class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[AlternateConstructorFamilyGroup]):
     candidate_collector = _alternate_constructor_family_groups
-    finding_spec = high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Alternate constructors should collapse into one provenance-dispatched builder",
-        'Several classmethods on one record class rebuild the same keyword schema from different source node types. That provenance family should collapse into one authoritative constructor with dispatch over source kind.',
-        "single provenance-aware builder for one record schema",
-        "same record schema is rebuilt across sibling alternate constructors for different source types",
-        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-    )
+    finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Alternate constructors should collapse into one provenance-dispatched builder', 'Several classmethods on one record class rebuild the same keyword schema from different source node types. That provenance family should collapse into one authoritative constructor with dispatch over source kind.', 'single provenance-aware builder for one record schema', 'same record schema is rebuilt across sibling alternate constructors for different source types', _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS)
 
     def _finding_for_candidate(self, group: AlternateConstructorFamilyGroup) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(group.file_path, line, f"{group.class_name}.{method_name}")
-            for method_name, line in zip(
-                group.method_names,
-                group.line_numbers,
-                strict=True,
-            )
-        )
+        evidence = tuple((SourceLocation(group.file_path, line, f'{group.class_name}.{method_name}') for method_name, line in zip(group.method_names, group.line_numbers, strict=True)))
         return self.build_finding(
             (
                 f"`{group.class_name}` repeats schema keywords {group.keyword_names} across alternate constructors {group.method_names} for source types {group.source_type_names}."
@@ -1968,6 +1385,11 @@ declare_module_detector(MultilineFStringLiteralCandidate, high_confidence_certif
 
 declare_module_detector(MultilineImportListCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Split import list should collapse into one import authority', 'A parenthesized multi-line import list is one dependency declaration. The extra physical line structure is not a semantic boundary and should collapse into the single import statement authority.', 'single source import statement for one dependency surface', 'one import statement is split across multiple physical source lines', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[MultilineImportListCandidate](summary=lambda import_candidate: f'`{import_candidate.file_path}` has a {import_candidate.line_count}-line import list at {import_candidate.line}-{import_candidate.end_line} with {import_candidate.import_name_count} imported names.', evidence=lambda import_candidate: (import_candidate.evidence,), scaffold=lambda import_candidate: 'from module import name_a, name_b, name_c', codemod_patch=lambda import_candidate: f'# Replace the parenthesized import split at {import_candidate.file_path}:{import_candidate.line}-{import_candidate.end_line} with one import statement.', metrics=lambda import_candidate: MappingMetrics.from_field_names(mapping_site_count=import_candidate.line_count, mapping_name=import_candidate.module_name or 'import-list', field_names=('imported_name',))), candidate_collector=_multiline_import_list_candidates)
 
+declare_module_detector(MultilineContainerLiteralCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Split container literal should collapse into one value authority', 'A comment-free multi-line tuple, list, set, or dict literal is one runtime value. The physical line split is not a semantic boundary; the value should be represented by one literal authority.', 'single source literal for one runtime container value', 'one container literal is split across multiple physical source lines without comments', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[MultilineContainerLiteralCandidate](summary=lambda container: f'`{container.file_path}` has a {container.line_count}-line {container.container_kind} literal at {container.line}-{container.end_line} with {container.element_count} element(s).', evidence=lambda container: (container.evidence,), scaffold=lambda container: '(item_a, item_b, item_c)', codemod_patch=lambda container: f'# Replace the comment-free container literal split at {container.file_path}:{container.line}-{container.end_line} with one literal expression.', metrics=lambda container: MappingMetrics.from_field_names(mapping_site_count=container.line_count, mapping_name=container.container_kind, field_names=('container_value',))), candidate_collector=_multiline_container_literal_candidates)
+
+
+declare_module_detector(MultilineCallExpressionCandidate, high_confidence_certified_spec(PatternId.LOCAL_VALUE_AUTHORITY, 'Split call expression should collapse into one call authority', 'A comment-free multi-line call expression is one runtime operation. The physical line split is not a semantic boundary; the call should be represented by one expression authority unless comments carry extra information.', 'single source call expression for one runtime operation', 'one call expression is split across multiple physical source lines without comments', _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS, _NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[MultilineCallExpressionCandidate](summary=lambda call_candidate: f'`{call_candidate.file_path}` has a {call_candidate.line_count}-line `{call_candidate.callee_name}` call at {call_candidate.line}-{call_candidate.end_line} with {call_candidate.argument_count} argument(s).', evidence=lambda call_candidate: (call_candidate.evidence,), scaffold=lambda call_candidate: 'result = operation(argument_a, argument_b, option=value)', codemod_patch=lambda call_candidate: f'# Replace the comment-free call split at {call_candidate.file_path}:{call_candidate.line}-{call_candidate.end_line} with one call expression.', metrics=lambda call_candidate: MappingMetrics.from_field_names(mapping_site_count=call_candidate.line_count, mapping_name=call_candidate.callee_name, field_names=('call_argument',))), candidate_collector=_multiline_call_expression_candidates)
+
 
 declare_module_detector(CatalogInstallingMixinFamilyCandidate, high_confidence_certified_spec(PatternId.ABC_TEMPLATE_METHOD, 'Catalog-installing mixins should share one subclass hook', 'Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.', 'one reusable catalog-installing subclass hook with declarative catalog attribute residue', 'sibling mixins repeat an identical class-creation hook over different catalog classvars', _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS, _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS), CandidateFindingRenderer[CatalogInstallingMixinFamilyCandidate](summary=lambda catalog_candidate: f'Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.', evidence=lambda catalog_candidate: catalog_candidate.evidence, scaffold=lambda catalog_candidate: 'class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)', codemod_patch=lambda catalog_candidate: '# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.', metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(duplicate_site_count=len(catalog_candidate.class_names), statement_count=2, class_count=len(catalog_candidate.class_names), method_symbols=tuple((f'{class_name}.__init_subclass__' for class_name in catalog_candidate.class_names)))), candidate_collector=_catalog_installing_mixin_family_candidates)
 
@@ -1979,14 +1401,7 @@ declare_module_detector(SparseConstructorVariantFamilyCandidate, high_confidence
 
 
 class SupportPreludeModuleFamilyDetector(IssueDetector):
-    finding_spec = finding_spec_template(
-        PatternId.AUTHORITATIVE_SCHEMA, "Support-prelude module families should have a manifest authority",
-        'Many one-class modules importing the same support prelude form an implicit module family. The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.',
-        "one manifest authority for a support-prelude module family",
-        "several one-class modules share the same star-import support prelude without a module-family catalog",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
-        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
-    )
+    finding_spec = finding_spec_template(PatternId.AUTHORITATIVE_SCHEMA, 'Support-prelude module families should have a manifest authority', 'Many one-class modules importing the same support prelude form an implicit module family. The family boundary should be derived from one manifest/catalog rather than remaining visible only as repeated import shape.', 'one manifest authority for a support-prelude module family', 'several one-class modules share the same star-import support prelude without a module-family catalog', _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS, _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

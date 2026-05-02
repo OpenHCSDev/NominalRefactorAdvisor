@@ -170,9 +170,7 @@ class _AttributeCallOwnerStep(
         owner = as_ast(value.attribute.value, self.owner_type)
         if owner is None:
             return None
-        if self.owner_name is not None and not node_has_owner_name(
-            owner, self.owner_name
-        ):
+        if self.owner_name is not None and not node_has_owner_name(owner, self.owner_name):
             return None
         return _AttributeCallOwnedParts(value.call, value.attribute, owner)
 
@@ -190,38 +188,16 @@ class _AttributeCallArgumentStep(
     def project(
         self, value: _AttributeCallOwnedParts[OwnerT]
     ) -> AttributeCallMatch[OwnerT] | None:
-        argument = call_argument_match(
-            value.call,
-            argument_name=self.single_argument_name,
-            required=self.single_argument_required,
-            argument_count=self.argument_count,
-            allow_keywords=self.allow_keywords,
-        )
+        argument = call_argument_match(value.call, argument_name=self.single_argument_name, required=self.single_argument_required, argument_count=self.argument_count, allow_keywords=self.allow_keywords)
         if argument is None:
             return None
-        return AttributeCallMatch(
-            value.call,
-            value.attribute,
-            value.owner,
-            argument.argument,
-        )
+        return AttributeCallMatch(value.call, value.attribute, value.owner, argument.argument)
 
 
 @lru_cache(maxsize=None)
 def registered_effect_steps(step_base: type[StepT]) -> tuple[StepT, ...]:
     registry = cast(dict[str, type[StepT]], step_base.__registry__)
-    return tuple(
-        step_type()
-        for step_type in sorted(
-            (
-                registered_type
-                for registered_type in registry.values()
-                if issubclass(registered_type, step_base)
-                and registered_type is not step_base
-            ),
-            key=lambda item: item.registration_order,
-        )
-    )
+    return tuple((step_type() for step_type in sorted((registered_type for registered_type in registry.values() if issubclass(registered_type, step_base) and registered_type is not step_base), key=lambda item: item.registration_order)))
 
 
 @dataclass(frozen=True)
@@ -399,11 +375,7 @@ def call_argument_match(
 def collection_literal(
     node: ast.AST,
     *,
-    collection_types: tuple[type[ast.Tuple], type[ast.List], type[ast.Set]] = (
-        ast.Tuple,
-        ast.List,
-        ast.Set,
-    ),
+    collection_types: tuple[type[ast.Tuple], type[ast.List], type[ast.Set]] = (ast.Tuple, ast.List, ast.Set),
 ) -> CollectionLiteral | None:
     if not isinstance(node, collection_types):
         return None
@@ -466,18 +438,7 @@ def attribute_call_match(
     allow_keywords: bool = True,
 ) -> AttributeCallMatch[OwnerT] | None:
     return (
-        Maybe.of(call)
-        .bind(_AttributeCallMethodStep(attribute_method_names(method_name, method_names)))
-        .bind(_AttributeCallOwnerStep(owner_type, owner_name))
-        .bind(
-            _AttributeCallArgumentStep(
-                single_argument_name,
-                single_argument_required,
-                argument_count,
-                allow_keywords,
-            )
-        )
-        .unwrap_or_none()
+        Maybe.of(call).bind(_AttributeCallMethodStep(attribute_method_names(method_name, method_names))).bind(_AttributeCallOwnerStep(owner_type, owner_name)).bind(_AttributeCallArgumentStep(single_argument_name, single_argument_required, argument_count, allow_keywords)).unwrap_or_none()
     )
 
 
