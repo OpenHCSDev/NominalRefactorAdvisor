@@ -7263,6 +7263,28 @@ def _multiline_f_string_literal_candidates(
     return tuple(candidates)
 
 
+def _multiline_import_list_candidates(
+    module: ParsedModule,
+) -> tuple[MultilineImportListCandidate, ...]:
+    candidates: list[MultilineImportListCandidate] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if node.end_lineno is None or node.end_lineno <= node.lineno or len(node.names) < 2:
+            continue
+        candidates.append(
+            MultilineImportListCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                end_line=node.end_lineno,
+                line_count=node.end_lineno - node.lineno + 1,
+                import_name_count=len(node.names),
+                module_name=node.module if isinstance(node, ast.ImportFrom) else None,
+            )
+        )
+    return tuple(candidates)
+
+
 def _dataclass_config_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     if not any(
         name_id(decorator) == "dataclass"

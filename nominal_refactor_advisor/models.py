@@ -18,17 +18,7 @@ from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty
 from .patterns import PatternId
 
-from .taxonomy import (
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
-    CERTIFIED,
-    SPECULATIVE,
-    STRONG_HEURISTIC,
-    CapabilityTag,
-    CertificationLevel,
-    ConfidenceLevel,
-    ObservationTag,
-)
+from .taxonomy import HIGH_CONFIDENCE, MEDIUM_CONFIDENCE, CERTIFIED, SPECULATIVE, STRONG_HEURISTIC, CapabilityTag, CertificationLevel, ConfidenceLevel, ObservationTag
 
 
 class SemanticRecord(ABC):

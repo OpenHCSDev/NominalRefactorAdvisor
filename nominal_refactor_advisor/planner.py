@@ -17,30 +17,9 @@ from pathlib import Path
 from typing import Callable, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
-from .models import (
-    CERTIFIED,
-    ImpactDelta,
-    STRONG_HEURISTIC,
-    OutcomeEstimate,
-    RefactorAction,
-    RefactorFinding,
-    RefactorPlan,
-    SourceLocation,
-)
-from .patterns import (
-    PATTERN_SPECS,
-    ActionBuilderId,
-    PatternId,
-    PlanStepBuilderId,
-)
-from .taxonomy import (
-    CapabilityTag,
-    CertificationLevel,
-    ConfidenceLevel,
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
-    ObservationTag,
-)
+from .models import CERTIFIED, ImpactDelta, STRONG_HEURISTIC, OutcomeEstimate, RefactorAction, RefactorFinding, RefactorPlan, SourceLocation
+from .patterns import PATTERN_SPECS, ActionBuilderId, PatternId, PlanStepBuilderId
+from .taxonomy import CapabilityTag, CertificationLevel, ConfidenceLevel, HIGH_CONFIDENCE, MEDIUM_CONFIDENCE, ObservationTag
 
 
 _FindingCluster = product_record('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]')

@@ -18,12 +18,7 @@ from .constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSp
 from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
 
-from .observation_graph import (
-    ObservationKind,
-    StructuralExecutionLevel,
-    StructuralObservation,
-    StructuralObservationCarrier,
-)
+from .observation_graph import ObservationKind, StructuralExecutionLevel, StructuralObservation, StructuralObservationCarrier
 
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule

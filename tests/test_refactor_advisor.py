@@ -5,47 +5,14 @@ import ast
 from pathlib import Path
 from typing import cast
 
-from nominal_refactor_advisor.ast_tools import (
-    AccessorWrapperObservationFamily,
-    AttributeProbeObservationFamily,
-    BuilderCallShapeFamily,
-    ClassMarkerObservationFamily,
-    ConfigDispatchObservationFamily,
-    DualAxisResolutionObservationFamily,
-    DynamicMethodInjectionObservationFamily,
-    ExportDictShapeFamily,
-    FieldObservationSpec,
-    FieldObservationFamily,
-    InlineStringLiteralDispatchObservationFamily,
-    InterfaceGenerationObservationFamily,
-    LineageMappingObservationFamily,
-    MethodShapeFamily,
-    ProjectionHelperObservationFamily,
-    RegistrationShapeSpec,
-    RegistrationShapeFamily,
-    RuntimeTypeGenerationObservationFamily,
-    ScopedShapeWrapperFunctionFamily,
-    ScopedShapeWrapperSpecFamily,
-    SentinelTypeObservationFamily,
-    StringLiteralDispatchObservationFamily,
-    NumericLiteralDispatchObservationFamily,
-    TypedLiteralObservationSpec,
-    collect_family_items,
-    collect_scoped_observations,
-    parse_python_modules,
-)
+from nominal_refactor_advisor.ast_tools import AccessorWrapperObservationFamily, AttributeProbeObservationFamily, BuilderCallShapeFamily, ClassMarkerObservationFamily, ConfigDispatchObservationFamily, DualAxisResolutionObservationFamily, DynamicMethodInjectionObservationFamily, ExportDictShapeFamily, FieldObservationSpec, FieldObservationFamily, InlineStringLiteralDispatchObservationFamily, InterfaceGenerationObservationFamily, LineageMappingObservationFamily, MethodShapeFamily, ProjectionHelperObservationFamily, RegistrationShapeSpec, RegistrationShapeFamily, RuntimeTypeGenerationObservationFamily, ScopedShapeWrapperFunctionFamily, ScopedShapeWrapperSpecFamily, SentinelTypeObservationFamily, StringLiteralDispatchObservationFamily, NumericLiteralDispatchObservationFamily, TypedLiteralObservationSpec, collect_family_items, collect_scoped_observations, parse_python_modules
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.models import DispatchCountMetrics
-from nominal_refactor_advisor.observation_graph import (
-    ObservationGraph,
-    ObservationKind,
-    StructuralExecutionLevel,
-    build_observation_graph,
-)
+from nominal_refactor_advisor.observation_graph import ObservationGraph, ObservationKind, StructuralExecutionLevel, build_observation_graph
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
 from nominal_refactor_advisor.semantic_match import EffectStep, Maybe

@@ -27,135 +27,14 @@ from metaclass_registry import AutoRegisterMeta
 
 from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from ..descriptor_algebra import AliasProperty
-from ..semantic_match import (
-    AstTypedEffectStep,
-    FirstSuccessfulEffectStep,
-    GuardedEffectStep,
-    Maybe,
-    NamedCallAssignment,
-    RegisteredEffectStep,
-    SingleCompareEffectStep,
-    as_ast,
-    ast_sequence,
-    attribute_call_match,
-    attribute_name,
-    call_attribute_name,
-    collection_literal,
-    constant_value,
-    name_id,
-    named_call_assignment,
-    named_value_binding,
-    registered_effect_steps,
-    single_assign_target,
-    single_ast,
-    single_call_arg,
-    single_call_arg_name,
-    single_compare_match,
-    single_item,
-    single_named_call_argument,
-    return_call,
-    return_value,
-    single_return_call,
-    single_return_value,
-)
-from ..ast_tools import (
-    AccessorWrapperCandidate,
-    AccessorWrapperObservationFamily,
-    AttributeProbeObservation,
-    AttributeProbeObservationFamily,
-    BuilderCallShape,
-    BuilderCallShapeFamily,
-    ClassMarkerObservation,
-    ClassMarkerObservationFamily,
-    CollectedFamily,
-    ConfigDispatchObservation,
-    FieldObservation,
-    FieldObservationFamily,
-    ConfigDispatchObservationFamily,
-    DualAxisResolutionObservation,
-    DualAxisResolutionObservationFamily,
-    DynamicMethodInjectionObservation,
-    DynamicMethodInjectionObservationFamily,
-    ExportDictShapeFamily,
-    InterfaceGenerationObservation,
-    InterfaceGenerationObservationFamily,
-    LiteralDispatchObservation,
-    ExportDictShape,
-    LineageMappingObservation,
-    LineageMappingObservationFamily,
-    MethodShape,
-    MethodShapeFamily,
-    ParsedModule,
-    ProjectionHelperShape,
-    ProjectionHelperObservationFamily,
-    RegistrationShape,
-    RegistrationShapeFamily,
-    RuntimeTypeGenerationObservation,
-    RuntimeTypeGenerationObservationFamily,
-    ScopedShapeWrapperFunction,
-    ScopedShapeWrapperFunctionFamily,
-    ScopedShapeWrapperSpec,
-    ScopedShapeWrapperSpecFamily,
-    SentinelTypeObservation,
-    SentinelTypeObservationFamily,
-    StringLiteralDispatchObservationFamily,
-    NumericLiteralDispatchObservationFamily,
-    InlineStringLiteralDispatchObservationFamily,
-    collect_family_items,
-    _walk_nodes,
-)
-from ..class_index import (
-    ClassFamilyIndex,
-    IndexedClass,
-    _module_import_aliases,
-    build_class_family_index,
-)
+from ..semantic_match import AstTypedEffectStep, FirstSuccessfulEffectStep, GuardedEffectStep, Maybe, NamedCallAssignment, RegisteredEffectStep, SingleCompareEffectStep, as_ast, ast_sequence, attribute_call_match, attribute_name, call_attribute_name, collection_literal, constant_value, name_id, named_call_assignment, named_value_binding, registered_effect_steps, single_assign_target, single_ast, single_call_arg, single_call_arg_name, single_compare_match, single_item, single_named_call_argument, return_call, return_value, single_return_call, single_return_value
+from ..ast_tools import AccessorWrapperCandidate, AccessorWrapperObservationFamily, AttributeProbeObservation, AttributeProbeObservationFamily, BuilderCallShape, BuilderCallShapeFamily, ClassMarkerObservation, ClassMarkerObservationFamily, CollectedFamily, ConfigDispatchObservation, FieldObservation, FieldObservationFamily, ConfigDispatchObservationFamily, DualAxisResolutionObservation, DualAxisResolutionObservationFamily, DynamicMethodInjectionObservation, DynamicMethodInjectionObservationFamily, ExportDictShapeFamily, InterfaceGenerationObservation, InterfaceGenerationObservationFamily, LiteralDispatchObservation, ExportDictShape, LineageMappingObservation, LineageMappingObservationFamily, MethodShape, MethodShapeFamily, ParsedModule, ProjectionHelperShape, ProjectionHelperObservationFamily, RegistrationShape, RegistrationShapeFamily, RuntimeTypeGenerationObservation, RuntimeTypeGenerationObservationFamily, ScopedShapeWrapperFunction, ScopedShapeWrapperFunctionFamily, ScopedShapeWrapperSpec, ScopedShapeWrapperSpecFamily, SentinelTypeObservation, SentinelTypeObservationFamily, StringLiteralDispatchObservationFamily, NumericLiteralDispatchObservationFamily, InlineStringLiteralDispatchObservationFamily, collect_family_items, _walk_nodes
+from ..class_index import ClassFamilyIndex, IndexedClass, _module_import_aliases, build_class_family_index
 from ..collection_algebra import sorted_tuple
-from ..models import (
-    CERTIFIED,
-    SPECULATIVE,
-    STRONG_HEURISTIC,
-    BranchCountMetrics,
-    CertifiedFindingSpec,
-    DispatchCountMetrics,
-    FieldFamilyMetrics,
-    FindingMetrics,
-    FindingSpec,
-    HighConfidenceCertifiedFindingSpec,
-    HighConfidenceFindingSpec,
-    HierarchyCandidateMetrics,
-    ImpactDelta,
-    MappingMetrics,
-    OrchestrationMetrics,
-    ParameterThreadMetrics,
-    ProbeCountMetrics,
-    RefactorFinding,
-    RegistrationMetrics,
-    RepeatedMethodMetrics,
-    ResolutionAxisMetrics,
-    SemanticBagDescriptor,
-    SentinelSimulationMetrics,
-    SourceLocation,
-    WitnessCarrierMetrics,
-    impact_delta_semantic_bag_descriptor,
-    metric_semantic_bag_descriptors,
-)
-from ..observation_graph import (
-    ObservationGraph,
-    ObservationKind,
-    StructuralExecutionLevel,
-    StructuralObservation,
-    StructuralObservationCarrier,
-)
+from ..models import CERTIFIED, SPECULATIVE, STRONG_HEURISTIC, BranchCountMetrics, CertifiedFindingSpec, DispatchCountMetrics, FieldFamilyMetrics, FindingMetrics, FindingSpec, HighConfidenceCertifiedFindingSpec, HighConfidenceFindingSpec, HierarchyCandidateMetrics, ImpactDelta, MappingMetrics, OrchestrationMetrics, ParameterThreadMetrics, ProbeCountMetrics, RefactorFinding, RegistrationMetrics, RepeatedMethodMetrics, ResolutionAxisMetrics, SemanticBagDescriptor, SentinelSimulationMetrics, SourceLocation, WitnessCarrierMetrics, impact_delta_semantic_bag_descriptor, metric_semantic_bag_descriptors
+from ..observation_graph import ObservationGraph, ObservationKind, StructuralExecutionLevel, StructuralObservation, StructuralObservationCarrier
 from ..patterns import PatternId
-from ..taxonomy import (
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
-    CapabilityTag,
-    CertificationLevel,
-    ConfidenceLevel,
-    ObservationTag,
-)
+from ..taxonomy import HIGH_CONFIDENCE, MEDIUM_CONFIDENCE, CapabilityTag, CertificationLevel, ConfidenceLevel, ObservationTag
 from ._substrate_support import *
 
 
@@ -8156,6 +8035,9 @@ MultilineStringLiteralCandidate = product_record('MultilineStringLiteralCandidat
 
 
 MultilineFStringLiteralCandidate = product_record('MultilineFStringLiteralCandidate', 'end_line: int; line_count: int; expression_count: int; char_count: int', bases=(LineWitnessCandidate,))
+
+
+MultilineImportListCandidate = product_record('MultilineImportListCandidate', 'end_line: int; line_count: int; import_name_count: int; module_name: str | None', bases=(LineWitnessCandidate,))
 
 
 DataclassNamespaceCliMirrorCandidate = product_record('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', bases=(ClassLineWitnessCandidate,))
