@@ -1,13 +1,23 @@
 """Helpers for deriving public module export surfaces from declarative policies."""
+
 from __future__ import annotations
+
 from .record_algebra import product_record
+
 import inspect
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
+
+
 PublicExportPolicy = product_record('PublicExportPolicy', 'module_name: str; types_only: bool; allow_callables: bool; include_enums: bool; exclude_abstract: bool; root_types: tuple[type[object], ...]; explicit_names: frozenset[str]', defaults={'types_only': True, 'allow_callables': False, 'include_enums': False, 'exclude_abstract': False, 'root_types': (), 'explicit_names': frozenset()}, doc="Declarative policy for deriving a module's public export surface.")
-def matches_public_export_policy(name: str, value: object, policy: PublicExportPolicy) -> bool:
+
+
+def matches_public_export_policy(
+    name: str, value: object, policy: PublicExportPolicy
+) -> bool:
     """Return whether a binding should appear in a derived public surface."""
+
     if name.startswith('_'): return False
     if name in policy.explicit_names: return True
     if getattr(value, '__module__', None) != policy.module_name: return False
@@ -17,6 +27,11 @@ def matches_public_export_policy(name: str, value: object, policy: PublicExportP
     if policy.include_enums and isinstance(value, type) and issubclass(value, Enum): return True
     if policy.root_types and isinstance(value, type): return issubclass(value, policy.root_types)
     return True if isinstance(value, type) else policy.allow_callables
-def derive_public_exports(namespace: dict[str, Any], policy: PublicExportPolicy) -> list[str]:
+
+
+def derive_public_exports(
+    namespace: dict[str, Any], policy: PublicExportPolicy
+) -> list[str]:
     """Derive a sorted ``__all__``-style export list from a module namespace."""
+
     return sorted((name for name, value in namespace.items() if matches_public_export_policy(name, value, policy)))

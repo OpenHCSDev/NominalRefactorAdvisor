@@ -4,18 +4,24 @@ This module contains the programmatic entrypoints used by tests and automation a
 well as the command-line interface used by developers. The public helpers are the
 recommended way to analyze a path or synthesize subsystem plans from findings.
 """
+
 from __future__ import annotations
+
 import argparse
 import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+
 from .ast_tools import parse_python_modules
 from .detectors import DetectorConfig, default_detectors
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
+
 _VALUELESS_ARGUMENT_ACTIONS = frozenset({'store_true', 'store_false', 'store_const', 'append_const', 'count', 'help', 'version'})
+
+
 @dataclass(frozen=True)
 class CliArgumentSpec:
     flags: tuple[str, ...]
@@ -25,6 +31,7 @@ class CliArgumentSpec:
     dest: str | None = None
     nargs: str | int | None = None
     value_type: type[object] | None = None
+
     def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
         kwargs: dict[str, object] = {"help": self.help}
         if self.action is not None: kwargs['action'] = self.action
@@ -34,24 +41,44 @@ class CliArgumentSpec:
             if self.nargs is not None: kwargs['nargs'] = self.nargs
             if self.value_type is not None: kwargs['type'] = self.value_type
         parser.add_argument(*self.flags, **kwargs)
+
+
 def _config_argument_specs() -> tuple[CliArgumentSpec, ...]: return tuple((CliArgumentSpec(flags=(f"--{config_field.name.replace('_', '-')}",), value_type=int, default=config_field.default, help=str(config_field.metadata['cli_help'])) for config_field in fields(DetectorConfig) if 'cli_help' in config_field.metadata))
+
+
 _CLI_ARGUMENT_SPECS = (CliArgumentSpec(flags=('path',), nargs='?', default='nominal_refactor_advisor', help='Root path to analyze (defaults to nominal_refactor_advisor).'), CliArgumentSpec(flags=('--json',), action='store_true', help='Emit JSON instead of Markdown.'), CliArgumentSpec(flags=('--include-plans',), action='store_true', help='Also synthesize subsystem-level composed refactor plans.'), CliArgumentSpec(flags=('--plans-only',), action='store_true', help='Emit only subsystem-level composed refactor plans.')) + _config_argument_specs() + (CliArgumentSpec(flags=('--exclude-pattern',), action='append', dest='excluded_pattern_ids', value_type=int, default=[], help='Pattern ID to exclude from findings (can be specified multiple times).'),)
-def analyze_modules(modules: list, config: DetectorConfig | None=None) -> list[RefactorFinding]:
+
+
+def analyze_modules(
+    modules: list, config: DetectorConfig | None = None
+) -> list[RefactorFinding]:
     """Run all registered detectors against parsed modules."""
     config = config or DetectorConfig()
     findings: list[RefactorFinding] = []
     for detector in default_detectors(): findings.extend(detector.detect(modules, config))
     return sorted(findings, key=lambda finding: (finding.pattern_id, finding.title, finding.summary))
-def analyze_path(root: Path, config: DetectorConfig | None=None) -> list[RefactorFinding]:
+
+
+def analyze_path(
+    root: Path, config: DetectorConfig | None = None
+) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
     modules = parse_python_modules(root)
     return analyze_modules(modules, config)
+
+
 def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
     """Analyze a path and synthesize subsystem-level refactor plans."""
     findings = analyze_path(root, config)
     return build_refactor_plans(findings, root)
+
+
 def _json_payload(findings: list[RefactorFinding], plans: list[RefactorPlan], modules: list) -> dict[str, object]: report = AnalysisReport(findings=tuple(findings), plans=tuple(plans)); graph = build_observation_graph(modules); payload = report.to_dict(); payload['observations'] = [asdict(item) for item in graph.observations]; payload['fibers'] = [asdict(item) for item in graph.fibers]; return payload
-def _format_markdown(findings: list[RefactorFinding], plans: list[RefactorPlan] | None=None) -> str:
+
+
+def _format_markdown(
+    findings: list[RefactorFinding], plans: list[RefactorPlan] | None = None
+) -> str:
     sections: list[str] = []
     if findings:
         sections.append(_format_findings_markdown(findings))
@@ -59,6 +86,8 @@ def _format_markdown(findings: list[RefactorFinding], plans: list[RefactorPlan] 
         sections.append("No refactoring findings.")
     if plans is not None: sections.append(_format_plans_markdown(plans))
     return "\n\n".join(section for section in sections if section)
+
+
 def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
     if not findings: return 'No refactoring findings.'
     lines: list[str] = []
@@ -82,6 +111,8 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
             for patch_line in finding.codemod_patch.splitlines(): lines.append(f'     {patch_line}')
         for item in finding.evidence: lines.append(f'   - Evidence: {item.file_path}:{item.line} `{item.symbol}`')
     return "\n".join(lines)
+
+
 def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
     if not plans: return 'No subsystem plans.'
     lines = ["Subsystem plans:"]
@@ -110,11 +141,14 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
         for title in plan.supporting_findings[:5]: lines.append(f'   - Supporting finding: {title}')
         for item in plan.evidence: lines.append(f'   - Evidence: {item.file_path}:{item.line} `{item.symbol}`')
     return "\n".join(lines)
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(description='AST-driven refactoring advisor for nominal architecture.')
     for spec in _CLI_ARGUMENT_SPECS: spec.add_to_parser(parser)
     args = parser.parse_args()
+
     config = DetectorConfig.from_namespace(args)
     root = Path(args.path)
     modules = parse_python_modules(root)
@@ -130,4 +164,6 @@ def main() -> int:
         else:
             print(_format_markdown(findings, plans))
     return 0
+
+
 if __name__ == '__main__': raise SystemExit(main())

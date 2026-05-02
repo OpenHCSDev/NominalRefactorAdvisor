@@ -1,23 +1,40 @@
 """Shared taxonomy values for certification, confidence, and capability labels."""
+
 from __future__ import annotations
+
 from enum import StrEnum
+
+
 class CertificationLevel(StrEnum):
     """How strongly the advisor believes a finding follows from the evidence."""
+
     CERTIFIED = "certified"
     STRONG_HEURISTIC = "strong_heuristic"
     SPECULATIVE = "speculative"
+
+
 class ConfidenceLevel(StrEnum):
     """Human-facing confidence bucket for findings and plans."""
+
     HIGH = "high"
     MEDIUM = "medium"
+
+
 class LabeledStrEnum(StrEnum):
     """String enum whose members carry their display label."""
+
     label: str
+
     def __new__(cls, value: str, label: str) -> 'LabeledStrEnum': member = str.__new__(cls, value); member._value_ = value; member.label = label; return member
+
+
 class CapabilityTag(LabeledStrEnum):
     """Capabilities recovered or prescribed by the canonical pattern library."""
+
     distinction: str
+
     def __new__(cls, value: str, label: str, distinction: str) -> 'CapabilityTag': member = str.__new__(cls, value); member._value_ = value; member.label = label; member.distinction = distinction; return member
+
     AUTHORITATIVE_DISPATCH = ("authoritative_dispatch", "authoritative closed-family dispatch", "which declared rule family owns dispatch")
     AUTHORITATIVE_MAPPING = ("authoritative_mapping", "authoritative mapping ownership", "which mapping is the single writable source")
     BIDIRECTIONAL_NORMALIZATION = ("bidirectional_normalization", "bidirectional normalization", "which companion type is the forward or reverse authority")
@@ -37,8 +54,11 @@ class CapabilityTag(LabeledStrEnum):
     TYPE_LINEAGE = ("type_lineage", "generated-type lineage", "which generated type descends from which base identity")
     UNIT_RATE_COHERENCE = ("unit_rate_coherence", "unit-rate coherence", "which fact owner should be authoritative")
     VIRTUAL_MEMBERSHIP = ("virtual_membership", "explicit virtual membership", "which classes explicitly claim a runtime role")
+
+
 class ObservationTag(LabeledStrEnum):
     """Observation families used to explain evidence and partial views."""
+
     ACCESSOR_WRAPPER = ("accessor_wrapper", "accessor wrapper methods")
     ATTRIBUTE_PROBE = ("attribute_probe", "attribute probes")
     BRANCH_DISPATCH = ("branch_dispatch", "branch-level value checks")
@@ -81,8 +101,11 @@ class ObservationTag(LabeledStrEnum):
     SENTINEL_TYPE = ("sentinel_type", "sentinel-type markers")
     STRING_DISPATCH = ("string_dispatch", "string dispatch")
     TYPE_NAMESPACE = ("type_namespace", "class namespace mutation")
+
+
 CERTIFIED = CertificationLevel.CERTIFIED
 STRONG_HEURISTIC = CertificationLevel.STRONG_HEURISTIC
 SPECULATIVE = CertificationLevel.SPECULATIVE
+
 HIGH_CONFIDENCE = ConfidenceLevel.HIGH
 MEDIUM_CONFIDENCE = ConfidenceLevel.MEDIUM

@@ -3,12 +3,18 @@
 This module holds the later detector classes plus the public detector factory
 surface.
 """
+
 from __future__ import annotations
+
 from ._base import *
 from ._helpers import *
+
 class ManualFamilyRosterDetector(IssueDetector):
     finding_spec = high_confidence_spec(PatternId.AUTO_REGISTER_META, 'Manual subclass roster should become metaclass-registry auto-registration', 'One helper manually enumerates a class family instead of deriving membership from class existence. The docs treat that as class-level registration logic that should live in one authoritative `metaclass-registry` hook.', 'zero-delay metaclass-registry class-family discovery with declarative ordering', 'family membership is maintained by a manual roster function or constant', _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS)
-    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
         del config
         index = NominalAuthorityIndex(modules)
         findings: list[RefactorFinding] = []
@@ -37,8 +43,11 @@ class ManualFamilyRosterDetector(IssueDetector):
                     )
                 )
         return findings
+
+
 class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Parallel key-family tables should become one authoritative record', 'Several dicts keyed by the same nominal family collectively encode one semantic record. The docs treat that as fragmented authority that should collapse into one authoritative schema.', 'single authoritative enum-keyed planning record', 'one key family is split across parallel metadata tables', _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS)
+
     def _finding_for_candidate(self, authority_candidate: FragmentedFamilyAuthorityCandidate) -> RefactorFinding:
         evidence = tuple((SourceLocation(authority_candidate.file_path, line, name) for name, line in zip(authority_candidate.mapping_names, authority_candidate.line_numbers, strict=True)))
         return self.build_finding(
@@ -59,9 +68,14 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[Fragmen
                 field_names=authority_candidate.shared_keys,
             ),
         )
+
+
 declare_module_detector(DerivedQueryIndexCandidate, high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Repeated linear query helpers should derive keyed indexes from the immutable authority', 'Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.', 'one authoritative immutable family plus derived keyed indexes', 'same immutable authority is rescanned by multiple query helpers with different key selectors', _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS), CandidateFindingRenderer[DerivedQueryIndexCandidate](summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.", evidence=lambda query_candidate: query_candidate.evidence, scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in ITEMS if hasattr(item, "secondary_key")}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]', codemod_patch=lambda query_candidate: f'# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Derive keyed indexes once and route the query helpers through those indexes instead of rescanning the family.', metrics=lambda query_candidate: MappingMetrics(mapping_site_count=len(query_candidate.function_names), field_count=max(len(query_candidate.query_key_names), 1), mapping_name=query_candidate.function_names[0], field_names=query_candidate.query_key_names, source_name=query_candidate.source_expression, identity_field_names=query_candidate.query_key_names)), detector_name='DerivedQueryIndexSurfaceDetector', candidate_collector=_derived_query_index_candidates)
+
+
 class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapterShellCandidate]):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Secondary runtime adapter shell should collapse into the authoritative spec', 'A function is rebuilding a local runtime/spec record by copying fields from one authoritative source record and resolving strategy ids through lookup tables. The docs treat that as secondary writable authority rather than a true abstraction boundary.', 'single authoritative spec/runtime record with local resolver hooks instead of a rehydrated adapter shell', 'one function copies source-record fields into a second record and resolves runtime hooks through keyed tables', _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS)
+
     def _finding_for_candidate(self, adapter_candidate: RuntimeAdapterShellCandidate) -> RefactorFinding:
         copied_fields = ", ".join(adapter_candidate.copied_field_names[:4])
         resolved_fields = ", ".join(adapter_candidate.resolver_field_names[:4])
@@ -96,10 +110,17 @@ class RuntimeAdapterShellDetector(ModuleCollectorCandidateDetector[RuntimeAdapte
                 identity_field_names=adapter_candidate.copied_field_names,
             ),
         )
+
+
 declare_module_detector(KeywordBagAdapterCandidate, high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Record-to-kwargs adapter shell should collapse onto the record authority', 'A helper is projecting one record into a kwargs bag field-by-field before a downstream builder call. The docs treat that as a transport shell unless the kwargs bag is itself the real authority.', 'single authoritative record projection or owner method instead of a standalone kwargs adapter shell', 'one helper copies several fields from a source record into a transient kwargs dictionary', _AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS), CandidateFindingRenderer[KeywordBagAdapterCandidate](summary=lambda adapter_candidate: f'`{adapter_candidate.function_name}` projects kwargs {adapter_candidate.key_names} from `{adapter_candidate.source_name}` fields {adapter_candidate.source_field_names}.', evidence=lambda adapter_candidate: (adapter_candidate.evidence,), scaffold=lambda adapter_candidate: '@dataclass(frozen=True)\nclass OptionSpec:\n    help: str\n    action: str | None = None\n\n    def as_kwargs(self) -> dict[str, object]:\n        kwargs: dict[str, object] = {"help": self.help}\n        if self.action is not None:\n            kwargs["action"] = self.action\n        return kwargs', codemod_patch=lambda adapter_candidate: f'# Stop routing `{adapter_candidate.source_name}` through standalone helper `{adapter_candidate.function_name}`.\n# Put the kwargs projection on the source record itself or make the downstream builder consume the record directly.', metrics=lambda adapter_candidate: MappingMetrics.from_field_names(mapping_site_count=1, mapping_name=adapter_candidate.function_name, field_names=adapter_candidate.key_names, source_name=adapter_candidate.source_name, identity_field_names=adapter_candidate.source_field_names)), detector_name='KeywordBagAdapterShellDetector', candidate_collector=_keyword_bag_adapter_candidates)
+
+
 class ExistingNominalAuthorityReuseDetector(IssueDetector):
     finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Existing nominal authority should be reused', 'A compatible nominal authority already exists, but another class repeats the same semantic field family outside that hierarchy. The docs prefer reusing the existing authority before synthesizing a new one.', 'reuse of an existing authoritative base or mixin instead of duplicating the family', 'a concrete class repeats a semantic family already declared by an existing nominal authority', _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS)
-    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
         for candidate in _existing_nominal_authority_reuse_candidates(modules):
@@ -134,9 +155,14 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
                 )
             )
         return findings
+
+
 class PassThroughNominalWrapperDetector(IssueDetector):
     finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Pass-through wrapper should reuse the existing nominal authority directly', 'A wrapper re-exposes an existing nominal contract through pure forwarding without adding any new invariant, provenance boundary, or semantic residue. The docs treat that as zero-information duplication: consumers should use the existing authority directly.', 'direct reuse of the existing nominal authority instead of a zero-information forwarding wrapper', 'a concrete class forwards an existing nominal contract member-for-member without adding new semantics', _NOMINAL_IDENTITY_PROVENANCE_FAIL_LOUD_CONTRACTS_CAPABILITY_TAGS)
-    def _collect_findings(self, modules: list[ParsedModule], config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
         for candidate in _pass_through_nominal_wrapper_candidates(modules):
@@ -161,9 +187,14 @@ class PassThroughNominalWrapperDetector(IssueDetector):
                 )
             )
         return findings
+
+
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Repeated finding-assembly pipeline should move into a detector base', 'Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. The docs prefer one template-method substrate plus mixins for residue.', 'candidate-driven detector template with abstract hooks and mixins', 'same finding assembly stages repeat across sibling detector classes', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS)
-    def _findings_for_module(self, module: ParsedModule, config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
         del config
         candidates = _finding_assembly_pipeline_candidates(module)
         if len(candidates) < 3: return []
@@ -192,10 +223,17 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
                 ),
             )
         ]
+
+
 def _keyword_mapping_metrics(mapping_site_count: int, field_names: tuple[str, ...], mapping_name: str) -> MappingMetrics: return MappingMetrics.from_field_names(mapping_site_count=mapping_site_count, mapping_name=mapping_name, field_names=field_names)
+
+
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Projection-style record rebuild should collapse into one authoritative builder', 'Several call sites rebuild the same nominal record by projecting overlapping source authorities field-by-field, often with guard/default residue mixed into the call. The docs treat that as fragmented builder authority: the projection belongs in one authoritative constructor, classmethod, or helper.', 'one authoritative projection builder for a repeated record family', 'same nominal record is re-projected from overlapping sources at several call sites', _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS, _KEYWORD_BUILDER_CALL_NORMALIZED_AST_OBSERVATION_TAGS)
-    def _findings_for_module(self, module: ParsedModule, config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         for builders in _projection_builder_groups(module, config):
             callee_name = builders[0].callee_name
@@ -221,9 +259,14 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                 )
             )
         return findings
+
+
 class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(PatternId.ABC_TEMPLATE_METHOD, 'Repeated guarded spec wrappers should collapse into mixins', 'Several observation-spec methods differ only by a scope guard and one delegate helper call. The docs prefer one shared wrapper substrate with orthogonal scope mixins.', 'shared wrapper substrate with orthogonal scope mixins', 'guard-and-delegate wrapper logic repeats across sibling observation specs', _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS)
-    def _findings_for_module(self, module: ParsedModule, config: DetectorConfig) -> list[RefactorFinding]:
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
         del config
         candidates = _guarded_delegator_candidates(module)
         if len(candidates) < 2: return []
@@ -252,15 +295,21 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
                 ),
             )
         ]
+
+
 class StructuralObservationProjectionDetector(CandidateFindingDetector):
     finding_spec = high_confidence_spec(PatternId.AUTHORITATIVE_SCHEMA, 'Repeated property projection builders should share one projection substrate', 'Several classes repeat the same property-backed constructor projection schema with only role hooks varying. The docs prefer one authoritative projection template.', 'single authoritative projection builder with role hooks', 'same property-backed constructor schema is manually rebuilt across many classes', _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS)
-    def _candidate_items(self, module: ParsedModule, config: DetectorConfig) -> Sequence[object]:
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
         del config
         grouped: dict[
             (tuple[str, str, tuple[str, ...]], list[StructuralObservationPropertyCandidate])
         ] = defaultdict(list)
         for candidate in _structural_observation_property_candidates(module): grouped[candidate.property_name, candidate.constructor_name, candidate.keyword_names].append(candidate)
         return tuple(((group_key, tuple(candidates)) for group_key, candidates in grouped.items() if len(candidates) >= 3))
+
     def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
         group_key, grouped_candidates = cast(tuple[tuple[str, str, tuple[str, ...]], tuple[StructuralObservationPropertyCandidate, ...]], candidate)
         property_name, constructor_name, keyword_names = group_key
@@ -281,7 +330,10 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
                 len(grouped_candidates), keyword_names, constructor_name
             ),
         )
+
+
 def default_detectors() -> tuple[IssueDetector, ...]:
     """Instantiate all registered detectors in deterministic priority order."""
     return tuple((detector_type() for detector_type in IssueDetector.registered_detector_types()))
+
 __all__ = tuple(name for name in globals() if not name.startswith("_"))
