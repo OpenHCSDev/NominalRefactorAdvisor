@@ -3164,6 +3164,32 @@ class LocalRecord:
     assert "AliasProperty" in (findings[0].scaffold or "")
 
 
+def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class LocalProduct:
+    name: str
+    line: int
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "field_only_frozen_dataclass"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalProduct" in findings[0].summary
+    assert "product_record" in (findings[0].codemod_patch or "")
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -8,6 +8,8 @@ reliably from the local AST.
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 import ast
 from collections import defaultdict
 from dataclasses import dataclass
@@ -17,17 +19,7 @@ from .ast_tools import ParsedModule
 from .collection_algebra import sorted_tuple
 
 
-@dataclass(frozen=True)
-class IndexedClass:
-    symbol: str
-    module_name: str
-    qualname: str
-    simple_name: str
-    file_path: str
-    line: int
-    node: ast.ClassDef
-    declared_base_names: tuple[str, ...]
-    resolved_base_symbols: tuple[str, ...]
+IndexedClass = product_record('IndexedClass', 'symbol: str; module_name: str; qualname: str; simple_name: str; file_path: str; line: int; node: ast.ClassDef; declared_base_names: tuple[str, ...]; resolved_base_symbols: tuple[str, ...]')
 
 
 @dataclass(frozen=True)

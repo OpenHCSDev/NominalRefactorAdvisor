@@ -6,6 +6,8 @@ across the split implementation modules.
 
 from __future__ import annotations
 
+from ..record_algebra import product_record
+
 from ._base import *
 from ._substrate_support import *
 
@@ -2659,10 +2661,7 @@ def _is_selected_match_subscript(node: ast.AST, match_var_name: str) -> bool:
     )
 
 
-@dataclass(frozen=True)
-class _SelectionGuardContext:
-    node: ast.AST
-    match_var_name: str
+_SelectionGuardContext = product_record('_SelectionGuardContext', 'node: ast.AST; match_var_name: str')
 
 
 class _SelectionGuardKindStep(RegisteredEffectStep):
@@ -5216,21 +5215,10 @@ def _nominal_policy_surface_family_candidates(
         key=lambda item: (item.file_path, item.owner_class_name, item.policy_root_symbol, item.methods[0].line),
     )
 
-@dataclass(frozen=True)
-class _FunctionWrapperContext:
-    module: ParsedModule
-    qualname: str
-    function: ast.FunctionDef | ast.AsyncFunctionDef
-    body: list[ast.stmt]
-    class_name: str | None
-    allowed_roots: set[str]
+_FunctionWrapperContext = product_record('_FunctionWrapperContext', 'module: ParsedModule; qualname: str; function: ast.FunctionDef | ast.AsyncFunctionDef; body: list[ast.stmt]; class_name: str | None; allowed_roots: set[str]')
 
 
-@dataclass(frozen=True)
-class _ProjectionWrapperCall:
-    bound_name: str
-    delegate_call: ast.Call
-    returned_value: ast.AST
+_ProjectionWrapperCall = product_record('_ProjectionWrapperCall', 'bound_name: str; delegate_call: ast.Call; returned_value: ast.AST')
 
 
 class _FunctionWrapperStep(RegisteredEffectStep):
@@ -5431,11 +5419,7 @@ def _pipeline_body_stages(
         return None
     return tuple(stages)
 
-@dataclass(frozen=True)
-class _PipelineStageSource:
-    kind: str
-    call: ast.Call
-    output_arity: int
+_PipelineStageSource = product_record('_PipelineStageSource', 'kind: str; call: ast.Call; output_arity: int')
 
 
 def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
@@ -6743,10 +6727,7 @@ def _single_self_parameter_name(node: ast.FunctionDef) -> str | None:
     return None if parameter is None else parameter.arg
 
 
-@dataclass(frozen=True)
-class _PropertyMethodReturn:
-    method_name: str
-    returned: ast.AST
+_PropertyMethodReturn = product_record('_PropertyMethodReturn', 'method_name: str; returned: ast.AST')
 
 
 class _SimplePropertyAliasPairStep(RegisteredEffectStep):
@@ -6834,28 +6815,52 @@ def _simple_property_alias_class_shape(
     return tuple(alias_pairs), tuple(declared_field_names)
 
 
-def _simple_property_alias_class_candidates(
+ClassShapeT = TypeVar("ClassShapeT")
+BuiltCandidateT = TypeVar("BuiltCandidateT")
+ClassShapeProjector = Callable[[ast.ClassDef], ClassShapeT | None]
+ClassShapeCandidateFactory = Callable[[ParsedModule, ast.ClassDef, ClassShapeT], BuiltCandidateT]
+
+
+def _class_shape_candidates(
     module: ParsedModule,
-) -> tuple[SimplePropertyAliasClassCandidate, ...]:
-    candidates: list[SimplePropertyAliasClassCandidate] = []
+    shape_projector: ClassShapeProjector[ClassShapeT],
+    candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
+) -> tuple[BuiltCandidateT, ...]:
+    candidates: list[BuiltCandidateT] = []
     for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef):
             continue
-        shape = _simple_property_alias_class_shape(node)
+        shape = shape_projector(node)
         if shape is None:
             continue
-        alias_pairs, declared_field_names = shape
-        candidates.append(
-            SimplePropertyAliasClassCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                class_name=node.name,
-                alias_pairs=alias_pairs,
-                declared_field_names=declared_field_names,
-                line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-            )
-        )
+        candidates.append(candidate_factory(module, node, shape))
     return tuple(candidates)
+
+
+def _simple_property_alias_class_candidate(
+    module: ParsedModule,
+    node: ast.ClassDef,
+    shape: tuple[tuple[tuple[str, str], ...], tuple[str, ...]],
+) -> SimplePropertyAliasClassCandidate:
+    alias_pairs, declared_field_names = shape
+    return SimplePropertyAliasClassCandidate(
+        file_path=str(module.path),
+        line=node.lineno,
+        class_name=node.name,
+        alias_pairs=alias_pairs,
+        declared_field_names=declared_field_names,
+        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+    )
+
+
+def _simple_property_alias_class_candidates(
+    module: ParsedModule,
+) -> tuple[SimplePropertyAliasClassCandidate, ...]:
+    return _class_shape_candidates(
+        module,
+        _simple_property_alias_class_shape,
+        _simple_property_alias_class_candidate,
+    )
 
 
 def _simple_property_alias_method_candidates(
@@ -6899,6 +6904,130 @@ def _simple_property_alias_method_candidates(
 
     Visitor().visit(module.module)
     return tuple(candidates)
+
+
+def _is_frozen_dataclass_decorator(node: ast.AST) -> bool:
+    call = as_ast(node, ast.Call)
+    if call is None or name_id(call.func) != "dataclass":
+        return False
+    return any(
+        keyword.arg == "frozen"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is True
+        for keyword in call.keywords
+    )
+
+
+class _FieldOnlyFrozenDataclassShapeStep(RegisteredEffectStep):
+    pass
+
+
+class _FrozenDataclassClassStep(
+    _FieldOnlyFrozenDataclassShapeStep,
+    GuardedEffectStep[ast.ClassDef, ast.ClassDef],
+):
+    step_id = "frozen_dataclass_class"
+    registration_order = 10
+
+    def accepts(self, value: ast.ClassDef) -> bool:
+        return any(
+            _is_frozen_dataclass_decorator(decorator)
+            for decorator in value.decorator_list
+        ) and not (value.body and _is_docstring_expr(value.body[0]))
+
+    def project(self, value: ast.ClassDef) -> ast.ClassDef | None:
+        return value
+
+
+def _value_free_ann_assign_field_spec(
+    statement: ast.stmt,
+) -> tuple[str, str] | None:
+    assignment = as_ast(statement, ast.AnnAssign)
+    if assignment is None or assignment.value is not None:
+        return None
+    target = as_ast(assignment.target, ast.Name)
+    if target is None:
+        return None
+    return target.id, ast.unparse(assignment.annotation)
+
+
+class _ValueFreeAnnotatedFieldsStep(
+    _FieldOnlyFrozenDataclassShapeStep,
+    GuardedEffectStep[ast.ClassDef, tuple[ast.ClassDef, tuple[tuple[str, str], ...]]],
+):
+    step_id = "value_free_annotated_fields"
+    registration_order = 20
+
+    def project(
+        self,
+        value: ast.ClassDef,
+    ) -> tuple[ast.ClassDef, tuple[tuple[str, str], ...]] | None:
+        field_specs: list[tuple[str, str]] = []
+        for statement in _trim_docstring_body(value.body):
+            if isinstance(statement, ast.Pass):
+                continue
+            field_spec = _value_free_ann_assign_field_spec(statement)
+            if field_spec is None:
+                return None
+            field_specs.append(field_spec)
+        if not field_specs:
+            return None
+        return value, tuple(field_specs)
+
+
+class _ProductRecordShapeStep(
+    _FieldOnlyFrozenDataclassShapeStep,
+    GuardedEffectStep[
+        tuple[ast.ClassDef, tuple[tuple[str, str], ...]],
+        tuple[tuple[str, ...], tuple[tuple[str, str], ...]],
+    ],
+):
+    step_id = "product_record_shape"
+    registration_order = 30
+
+    def project(
+        self,
+        value: tuple[ast.ClassDef, tuple[tuple[str, str], ...]],
+    ) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
+        node, field_specs = value
+        return tuple(ast.unparse(base) for base in node.bases), field_specs
+
+
+def _field_only_frozen_dataclass_shape(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
+    return cast(
+        tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None,
+        Maybe.of(node)
+        .bind_all(registered_effect_steps(_FieldOnlyFrozenDataclassShapeStep))
+        .unwrap_or_none(),
+    )
+
+
+def _field_only_frozen_dataclass_candidate(
+    module: ParsedModule,
+    node: ast.ClassDef,
+    shape: tuple[tuple[str, ...], tuple[tuple[str, str], ...]],
+) -> FieldOnlyFrozenDataclassCandidate:
+    base_names, field_specs = shape
+    return FieldOnlyFrozenDataclassCandidate(
+        file_path=str(module.path),
+        line=node.lineno,
+        class_name=node.name,
+        base_names=base_names,
+        field_specs=field_specs,
+        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+    )
+
+
+def _field_only_frozen_dataclass_candidates(
+    module: ParsedModule,
+) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
+    return _class_shape_candidates(
+        module,
+        _field_only_frozen_dataclass_shape,
+        _field_only_frozen_dataclass_candidate,
+    )
 
 
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})

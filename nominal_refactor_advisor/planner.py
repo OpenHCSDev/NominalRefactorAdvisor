@@ -6,6 +6,8 @@ pattern-aware plans suitable for long-running maintenance work.
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -41,11 +43,7 @@ from .taxonomy import (
 )
 
 
-@dataclass(frozen=True)
-class _FindingCluster:
-    subsystem: str
-    findings: tuple[RefactorFinding, ...]
-    evidence: tuple[SourceLocation, ...]
+_FindingCluster = product_record('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]')
 
 
 class PatternPlanStepBuilder(ABC):
@@ -199,27 +197,7 @@ class ActionTemplate:
     statement_operation: str | None = None
 
 
-@dataclass(frozen=True)
-class ActionContext:
-    subsystem: str
-    evidence: tuple[SourceLocation, ...]
-    symbols: tuple[str, ...]
-    base_name: str
-    template_method_name: str
-    statement_sequence: str
-    registry_name: str
-    registry_hook_examples: str
-    class_list: str
-    mapping_symbol: str
-    mapping_call: str
-    mapping_problem: str
-    field_list: str
-    identity_field_list: str
-    field_execution_level: str
-    dispatch_symbol: str
-    dispatch_axis: str
-    dispatch_cases: str
-    statement_count: int
+ActionContext = product_record('ActionContext', 'subsystem: str; evidence: tuple[SourceLocation, ...]; symbols: tuple[str, ...]; base_name: str; template_method_name: str; statement_sequence: str; registry_name: str; registry_hook_examples: str; class_list: str; mapping_symbol: str; mapping_call: str; mapping_problem: str; field_list: str; identity_field_list: str; field_execution_level: str; dispatch_symbol: str; dispatch_axis: str; dispatch_cases: str; statement_count: int')
 
 
 _ABC_FIELD_ACTION_TEMPLATES = (

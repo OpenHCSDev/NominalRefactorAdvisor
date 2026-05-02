@@ -7,6 +7,8 @@ record vocabulary.
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, cast
@@ -460,10 +462,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         )
 
 
-@dataclass(frozen=True)
-class SentinelSimulationMetrics(FindingMetrics):
-    class_count: int
-    branch_site_count: int
+SentinelSimulationMetrics = product_record('SentinelSimulationMetrics', 'class_count: int; branch_site_count: int', bases=(FindingMetrics,))
 
 
 class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
@@ -502,9 +501,7 @@ class BranchCountMetrics(CountedDispatchMetrics):
     count_value = AliasProperty[int]("branch_site_count")
 
 
-@dataclass(frozen=True)
-class ResolutionAxisMetrics(FindingMetrics):
-    resolution_axis_count: int
+ResolutionAxisMetrics = product_record('ResolutionAxisMetrics', 'resolution_axis_count: int', bases=(FindingMetrics,))
 
 
 @dataclass(frozen=True)

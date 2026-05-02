@@ -6,6 +6,8 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 
 from __future__ import annotations
 
+from ..record_algebra import product_record
+
 import ast
 from abc import abstractmethod
 from collections.abc import Callable
@@ -1128,19 +1130,10 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         ]
 
 
-@dataclass(frozen=True)
-class ConstructorVariantFamilyCandidate(ClassMethodFamilyCandidate):
-    callee_name: str
-    coordinate_count: int
-    varying_coordinate_names: tuple[str, ...]
+ConstructorVariantFamilyCandidate = product_record('ConstructorVariantFamilyCandidate', 'callee_name: str; coordinate_count: int; varying_coordinate_names: tuple[str, ...]', bases=(ClassMethodFamilyCandidate,))
 
 
-@dataclass(frozen=True)
-class AccumulatorFoldFamilyCandidate(ClassMethodFamilyCandidate):
-    accumulator_type_name: str
-    result_method_name: str
-    source_parameter_names: tuple[str, ...]
-    step_method_names: tuple[str, ...]
+AccumulatorFoldFamilyCandidate = product_record('AccumulatorFoldFamilyCandidate', 'accumulator_type_name: str; result_method_name: str; source_parameter_names: tuple[str, ...]; step_method_names: tuple[str, ...]', bases=(ClassMethodFamilyCandidate,))
 
 
 @dataclass(frozen=True)
@@ -1159,16 +1152,10 @@ class ExcessiveBlankLineRunCandidate:
         )
 
 
-@dataclass(frozen=True)
-class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
-    catalog_attribute_names: tuple[str, ...]
+CatalogInstallingMixinFamilyCandidate = product_record('CatalogInstallingMixinFamilyCandidate', 'catalog_attribute_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
 
 
-@dataclass(frozen=True)
-class RegexGroupExtractorFamilyCandidate(ClassMethodFamilyCandidate):
-    pattern_attribute_names: tuple[str, ...]
-    matcher_names: tuple[str, ...]
-    group_index: int
+RegexGroupExtractorFamilyCandidate = product_record('RegexGroupExtractorFamilyCandidate', 'pattern_attribute_names: tuple[str, ...]; matcher_names: tuple[str, ...]; group_index: int', bases=(ClassMethodFamilyCandidate,))
 
 
 @dataclass(frozen=True)
@@ -1176,9 +1163,7 @@ class SparseConstructorVariantFamilyCandidate(KeywordMethodFamilyCandidate):
     pass
 
 
-@dataclass(frozen=True)
-class SupportPreludeModuleFamilyCandidate(MultiFileClassLineNumbersGroup):
-    support_module_name: str
+SupportPreludeModuleFamilyCandidate = product_record('SupportPreludeModuleFamilyCandidate', 'support_module_name: str', bases=(MultiFileClassLineNumbersGroup,))
 
 
 @dataclass(frozen=True)
@@ -1566,10 +1551,7 @@ def _catalog_installing_mixin_candidate(
     )
 
 
-@dataclass(frozen=True)
-class _CatalogInstallingMixinShape:
-    first_call: ast.Call
-    second_call: ast.Call
+_CatalogInstallingMixinShape = product_record('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call')
 
 
 class _CatalogInstallingMixinStep(RegisteredEffectStep):
@@ -1689,50 +1671,28 @@ def _catalog_installing_mixin_family_candidates(
     )
 
 
-@dataclass(frozen=True)
-class _RegexGroupExtractorMethod:
-    method_name: str
-    line: int
-    pattern_attribute_name: str
-    matcher_name: str
-    group_index: int
+_RegexGroupExtractorMethod = product_record('_RegexGroupExtractorMethod', 'method_name: str; line: int; pattern_attribute_name: str; matcher_name: str; group_index: int')
 
 
 _REGEX_MATCHER_NAMES = frozenset({"search", "match", "fullmatch"})
 
 
-@dataclass(frozen=True)
-class _RegexExtractorBody:
-    method: ast.FunctionDef
-    assign: ast.Assign
-    returned: ast.Return
+_RegexExtractorBody = product_record('_RegexExtractorBody', 'method: ast.FunctionDef; assign: ast.Assign; returned: ast.Return')
 
 
-@dataclass(frozen=True)
-class _RegexExtractorMethodContext:
-    method: ast.FunctionDef
-    match_name: str
+_RegexExtractorMethodContext = product_record('_RegexExtractorMethodContext', 'method: ast.FunctionDef; match_name: str')
 
 
-@dataclass(frozen=True)
-class _RegexExtractorReturnedContext(_RegexExtractorMethodContext):
-    returned: ast.Return
+_RegexExtractorReturnedContext = product_record('_RegexExtractorReturnedContext', 'returned: ast.Return', bases=(_RegexExtractorMethodContext,))
 
 
-@dataclass(frozen=True)
-class _RegexExtractorAssignment(_RegexExtractorReturnedContext):
-    call: ast.Call
+_RegexExtractorAssignment = product_record('_RegexExtractorAssignment', 'call: ast.Call', bases=(_RegexExtractorReturnedContext,))
 
 
-@dataclass(frozen=True)
-class _RegexExtractorMatcherCall(_RegexExtractorReturnedContext):
-    pattern_attribute_name: str
-    matcher_name: str
+_RegexExtractorMatcherCall = product_record('_RegexExtractorMatcherCall', 'pattern_attribute_name: str; matcher_name: str', bases=(_RegexExtractorReturnedContext,))
 
 
-@dataclass(frozen=True)
-class _RegexExtractorConditionalReturn(_RegexExtractorMatcherCall):
-    group_call: ast.Call
+_RegexExtractorConditionalReturn = product_record('_RegexExtractorConditionalReturn', 'group_call: ast.Call', bases=(_RegexExtractorMatcherCall,))
 
 
 class _RegexGroupExtractorStep(RegisteredEffectStep):

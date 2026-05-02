@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -100,11 +102,7 @@ class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class SingleCompareMatch:
-    left: ast.AST
-    operator: ast.cmpop
-    right: ast.AST
+SingleCompareMatch = product_record('SingleCompareMatch', 'left: ast.AST; operator: ast.cmpop; right: ast.AST')
 
 
 class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
@@ -124,12 +122,7 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class AttributeCallMatch(Generic[OwnerT]):
-    call: ast.Call
-    attribute: ast.Attribute
-    owner: OwnerT
-    single_argument: ast.AST | None
+AttributeCallMatch = product_record('AttributeCallMatch', 'call: ast.Call; attribute: ast.Attribute; owner: OwnerT; single_argument: ast.AST | None', bases=(Generic[OwnerT],))
 
 
 @dataclass(frozen=True)
@@ -138,36 +131,19 @@ class CallArgumentMatch:
     arguments: tuple[ast.AST, ...] = ()
 
 
-@dataclass(frozen=True)
-class NamedCallAssignment:
-    target_name: str
-    call: ast.Call
+NamedCallAssignment = product_record('NamedCallAssignment', 'target_name: str; call: ast.Call')
 
 
-@dataclass(frozen=True)
-class NamedValueBinding:
-    name: str
-    value: ast.AST | None
-    line: int
+NamedValueBinding = product_record('NamedValueBinding', 'name: str; value: ast.AST | None; line: int')
 
 
-@dataclass(frozen=True)
-class CollectionLiteral:
-    node: ast.Tuple | ast.List | ast.Set
-    elements: tuple[ast.AST, ...]
+CollectionLiteral = product_record('CollectionLiteral', 'node: ast.Tuple | ast.List | ast.Set; elements: tuple[ast.AST, ...]')
 
 
-@dataclass(frozen=True)
-class _AttributeCallParts:
-    call: ast.Call
-    attribute: ast.Attribute
+_AttributeCallParts = product_record('_AttributeCallParts', 'call: ast.Call; attribute: ast.Attribute')
 
 
-@dataclass(frozen=True)
-class _AttributeCallOwnedParts(Generic[OwnerT]):
-    call: ast.Call
-    attribute: ast.Attribute
-    owner: OwnerT
+_AttributeCallOwnedParts = product_record('_AttributeCallOwnedParts', 'call: ast.Call; attribute: ast.Attribute; owner: OwnerT', bases=(Generic[OwnerT],))
 
 
 @dataclass(frozen=True)

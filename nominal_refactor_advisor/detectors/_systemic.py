@@ -6,6 +6,8 @@ axis authority, registration, and other repo-wide architectural smells.
 
 from __future__ import annotations
 
+from ..record_algebra import product_record
+
 from ._base import *
 from ._helpers import *
 
@@ -508,9 +510,7 @@ class ClassRoleQuotientDetector(ModuleCollectorCandidateDetector[ClassRoleQuotie
         )
 
 
-@dataclass(frozen=True)
-class PassThroughCompositionFacadeCandidate(ClassLineWitnessCandidate):
-    base_names: tuple[str, ...]
+PassThroughCompositionFacadeCandidate = product_record('PassThroughCompositionFacadeCandidate', 'base_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
 def _is_pass_through_class_body(body: Sequence[ast.stmt]) -> bool:
@@ -2855,6 +2855,45 @@ class SimplePropertyAliasMethodDetector(
             mapping_site_count=1,
             mapping_name=f"{candidate.class_name}.{candidate.method_name}",
             field_names=(candidate.source_name,),
+        ),
+    )
+
+
+class FieldOnlyFrozenDataclassDetector(
+    ModuleCollectorCandidateDetector[FieldOnlyFrozenDataclassCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Field-only frozen dataclass should use product-record algebra",
+        "A frozen dataclass whose body contains only field annotations is a nominal product. "
+            "Spelling the decorator, class shell, and one field declaration per line repeats record "
+            "mechanics that can be derived from a compact product schema.",
+        "frozen nominal product class derived from one product-record schema",
+        "field-only frozen dataclass repeats product-record declaration mechanics",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[FieldOnlyFrozenDataclassCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.class_name}` is a {len(candidate.field_specs)}-field frozen product "
+            f"record spanning {candidate.line_count} line(s)."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: (
+            "from nominal_refactor_advisor.record_algebra import product_record\n\n"
+            f"{candidate.class_name} = product_record(\n"
+            f"    \"{candidate.class_name}\",\n"
+            "    \"field_name: FieldType; other_field: OtherType\",\n"
+            ")"
+        ),
+        codemod_patch=lambda candidate: (
+            "# Replace the field-only `@dataclass(frozen=True)` class shell with "
+            "`product_record(...)`, preserving bases and field annotations."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=1,
+            mapping_name=candidate.class_name,
+            field_names=tuple(name for name, _ in candidate.field_specs),
         ),
     )
 

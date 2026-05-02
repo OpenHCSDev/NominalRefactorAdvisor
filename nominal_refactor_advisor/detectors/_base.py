@@ -8,6 +8,8 @@ detector implementations.
 
 from __future__ import annotations
 
+from ..record_algebra import product_record
+
 import ast
 import inspect
 from pathlib import Path
@@ -2051,44 +2053,25 @@ def _repeated_enum_strategy_dispatch_candidates(
     )
 
 
-@dataclass(frozen=True)
-class _LineCaseSpec(ABC):
-    line: int
-    case_names: tuple[str, ...]
+_LineCaseSpec = product_record('_LineCaseSpec', 'line: int; case_names: tuple[str, ...]', bases=(ABC,))
 
 
-@dataclass(frozen=True)
-class _SelectorCaseSpec(_LineCaseSpec):
-    selector_method_name: str
+_SelectorCaseSpec = product_record('_SelectorCaseSpec', 'selector_method_name: str', bases=(_LineCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _StrategySelectorSpec(_SelectorCaseSpec):
-    root_name: str
-    mapping_name: str
+_StrategySelectorSpec = product_record('_StrategySelectorSpec', 'root_name: str; mapping_name: str', bases=(_SelectorCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _GenericDispatchSpec(_LineCaseSpec):
-    function_name: str
+_GenericDispatchSpec = product_record('_GenericDispatchSpec', 'function_name: str', bases=(_LineCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _AxisExpressionSite(ABC):
-    axis_expression: str
-    line: int
+_AxisExpressionSite = product_record('_AxisExpressionSite', 'axis_expression: str; line: int', bases=(ABC,))
 
 
-@dataclass(frozen=True)
-class _SelectorAssignment(_AxisExpressionSite):
-    variable_name: str
-    selector_spec: _StrategySelectorSpec
+_SelectorAssignment = product_record('_SelectorAssignment', 'variable_name: str; selector_spec: _StrategySelectorSpec', bases=(_AxisExpressionSite,))
 
 
-@dataclass(frozen=True)
-class _NestedGenericUsage(_AxisExpressionSite):
-    callback_name: str
-    generic_spec: _GenericDispatchSpec
+_NestedGenericUsage = product_record('_NestedGenericUsage', 'callback_name: str; generic_spec: _GenericDispatchSpec', bases=(_AxisExpressionSite,))
 
 
 @dataclass(frozen=True)
@@ -2109,30 +2092,16 @@ class _GuardedReturnCase:
         )
 
 
-@dataclass(frozen=True)
-class _SelectedConstantReturnShape:
-    constant_name: str
-    wrapper_name: str | None
-    template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]
+_SelectedConstantReturnShape = product_record('_SelectedConstantReturnShape', 'constant_name: str; wrapper_name: str | None; template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]')
 
 
-@dataclass(frozen=True)
-class _ModuleConstantBinding:
-    line: int
-    constructor_name: str | None
+_ModuleConstantBinding = product_record('_ModuleConstantBinding', 'line: int; constructor_name: str | None')
 
 
-@dataclass(frozen=True)
-class _SelectionHelperShape:
-    function_name: str
-    selected_field_name: str
-    line: int
+_SelectionHelperShape = product_record('_SelectionHelperShape', 'function_name: str; selected_field_name: str; line: int')
 
 
-@dataclass(frozen=True)
-class _SelectionLookupShape:
-    function_name: str
-    line: int
+_SelectionLookupShape = product_record('_SelectionLookupShape', 'function_name: str; line: int')
 
 
 def _module_level_dict_literals(
@@ -3012,34 +2981,13 @@ def _axis_keyword_names(
     return sorted_tuple(names)
 
 
-@dataclass(frozen=True)
-class _SpecAxisEntry:
-    constructor_name: str
-    axis_pairs: tuple[
-        tuple[tuple[str, str], tuple[str, str]],
-        ...,
-    ]
-    extra_keyword_names: tuple[str, ...]
+_SpecAxisEntry = product_record('_SpecAxisEntry', 'constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class _SpecAxisBinding:
-    family_name: str
-    line: int
-    value: ast.AST
+_SpecAxisBinding = product_record('_SpecAxisBinding', 'family_name: str; line: int; value: ast.AST')
 
 
-@dataclass(frozen=True)
-class _SpecAxisSource:
-    family_name: str
-    line: int
-    constructor_name: str
-    axis_pairs: tuple[
-        tuple[tuple[str, str], tuple[str, str]],
-        ...,
-    ]
-    extra_keyword_names: tuple[str, ...]
-    is_standalone: bool
+_SpecAxisSource = product_record('_SpecAxisSource', 'family_name: str; line: int; constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]; is_standalone: bool')
 
 
 def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]:
@@ -3957,42 +3905,22 @@ def _module_keyed_selection_helper_candidates(
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name))
 
 
-@dataclass(frozen=True)
-class _FileAxisCaseSpec(_LineCaseSpec):
-    file_path: str
-    key_type_name: str
+_FileAxisCaseSpec = product_record('_FileAxisCaseSpec', 'file_path: str; key_type_name: str', bases=(_LineCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _FamilyAxisSpec(_FileAxisCaseSpec):
-    family_name: str
+_FamilyAxisSpec = product_record('_FamilyAxisSpec', 'family_name: str', bases=(_FileAxisCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _KeyedFamilyAxisSpec(_FamilyAxisSpec):
-    family_label: str | None
-    registry_key_attr_name: str
+_KeyedFamilyAxisSpec = product_record('_KeyedFamilyAxisSpec', 'family_label: str | None; registry_key_attr_name: str', bases=(_FamilyAxisSpec,))
 
 
-@dataclass(frozen=True)
-class _ManualSelectorAxisSpec(_FamilyAxisSpec):
-    selector_method_name: str
+_ManualSelectorAxisSpec = product_record('_ManualSelectorAxisSpec', 'selector_method_name: str', bases=(_FamilyAxisSpec,))
 
 
-@dataclass(frozen=True)
-class _KeyedTableAxisSpec(_FileAxisCaseSpec):
-    table_name: str
-    value_shape_name: str | None
+_KeyedTableAxisSpec = product_record('_KeyedTableAxisSpec', 'table_name: str; value_shape_name: str | None', bases=(_FileAxisCaseSpec,))
 
 
-@dataclass(frozen=True)
-class _ClassAssignedEnumAxisSpec:
-    file_path: str
-    line: int
-    class_name: str
-    key_attr_name: str
-    key_type_name: str
-    case_name: str
+_ClassAssignedEnumAxisSpec = product_record('_ClassAssignedEnumAxisSpec', 'file_path: str; line: int; class_name: str; key_attr_name: str; key_type_name: str; case_name: str')
 
 
 def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
@@ -4660,24 +4588,13 @@ def _raise_exception_type_name(node: ast.Raise) -> str | None:
     return _call_name(node.exc)
 
 
-@dataclass(frozen=True)
-class RegistryLookupShape:
-    key_expr: str
-    error_type_name: str | None
-    style: str
+RegistryLookupShape = product_record('RegistryLookupShape', 'key_expr: str; error_type_name: str | None; style: str')
 
 
-@dataclass(frozen=True)
-class _TryRegistryLookupBody:
-    returned: ast.Return
-    handler: ast.ExceptHandler
+_TryRegistryLookupBody = product_record('_TryRegistryLookupBody', 'returned: ast.Return; handler: ast.ExceptHandler')
 
 
-@dataclass(frozen=True)
-class _GuardedRegistryLookupBody:
-    guard: ast.If
-    returned: ast.Return
-    key_expr: str
+_GuardedRegistryLookupBody = product_record('_GuardedRegistryLookupBody', 'guard: ast.If; returned: ast.Return; key_expr: str')
 
 
 class _RegistryLookupShapeStep(RegisteredEffectStep):
@@ -6793,10 +6710,7 @@ _WITNESS_MIXIN_ROLE_NAMES = (
 )
 
 
-@dataclass(frozen=True)
-class WitnessMixinRoleSpec:
-    mixin_name: str
-    scaffold: str
+WitnessMixinRoleSpec = product_record('WitnessMixinRoleSpec', 'mixin_name: str; scaffold: str')
 
 
 _WITNESS_MIXIN_ROLE_SPECS = {
@@ -7102,13 +7016,7 @@ class SemanticDataclassRecommendation:
     ) = _SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS.derived_methods()
 
 
-@dataclass(frozen=True)
-class SemanticDictBagCandidate:
-    line: int
-    symbol: str
-    key_names: tuple[str, ...]
-    context_kind: str
-    recommendation: SemanticDataclassRecommendation
+SemanticDictBagCandidate = product_record('SemanticDictBagCandidate', 'line: int; symbol: str; key_names: tuple[str, ...]; context_kind: str; recommendation: SemanticDataclassRecommendation')
 
 
 @dataclass(frozen=True)
@@ -7152,10 +7060,7 @@ class QualnameWitnessNameMixin(WitnessNameAliasMixin):
     witness_name = AliasProperty[str]("qualname")
 
 
-@dataclass(frozen=True)
-class EnumCaseFamilyMixin(ABC):
-    enum_name: str
-    case_names: tuple[str, ...]
+EnumCaseFamilyMixin = product_record('EnumCaseFamilyMixin', 'enum_name: str; case_names: tuple[str, ...]', bases=(ABC,))
 
 
 @dataclass(frozen=True)
@@ -7164,9 +7069,7 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-@dataclass(frozen=True)
-class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate):
-    class_name: str
+ClassLineWitnessCandidate = product_record('ClassLineWitnessCandidate', 'class_name: str', bases=(ClassNameWitnessNameMixin, LineWitnessCandidate))
 
 
 @dataclass(frozen=True)
@@ -7215,26 +7118,10 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
         )
 
 
-@dataclass(frozen=True)
-class NominalAuthorityShape:
-    file_path: str
-    class_name: str
-    line: int
-    declared_base_names: tuple[str, ...]
-    ancestor_names: tuple[str, ...]
-    field_names: tuple[str, ...]
-    field_type_map: tuple[tuple[str, str], ...]
-    method_names: tuple[str, ...]
-    is_abstract: bool
-    is_dataclass_family: bool
+NominalAuthorityShape = product_record('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool')
 
 
-@dataclass(frozen=True)
-class ManualFamilyRosterCandidate(LineWitnessCandidate):
-    owner_name: str
-    member_names: tuple[str, ...]
-    family_base_name: str
-    constructor_style: str
+ManualFamilyRosterCandidate = product_record('ManualFamilyRosterCandidate', 'owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str', bases=(LineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7256,12 +7143,7 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
         return tuple(location.symbol for location in self.consumer_locations)
 
 
-@dataclass(frozen=True)
-class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
-    selector_method_name: str
-    predicate_method_name: str
-    context_param_name: str
-    concrete_class_names: tuple[str, ...]
+PredicateSelectedConcreteFamilyCandidate = product_record('PredicateSelectedConcreteFamilyCandidate', 'selector_method_name: str; predicate_method_name: str; context_param_name: str; concrete_class_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7288,14 +7170,7 @@ class ParallelMirroredLeafFamilyCandidate:
         )
 
 
-@dataclass(frozen=True)
-class FragmentedFamilyAuthorityCandidate:
-    file_path: str
-    mapping_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    key_family_name: str
-    shared_keys: tuple[str, ...]
-    total_keys: tuple[str, ...]
+FragmentedFamilyAuthorityCandidate = product_record('FragmentedFamilyAuthorityCandidate', 'file_path: str; mapping_names: tuple[str, ...]; line_numbers: tuple[int, ...]; key_family_name: str; shared_keys: tuple[str, ...]; total_keys: tuple[str, ...]')
 
 
 @dataclass(frozen=True)
@@ -7335,21 +7210,10 @@ class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     forwarded_member_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-@dataclass(frozen=True)
-class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
-    method_name: str
-    candidate_source_name: str
-    metrics_type_name: str | None
-    scaffold_helper_name: str | None
-    patch_helper_name: str | None
+FindingAssemblyPipelineCandidate = product_record('FindingAssemblyPipelineCandidate', 'method_name: str; candidate_source_name: str; metrics_type_name: str | None; scaffold_helper_name: str | None; patch_helper_name: str | None', bases=(WitnessCarrierCandidate,))
 
 
-@dataclass(frozen=True)
-class GuardedDelegatorCandidate(WitnessCarrierCandidate):
-    method_name: str
-    guard_role: str
-    delegate_name: str
-    scope_role: str
+GuardedDelegatorCandidate = product_record('GuardedDelegatorCandidate', 'method_name: str; guard_role: str; delegate_name: str; scope_role: str', bases=(WitnessCarrierCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7433,116 +7297,52 @@ class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
         )
 
 
-@dataclass(frozen=True)
-class PropertyHookGroup(ClassLineNumbersGroup):
-    base_name: str
-    property_name: str
+PropertyHookGroup = product_record('PropertyHookGroup', 'base_name: str; property_name: str', bases=(ClassLineNumbersGroup,))
 
 
-@dataclass(frozen=True)
-class PropertyAliasHookGroup(PropertyHookGroup):
-    returned_attribute: str
+PropertyAliasHookGroup = product_record('PropertyAliasHookGroup', 'returned_attribute: str', bases=(PropertyHookGroup,))
 
 
-@dataclass(frozen=True)
-class ConstantPropertyHookGroup(PropertyHookGroup):
-    return_expressions: tuple[str, ...]
+ConstantPropertyHookGroup = product_record('ConstantPropertyHookGroup', 'return_expressions: tuple[str, ...]', bases=(PropertyHookGroup,))
 
 
-@dataclass(frozen=True)
-class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
-    base_names: tuple[str, ...]
-    method_name: str
-    helper_name: str
-    wrapper_kind: str
-    parameter_names: tuple[str, ...]
+HelperBackedObservationSpecCandidate = product_record('HelperBackedObservationSpecCandidate', 'base_names: tuple[str, ...]; method_name: str; helper_name: str; wrapper_kind: str; parameter_names: tuple[str, ...]', bases=(WitnessCarrierCandidate,))
 
 
-@dataclass(frozen=True)
-class HelperBackedObservationSpecGroup(ClassLineNumbersGroup):
-    base_names: tuple[str, ...]
-    method_names: tuple[str, ...]
-    helper_names: tuple[str, ...]
-    wrapper_kinds: tuple[str, ...]
+HelperBackedObservationSpecGroup = product_record('HelperBackedObservationSpecGroup', 'base_names: tuple[str, ...]; method_names: tuple[str, ...]; helper_names: tuple[str, ...]; wrapper_kinds: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
 
 
-@dataclass(frozen=True)
-class GuardedWrapperSpecPair:
-    file_path: str
-    spec_name: str
-    spec_line: int
-    function_name: str
-    function_line: int
-    constructor_name: str
-    node_types: tuple[str, ...]
+GuardedWrapperSpecPair = product_record('GuardedWrapperSpecPair', 'file_path: str; spec_name: str; spec_line: int; function_name: str; function_line: int; constructor_name: str; node_types: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class DeclarativeFamilyLeafCandidate(WitnessCarrierCandidate):
-    base_names: tuple[str, ...]
-    assigned_names: tuple[str, ...]
+DeclarativeFamilyLeafCandidate = product_record('DeclarativeFamilyLeafCandidate', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', bases=(WitnessCarrierCandidate,))
 
 
-@dataclass(frozen=True)
-class DeclarativeFamilyBoilerplateGroup(ClassLineNumbersGroup):
-    base_names: tuple[str, ...]
-    assigned_names: tuple[str, ...]
+DeclarativeFamilyBoilerplateGroup = product_record('DeclarativeFamilyBoilerplateGroup', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
 
 
-@dataclass(frozen=True)
-class TypeIndexedDefinitionBoilerplateGroup:
-    file_path: str
-    base_names: tuple[str, ...]
-    definition_class_names: tuple[str, ...]
-    alias_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    assigned_names: tuple[str, ...]
+TypeIndexedDefinitionBoilerplateGroup = product_record('TypeIndexedDefinitionBoilerplateGroup', 'file_path: str; base_names: tuple[str, ...]; definition_class_names: tuple[str, ...]; alias_names: tuple[str, ...]; line_numbers: tuple[int, ...]; assigned_names: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class ExportSurfaceCandidate(LineWitnessCandidate):
-    export_symbol: str
-    exported_names: tuple[str, ...]
+ExportSurfaceCandidate = product_record('ExportSurfaceCandidate', 'export_symbol: str; exported_names: tuple[str, ...]', bases=(LineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class DerivedExportSurfaceCandidate(ExportSurfaceCandidate):
-    derivable_root_names: tuple[str, ...]
+DerivedExportSurfaceCandidate = product_record('DerivedExportSurfaceCandidate', 'derivable_root_names: tuple[str, ...]', bases=(ExportSurfaceCandidate,))
 
 
-@dataclass(frozen=True)
-class ManualPublicApiSurfaceCandidate(ExportSurfaceCandidate):
-    source_name_count: int
+ManualPublicApiSurfaceCandidate = product_record('ManualPublicApiSurfaceCandidate', 'source_name_count: int', bases=(ExportSurfaceCandidate,))
 
 
-@dataclass(frozen=True)
-class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
-    surface_name: str
-    key_kind: str
-    value_names: tuple[str, ...]
-    derivable_root_names: tuple[str, ...]
+DerivedIndexedSurfaceCandidate = product_record('DerivedIndexedSurfaceCandidate', 'surface_name: str; key_kind: str; value_names: tuple[str, ...]; derivable_root_names: tuple[str, ...]', bases=(LineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class RegisteredUnionSurfaceCandidate(LineWitnessCandidate):
-    owner_name: str
-    accessor_name: str
-    root_names: tuple[str, ...]
+RegisteredUnionSurfaceCandidate = product_record('RegisteredUnionSurfaceCandidate', 'owner_name: str; accessor_name: str; root_names: tuple[str, ...]', bases=(LineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class ExportPolicyPredicateCandidate(
-    WitnessCarrierCandidate, SubjectNameFunctionNameMixin
-):
-    role_names: tuple[str, ...]
-    root_type_names: tuple[str, ...]
+ExportPolicyPredicateCandidate = product_record('ExportPolicyPredicateCandidate', 'role_names: tuple[str, ...]; root_type_names: tuple[str, ...]', bases=(WitnessCarrierCandidate, SubjectNameFunctionNameMixin))
 
 
-@dataclass(frozen=True)
-class RegistryTraversalGroup(ClassLineNumbersGroup):
-    method_names: tuple[str, ...]
-    materialization_kinds: tuple[str, ...]
-    registry_attribute_names: tuple[str, ...]
+RegistryTraversalGroup = product_record('RegistryTraversalGroup', 'method_names: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
 
 
 @dataclass(frozen=True)
@@ -7560,55 +7360,25 @@ class SubclassTraversalSite:
         return SourceLocation(self.file_path, self.line, self.symbol)
 
 
-@dataclass(frozen=True)
-class SubclassTraversalGroup:
-    symbols: tuple[str, ...]
-    file_paths: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    root_expressions: tuple[str, ...]
-    materialization_kinds: tuple[str, ...]
-    registry_attribute_names: tuple[str, ...]
-    filter_names: tuple[str, ...]
+SubclassTraversalGroup = product_record('SubclassTraversalGroup', 'symbols: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; root_expressions: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]; filter_names: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class AlternateConstructorFamilyGroup(KeywordMethodFamilyCandidate):
-    source_type_names: tuple[str, ...]
+AlternateConstructorFamilyGroup = product_record('AlternateConstructorFamilyGroup', 'source_type_names: tuple[str, ...]', bases=(KeywordMethodFamilyCandidate,))
 
 
-@dataclass(frozen=True)
-class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
-    method_name: str
-    reflective_builtin: str
+SelfReflectiveBuiltinCandidate = product_record('SelfReflectiveBuiltinCandidate', 'method_name: str; reflective_builtin: str', bases=(WitnessCarrierCandidate,))
 
 
-@dataclass(frozen=True)
-class ReflectiveSelfAttributeCandidate(SelfReflectiveBuiltinCandidate):
-    attribute_name: str
+ReflectiveSelfAttributeCandidate = product_record('ReflectiveSelfAttributeCandidate', 'attribute_name: str', bases=(SelfReflectiveBuiltinCandidate,))
 
 
-@dataclass(frozen=True)
-class DynamicSelfFieldSelectionCandidate(SelfReflectiveBuiltinCandidate):
-    selector_expression: str
+DynamicSelfFieldSelectionCandidate = product_record('DynamicSelfFieldSelectionCandidate', 'selector_expression: str', bases=(SelfReflectiveBuiltinCandidate,))
 
 
-@dataclass(frozen=True)
-class StringBackedReflectiveNominalLookupCandidate(ClassLineWitnessCandidate):
-    method_name: str
-    selector_attr_name: str
-    lookup_kind: str
-    receiver_expression: str
-    concrete_class_names: tuple[str, ...]
-    selector_values: tuple[str, ...]
+StringBackedReflectiveNominalLookupCandidate = product_record('StringBackedReflectiveNominalLookupCandidate', 'method_name: str; selector_attr_name: str; lookup_kind: str; receiver_expression: str; concrete_class_names: tuple[str, ...]; selector_values: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
-    method_name: str
-    config_attr_name: str
-    config_type_name: str
-    missing_field_names: tuple[str, ...]
-    probe_builtin_names: tuple[str, ...]
+ConcreteConfigFieldProbeCandidate = product_record('ConcreteConfigFieldProbeCandidate', 'method_name: str; config_attr_name: str; config_type_name: str; missing_field_names: tuple[str, ...]; probe_builtin_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7619,13 +7389,7 @@ class _ManualSubclassRegistrationSite:
     requires_concrete_subclass: bool = False
 
 
-@dataclass(frozen=True)
-class IndexedFamilyWrapperCandidate:
-    function_name: str
-    lineno: int
-    collector_name: str
-    spec_root_name: str
-    item_type_name: str
+IndexedFamilyWrapperCandidate = product_record('IndexedFamilyWrapperCandidate', 'function_name: str; lineno: int; collector_name: str; spec_root_name: str; item_type_name: str')
 
 
 @dataclass(frozen=True)
@@ -7656,24 +7420,13 @@ class FunctionProfile:
         return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
-@dataclass(frozen=True)
-class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
-    qualname: str
+QualnameLineWitnessCandidate = product_record('QualnameLineWitnessCandidate', 'qualname: str', bases=(QualnameWitnessNameMixin, LineWitnessCandidate))
 
 
-@dataclass(frozen=True)
-class ParameterThreadFamilyCandidate:
-    shared_parameter_names: tuple[str, ...]
-    functions: tuple[FunctionProfile, ...]
+ParameterThreadFamilyCandidate = product_record('ParameterThreadFamilyCandidate', 'shared_parameter_names: tuple[str, ...]; functions: tuple[FunctionProfile, ...]')
 
 
-@dataclass(frozen=True)
-class SuffixAxisSurfaceMethod(QualnameLineWitnessCandidate):
-    owner_name: str
-    operation_name: str
-    axis_name: str
-    parameter_names: tuple[str, ...]
-    statement_count: int
+SuffixAxisSurfaceMethod = product_record('SuffixAxisSurfaceMethod', 'owner_name: str; operation_name: str; axis_name: str; parameter_names: tuple[str, ...]; statement_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7689,15 +7442,7 @@ class SuffixAxisSurfaceCandidate:
         return tuple(method.evidence for method in self.methods[:8])
 
 
-@dataclass(frozen=True)
-class SiblingRoleHelperMethod(QualnameLineWitnessCandidate):
-    owner_name: str
-    method_name: str
-    role_token: str
-    shared_tokens: tuple[str, ...]
-    parameter_names: tuple[str, ...]
-    control_shape: tuple[str, ...]
-    line_count: int
+SiblingRoleHelperMethod = product_record('SiblingRoleHelperMethod', 'owner_name: str; method_name: str; role_token: str; shared_tokens: tuple[str, ...]; parameter_names: tuple[str, ...]; control_shape: tuple[str, ...]; line_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -7791,18 +7536,10 @@ class EnumStrategyDispatchCandidate:
         return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
-@dataclass(frozen=True)
-class RepeatedEnumStrategyDispatchCandidate:
-    file_path: str
-    enum_family: str
-    shared_case_names: tuple[str, ...]
-    functions: tuple[EnumStrategyDispatchCandidate, ...]
+RepeatedEnumStrategyDispatchCandidate = product_record('RepeatedEnumStrategyDispatchCandidate', 'file_path: str; enum_family: str; shared_case_names: tuple[str, ...]; functions: tuple[EnumStrategyDispatchCandidate, ...]')
 
 
-@dataclass(frozen=True)
-class InlineEnumSubsetGuardCandidate(EnumCaseFamilyMixin, FunctionLineWitnessCandidate):
-    axis_expression: str
-    operator: str
+InlineEnumSubsetGuardCandidate = product_record('InlineEnumSubsetGuardCandidate', 'axis_expression: str; operator: str', bases=(EnumCaseFamilyMixin, FunctionLineWitnessCandidate))
 
 
 @dataclass(frozen=True)
@@ -7866,9 +7603,7 @@ class AxisFamilySite(LineWitnessCandidate):
     witness_name = AliasProperty[str]("family_name")
 
 
-@dataclass(frozen=True)
-class KeyedAxisFamilySite(AxisFamilySite):
-    family_label: str | None
+KeyedAxisFamilySite = product_record('KeyedAxisFamilySite', 'family_label: str | None', bases=(AxisFamilySite,))
 
 
 @dataclass(frozen=True)
@@ -8025,24 +7760,10 @@ class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-@dataclass(frozen=True)
-class KeywordBagAdapterCandidate(FunctionLineWitnessCandidate):
-    source_name: str
-    key_names: tuple[str, ...]
-    source_field_names: tuple[str, ...]
+KeywordBagAdapterCandidate = product_record('KeywordBagAdapterCandidate', 'source_name: str; key_names: tuple[str, ...]; source_field_names: tuple[str, ...]', bases=(FunctionLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class TransportShellTemplateCandidate(ClassLineWitnessCandidate):
-    driver_method_name: str
-    selector_attr_name: str
-    selector_value_names: tuple[str, ...]
-    concrete_class_names: tuple[str, ...]
-    source_param_name: str
-    constructor_name: str
-    kwargs_helper_name: str | None
-    inner_hook_name: str
-    outer_hook_name: str
+TransportShellTemplateCandidate = product_record('TransportShellTemplateCandidate', 'driver_method_name: str; selector_attr_name: str; selector_value_names: tuple[str, ...]; concrete_class_names: tuple[str, ...]; source_param_name: str; constructor_name: str; kwargs_helper_name: str | None; inner_hook_name: str; outer_hook_name: str', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8060,11 +7781,7 @@ class SpecAxisFamily:
         return SourceLocation(self.file_path, self.line, self.family_name)
 
 
-@dataclass(frozen=True)
-class CrossModuleSpecAxisAuthorityCandidate:
-    axis_field_names: tuple[str, str]
-    shared_axis_pairs: tuple[tuple[str, str], ...]
-    families: tuple[SpecAxisFamily, ...]
+CrossModuleSpecAxisAuthorityCandidate = product_record('CrossModuleSpecAxisAuthorityCandidate', 'axis_field_names: tuple[str, str]; shared_axis_pairs: tuple[tuple[str, str], ...]; families: tuple[SpecAxisFamily, ...]')
 
 
 @dataclass(frozen=True)
@@ -8082,53 +7799,22 @@ class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
         return SourceLocation(self.file_path, self.line, self.qualname)
 
 
-@dataclass(frozen=True)
-class ParallelRegistryProjectionFamilyCandidate:
-    file_path: str
-    collector_name: str
-    registry_accessor_name: str
-    return_keyword_names: tuple[str, ...]
-    functions: tuple[RegisteredCatalogProjectionCandidate, ...]
+ParallelRegistryProjectionFamilyCandidate = product_record('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]')
 
 
-@dataclass(frozen=True)
-class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
-    family_base_name: str
-    registry_key_attr_name: str
-    lookup_method_name: str
-    lookup_style: str
-    error_type_name: str | None
-    abstract_hook_names: tuple[str, ...]
+KeyedFamilyRootCandidate = product_record('KeyedFamilyRootCandidate', 'family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class RepeatedKeyedFamilyCandidate:
-    family_base_name: str
-    lookup_style: str
-    roots: tuple[KeyedFamilyRootCandidate, ...]
+RepeatedKeyedFamilyCandidate = product_record('RepeatedKeyedFamilyCandidate', 'family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]')
 
 
-@dataclass(frozen=True)
-class ManualRecordRegistrationShape:
-    key_expr: str
-    key_field_name: str
-    constructor_field_names: tuple[str, ...]
+ManualRecordRegistrationShape = product_record('ManualRecordRegistrationShape', 'key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
-    register_method_name: str
-    lookup_method_name: str
-    lookup_style: str
-    key_field_name: str
-    key_expr: str
-    constructor_field_names: tuple[str, ...]
+ManualKeyedRecordTableClassCandidate = product_record('ManualKeyedRecordTableClassCandidate', 'register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class ManualKeyedRecordTableGroupCandidate:
-    file_path: str
-    classes: tuple[ManualKeyedRecordTableClassCandidate, ...]
+ManualKeyedRecordTableGroupCandidate = product_record('ManualKeyedRecordTableGroupCandidate', 'file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]')
 
 
 @dataclass(frozen=True)
@@ -8166,14 +7852,7 @@ class ManualStructuralRecordMechanicsGroupCandidate:
         )
 
 
-@dataclass(frozen=True)
-class ConcreteTypeCaseFunctionCandidate(FunctionLineWitnessCandidate):
-    subject_expression: str
-    subject_role: str
-    concrete_class_names: tuple[str, ...]
-    abstract_class_names: tuple[str, ...]
-    union_alias_names: tuple[str, ...]
-    case_site_count: int
+ConcreteTypeCaseFunctionCandidate = product_record('ConcreteTypeCaseFunctionCandidate', 'subject_expression: str; subject_role: str; concrete_class_names: tuple[str, ...]; abstract_class_names: tuple[str, ...]; union_alias_names: tuple[str, ...]; case_site_count: int', bases=(FunctionLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8203,13 +7882,7 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
         return tuple(function.evidence for function in self.functions[:6])
 
 
-@dataclass(frozen=True)
-class GuardValidatorFunctionCandidate(FunctionLineWitnessCandidate):
-    subject_param_name: str
-    alias_source_attr: str | None
-    guard_count: int
-    accessed_attr_names: tuple[str, ...]
-    helper_call_names: tuple[str, ...]
+GuardValidatorFunctionCandidate = product_record('GuardValidatorFunctionCandidate', 'subject_param_name: str; alias_source_attr: str | None; guard_count: int; accessed_attr_names: tuple[str, ...]; helper_call_names: tuple[str, ...]', bases=(FunctionLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8226,11 +7899,7 @@ class RepeatedGuardValidatorFamilyCandidate:
         return tuple(function.evidence for function in self.functions[:6])
 
 
-@dataclass(frozen=True)
-class ValidateShapeGuardMethodCandidate(ClassMethodLineWitnessCandidate):
-    guard_count: int
-    shape_guard_count: int
-    shape_guard_signatures: tuple[str, ...]
+ValidateShapeGuardMethodCandidate = product_record('ValidateShapeGuardMethodCandidate', 'guard_count: int; shape_guard_count: int; shape_guard_signatures: tuple[str, ...]', bases=(ClassMethodLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8322,10 +7991,7 @@ class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
         return SourceLocation(self.file_path, self.line, self.qualname)
 
 
-@dataclass(frozen=True)
-class ResolvedExternalCallsite:
-    module_name: str
-    location: SourceLocation
+ResolvedExternalCallsite = product_record('ResolvedExternalCallsite', 'module_name: str; location: SourceLocation')
 
 
 @dataclass(frozen=True)
@@ -8432,11 +8098,7 @@ class NominalPolicySurfaceFamilyCandidate:
         return tuple(method.evidence for method in self.methods[:6])
 
 
-@dataclass(frozen=True)
-class WrapperChainCandidate:
-    file_path: str
-    wrappers: tuple[FunctionWrapperCandidate, ...]
-    leaf_delegate_symbol: str
+WrapperChainCandidate = product_record('WrapperChainCandidate', 'file_path: str; wrappers: tuple[FunctionWrapperCandidate, ...]; leaf_delegate_symbol: str')
 
 
 @dataclass(frozen=True)
@@ -8470,42 +8132,16 @@ class ResultAssemblyPipelineFunction:
         return SourceLocation(self.file_path, self.lineno, self.qualname)
 
 
-@dataclass(frozen=True)
-class RepeatedResultAssemblyPipelineCandidate:
-    file_path: str
-    shared_tail: tuple[PipelineAssemblyStage, ...]
-    functions: tuple[ResultAssemblyPipelineFunction, ...]
+RepeatedResultAssemblyPipelineCandidate = product_record('RepeatedResultAssemblyPipelineCandidate', 'file_path: str; shared_tail: tuple[PipelineAssemblyStage, ...]; functions: tuple[ResultAssemblyPipelineFunction, ...]')
 
 
-@dataclass(frozen=True)
-class FailSoftEffectPipelineCandidate(FunctionLineWitnessCandidate):
-    line_count: int
-    guard_count: int
-    normal_form: str
-    guarded_binding_names: tuple[str, ...]
-    stage_kinds: tuple[str, ...]
-    success_return_kind: str
-    helper_call_names: tuple[str, ...]
+FailSoftEffectPipelineCandidate = product_record('FailSoftEffectPipelineCandidate', 'line_count: int; guard_count: int; normal_form: str; guarded_binding_names: tuple[str, ...]; stage_kinds: tuple[str, ...]; success_return_kind: str; helper_call_names: tuple[str, ...]', bases=(FunctionLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class EffectStepAmortizationCandidate(FunctionLineWitnessCandidate):
-    line_count: int
-    payoff_score: int
-    none_return_count: int
-    ast_type_guard_count: int
-    cardinality_guard_count: int
-    semantic_helper_count: int
-    ast_type_names: tuple[str, ...]
-    semantic_helper_names: tuple[str, ...]
-    normal_form: str
+EffectStepAmortizationCandidate = product_record('EffectStepAmortizationCandidate', 'line_count: int; payoff_score: int; none_return_count: int; ast_type_guard_count: int; cardinality_guard_count: int; semantic_helper_count: int; ast_type_names: tuple[str, ...]; semantic_helper_names: tuple[str, ...]; normal_form: str', bases=(FunctionLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
-    none_return_count: int
-    raw_guard_count: int
-    suggested_base_name: str
+EffectStepImplementationLeakCandidate = product_record('EffectStepImplementationLeakCandidate', 'none_return_count: int; raw_guard_count: int; suggested_base_name: str', bases=(ClassMethodLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8519,20 +8155,10 @@ class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
         return ", ".join(self.declaration_names[:4])
 
 
-@dataclass(frozen=True)
-class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
-    collector_name: str
-    scope_kind: str
-    uses_config: bool
-    recommended_base_name: str
+CandidateCollectorBoilerplateCandidate = product_record('CandidateCollectorBoilerplateCandidate', 'collector_name: str; scope_kind: str; uses_config: bool; recommended_base_name: str', bases=(ClassMethodLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class TypedCandidateCastBoilerplateCandidate(ClassMethodLineWitnessCandidate):
-    parameter_name: str
-    local_name: str
-    candidate_type_name: str
-    detector_base_name: str
+TypedCandidateCastBoilerplateCandidate = product_record('TypedCandidateCastBoilerplateCandidate', 'parameter_name: str; local_name: str; candidate_type_name: str; detector_base_name: str', bases=(ClassMethodLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8544,54 +8170,31 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
     witness_name = AliasProperty[str]("constructor_name")
 
 
-@dataclass(frozen=True)
-class DirectBuildFindingRendererCandidate(ClassMethodLineWitnessCandidate):
-    base_name: str
-    positional_arg_count: int
-    keyword_names: tuple[str, ...]
+DirectBuildFindingRendererCandidate = product_record('DirectBuildFindingRendererCandidate', 'base_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]', bases=(ClassMethodLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class DerivableDetectorIdCandidate(ClassLineWitnessCandidate):
-    detector_id_value: str
+DerivableDetectorIdCandidate = product_record('DerivableDetectorIdCandidate', 'detector_id_value: str', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class DerivableCandidateCollectorCandidate(ClassLineWitnessCandidate):
-    collector_name: str
+DerivableCandidateCollectorCandidate = product_record('DerivableCandidateCollectorCandidate', 'collector_name: str', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class CanonicalFindingSpecBuilderCandidate(ClassLineWitnessCandidate):
-    constructor_name: str
-    builder_name: str
-    keyword_names: tuple[str, ...]
+CanonicalFindingSpecBuilderCandidate = product_record('CanonicalFindingSpecBuilderCandidate', 'constructor_name: str; builder_name: str; keyword_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class ManualSortedTupleReturnCandidate(QualnameLineWitnessCandidate):
-    sorted_expression: str
-    key_expression: str | None
-    reverse_expression: str | None
-    line_count: int
+ManualSortedTupleReturnCandidate = product_record('ManualSortedTupleReturnCandidate', 'sorted_expression: str; key_expression: str | None; reverse_expression: str | None; line_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class ManualSortedTupleExpressionCandidate(ManualSortedTupleReturnCandidate):
-    context_kind: str
+ManualSortedTupleExpressionCandidate = product_record('ManualSortedTupleExpressionCandidate', 'context_kind: str', bases=(ManualSortedTupleReturnCandidate,))
 
 
-@dataclass(frozen=True)
-class SimplePropertyAliasClassCandidate(ClassLineWitnessCandidate):
-    alias_pairs: tuple[tuple[str, str], ...]
-    declared_field_names: tuple[str, ...]
-    line_count: int
+SimplePropertyAliasClassCandidate = product_record('SimplePropertyAliasClassCandidate', 'alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class SimplePropertyAliasMethodCandidate(ClassMethodLineWitnessCandidate):
-    source_name: str
-    return_annotation: str | None
+SimplePropertyAliasMethodCandidate = product_record('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', bases=(ClassMethodLineWitnessCandidate,))
+
+
+FieldOnlyFrozenDataclassCandidate = product_record('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; line_count: int', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)
@@ -8656,14 +8259,7 @@ class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin
     registry_name = AliasProperty[str]("subject_name")
 
 
-@dataclass(frozen=True)
-class StructuralConfusabilityCandidate(
-    WitnessCarrierCandidate,
-    NameFamilyClassNamesMixin,
-    SubjectNameFunctionNameMixin,
-):
-    parameter_name: str
-    observed_method_names: tuple[str, ...]
+StructuralConfusabilityCandidate = product_record('StructuralConfusabilityCandidate', 'parameter_name: str; observed_method_names: tuple[str, ...]', bases=(WitnessCarrierCandidate, NameFamilyClassNamesMixin, SubjectNameFunctionNameMixin))
 
 
 @dataclass(frozen=True)
@@ -8675,14 +8271,10 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-@dataclass(frozen=True)
-class WitnessCarrierFamilyCandidate(ClassLineNumbersGroup):
-    shared_role_names: tuple[str, ...]
+WitnessCarrierFamilyCandidate = product_record('WitnessCarrierFamilyCandidate', 'shared_role_names: tuple[str, ...]', bases=(ClassLineNumbersGroup,))
 
 
-@dataclass(frozen=True)
-class WitnessMixinEnforcementCandidate(ClassLineNumbersGroup):
-    role_field_names: tuple[tuple[str, tuple[str, ...]], ...]
+WitnessMixinEnforcementCandidate = product_record('WitnessMixinEnforcementCandidate', 'role_field_names: tuple[tuple[str, tuple[str, ...]], ...]', bases=(ClassLineNumbersGroup,))
 
 
 def _axis_dispatch_metrics(

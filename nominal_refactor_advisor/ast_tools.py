@@ -8,6 +8,8 @@ directly.
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 import ast
 import copy
 import os
@@ -108,31 +110,19 @@ class ParsedModule:
     source: str
 
 
-@dataclass(frozen=True)
-class AstNameFamily:
-    names: frozenset[str]
+AstNameFamily = product_record('AstNameFamily', 'names: frozenset[str]')
 
 
-@dataclass(frozen=True)
-class AstCallObservation:
-    call: ast.Call
-    matched_name: str
+AstCallObservation = product_record('AstCallObservation', 'call: ast.Call; matched_name: str')
 
 
 AstScopedNode: TypeAlias = ast.AST
 
 
-@dataclass(frozen=True)
-class ScopedAstObservation:
-    node: AstScopedNode
-    class_name: str | None
-    function_name: str | None
+ScopedAstObservation = product_record('ScopedAstObservation', 'node: AstScopedNode; class_name: str | None; function_name: str | None')
 
 
-@dataclass(frozen=True)
-class ClassAstObservation:
-    node: ast.ClassDef
-    is_dataclass_family: bool
+ClassAstObservation = product_record('ClassAstObservation', 'node: ast.ClassDef; is_dataclass_family: bool')
 
 
 _TRegistered = TypeVar("_TRegistered")
@@ -944,10 +934,7 @@ def _literal_dispatch_case(
     )
 
 
-@dataclass(frozen=True)
-class _LiteralDispatchCompare:
-    left: ast.AST
-    right: ast.AST
+_LiteralDispatchCompare = product_record('_LiteralDispatchCompare', 'left: ast.AST; right: ast.AST')
 
 
 class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompare]):
@@ -1222,10 +1209,7 @@ def _projection_outer_inner_calls(
     return outer_call_name, inner_call
 
 
-@dataclass(frozen=True)
-class _ProjectionGeneratorMatch:
-    node: ast.GeneratorExp
-    comprehension: ast.comprehension
+_ProjectionGeneratorMatch = product_record('_ProjectionGeneratorMatch', 'node: ast.GeneratorExp; comprehension: ast.comprehension')
 
 
 class _ProjectionGeneratorAttributeStep(RegisteredEffectStep):

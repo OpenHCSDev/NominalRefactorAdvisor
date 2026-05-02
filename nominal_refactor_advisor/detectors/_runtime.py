@@ -6,6 +6,8 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 
 from __future__ import annotations
 
+from ..record_algebra import product_record
+
 from ._base import *
 from ._helpers import *
 
@@ -772,10 +774,7 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
         return f"{module.path} performs {len(evidence)} class-level marker checks on instances."
 
 
-@dataclass(frozen=True, slots=True)
-class _ExternalConcreteTypeIdentityTableCandidate(LineWitnessCandidate):
-    symbol: str
-    row_pairs: tuple[tuple[str, str, int], ...]
+_ExternalConcreteTypeIdentityTableCandidate = product_record('_ExternalConcreteTypeIdentityTableCandidate', 'symbol: str; row_pairs: tuple[tuple[str, str, int], ...]', bases=(LineWitnessCandidate,))
 
 
 class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
@@ -1349,22 +1348,10 @@ _STATIC_PAYLOAD_WRITE_METHODS = frozenset(
 _WRITE_MODE_TOKENS = frozenset({"w", "a", "x", "wt", "at", "xt", "wb", "ab", "xb"})
 
 
-@dataclass(frozen=True)
-class StaticPayloadStats:
-    payload_line_count: int
-    largest_literal_line_count: int
-    marker_kinds: tuple[str, ...]
+StaticPayloadStats = product_record('StaticPayloadStats', 'payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]')
 
 
-@dataclass(frozen=True)
-class EmbeddedStaticPayloadCandidate(QualnameLineWitnessCandidate):
-    function_name: str
-    line_count: int
-    static_payload_line_count: int
-    largest_literal_line_count: int
-    marker_kinds: tuple[str, ...]
-    sink_kinds: tuple[str, ...]
-    call_site_count: int
+EmbeddedStaticPayloadCandidate = product_record('EmbeddedStaticPayloadCandidate', 'function_name: str; line_count: int; static_payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]; sink_kinds: tuple[str, ...]; call_site_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
 def _function_line_count(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
@@ -1652,11 +1639,7 @@ class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetect
         )
 
 
-@dataclass(frozen=True)
-class UnreferencedPrivateFunctionCandidate(QualnameLineWitnessCandidate):
-    function_name: str
-    line_count: int
-    call_site_count: int
+UnreferencedPrivateFunctionCandidate = product_record('UnreferencedPrivateFunctionCandidate', 'function_name: str; line_count: int; call_site_count: int', bases=(QualnameLineWitnessCandidate,))
 
 
 def _has_external_protocol_shape(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
