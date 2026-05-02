@@ -3136,6 +3136,34 @@ class LocalAliasMixin:
     assert "AliasProperty" in (findings[0].codemod_patch or "")
 
 
+def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class LocalRecord:
+    source_name: str
+
+    def other_behavior(self):
+        return self.source_name.upper()
+
+    @property
+    def public_name(self) -> str:
+        return self.source_name
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "simple_property_alias_method"
+    ]
+
+    assert len(findings) == 1
+    assert "LocalRecord.public_name" in findings[0].summary
+    assert "AliasProperty" in (findings[0].scaffold or "")
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

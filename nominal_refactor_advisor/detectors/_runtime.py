@@ -1763,9 +1763,7 @@ class SiblingSmallMethodTemplateCandidate(LineWitnessCandidate):
     statement_count: int
     parameter_count: int
 
-    @property
-    def witness_name(self) -> str:
-        return self.owner_name
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("owner_name")
 
     @property
     def evidence_locations(self) -> tuple[SourceLocation, ...]:
@@ -2056,9 +2054,7 @@ class ConstantBackedDispatchAxisCandidate(LineWitnessCandidate):
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
-    @property
-    def witness_name(self) -> str:
-        return self.axis_name
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_name")
 
     @property
     def evidence_locations(self) -> tuple[SourceLocation, ...]:
@@ -2994,9 +2990,7 @@ class FlattenedProjectionPropertyCandidate(LineWitnessCandidate):
     def symbol(self) -> str:
         return f"{self.class_name}.{self.property_name}"
 
-    @property
-    def witness_name(self) -> str:
-        return self.symbol
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("symbol")
 
 
 def _flattened_projection_properties(

@@ -7183,10 +7183,7 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
     @property
     def symbol(self) -> str:
         return f"{self.class_name}.{self.method_name}"
-
-    @property
-    def witness_name(self) -> str:
-        return self.symbol
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("symbol")
 
 
 @dataclass(frozen=True)
@@ -8589,6 +8586,12 @@ class SimplePropertyAliasClassCandidate(ClassLineWitnessCandidate):
     alias_pairs: tuple[tuple[str, str], ...]
     declared_field_names: tuple[str, ...]
     line_count: int
+
+
+@dataclass(frozen=True)
+class SimplePropertyAliasMethodCandidate(ClassMethodLineWitnessCandidate):
+    source_name: str
+    return_annotation: str | None
 
 
 @dataclass(frozen=True)

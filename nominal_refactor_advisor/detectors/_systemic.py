@@ -2822,6 +2822,43 @@ class SimplePropertyAliasClassDetector(
     )
 
 
+class SimplePropertyAliasMethodDetector(
+    ModuleCollectorCandidateDetector[SimplePropertyAliasMethodCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Direct property alias method should use descriptor algebra",
+        "A property method whose body is exactly `return self.<field>` is a descriptor relation, "
+            "even when the surrounding class owns other behavior. Keeping that relation as a method "
+            "repeats alias mechanics and hides the source-target projection from class declarations.",
+        "typed alias-property descriptor reused for direct field projection methods",
+        "property method repeats direct self-field alias mechanics",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[SimplePropertyAliasMethodCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.class_name}.{candidate.method_name}` is a direct property alias "
+            f"to `{candidate.source_name}`."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: (
+            "from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\n"
+            f"{candidate.method_name} = AliasProperty["
+            f"{candidate.return_annotation or 'ValueType'}](\"{candidate.source_name}\")"
+        ),
+        codemod_patch=lambda candidate: (
+            "# Replace the `@property return self.<source>` method with an "
+            "`AliasProperty[...]` descriptor on the class body."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=1,
+            mapping_name=f"{candidate.class_name}.{candidate.method_name}",
+            field_names=(candidate.source_name,),
+        ),
+    )
+
+
 class SemanticTagTupleBoilerplateDetector(
     ModuleCollectorCandidateDetector[SemanticTagTupleBoilerplateCandidate]
 ):

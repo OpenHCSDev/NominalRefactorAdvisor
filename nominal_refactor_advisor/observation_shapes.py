@@ -240,13 +240,8 @@ class FieldObservation(
     def symbol(self) -> str:
         return f"{self.class_name}.{self.field_name}"
 
-    @property
-    def observed_name(self) -> str:
-        return self.field_name
-
-    @property
-    def fiber_key(self) -> str:
-        return self.field_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
 
 
 @dataclass(frozen=True)
@@ -295,9 +290,7 @@ class LiteralDispatchObservation(
     def nominal_witness(self) -> str:
         return self.scope_owner or self.symbol
 
-    @property
-    def observed_name(self) -> str:
-        return self.axis_expression
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_expression")
 
     @property
     def fiber_key(self) -> str:
@@ -320,13 +313,8 @@ class ProjectionHelperShape(
     iterable_fingerprint: str
     projected_attribute: str
 
-    @property
-    def symbol(self) -> str:
-        return self.function_name
-
-    @property
-    def observed_name(self) -> str:
-        return self.projected_attribute
+    symbol: ClassVar[AliasProperty[str]] = AliasProperty("function_name")
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("projected_attribute")
 
     @property
     def fiber_key(self) -> str:
@@ -395,9 +383,7 @@ class ScopedShapeWrapperSpec(
     function_name: str
     node_types: tuple[str, ...]
 
-    @property
-    def owner_symbol(self) -> str:
-        return self.spec_name
+    owner_symbol: ClassVar[AliasProperty[str]] = AliasProperty("spec_name")
 
     @property
     def fiber_key(self) -> str:
@@ -418,9 +404,7 @@ class ConfigDispatchObservation(
     symbol: str
     observed_attribute: str
 
-    @property
-    def fiber_key(self) -> str:
-        return self.observed_attribute
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_attribute")
 
 
 @dataclass(frozen=True)
@@ -436,13 +420,8 @@ class ClassMarkerObservation(
     symbol: str
     marker_name: str
 
-    @property
-    def observed_name(self) -> str:
-        return self.marker_name
-
-    @property
-    def fiber_key(self) -> str:
-        return self.marker_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("marker_name")
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("marker_name")
 
 
 @dataclass(frozen=True)
@@ -474,13 +453,8 @@ class SentinelTypeObservation(
     symbol: str
     sentinel_name: str
 
-    @property
-    def observed_name(self) -> str:
-        return self.sentinel_name
-
-    @property
-    def fiber_key(self) -> str:
-        return self.sentinel_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("sentinel_name")
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("sentinel_name")
 
 
 @dataclass(frozen=True)
@@ -496,13 +470,8 @@ class DynamicMethodInjectionObservation(
     symbol: str
     mutator_name: str
 
-    @property
-    def observed_name(self) -> str:
-        return self.mutator_name
-
-    @property
-    def fiber_key(self) -> str:
-        return self.mutator_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("mutator_name")
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("mutator_name")
 
 
 @dataclass(frozen=True)
@@ -534,13 +503,8 @@ class LineageMappingObservation(
     symbol: str
     mapping_name: str
 
-    @property
-    def observed_name(self) -> str:
-        return self.mapping_name
-
-    @property
-    def fiber_key(self) -> str:
-        return self.mapping_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("mapping_name")
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("mapping_name")
 
 
 @dataclass(frozen=True)
@@ -561,9 +525,7 @@ class DualAxisResolutionObservation(
     def observed_name(self) -> str:
         return f"{self.outer_axis_name}:{self.inner_axis_name}"
 
-    @property
-    def fiber_key(self) -> str:
-        return self.observed_name
+    fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("observed_name")
 
 
 @dataclass(frozen=True)
@@ -597,9 +559,7 @@ class MethodShape(
     def nominal_witness(self) -> str:
         return self.class_name or self.symbol
 
-    @property
-    def observed_name(self) -> str:
-        return self.method_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("method_name")
 
     @property
     def fiber_key(self) -> str:
@@ -628,9 +588,7 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
     def symbol(self) -> str:
         return f"{self.owner_prefix}:{self.callee_name}"
 
-    @property
-    def observed_name(self) -> str:
-        return self.callee_name
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("callee_name")
 
     @property
     def fiber_key(self) -> str:

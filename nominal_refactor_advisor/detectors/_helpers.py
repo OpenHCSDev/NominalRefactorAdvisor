@@ -6858,6 +6858,49 @@ def _simple_property_alias_class_candidates(
     return tuple(candidates)
 
 
+def _simple_property_alias_method_candidates(
+    module: ParsedModule,
+) -> tuple[SimplePropertyAliasMethodCandidate, ...]:
+    candidates: list[SimplePropertyAliasMethodCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+
+        @property
+        def class_name(self) -> str:
+            return ".".join(self.class_stack)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            for statement in _trim_docstring_body(node.body):
+                if not isinstance(statement, ast.FunctionDef):
+                    continue
+                alias_pair = _simple_property_alias_pair(statement)
+                if alias_pair is None:
+                    continue
+                method_name, source_name = alias_pair
+                candidates.append(
+                    SimplePropertyAliasMethodCandidate(
+                        file_path=str(module.path),
+                        line=statement.lineno,
+                        class_name=self.class_name,
+                        method_name=method_name,
+                        source_name=source_name,
+                        return_annotation=(
+                            ast.unparse(statement.returns)
+                            if statement.returns is not None
+                            else None
+                        ),
+                    )
+                )
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
 _SEMANTIC_TAG_CONSTANT_SUFFIX = {
     "capability_tags": "CAPABILITY_TAGS",

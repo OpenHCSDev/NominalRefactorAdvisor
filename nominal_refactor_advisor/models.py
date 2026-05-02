@@ -268,9 +268,7 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
             shared_statement_texts=shared_statement_texts,
         )
 
-    @property
-    def shared_algorithm_sites(self) -> int:
-        return self.duplicate_site_count
+    shared_algorithm_sites: ClassVar[AliasProperty[int]] = AliasProperty("duplicate_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -290,13 +288,8 @@ class RepeatedMethodMetrics(BehaviorFindingMetrics):
             shared_algorithm_sites_centralized=max(self.duplicate_site_count - 1, 0),
         )
 
-    @property
-    def plan_statement_count(self) -> int:
-        return self.statement_count
-
-    @property
-    def plan_shared_statement_texts(self) -> tuple[str, ...]:
-        return self.shared_statement_texts
+    plan_statement_count: ClassVar[AliasProperty[int]] = AliasProperty("statement_count")
+    plan_shared_statement_texts: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_statement_texts")
 
     @property
     def plan_class_names(self) -> tuple[str, ...]:
@@ -332,13 +325,8 @@ class FieldFamilyMetrics(ClassNamesPlanMetrics):
             self.field_count,
         )
 
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return self.field_names
-
-    @property
-    def plan_field_execution_level(self) -> str:
-        return self.execution_level
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("field_names")
+    plan_field_execution_level: ClassVar[AliasProperty[str]] = AliasProperty("execution_level")
 
 
 @dataclass(frozen=True)
@@ -357,9 +345,7 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
             self.shared_role_count,
         )
 
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return self.shared_role_names
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_role_names")
 
 
 @dataclass(frozen=True)
@@ -392,9 +378,7 @@ class MappingMetrics(MappingFindingMetrics):
             identity_field_names=identity_field_names,
         )
 
-    @property
-    def mapping_sites(self) -> int:
-        return self.mapping_site_count
+    mapping_sites: ClassVar[AliasProperty[int]] = AliasProperty("mapping_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -417,21 +401,10 @@ class MappingMetrics(MappingFindingMetrics):
             ),
         )
 
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return self.field_names
-
-    @property
-    def plan_mapping_name(self) -> str | None:
-        return self.mapping_name
-
-    @property
-    def plan_source_name(self) -> str | None:
-        return self.source_name
-
-    @property
-    def plan_identity_field_names(self) -> tuple[str, ...]:
-        return self.identity_field_names
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("field_names")
+    plan_mapping_name: ClassVar[AliasProperty[str | None]] = AliasProperty("mapping_name")
+    plan_source_name: ClassVar[AliasProperty[str | None]] = AliasProperty("source_name")
+    plan_identity_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("identity_field_names")
 
 
 @dataclass(frozen=True)
@@ -461,9 +434,7 @@ class RegistrationMetrics(RegistrationFindingMetrics):
             class_key_pairs=class_key_pairs,
         )
 
-    @property
-    def registration_sites(self) -> int:
-        return self.registration_site_count
+    registration_sites: ClassVar[AliasProperty[int]] = AliasProperty("registration_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -476,21 +447,10 @@ class RegistrationMetrics(RegistrationFindingMetrics):
             registration_sites_removed=self.registration_site_count,
         )
 
-    @property
-    def plan_class_names(self) -> tuple[str, ...]:
-        return self.class_names
-
-    @property
-    def plan_registry_name(self) -> str | None:
-        return self.registry_name
-
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return self.class_key_pairs
-
-    @property
-    def plan_class_key_pairs(self) -> tuple[str, ...]:
-        return self.class_key_pairs
+    plan_class_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("class_names")
+    plan_registry_name: ClassVar[AliasProperty[str | None]] = AliasProperty("registry_name")
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("class_key_pairs")
+    plan_class_key_pairs: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("class_key_pairs")
 
     @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
@@ -520,9 +480,7 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
     def count_value(self) -> int:
         raise NotImplementedError
 
-    @property
-    def dispatch_sites(self) -> int:
-        return self.count_value
+    dispatch_sites = AliasProperty[int]("count_value")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -563,9 +521,7 @@ class DispatchCountMetrics(CountedDispatchMetrics):
     dispatch_axis: str | None = None
     literal_cases: tuple[str, ...] = ()
 
-    @property
-    def count_value(self) -> int:
-        return self.dispatch_site_count
+    count_value: ClassVar[AliasProperty[int]] = AliasProperty("dispatch_site_count")
 
     @classmethod
     def from_literal_family(
@@ -577,13 +533,8 @@ class DispatchCountMetrics(CountedDispatchMetrics):
             literal_cases=literal_cases,
         )
 
-    @property
-    def plan_dispatch_axis(self) -> str | None:
-        return self.dispatch_axis
-
-    @property
-    def plan_literal_cases(self) -> tuple[str, ...]:
-        return self.literal_cases
+    plan_dispatch_axis: ClassVar[AliasProperty[str | None]] = AliasProperty("dispatch_axis")
+    plan_literal_cases: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("literal_cases")
 
 
 @dataclass(frozen=True)
@@ -594,9 +545,7 @@ class OrchestrationMetrics(BehaviorFindingMetrics):
     parameter_count: int
     callee_family_count: int
 
-    @property
-    def shared_algorithm_sites(self) -> int:
-        return self.branch_site_count
+    shared_algorithm_sites: ClassVar[AliasProperty[int]] = AliasProperty("branch_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -630,9 +579,7 @@ class ParameterThreadMetrics(FindingMetrics):
             repeated_mappings_centralized=removable,
         )
 
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return self.shared_parameter_names
+    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_parameter_names")
 
 
 @dataclass(frozen=True, kw_only=True)
