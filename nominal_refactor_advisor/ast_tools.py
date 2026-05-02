@@ -690,11 +690,7 @@ def _collect_all_scoped_observations(
             self.generic_visit(node)
             self.function_stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._record(node)
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def generic_visit(self, node: ast.AST) -> None:
             if not isinstance(

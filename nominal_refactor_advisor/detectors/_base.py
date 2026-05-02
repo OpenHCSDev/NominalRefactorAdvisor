@@ -933,8 +933,7 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             self._record(node)
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self._record(node)
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def _record(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
             end_lineno = node.end_lineno if node.end_lineno is not None else node.lineno
@@ -1793,9 +1792,7 @@ def _iter_named_functions(
             functions.append((".".join((*self.class_stack, node.name)), node))
             self.generic_visit(node)
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            functions.append((".".join((*self.class_stack, node.name)), node))
-            self.generic_visit(node)
+        visit_AsyncFunctionDef = visit_FunctionDef
 
     Visitor().visit(module.module)
     return tuple(functions)
@@ -2262,8 +2259,7 @@ def _non_nested_subnodes(
         def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
             return
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            return
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def generic_visit(self, node: ast.AST) -> None:
             nodes.append(node)
@@ -8179,6 +8175,12 @@ SimplePropertyAliasMethodCandidate = product_record('SimplePropertyAliasMethodCa
 
 
 FieldOnlyFrozenDataclassCandidate = product_record('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; default_specs: tuple[tuple[str, str], ...]; docstring: str | None; kw_only: bool; line_count: int', bases=(ClassLineWitnessCandidate,))
+
+
+DuplicateVisitorMethodBodyCandidate = product_record('DuplicateVisitorMethodBodyCandidate', 'method_names: tuple[str, ...]; statement_count: int', bases=(ClassLineWitnessCandidate,))
+
+
+EnumMetadataTableCandidate = product_record('EnumMetadataTableCandidate', 'table_name: str; property_names: tuple[str, ...]; case_count: int', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)

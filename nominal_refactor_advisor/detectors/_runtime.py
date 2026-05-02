@@ -1387,10 +1387,7 @@ def _walk_function_body_nodes(
                 for statement in _trim_docstring_body(node.body):
                     self.visit(statement)
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is function:
-                for statement in _trim_docstring_body(node.body):
-                    self.visit(statement)
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             del node

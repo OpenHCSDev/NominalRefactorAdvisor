@@ -2899,6 +2899,73 @@ class FieldOnlyFrozenDataclassDetector(
     )
 
 
+class DuplicateVisitorMethodBodyDetector(
+    ModuleCollectorCandidateDetector[DuplicateVisitorMethodBodyCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Duplicate AST visitor hooks should share one hook implementation",
+        "Sibling `visit_*` methods with exactly the same normalized body encode one visitor transition more than once. "
+            "The shared body should be one hook or an explicit method alias, leaving the node-type distinction in dispatch metadata.",
+        "one visitor hook implementation reused by equivalent node dispatch entries",
+        "same normalized visitor hook body is repeated on sibling visit methods",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[DuplicateVisitorMethodBodyCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.class_name}` repeats the same visitor body across "
+            f"{', '.join(candidate.method_names)}."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: f"{candidate.method_names[0]}(...)\n{candidate.method_names[1]} = {candidate.method_names[0]}",
+        codemod_patch=lambda candidate: (
+            "# Replace duplicate sibling `visit_*` method bodies with one shared "
+            "implementation or explicit aliases for equivalent visitor dispatch entries."
+        ),
+        metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=len(candidate.method_names),
+            statement_count=candidate.statement_count,
+            class_count=1,
+            method_symbols=tuple(
+                f"{candidate.class_name}.{method_name}"
+                for method_name in candidate.method_names
+            ),
+        ),
+    )
+
+
+class EnumMetadataTableDetector(ModuleCollectorCandidateDetector[EnumMetadataTableCandidate]):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Enum metadata table should be carried by enum members",
+        "An enum whose properties only index a module-level table by `self` splits member identity from member metadata. "
+            "The metadata should move into enum construction so each member carries its own typed semantic record.",
+        "enum member construction owns the member metadata",
+        "enum properties read a parallel metadata table keyed by the same enum family",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _EXPORT_MAPPING_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[EnumMetadataTableCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.class_name}` reads {candidate.property_names} from "
+            f"`{candidate.table_name}` across {candidate.case_count} enum cases."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: "class MetadataEnum(StrEnum):\n    def __new__(cls, value: str, label: str):\n        obj = str.__new__(cls, value)\n        obj._value_ = value\n        obj.label = label\n        return obj",
+        codemod_patch=lambda candidate: (
+            f"# Move `{candidate.table_name}` values into `{candidate.class_name}` member tuples "
+            "and delete the table-backed property lookups."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=candidate.case_count,
+            mapping_name=candidate.table_name,
+            field_names=candidate.property_names,
+            source_name=candidate.class_name,
+        ),
+    )
+
+
 class SemanticTagTupleBoilerplateDetector(
     ModuleCollectorCandidateDetector[SemanticTagTupleBoilerplateCandidate]
 ):

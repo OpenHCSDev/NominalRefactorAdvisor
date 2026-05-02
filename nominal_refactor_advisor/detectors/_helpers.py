@@ -60,16 +60,7 @@ def _semantic_dict_bag_candidates(
                 self.visit(stmt)
             self.function_stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            candidates.extend(
-                _function_local_semantic_dict_bag_candidates(
-                    module, node, tuple(self.class_stack)
-                )
-            )
-            self.function_stack.append(node.name)
-            for stmt in _trim_docstring_body(node.body):
-                self.visit(stmt)
-            self.function_stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Call(self, node: ast.Call) -> None:
             for keyword in node.keywords:
@@ -117,10 +108,7 @@ def _function_local_semantic_dict_bag_candidates(
                 for stmt in _trim_docstring_body(node.body):
                     self.visit(stmt)
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is self.target_node:
-                for stmt in _trim_docstring_body(node.body):
-                    self.visit(stmt)
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             return None
@@ -4160,14 +4148,7 @@ def _semantic_string_literal_sites(
                 self.visit(stmt)
             self.function_stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.function_stack.append(node.name)
-            body = node.body
-            if body and _is_docstring_expr(body[0]):
-                body = body[1:]
-            for stmt in body:
-                self.visit(stmt)
-            self.function_stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Assign(self, node: ast.Assign) -> None:
             self._record_literals(node.value, node.lineno, "assign")
@@ -4555,10 +4536,7 @@ def _dispatch_dict_locations(
             self.generic_visit(node)
             self.function_depth -= 1
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.function_depth += 1
-            self.generic_visit(node)
-            self.function_depth -= 1
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Assign(self, node: ast.Assign) -> None:
             if self.function_depth > 0:
@@ -4572,17 +4550,7 @@ def _dispatch_dict_locations(
                     )
                 )
 
-        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-            if self.function_depth > 0:
-                return
-            if not isinstance(node.value, ast.Dict):
-                return
-            if _looks_like_dispatch_dict(node.value, min_string_cases):
-                locations.append(
-                    SourceLocation(
-                        str(module.path), node.lineno, "dict-string-dispatch"
-                    )
-                )
+        visit_AnnAssign = visit_Assign
 
     Visitor().visit(module.module)
     return locations
@@ -4903,10 +4871,7 @@ def _external_callsites_by_target_cached(
                 self.generic_visit(node)
                 self.function_stack.pop()
 
-            def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-                self.function_stack.append(node.name)
-                self.generic_visit(node)
-                self.function_stack.pop()
+            visit_AsyncFunctionDef = visit_FunctionDef
 
             def visit_Call(self, node: ast.Call) -> None:
                 for target in _resolved_import_call_target_symbols(
@@ -5889,15 +5854,8 @@ def _local_symbol_reference_sites(
             self.generic_visit(node)
             self.stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.stack.append(node.name)
-            self.generic_visit(node)
-            self.stack.pop()
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            self.stack.append(node.name)
-            self.generic_visit(node)
-            self.stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
 
         def visit_Name(self, node: ast.Name) -> None:
             references[node.id].add(self._site(node.lineno))
@@ -6533,9 +6491,7 @@ def _local_return_nodes(
             if node is function:
                 self.generic_visit(node)
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            if node is function:
-                self.generic_visit(node)
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             return None
@@ -6666,10 +6622,7 @@ def _manual_sorted_tuple_expression_candidates(
             self.generic_visit(node)
             self.function_stack.pop()
 
-        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
+        visit_AsyncFunctionDef = visit_FunctionDef
 
         def visit_Call(self, node: ast.Call) -> None:
             sorted_call = _sorted_call_in_tuple_expression(node)
@@ -7093,6 +7046,109 @@ def _field_only_frozen_dataclass_candidates(
         _field_only_frozen_dataclass_shape,
         _field_only_frozen_dataclass_candidate,
     )
+
+
+def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    body = _trim_docstring_body(method.body)
+    return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)
+
+
+def _duplicate_visitor_method_body_candidates(
+    module: ParsedModule,
+) -> tuple[DuplicateVisitorMethodBodyCandidate, ...]:
+    candidates: list[DuplicateVisitorMethodBodyCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            groups: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = defaultdict(list)
+            for statement in node.body:
+                if (
+                    isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and statement.name.startswith("visit_")
+                ):
+                    groups[_method_body_fingerprint(statement)].append(statement)
+            for methods in groups.values():
+                if len(methods) < 2:
+                    continue
+                candidates.append(
+                    DuplicateVisitorMethodBodyCandidate(
+                        file_path=str(module.path),
+                        line=methods[0].lineno,
+                        class_name=".".join(self.class_stack),
+                        method_names=tuple(method.name for method in methods),
+                        statement_count=len(_trim_docstring_body(methods[0].body)),
+                    )
+                )
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+def _enum_metadata_table_cases(module: ast.Module) -> dict[str, tuple[str, int]]:
+    tables: dict[str, tuple[str, int]] = {}
+    for statement in module.body:
+        binding = named_value_binding(statement)
+        value = as_ast(None if binding is None else binding.value, ast.Dict)
+        if binding is None or value is None:
+            continue
+        enum_key_names = tuple(
+            key.value.id
+            for key in value.keys
+            if isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name)
+        )
+        enum_names = set(enum_key_names)
+        if len(enum_key_names) == len(value.keys) and len(enum_names) == 1:
+            tables[binding.name] = (next(iter(enum_names)), len(value.keys))
+    return tables
+
+
+def _enum_metadata_property_table(method: ast.FunctionDef) -> str | None:
+    returned = single_return_value(_trim_docstring_body(method.body))
+    lookup_source = returned.value if isinstance(returned, ast.Attribute) else returned
+    lookup = as_ast(lookup_source, ast.Subscript)
+    table_name = name_id(None if lookup is None else lookup.value)
+    property_method = any(name_id(decorator) == "property" for decorator in method.decorator_list)
+    return (
+        table_name
+        if property_method and lookup is not None and name_id(lookup.slice) == "self"
+        else None
+    )
+
+
+def _enum_metadata_table_candidates(
+    module: ParsedModule,
+) -> tuple[EnumMetadataTableCandidate, ...]:
+    table_cases = _enum_metadata_table_cases(module.module)
+    candidates: list[EnumMetadataTableCandidate] = []
+    for statement in module.module.body:
+        if not isinstance(statement, ast.ClassDef):
+            continue
+        property_tables: dict[str, list[str]] = defaultdict(list)
+        for item in statement.body:
+            if isinstance(item, ast.FunctionDef):
+                table_name = _enum_metadata_property_table(item)
+                if table_name is not None:
+                    property_tables[table_name].append(item.name)
+        for table_name, property_names in property_tables.items():
+            enum_name, case_count = table_cases.get(table_name, (None, 0))
+            if enum_name == statement.name:
+                candidates.append(
+                    EnumMetadataTableCandidate(
+                        file_path=str(module.path),
+                        line=statement.lineno,
+                        class_name=statement.name,
+                        table_name=table_name,
+                        property_names=tuple(property_names),
+                        case_count=case_count,
+                    )
+                )
+    return tuple(candidates)
 
 
 _SEMANTIC_TAG_KEYWORDS = frozenset({"capability_tags", "observation_tags"})
