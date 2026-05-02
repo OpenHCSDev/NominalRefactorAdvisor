@@ -12,6 +12,7 @@ from collections import defaultdict
 
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..class_index import ClassFamilyIndex, IndexedClass
+from ..collection_algebra import sorted_tuple
 
 _TYPE_NAME_LITERAL = "type"
 
@@ -74,14 +75,8 @@ def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
 
 
 def _declared_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                base_name
-                for base_name in (_ast_terminal_name(base) for base in node.bases)
-                if base_name is not None
-            }
-        )
+    return sorted_tuple(
+        {base_name for base_name in (_ast_terminal_name(base) for base in node.bases) if base_name is not None},
     )
 
 
@@ -189,16 +184,9 @@ def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
         names = {
             name for element in node.elts for name in _annotation_type_names(element)
         }
-        return tuple(sorted(names))
+        return sorted_tuple(names)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return tuple(
-            sorted(
-                {
-                    *_annotation_type_names(node.left),
-                    *_annotation_type_names(node.right),
-                }
-            )
-        )
+        return sorted_tuple({*_annotation_type_names(node.left), *_annotation_type_names(node.right)})
     if isinstance(node, ast.Subscript):
         base_name = _ast_terminal_name(node.value)
         if base_name in {"Optional", "Required", "NotRequired", "Type", _TYPE_NAME_LITERAL}:
@@ -308,11 +296,8 @@ def _indexed_class_display_names(
     indexed_classes: tuple[IndexedClass, ...],
     class_index: ClassFamilyIndex,
 ) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            _indexed_class_display_name(indexed_class, class_index)
-            for indexed_class in indexed_classes
-        )
+    return sorted_tuple(
+        (_indexed_class_display_name(indexed_class, class_index) for indexed_class in indexed_classes),
     )
 
 

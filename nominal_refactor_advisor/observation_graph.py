@@ -10,8 +10,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
+from .collection_algebra import sorted_tuple
 from .export_tools import PublicExportPolicy, derive_public_exports
 
 if TYPE_CHECKING:
@@ -81,12 +82,34 @@ class StructuralObservationCarrier(ABC):
 
 
 @dataclass(frozen=True)
+class SortedObservationAttribute:
+    """Descriptor for sorted unique string projections from an observation group."""
+
+    attribute_name: str
+
+    def __get__(
+        self,
+        instance: ObservationGroup | None,
+        owner: type[ObservationGroup],
+    ) -> tuple[str, ...] | SortedObservationAttribute:
+        del owner
+        if instance is None:
+            return self
+        return instance.sorted_observation_attribute(self.attribute_name)
+
+
+@dataclass(frozen=True)
 class ObservationGroup:
     """Common carrier for grouped observations under one structural axis."""
 
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     observations: tuple[StructuralObservation, ...]
+
+    def sorted_observation_attribute(self, attribute_name: str) -> tuple[str, ...]:
+        return sorted_tuple(
+            {cast(str, getattr(item, attribute_name)) for item in self.observations}
+        )
 
 
 @dataclass(frozen=True)
@@ -99,9 +122,7 @@ class ObservationFiber(ObservationGroup):
     def observed_name(self) -> str:
         return self.observations[0].observed_name
 
-    @property
-    def nominal_witnesses(self) -> tuple[str, ...]:
-        return tuple(sorted({item.nominal_witness for item in self.observations}))
+    nominal_witnesses = SortedObservationAttribute("nominal_witness")
 
 
 @dataclass(frozen=True)
@@ -110,13 +131,8 @@ class NominalWitnessGroup(ObservationGroup):
 
     nominal_witness: str
 
-    @property
-    def observed_names(self) -> tuple[str, ...]:
-        return tuple(sorted({item.observed_name for item in self.observations}))
-
-    @property
-    def fiber_keys(self) -> tuple[str, ...]:
-        return tuple(sorted({item.fiber_key for item in self.observations}))
+    observed_names = SortedObservationAttribute("observed_name")
+    fiber_keys = SortedObservationAttribute("fiber_key")
 
 
 @dataclass(frozen=True)
@@ -161,21 +177,13 @@ class ObservationGraph:
                 observation_kind=kind,
                 execution_level=execution_level,
                 fiber_key=fiber_key,
-                observations=tuple(
-                    sorted(items, key=lambda item: (item.file_path, item.line))
-                ),
+                observations=sorted_tuple(items, key=lambda item: (item.file_path, item.line)),
             )
             for (kind, execution_level, fiber_key), items in grouped.items()
         ]
-        return tuple(
-            sorted(
-                fibers,
-                key=lambda item: (
-                    item.observation_kind,
-                    item.execution_level,
-                    item.fiber_key,
-                ),
-            )
+        return sorted_tuple(
+            fibers,
+            key=lambda item: (item.observation_kind, item.execution_level, item.fiber_key),
         )
 
     def fibers_for(
@@ -219,20 +227,11 @@ class ObservationGraph:
                 observation_kind=observation_kind,
                 execution_level=execution_level,
                 nominal_witness=nominal_witness,
-                observations=tuple(
-                    sorted(
-                        items,
-                        key=lambda item: (
-                            item.file_path,
-                            item.line,
-                            item.owner_symbol,
-                        ),
-                    )
-                ),
+                observations=sorted_tuple(items, key=lambda item: (item.file_path, item.line, item.owner_symbol)),
             )
             for nominal_witness, items in grouped.items()
         ]
-        return tuple(sorted(groups, key=lambda item: item.nominal_witness))
+        return sorted_tuple(groups, key=lambda item: item.nominal_witness)
 
     def coherence_cohorts_for(
         self,
@@ -255,30 +254,16 @@ class ObservationGraph:
             )
             for group in self.witness_groups_for(observation_kind, execution_level)
         }
-        witness_names = tuple(
-            sorted(
-                witness
-                for witness, fiber_keys in witness_to_fiber_keys.items()
-                if len(fiber_keys) >= minimum_fibers
-            )
-        )
+        witness_names = sorted_tuple((witness for witness, fiber_keys in witness_to_fiber_keys.items() if len(fiber_keys) >= minimum_fibers))
         cohorts: dict[tuple[tuple[str, ...], tuple[str, ...]], ObservationCohort] = {}
         for left_index, left_name in enumerate(witness_names):
             left_keys = witness_to_fiber_keys[left_name]
             for right_name in witness_names[left_index + 1 :]:
-                shared_keys = tuple(
-                    sorted(left_keys & witness_to_fiber_keys[right_name])
-                )
+                shared_keys = sorted_tuple(left_keys & witness_to_fiber_keys[right_name])
                 if len(shared_keys) < minimum_fibers:
                     continue
                 shared_key_set = frozenset(shared_keys)
-                supporting_witnesses = tuple(
-                    sorted(
-                        witness
-                        for witness, fiber_keys in witness_to_fiber_keys.items()
-                        if shared_key_set <= fiber_keys
-                    )
-                )
+                supporting_witnesses = sorted_tuple((witness for witness, fiber_keys in witness_to_fiber_keys.items() if shared_key_set <= fiber_keys))
                 if len(supporting_witnesses) < minimum_witnesses:
                     continue
                 cohorts[(supporting_witnesses, shared_keys)] = ObservationCohort(
@@ -289,16 +274,9 @@ class ObservationGraph:
                         relevant_fibers[fiber_key] for fiber_key in shared_keys
                     ),
                 )
-        return tuple(
-            sorted(
-                cohorts.values(),
-                key=lambda item: (
-                    item.observation_kind,
-                    item.execution_level,
-                    item.nominal_witnesses,
-                    item.fiber_keys,
-                ),
-            )
+        return sorted_tuple(
+            cohorts.values(),
+            key=lambda item: (item.observation_kind, item.execution_level, item.nominal_witnesses, item.fiber_keys),
         )
 
 
@@ -315,12 +293,7 @@ def collect_structural_observations(
             for item in collect_family_items(parsed_module, family)
             if isinstance(item, StructuralObservationCarrier)
         )
-    return tuple(
-        sorted(
-            observations,
-            key=lambda item: (item.file_path, item.line, item.owner_symbol),
-        )
-    )
+    return sorted_tuple(observations, key=lambda item: (item.file_path, item.line, item.owner_symbol))
 
 
 def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:

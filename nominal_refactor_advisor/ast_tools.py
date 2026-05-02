@@ -19,6 +19,7 @@ from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .collection_algebra import sorted_tuple
 from .semantic_match import (
     AstTypedEffectStep,
     GuardedEffectStep,
@@ -643,7 +644,7 @@ def _iter_attribute_family_calls(
         if matched_name is None:
             continue
         observations.append(AstCallObservation(call=node, matched_name=matched_name))
-    return tuple(sorted(observations, key=lambda item: item.call.lineno))
+    return sorted_tuple(observations, key=lambda item: item.call.lineno)
 
 
 def _attribute_call_family_name(node: ast.Call, family: AstNameFamily) -> str | None:
@@ -666,7 +667,7 @@ def _iter_class_decorator_family_calls(
             if matched_name is None:
                 continue
             observations.append((node, decorator, matched_name))
-    return tuple(sorted(observations, key=lambda item: item[0].lineno))
+    return sorted_tuple(observations, key=lambda item: item[0].lineno)
 
 
 def _node_display_name(node: ast.AST) -> str:
@@ -1056,9 +1057,7 @@ def _inline_literal_dispatch_groups(
         )
     observations: list[LiteralDispatchObservation] = []
     for axis_fingerprint, items in groups.items():
-        literal_cases = tuple(
-            sorted({literal_case for _, _, literal_case in items}, key=str)
-        )
+        literal_cases = sorted_tuple({literal_case for _, _, literal_case in items}, key=str)
         if len(literal_cases) < 2:
             continue
         observations.append(
@@ -1071,11 +1070,11 @@ def _inline_literal_dispatch_groups(
                 literal_cases=literal_cases,
                 literal_kind=literal_kind,
                 execution_level=_execution_level_for_scope(owner_name),
-                branch_lines=tuple(sorted(line for line, _, _ in items)),
+                branch_lines=sorted_tuple((line for line, _, _ in items)),
                 scope_owner=owner_name,
             )
         )
-    return tuple(sorted(observations, key=lambda item: item.line))
+    return sorted_tuple(observations, key=lambda item: item.line)
 
 
 _LITERAL_DISPATCH_KINDS: tuple[tuple[type[object], LiteralKind], ...] = (
@@ -1110,7 +1109,7 @@ def _literal_dispatch_observations(
             )
             if observation is not None:
                 observations.append(observation)
-    return tuple(sorted(observations, key=lambda item: (item.line, item.literal_kind)))
+    return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
 
 
 def _literal_dispatch_observations_for_kind(
@@ -1140,7 +1139,7 @@ def _inline_literal_dispatch_observations(
                     literal_kind,
                 )
             )
-    return tuple(sorted(observations, key=lambda item: (item.line, item.literal_kind)))
+    return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))
 
 
 def _inline_literal_dispatch_observations_for_kind(
@@ -1630,9 +1629,7 @@ def _config_dispatch_observations(
                         observed_attribute=attr_name,
                     )
                 )
-    return tuple(
-        sorted(observations, key=lambda item: (item.line, item.observed_attribute))
-    )
+    return sorted_tuple(observations, key=lambda item: (item.line, item.observed_attribute))
 
 
 def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
@@ -1667,7 +1664,7 @@ def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
                 attrs.add(left_name)
             if right_name is not None and left_literal is not None:
                 attrs.add(right_name)
-    return tuple(sorted(attrs))
+    return sorted_tuple(attrs)
 
 
 def _match_config_dispatch_attributes(subject: ast.AST) -> tuple[str, ...]:
@@ -1717,7 +1714,7 @@ def _class_marker_observations(
                         marker_name=node.attr,
                     )
                 )
-    return tuple(sorted(observations, key=lambda item: (item.line, item.marker_name)))
+    return sorted_tuple(observations, key=lambda item: (item.line, item.marker_name))
 
 
 def _interface_generation_observation(
@@ -1801,7 +1798,7 @@ def _sentinel_type_usage_observations(
                         sentinel_name=name,
                     )
                 )
-    return tuple(sorted(observations, key=lambda item: (item.line, item.sentinel_name)))
+    return sorted_tuple(observations, key=lambda item: (item.line, item.sentinel_name))
 
 
 def _dynamic_method_injection_observations(
@@ -1826,7 +1823,7 @@ def _dynamic_method_injection_observations(
                     mutator_name=_SETATTR_BUILTIN,
                 )
             )
-    return tuple(sorted(observations, key=lambda item: item.line))
+    return sorted_tuple(observations, key=lambda item: item.line)
 
 
 def _runtime_type_generation_observation(

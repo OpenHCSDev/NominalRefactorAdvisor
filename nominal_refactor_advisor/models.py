@@ -12,6 +12,7 @@ from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
+from .collection_algebra import sorted_tuple
 from .patterns import PatternId
 
 from .taxonomy import (
@@ -860,4 +861,4 @@ def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
         for metric_type in _descendant_types(FindingMetrics)
         if is_dataclass(metric_type)
     )
-    return tuple(sorted(discovered, key=lambda metric_type: metric_type.__name__))
+    return sorted_tuple(discovered, key=lambda metric_type: metric_type.__name__)

@@ -88,18 +88,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        builders = tuple(
-            sorted(
-                (
-                    builder
-                    for module in modules
-                    for builder in _collect_typed_family_items(
-                        module, BuilderCallShapeFamily, BuilderCallShape
-                    )
-                ),
-                key=lambda item: (item.file_path, item.lineno, item.symbol),
-            )
-        )
+        builders = sorted_tuple((builder for module in modules for builder in _collect_typed_family_items(module, BuilderCallShapeFamily, BuilderCallShape)), key=lambda item: (item.file_path, item.lineno, item.symbol))
         findings: list[RefactorFinding] = []
         findings.extend(self._exact_mapping_findings(builders, config))
         findings.extend(self._single_owner_family_findings(builders, config))
@@ -122,7 +111,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
             ].append(builder)
         findings: list[RefactorFinding] = []
         for group in grouped.values():
-            ordered = tuple(sorted(group, key=lambda item: (item.file_path, item.lineno)))
+            ordered = sorted_tuple(group, key=lambda item: (item.file_path, item.lineno))
             if len(ordered) < 2 or len({builder.symbol for builder in ordered}) < 2:
                 continue
             evidence = tuple(
@@ -167,12 +156,10 @@ class RepeatedBuilderCallDetector(IssueDetector):
         findings: list[RefactorFinding] = []
         minimum_sites = max(config.min_builder_keywords, 4)
         for owner_key, group in grouped.items():
-            ordered = tuple(sorted(group, key=lambda item: (item.file_path, item.lineno)))
+            ordered = sorted_tuple(group, key=lambda item: (item.file_path, item.lineno))
             if len(ordered) < minimum_sites:
                 continue
-            distinct_keyword_names = tuple(
-                sorted({name for builder in ordered for name in builder.keyword_names})
-            )
+            distinct_keyword_names = sorted_tuple({name for builder in ordered for name in builder.keyword_names})
             if len(distinct_keyword_names) < config.min_builder_keywords:
                 continue
             if len({builder.keyword_names for builder in ordered}) < 2:
@@ -238,12 +225,7 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
     def _finding_from_group(
         self, shapes: tuple[object, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
-        export_shapes = tuple(
-            sorted(
-                (_as_export_shape(shape) for shape in shapes),
-                key=lambda item: (item.file_path, item.lineno),
-            )
-        )
+        export_shapes = sorted_tuple((_as_export_shape(shape) for shape in shapes), key=lambda item: (item.file_path, item.lineno))
         if len(export_shapes) < 2:
             return None
         owner_symbols = {shape.symbol for shape in export_shapes}
@@ -300,12 +282,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
     def _finding_from_group(
         self, shapes: tuple[object, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
-        registrations = tuple(
-            sorted(
-                (_as_registration_shape(shape) for shape in shapes),
-                key=lambda item: (item.file_path, item.lineno),
-            )
-        )
+        registrations = sorted_tuple((_as_registration_shape(shape) for shape in shapes), key=lambda item: (item.file_path, item.lineno))
         if len(registrations) < config.min_registration_sites:
             return None
         class_names = {item.registered_class for item in registrations}
@@ -329,7 +306,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
                 registration_site_count=len(registrations),
                 class_count=len(class_names),
                 registry_name=registry_name,
-                class_names=tuple(sorted(class_names)),
+                class_names=sorted_tuple(class_names),
                 class_key_pairs=tuple(
                     f"{item.registered_class}={item.key_expression}"
                     for item in registrations
@@ -1461,7 +1438,7 @@ def _static_payload_marker_kinds(value: str) -> tuple[str, ...]:
         markers.add("query_language")
     if re.search(r"^[A-Za-z0-9_.-]+:\s+.+$", value, re.M):
         markers.add("keyed_config")
-    return tuple(sorted(markers))
+    return sorted_tuple(markers)
 
 
 def _static_payload_stats(
@@ -1477,15 +1454,7 @@ def _static_payload_stats(
         for value in literal_values
         if len(value.strip()) >= 80 and _payload_literal_line_count(value) >= 2
     )
-    marker_kinds = tuple(
-        sorted(
-            {
-                marker
-                for value in payload_values
-                for marker in _static_payload_marker_kinds(value)
-            }
-        )
-    )
+    marker_kinds = sorted_tuple({marker for value in payload_values for marker in _static_payload_marker_kinds(value)})
     return StaticPayloadStats(
         payload_line_count=sum(_payload_literal_line_count(value) for value in payload_values),
         largest_literal_line_count=max(
@@ -1522,7 +1491,7 @@ def _static_payload_sink_kinds(
             node.value, (ast.Constant, ast.JoinedStr)
         ):
             sink_kinds.add("return-payload")
-    return tuple(sorted(sink_kinds))
+    return sorted_tuple(sink_kinds)
 
 
 def _node_within_function(
@@ -1626,9 +1595,7 @@ def _embedded_static_payload_candidates(
                 ),
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
 class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetector[EmbeddedStaticPayloadCandidate]):
@@ -1752,9 +1719,7 @@ def _unreferenced_private_function_candidates(
                 ),
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
 class UnreferencedPrivateFunctionDetector(ConfiguredModuleCollectorCandidateDetector[UnreferencedPrivateFunctionCandidate]):
@@ -1882,7 +1847,7 @@ def _method_name_family_tokens(method_names: tuple[str, ...]) -> tuple[str, ...]
     if not token_sets:
         return ()
     shared = set.intersection(*token_sets)
-    return tuple(sorted(token for token in shared if len(token) >= 3))
+    return sorted_tuple((token for token in shared if len(token) >= 3))
 
 
 def _sibling_small_method_template_candidates(
@@ -1912,7 +1877,7 @@ def _sibling_small_method_template_candidates(
     for (owner_name, parameter_count, template), functions in grouped.items():
         if len(functions) < 2:
             continue
-        ordered = tuple(sorted(functions, key=lambda item: (item[1].lineno, item[0])))
+        ordered = sorted_tuple(functions, key=lambda item: (item[1].lineno, item[0]))
         method_names = tuple(function.name for _, function in ordered)
         if not _method_name_family_tokens(method_names):
             continue
@@ -1928,7 +1893,7 @@ def _sibling_small_method_template_candidates(
                 parameter_count=parameter_count,
             )
         )
-    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.owner_name)))
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.owner_name))
 
 
 class SiblingSmallMethodTemplateDetector(ModuleCollectorCandidateDetector[SiblingSmallMethodTemplateCandidate]):
@@ -2123,7 +2088,7 @@ def _constant_names_in_node(node: ast.AST) -> tuple[str, ...]:
         for child in _walk_nodes(node)
         if (name := _uppercase_constant_name(child)) is not None
     }
-    return tuple(sorted(names))
+    return sorted_tuple(names)
 
 
 def _constant_backed_dispatch_tests(
@@ -2179,11 +2144,11 @@ def _constant_backed_dispatch_axis_candidates(
 
     candidates: list[ConstantBackedDispatchAxisCandidate] = []
     for (axis_name, constant_prefix), sites in grouped.items():
-        constant_names = tuple(sorted({name for _, _, names in sites for name in names}))
+        constant_names = sorted_tuple({name for _, _, names in sites for name in names})
         function_names = tuple(dict.fromkeys(qualname for qualname, _, _ in sites))
         if len(constant_names) < 4 or len(function_names) < 2:
             continue
-        ordered_sites = tuple(sorted(sites, key=lambda item: (item[1], item[0])))
+        ordered_sites = sorted_tuple(sites, key=lambda item: (item[1], item[0]))
         evidence_by_function: dict[str, int] = {}
         for qualname, line, _ in ordered_sites:
             evidence_by_function.setdefault(qualname, line)
@@ -2198,7 +2163,7 @@ def _constant_backed_dispatch_axis_candidates(
                 line_numbers=tuple(evidence_by_function.values()),
             )
         )
-    return tuple(sorted(candidates, key=lambda item: (item.file_path, item.line, item.axis_name)))
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.axis_name))
 
 
 class ConstantBackedDispatchAxisDetector(ConfiguredModuleCollectorCandidateDetector[ConstantBackedDispatchAxisCandidate]):
@@ -2339,7 +2304,7 @@ def _manual_process_step_ladder_candidates(
             sites.append((qualname, table_name, table_line, step_count))
     if len(sites) < 2:
         return ()
-    ordered = tuple(sorted(sites, key=lambda item: (item[2], item[0], item[1])))
+    ordered = sorted_tuple(sites, key=lambda item: (item[2], item[0], item[1]))
     return (
         ManualProcessStepLadderCandidate(
             file_path=str(module.path),
@@ -2599,7 +2564,7 @@ def _repeated_local_regex_bundle_candidates(
             for right_name, _right_function, right_literals in functions[
                 left_index + 1 :
             ]:
-                shared = tuple(sorted(set(left_literals) & set(right_literals)))
+                shared = sorted_tuple(set(left_literals) & set(right_literals))
                 if len(shared) < config.min_repeated_local_regex_literals:
                     continue
                 line_numbers = (
@@ -2616,16 +2581,9 @@ def _repeated_local_regex_bundle_candidates(
                         line_numbers=line_numbers,
                     )
                 )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate.file_path,
-                candidate.line,
-                candidate.function_names,
-                candidate.regex_literals,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (candidate.file_path, candidate.line, candidate.function_names, candidate.regex_literals),
     )
 
 
@@ -2768,9 +2726,7 @@ def _algebraic_duplicate_compound_block_candidates(
             )
         if len(first_site_by_function) < 2:
             continue
-        ordered_items = tuple(
-            sorted(first_site_by_function.items(), key=lambda item: item[1][0])
-        )
+        ordered_items = sorted_tuple(first_site_by_function.items(), key=lambda item: item[1][0])
         candidates.append(
             AlgebraicDuplicateCompoundBlockCandidate(
                 file_path=str(module.path),
@@ -2781,16 +2737,9 @@ def _algebraic_duplicate_compound_block_candidates(
                 normal_form_size=_algebraic_normal_form_size(normal_form),
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate.file_path,
-                candidate.line,
-                candidate.block_kind,
-                candidate.function_names,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (candidate.file_path, candidate.line, candidate.block_kind, candidate.function_names),
     )
 
 
@@ -3025,11 +2974,7 @@ class AccessorWrapperDetector(ModuleCollectorCandidateDetector[tuple[AccessorWra
                     {ordered_item.observed_attribute for ordered_item in ordered}
                 ),
                 mapping_name=f"{class_name} property",
-                field_names=tuple(
-                    sorted(
-                        {ordered_item.observed_attribute for ordered_item in ordered}
-                    )
-                ),
+                field_names=sorted_tuple({ordered_item.observed_attribute for ordered_item in ordered}),
             ),
         )
 
@@ -3098,7 +3043,7 @@ def _flattened_projection_properties(
                 )
             )
     return tuple(
-        tuple(sorted(items, key=lambda item: (item.line, item.property_name)))
+        sorted_tuple(items, key=lambda item: (item.line, item.property_name))
         for _, items in sorted(grouped.items())
         if len(items) >= 2
     )
@@ -3161,15 +3106,7 @@ class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidat
     def _finding_for_candidate(self, chain_candidate: WrapperChainCandidate) -> RefactorFinding:
         wrapper_symbols = tuple(item.qualname for item in chain_candidate.wrappers)
         evidence = tuple(item.evidence for item in chain_candidate.wrappers[:6])
-        projected_attributes = tuple(
-            sorted(
-                {
-                    attr
-                    for item in chain_candidate.wrappers
-                    for attr in item.projected_attributes
-                }
-            )
-        )
+        projected_attributes = sorted_tuple({attr for item in chain_candidate.wrappers for attr in item.projected_attributes})
         scaffold = (
             "Keep one authoritative view/carrier and derive the smaller wrapper views directly from it.\n\n"
             f"Wrapper chain: {' -> '.join(wrapper_symbols)} -> {chain_candidate.leaf_delegate_symbol}"

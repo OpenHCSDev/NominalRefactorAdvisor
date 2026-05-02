@@ -350,9 +350,7 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
             )
             for candidate in candidates[:6]
         )
-        collector_names = tuple(
-            sorted({candidate.candidate_source_name for candidate in candidates})
-        )
+        collector_names = sorted_tuple({candidate.candidate_source_name for candidate in candidates})
         return [
             self.build_finding(
                 (
@@ -472,7 +470,7 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
             )
             for candidate in candidates[:6]
         )
-        scope_roles = tuple(sorted({candidate.scope_role for candidate in candidates}))
+        scope_roles = sorted_tuple({candidate.scope_role for candidate in candidates})
         return [
             self.build_finding(
                 (

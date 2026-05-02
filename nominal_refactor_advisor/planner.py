@@ -13,6 +13,8 @@ from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
 from typing import Callable, Sequence, TypeVar
+
+from .collection_algebra import sorted_tuple
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -560,16 +562,7 @@ def _cluster_findings(
 
     clusters: list[_FindingCluster] = []
     for group_findings in grouped.values():
-        ordered_findings = tuple(
-            sorted(
-                group_findings,
-                key=lambda finding: (
-                    _subsystem_name((finding,), root),
-                    finding.pattern_id,
-                    finding.title,
-                ),
-            )
-        )
+        ordered_findings = sorted_tuple(group_findings, key=lambda finding: (_subsystem_name((finding,), root), finding.pattern_id, finding.title))
         clusters.append(
             _FindingCluster(
                 subsystem=_subsystem_name(ordered_findings, root),
@@ -695,7 +688,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
 def _select_pattern_cover(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[PatternId, ...]:
-    pattern_ids = tuple(sorted({finding.pattern_id for finding in findings}))
+    pattern_ids = sorted_tuple({finding.pattern_id for finding in findings})
     required_capabilities = set(_unique_capabilities(findings))
     if not pattern_ids:
         return ()
@@ -1210,7 +1203,7 @@ def _dedupe_preserve_order(items) -> list[str]:
 
 def _evidence_paths(finding: RefactorFinding) -> tuple[Path, ...]:
     paths = {Path(item.file_path) for item in finding.evidence}
-    return tuple(sorted(paths))
+    return sorted_tuple(paths)
 
 
 def _safe_relative(path: Path, root: Path) -> Path:

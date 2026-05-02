@@ -3058,6 +3058,59 @@ class LocalRuleDetector(IssueDetector):
     assert "coordinate names" in (findings[0].codemod_patch or "")
 
 
+def test_detects_manual_sorted_tuple_return(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def ordered_names(items):
+    return tuple(
+        sorted(
+            {item.name for item in items},
+            key=str.lower,
+        )
+    )
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "manual_sorted_tuple_return"
+    ]
+
+    assert len(findings) == 1
+    assert "ordered_names" in findings[0].summary
+    assert "sorted_tuple" in (findings[0].codemod_patch or "")
+
+
+def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def ordered_payload(items):
+    names = tuple(
+        sorted(
+            {item.name for item in items},
+            key=str.lower,
+        )
+    )
+    return {"names": names}
+""",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "manual_sorted_tuple_expression"
+    ]
+
+    assert len(findings) == 1
+    assert "ordered_payload" in findings[0].summary
+    assert "expression payloads" in (findings[0].codemod_patch or "")
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

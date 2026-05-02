@@ -25,6 +25,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from ..semantic_match import (
+    AstTypedEffectStep,
     FirstSuccessfulEffectStep,
     GuardedEffectStep,
     Maybe,
@@ -106,6 +107,7 @@ from ..class_index import (
     _module_import_aliases,
     build_class_family_index,
 )
+from ..collection_algebra import sorted_tuple
 from ..models import (
     CERTIFIED,
     SPECULATIVE,
@@ -189,7 +191,7 @@ def _semantic_tag_token_matchers(
             for alias, member_name in _SEMANTIC_TAG_NAME_ALIASES.get(tag_enum, {}).items()
         ),
     )
-    return tuple(sorted(rows, key=lambda row: (-len(row[0]), row[0])))
+    return sorted_tuple(rows, key=lambda row: (-len(row[0]), row[0]))
 
 
 def _semantic_tag_constant_suffix(
@@ -224,7 +226,7 @@ def _semantic_tag_tuple_from_constant_name(constant_name: str) -> tuple[Semantic
 @lru_cache(maxsize=1)
 def _semantic_tag_constant_names_from_detector_sources() -> tuple[str, ...]:
     detector_source = "\n".join(source_path.read_text() for source_path in Path(__file__).parent.glob("_*.py"))
-    return tuple(sorted(set(_SEMANTIC_TAG_CONSTANT_NAME_RE.findall(detector_source))))
+    return sorted_tuple(set(_SEMANTIC_TAG_CONSTANT_NAME_RE.findall(detector_source)))
 
 
 globals().update({
@@ -461,16 +463,9 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
-        return tuple(
-            sorted(
-                detector_registry.values(),
-                key=lambda item: (
-                    item.detector_priority,
-                    item.__module__,
-                    vars(item).get("__firstlineno__", 0),
-                    item.__qualname__,
-                ),
-            )
+        return sorted_tuple(
+            detector_registry.values(),
+            key=lambda item: (item.detector_priority, item.__module__, vars(item).get('__firstlineno__', 0), item.__qualname__),
         )
 
     def detect(
@@ -960,14 +955,14 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
                     line_count=end_lineno - node.lineno + 1,
                     branch_count=branch_count,
                     call_count=call_count,
-                    callee_names=tuple(sorted(callee_name_set)),
+                    callee_names=sorted_tuple(callee_name_set),
                     parameter_names=_parameter_names(node),
                 )
             )
             self.generic_visit(node)
 
     Visitor().visit(module.module)
-    return tuple(sorted(profiles, key=lambda item: (item.lineno, item.qualname)))
+    return sorted_tuple(profiles, key=lambda item: (item.lineno, item.qualname))
 
 
 _PRIVATE_SUBSYSTEM_TOKEN_STOPWORDS = frozenset(
@@ -1054,7 +1049,7 @@ def _top_level_private_symbol_references(
             self.generic_visit(node)
 
     Visitor().visit(node)
-    return tuple(sorted(referenced))
+    return sorted_tuple(referenced)
 
 
 @lru_cache(maxsize=None)
@@ -1089,7 +1084,7 @@ def _top_level_private_symbol_profiles(
                 ),
             )
         )
-    return tuple(sorted(profiles, key=lambda item: (item.line, item.symbol)))
+    return sorted_tuple(profiles, key=lambda item: (item.line, item.symbol))
 
 
 def _suggest_private_cohort_module_name(
@@ -1184,15 +1179,9 @@ def _dedupe_private_cohort_candidates(
             continue
         accepted.append(candidate)
         accepted_symbol_sets.append(symbol_names)
-    return tuple(
-        sorted(
-            accepted,
-            key=lambda item: (
-                item.file_path,
-                item.symbols[0].line,
-                -item.total_cohort_lines,
-            ),
-        )
+    return sorted_tuple(
+        accepted,
+        key=lambda item: (item.file_path, item.symbols[0].line, -item.total_cohort_lines),
     )
 
 
@@ -1216,14 +1205,14 @@ def _private_cohort_should_be_module_candidates(
         for referenced_name in profile.referenced_private_symbols:
             if referenced_name not in profile_by_name:
                 continue
-            edge = tuple(sorted((profile.symbol, referenced_name)))
+            edge = sorted_tuple((profile.symbol, referenced_name))
             reference_edges.add(edge)
             adjacency[edge[0]].add(edge[1])
             adjacency[edge[1]].add(edge[0])
     for left, right in combinations(profiles, 2):
         if len(set(left.name_tokens) & set(right.name_tokens)) < 2:
             continue
-        edge = tuple(sorted((left.symbol, right.symbol)))
+        edge = sorted_tuple((left.symbol, right.symbol))
         lexical_edges.add(edge)
         adjacency[edge[0]].add(edge[1])
         adjacency[edge[1]].add(edge[0])
@@ -1237,12 +1226,7 @@ def _private_cohort_should_be_module_candidates(
     for token_pair, symbol_names in token_pair_groups.items():
         if len(symbol_names) < min_symbol_count:
             continue
-        members = tuple(
-            sorted(
-                (profile_by_name[name] for name in symbol_names),
-                key=lambda item: (item.line, item.symbol),
-            )
-        )
+        members = sorted_tuple((profile_by_name[name] for name in symbol_names), key=lambda item: (item.line, item.symbol))
         candidate = _build_private_cohort_candidate(
             module=module,
             module_line_count=module_line_count,
@@ -1277,12 +1261,7 @@ def _private_cohort_should_be_module_candidates(
         seen.update(component_names)
         if len(component_names) < min_symbol_count:
             continue
-        members = tuple(
-            sorted(
-                (profile_by_name[name] for name in component_names),
-                key=lambda item: (item.line, item.symbol),
-            )
-        )
+        members = sorted_tuple((profile_by_name[name] for name in component_names), key=lambda item: (item.line, item.symbol))
         candidate = _build_private_cohort_candidate(
             module=module,
             module_line_count=module_line_count,
@@ -1315,11 +1294,7 @@ def _parameter_thread_family_candidates(
     ] = {}
     adjacency: dict[str, set[str]] = defaultdict(set)
     for left, right in combinations(profiles, 2):
-        shared_parameter_names = tuple(
-            sorted(
-                set(left.semantic_parameter_names) & set(right.semantic_parameter_names)
-            )
-        )
+        shared_parameter_names = sorted_tuple(set(left.semantic_parameter_names) & set(right.semantic_parameter_names))
         if len(shared_parameter_names) < config.min_shared_parameters:
             continue
         functions = tuple(
@@ -1379,15 +1354,9 @@ def _parameter_thread_family_candidates(
             ),
         )
         component_candidates.append(best_candidate)
-    return tuple(
-        sorted(
-            component_candidates,
-            key=lambda item: (
-                -len(item.shared_parameter_names),
-                -len(item.functions),
-                item.functions[0].qualname,
-            ),
-        )
+    return sorted_tuple(
+        component_candidates,
+        key=lambda item: (-len(item.shared_parameter_names), -len(item.functions), item.functions[0].qualname),
     )
 
 
@@ -1416,7 +1385,7 @@ def _suffix_axis_surface_methods(
                 statement_count=len(_trim_docstring_body(function.body)),
             )
         )
-    return tuple(sorted(methods, key=lambda item: (item.file_path, item.line, item.qualname)))
+    return sorted_tuple(methods, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
 def _suffix_axis_surface_candidates(
@@ -1434,7 +1403,7 @@ def _suffix_axis_surface_candidates(
         tuple[str, tuple[str, ...]], list[tuple[str, tuple[SuffixAxisSurfaceMethod, ...]]]
     ] = defaultdict(list)
     for (owner_name, operation_name), operation_methods in grouped_by_operation.items():
-        axis_names = tuple(sorted({method.axis_name for method in operation_methods}))
+        axis_names = sorted_tuple({method.axis_name for method in operation_methods})
         if len(axis_names) < 2:
             continue
         methods_by_axis = {
@@ -1450,7 +1419,7 @@ def _suffix_axis_surface_candidates(
     for (owner_name, axis_names), operation_groups in grouped_by_axis_set.items():
         if len(operation_groups) < min_operation_count:
             continue
-        ordered_groups = tuple(sorted(operation_groups, key=lambda item: item[0]))
+        ordered_groups = sorted_tuple(operation_groups, key=lambda item: item[0])
         methods = tuple(method for _, group_methods in ordered_groups for method in group_methods)
         candidates.append(
             SuffixAxisSurfaceCandidate(
@@ -1461,16 +1430,9 @@ def _suffix_axis_surface_candidates(
                 methods=methods,
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.owner_name,
-                item.axis_names,
-                item.operation_names,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.owner_name, item.axis_names, item.operation_names),
     )
 
 
@@ -1604,12 +1566,7 @@ def _sibling_role_helper_symmetry_candidates(
 
     candidates: list[SiblingRoleHelperSymmetryCandidate] = []
     for (owner_name, shared_tokens, _), methods_by_qualname in grouped.items():
-        methods = tuple(
-            sorted(
-                methods_by_qualname.values(),
-                key=lambda item: (item.file_path, item.line, item.qualname),
-            )
-        )
+        methods = sorted_tuple(methods_by_qualname.values(), key=lambda item: (item.file_path, item.line, item.qualname))
         role_tokens = {method.role_token for method in methods}
         if len(methods) < 2 or len(role_tokens) < 2:
             continue
@@ -1624,12 +1581,7 @@ def _sibling_role_helper_symmetry_candidates(
             )
         )
 
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.owner_name, item.shared_tokens),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.owner_name, item.shared_tokens))
 
 
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
@@ -1737,7 +1689,7 @@ def _enum_projection_tables(
                     value_summaries=tuple(value_summaries),
                 )
             )
-    return tuple(sorted(tables, key=lambda item: (item.file_path, item.line, item.table_name)))
+    return sorted_tuple(tables, key=lambda item: (item.file_path, item.line, item.table_name))
 
 
 def _subscript_axis_expr_for_table(node: ast.AST, table_name: str) -> str | None:
@@ -1766,7 +1718,7 @@ def _residual_enum_branch_cases(
         for operand in operands:
             if operand.startswith(f"{enum_name}."):
                 case_names.add(operand.split(".", 1)[1])
-    return tuple(sorted(case_names))
+    return sorted_tuple(case_names)
 
 
 def _residual_closed_axis_indirection_candidates(
@@ -1813,16 +1765,9 @@ def _residual_closed_axis_indirection_candidates(
                         table_value_summaries=table.value_summaries,
                     )
                 )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.qualname,
-                item.table_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.line, item.qualname, item.table_name),
     )
 
 
@@ -2008,12 +1953,7 @@ def _inline_enum_subset_guard_candidates(
                     operator=operator,
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.function_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.function_name))
 
 
 def _enum_strategy_dispatch_candidates(
@@ -2058,12 +1998,7 @@ def _enum_strategy_dispatch_candidates(
             existing = candidate_map.get(key)
             if existing is None or len(candidate.case_names) > len(existing.case_names):
                 candidate_map[key] = candidate
-    return tuple(
-        sorted(
-            candidate_map.values(),
-            key=lambda item: (item.file_path, item.lineno, item.qualname),
-        )
-    )
+    return sorted_tuple(candidate_map.values(), key=lambda item: (item.file_path, item.lineno, item.qualname))
 
 
 def _enum_family_name(case_names: tuple[str, ...]) -> str | None:
@@ -2085,7 +2020,7 @@ def _repeated_enum_strategy_dispatch_candidates(
         right_family = _enum_family_name(right.case_names)
         if left_family is None or left_family != right_family:
             continue
-        shared_cases = tuple(sorted(set(left.case_names) & set(right.case_names)))
+        shared_cases = sorted_tuple(set(left.case_names) & set(right.case_names))
         if len(shared_cases) < 2:
             continue
         functions = tuple(
@@ -2105,17 +2040,13 @@ def _repeated_enum_strategy_dispatch_candidates(
             file_path=str(module.path),
             enum_family=enum_family,
             shared_case_names=shared_cases,
-            functions=tuple(
-                sorted(items, key=lambda item: (item.file_path, item.lineno, item.qualname))
-            ),
+            functions=sorted_tuple(items, key=lambda item: (item.file_path, item.lineno, item.qualname)),
         )
         for (enum_family, shared_cases), items in grouped.items()
     ]
-    return tuple(
-        sorted(
-            repeated,
-            key=lambda item: (-len(item.shared_case_names), -len(item.functions), item.functions[0].qualname),
-        )
+    return sorted_tuple(
+        repeated,
+        key=lambda item: (-len(item.shared_case_names), -len(item.functions), item.functions[0].qualname),
     )
 
 
@@ -2344,7 +2275,7 @@ def _generic_dispatch_specs(
     return tuple(
         _GenericDispatchSpec(
             function_name=function_name,
-            case_names=tuple(sorted(set(case_names_by_root[function_name]))),
+            case_names=sorted_tuple(set(case_names_by_root[function_name])),
             line=root_lines[function_name],
         )
         for function_name in sorted(root_lines)
@@ -2480,7 +2411,7 @@ def _callback_names_referenced(call: ast.Call) -> tuple[str, ...]:
     for keyword in call.keywords:
         if isinstance(keyword.value, ast.Name):
             referenced_names.add(keyword.value.id)
-    return tuple(sorted(referenced_names))
+    return sorted_tuple(referenced_names)
 
 
 def _split_dispatch_authority_candidates(
@@ -2597,8 +2528,8 @@ def _bipartition_product_axes(
                     continue
                 colors[neighbor] = expected
                 queue.append(neighbor)
-    left_axis = tuple(sorted(name for name, color in colors.items() if color == 0))
-    right_axis = tuple(sorted(name for name, color in colors.items() if color == 1))
+    left_axis = sorted_tuple((name for name, color in colors.items() if color == 0))
+    right_axis = sorted_tuple((name for name, color in colors.items() if color == 1))
     if len(left_axis) < 2 or len(right_axis) < 2:
         return None
     return (left_axis, right_axis)
@@ -2628,7 +2559,7 @@ def _empty_leaf_product_family_candidates(
         leaves.append((node.name, node.lineno, cast(tuple[str, str], base_names)))
     if len(leaves) < 4:
         return ()
-    base_graph_edges = tuple(sorted({leaf[2] for leaf in leaves}))
+    base_graph_edges = sorted_tuple({leaf[2] for leaf in leaves})
     adjacency: dict[str, set[str]] = defaultdict(set)
     for left_name, right_name in base_graph_edges:
         adjacency[left_name].add(right_name)
@@ -2647,13 +2578,7 @@ def _empty_leaf_product_family_candidates(
             component_nodes.add(current)
             visited.add(current)
             queue.extend(sorted(adjacency[current] - component_nodes))
-        component_edges = tuple(
-            sorted(
-                edge
-                for edge in base_graph_edges
-                if edge[0] in component_nodes and edge[1] in component_nodes
-            )
-        )
+        component_edges = sorted_tuple((edge for edge in base_graph_edges if edge[0] in component_nodes and edge[1] in component_nodes))
         if len(component_edges) < 4:
             continue
         axes = _bipartition_product_axes(component_edges)
@@ -2884,15 +2809,7 @@ def _transport_shell_template_candidates(
             )
             for descendant in descendants
         }
-        concrete_selector_values = tuple(
-            sorted(
-                {
-                    selector_value_name
-                    for selector_value_name in selector_value_by_class.values()
-                    if selector_value_name is not None
-                }
-            )
-        )
+        concrete_selector_values = sorted_tuple({selector_value_name for selector_value_name in selector_value_by_class.values() if selector_value_name is not None})
         if len(concrete_selector_values) < config.min_registration_sites:
             continue
         concrete_class_names = tuple(
@@ -2916,9 +2833,7 @@ def _transport_shell_template_candidates(
                 outer_hook_name=outer_hook_name,
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 
 _TYPE_NAME_LITERAL = "type"
@@ -3093,7 +3008,7 @@ def _axis_keyword_names(
             or value_predicate(ast.unparse(value))
         ):
             names.append(name)
-    return tuple(sorted(names))
+    return sorted_tuple(names)
 
 
 @dataclass(frozen=True)
@@ -3160,13 +3075,7 @@ def _spec_axis_entry_from_call(element: ast.AST) -> _SpecAxisEntry | None:
     )
     if not axis_pairs:
         return None
-    extra_keyword_names = tuple(
-        sorted(
-            name
-            for name in keyword_map
-            if name not in set(identity_names) | set(executable_names)
-        )
-    )
+    extra_keyword_names = sorted_tuple((name for name in keyword_map if name not in set(identity_names) | set(executable_names)))
     return _SpecAxisEntry(
         constructor_name=constructor_name,
         axis_pairs=axis_pairs,
@@ -3215,15 +3124,7 @@ def _spec_axis_source(binding: _SpecAxisBinding) -> _SpecAxisSource | None:
         axis_pairs=tuple(
             axis_pair for entry in entries for axis_pair in entry.axis_pairs
         ),
-        extra_keyword_names=tuple(
-            sorted(
-                {
-                    extra_keyword_name
-                    for entry in entries
-                    for extra_keyword_name in entry.extra_keyword_names
-                }
-            )
-        ),
+        extra_keyword_names=sorted_tuple({extra_keyword_name for entry in entries for extra_keyword_name in entry.extra_keyword_names}),
         is_standalone=False,
     )
 
@@ -3272,7 +3173,7 @@ def _standalone_spec_axis_sources(
     for constructor_name, items in sorted(grouped.items()):
         if len(items) < 2:
             continue
-        ordered_items = tuple(sorted(items, key=lambda item: (item.line, item.family_name)))
+        ordered_items = sorted_tuple(items, key=lambda item: (item.line, item.family_name))
         collapsed_sources.append(
             _SpecAxisSource(
                 family_name=" + ".join(item.family_name for item in ordered_items),
@@ -3281,15 +3182,7 @@ def _standalone_spec_axis_sources(
                 axis_pairs=tuple(
                     axis_pair for item in ordered_items for axis_pair in item.axis_pairs
                 ),
-                extra_keyword_names=tuple(
-                    sorted(
-                        {
-                            extra_keyword_name
-                            for item in ordered_items
-                            for extra_keyword_name in item.extra_keyword_names
-                        }
-                    )
-                ),
+                extra_keyword_names=sorted_tuple({extra_keyword_name for item in ordered_items for extra_keyword_name in item.extra_keyword_names}),
                 is_standalone=False,
             )
         )
@@ -3316,9 +3209,7 @@ def _spec_axis_families(
         for source in _standalone_spec_axis_sources(sources)
         for family in _spec_axis_family_from_source(module, source)
     )
-    return tuple(
-        sorted(families, key=lambda item: (item.file_path, item.line, item.family_name))
-    )
+    return sorted_tuple(families, key=lambda item: (item.file_path, item.line, item.family_name))
 
 
 def _cross_module_spec_axis_authority_candidates(
@@ -3336,9 +3227,7 @@ def _cross_module_spec_axis_authority_candidates(
             continue
         if left.axis_field_names != right.axis_field_names:
             continue
-        shared_pairs = tuple(
-            sorted(set(left.axis_pairs) & set(right.axis_pairs))
-        )
+        shared_pairs = sorted_tuple(set(left.axis_pairs) & set(right.axis_pairs))
         if len(shared_pairs) < 2:
             continue
         if (
@@ -3351,12 +3240,7 @@ def _cross_module_spec_axis_authority_candidates(
             CrossModuleSpecAxisAuthorityCandidate(
                 axis_field_names=left.axis_field_names,
                 shared_axis_pairs=shared_pairs,
-                families=tuple(
-                    sorted(
-                        (left, right),
-                        key=lambda item: (item.file_path, item.line, item.family_name),
-                    )
-                ),
+                families=sorted_tuple((left, right), key=lambda item: (item.file_path, item.line, item.family_name)),
             )
         )
     deduped: dict[
@@ -3366,15 +3250,9 @@ def _cross_module_spec_axis_authority_candidates(
         family_names = tuple(family.family_name for family in candidate.families)
         key = (candidate.axis_field_names, candidate.shared_axis_pairs, family_names)
         deduped[key] = candidate
-    return tuple(
-        sorted(
-            deduped.values(),
-            key=lambda item: (
-                -len(item.shared_axis_pairs),
-                item.families[0].file_path,
-                item.families[0].family_name,
-            ),
-        )
+    return sorted_tuple(
+        deduped.values(),
+        key=lambda item: (-len(item.shared_axis_pairs), item.families[0].file_path, item.families[0].family_name),
     )
 
 
@@ -3426,12 +3304,7 @@ def _registered_catalog_projection_candidates(
                 ),
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.qualname),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
 def _is_upper_snake_identifier(name: str) -> bool:
@@ -3749,12 +3622,7 @@ def _closed_constant_selector_candidates(
                 evidence_locations=tuple(evidence[:6]),
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.qualname),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
 
 
 def _call_uses_iteration_variable(
@@ -3802,7 +3670,7 @@ def _comprehension_builder_names(
             call_name = _call_name(call.func)
             if call_name is not None:
                 builder_names.add(call_name)
-    return tuple(sorted(builder_names))
+    return sorted_tuple(builder_names)
 
 
 def _named_family_for_constants(
@@ -3879,9 +3747,7 @@ def _derived_wrapper_spec_shadow_candidates(
             primary_family_name = _named_family_for_constants(
                 named_sequences, primary_constant_names
             )
-            extra_field_names = tuple(
-                sorted(name for name in common_keyword_names if name != link_field_name)
-            )
+            extra_field_names = sorted_tuple((name for name in common_keyword_names if name != link_field_name))
             evidence: list[SourceLocation] = [
                 SourceLocation(str(module.path), family_line, family_name)
             ]
@@ -3910,12 +3776,7 @@ def _derived_wrapper_spec_shadow_candidates(
                 )
             )
             break
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.derived_family_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.derived_family_name))
 
 
 def _class_annassign_target_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -4092,12 +3953,7 @@ def _module_keyed_selection_helper_candidates(
                 evidence_locations=tuple(evidence[:6]),
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.rule_class_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name))
 
 
 @dataclass(frozen=True)
@@ -4167,22 +4023,7 @@ def _keyed_family_axis_specs(
         )
         if registry_key_attr_name is None:
             continue
-        case_names = tuple(
-            sorted(
-                {
-                    ast.unparse(assignment)
-                    for descendant in _indexed_descendant_classes(
-                        class_index, indexed_class.symbol
-                    )
-                    if (
-                        assignment := _class_direct_assignments(descendant.node).get(
-                            registry_key_attr_name
-                        )
-                    )
-                    is not None
-                }
-            )
-        )
+        case_names = sorted_tuple({ast.unparse(assignment) for descendant in _indexed_descendant_classes(class_index, indexed_class.symbol) if (assignment := _class_direct_assignments(descendant.node).get(registry_key_attr_name)) is not None})
         if len(case_names) < 2:
             continue
         specs.append(
@@ -4256,7 +4097,7 @@ def _module_keyed_table_axis_specs(
                 line=line,
                 table_name=table_name,
                 key_type_name=key_type_name,
-                case_names=tuple(sorted(case_names)),
+                case_names=sorted_tuple(case_names),
                 value_shape_name=value_shape_name,
             )
         )
@@ -4326,22 +4167,15 @@ def _enum_keyed_table_class_axis_shadow_candidates(
         ):
             if axis_key_type_name != key_type_name:
                 continue
-            class_sites = tuple(
-                sorted(
-                    {(axis_spec.class_name, axis_spec.line) for axis_spec in axis_specs},
-                    key=lambda item: (item[1], item[0]),
-                )
-            )
+            class_sites = sorted_tuple({(axis_spec.class_name, axis_spec.line) for axis_spec in axis_specs}, key=lambda item: (item[1], item[0]))
             if len(class_sites) < 2:
                 continue
-            class_case_names = tuple(sorted({axis_spec.case_name for axis_spec in axis_specs}))
-            shared_case_names = tuple(
-                sorted(set(class_case_names) & set(table_case_names))
-            )
+            class_case_names = sorted_tuple({axis_spec.case_name for axis_spec in axis_specs})
+            shared_case_names = sorted_tuple(set(class_case_names) & set(table_case_names))
             if len(shared_case_names) < 2:
                 continue
             case_overlap_ratio = _case_overlap_ratio(
-                tuple(sorted(table_case_names)),
+                sorted_tuple(table_case_names),
                 class_case_names,
             )
             if case_overlap_ratio < 0.8:
@@ -4359,19 +4193,12 @@ def _enum_keyed_table_class_axis_shadow_candidates(
                     key_attr_name=key_attr_name,
                     class_sites=class_sites,
                     shared_case_names=shared_case_names,
-                    value_type_names=tuple(sorted(set(value_type_names))),
+                    value_type_names=sorted_tuple(set(value_type_names)),
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.key_type_name,
-                item.table_name,
-                item.key_attr_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.key_type_name, item.table_name, item.key_attr_name),
     )
 
 
@@ -4390,9 +4217,7 @@ def _parallel_keyed_table_and_family_candidates(
             for family_spec in family_specs:
                 if table_spec.key_type_name != family_spec.key_type_name:
                     continue
-                shared_case_names = tuple(
-                    sorted(set(table_spec.case_names) & set(family_spec.case_names))
-                )
+                shared_case_names = sorted_tuple(set(table_spec.case_names) & set(family_spec.case_names))
                 if len(shared_case_names) < 2:
                     continue
                 case_overlap_ratio = _case_overlap_ratio(
@@ -4431,32 +4256,16 @@ def _parallel_keyed_table_and_family_candidates(
                         shared_case_names=shared_case_names,
                     )
                 )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.key_type_name,
-                item.table_name,
-                item.family_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.key_type_name, item.table_name, item.family_name),
     )
 
 
 def _parallel_keyed_table_axis_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAxisCandidate, ...]:
-    specs = tuple(
-        sorted(
-            (
-                table_spec
-                for module in modules
-                for table_spec in _module_keyed_table_axis_specs(module)
-            ),
-            key=lambda item: (item.file_path, item.line, item.table_name),
-        )
-    )
+    specs = sorted_tuple((table_spec for module in modules for table_spec in _module_keyed_table_axis_specs(module)), key=lambda item: (item.file_path, item.line, item.table_name))
     candidates: list[ParallelKeyedTableAxisCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for index, left_spec in enumerate(specs):
@@ -4465,9 +4274,7 @@ def _parallel_keyed_table_axis_candidates(
                 continue
             if left_spec.key_type_name != right_spec.key_type_name:
                 continue
-            shared_case_names = tuple(
-                sorted(set(left_spec.case_names) & set(right_spec.case_names))
-            )
+            shared_case_names = sorted_tuple(set(left_spec.case_names) & set(right_spec.case_names))
             if len(shared_case_names) < 2:
                 continue
             case_overlap_ratio = _case_overlap_ratio(
@@ -4489,9 +4296,7 @@ def _parallel_keyed_table_axis_candidates(
             name_overlap_ratio = max(table_overlap, value_overlap)
             if name_overlap_ratio < 0.5:
                 continue
-            key = tuple(
-                sorted((left_spec.table_name, right_spec.table_name))
-            ) + (left_spec.key_type_name,)
+            key = sorted_tuple((left_spec.table_name, right_spec.table_name)) + (left_spec.key_type_name,)
             if key in seen:
                 continue
             seen.add(key)
@@ -4505,17 +4310,9 @@ def _parallel_keyed_table_axis_candidates(
                     name_overlap_ratio=name_overlap_ratio,
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.key_type_name,
-                item.left.file_path,
-                item.left.table_name,
-                item.right.file_path,
-                item.right.table_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.key_type_name, item.left.file_path, item.left.table_name, item.right.file_path, item.right.table_name),
     )
 
 
@@ -4533,9 +4330,7 @@ def _parallel_keyed_axis_family_candidates(
                 continue
             if left_spec.registry_key_attr_name != right_spec.registry_key_attr_name:
                 continue
-            shared_case_names = tuple(
-                sorted(set(left_spec.case_names) & set(right_spec.case_names))
-            )
+            shared_case_names = sorted_tuple(set(left_spec.case_names) & set(right_spec.case_names))
             if len(shared_case_names) < 2:
                 continue
             family_label_match = (
@@ -4554,11 +4349,7 @@ def _parallel_keyed_axis_family_candidates(
                 case_overlap_ratio < 0.8 or name_overlap_ratio < 0.6
             ):
                 continue
-            key = tuple(
-                sorted(
-                    (left_spec.family_name, right_spec.family_name),
-                )
-            ) + (left_spec.key_type_name,)
+            key = sorted_tuple((left_spec.family_name, right_spec.family_name)) + (left_spec.key_type_name,)
             if key in seen:
                 continue
             seen.add(key)
@@ -4582,17 +4373,9 @@ def _parallel_keyed_axis_family_candidates(
                     name_overlap_ratio=name_overlap_ratio,
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.key_type_name,
-                item.left.file_path,
-                item.left.family_name,
-                item.right.file_path,
-                item.right.family_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.key_type_name, item.left.file_path, item.left.family_name, item.right.file_path, item.right.family_name),
     )
 
 
@@ -4631,9 +4414,7 @@ def _cross_module_axis_shadow_family_candidates(
                 continue
             if authoritative_spec.key_type_name != shadow_spec.key_type_name:
                 continue
-            shared_case_names = tuple(
-                sorted(set(authoritative_spec.case_names) & set(shadow_spec.case_names))
-            )
+            shared_case_names = sorted_tuple(set(authoritative_spec.case_names) & set(shadow_spec.case_names))
             if len(shared_case_names) < 2:
                 continue
             key = (
@@ -4661,15 +4442,9 @@ def _cross_module_axis_shadow_family_candidates(
                     shared_case_names=shared_case_names,
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.key_type_name,
-                item.authoritative.file_path,
-                item.shadow.file_path,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.key_type_name, item.authoritative.file_path, item.shadow.file_path),
     )
 
 
@@ -4688,7 +4463,7 @@ def _enum_member_refs_for_known_key_types(
             continue
         refs[key_type_name].add(f"{key_type_name}.{parts[-1]}")
     return {
-        key_type_name: tuple(sorted(case_names))
+        key_type_name: sorted_tuple(case_names)
         for key_type_name, case_names in refs.items()
     }
 
@@ -4750,25 +4525,14 @@ def _residual_closed_axis_branching_candidates(
                     for spec in specs
                     for case_name in spec.case_names
                 }
-                shared_case_names = tuple(
-                    sorted(case_names_by_key[key_type_name] & authoritative_case_names)
-                )
+                shared_case_names = sorted_tuple(case_names_by_key[key_type_name] & authoritative_case_names)
                 if not shared_case_names:
                     continue
                 key = (file_path, qualname, key_type_name)
                 if key in seen:
                     continue
                 seen.add(key)
-                authoritative_families = tuple(
-                    sorted(
-                        (
-                            spec.family_name,
-                            spec.file_path,
-                            spec.line,
-                        )
-                        for spec in specs
-                    )
-                )
+                authoritative_families = sorted_tuple(((spec.family_name, spec.file_path, spec.line) for spec in specs))
                 candidates.append(
                     ResidualClosedAxisBranchingCandidate(
                         key_type_name=key_type_name,
@@ -4780,11 +4544,9 @@ def _residual_closed_axis_branching_candidates(
                         authoritative_families=authoritative_families,
                     )
                 )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
     )
 
 
@@ -4810,9 +4572,7 @@ def _parallel_registry_projection_family_candidates(
             collector_name=collector_name,
             registry_accessor_name=registry_accessor_name,
             return_keyword_names=return_keyword_names,
-            functions=tuple(
-                sorted(functions, key=lambda item: (item.line, item.qualname))
-            ),
+            functions=sorted_tuple(functions, key=lambda item: (item.line, item.qualname)),
         )
         for (collector_name, registry_accessor_name, return_keyword_names), functions in sorted(
             grouped.items()
@@ -5108,12 +4868,7 @@ def _repeated_keyed_family_candidates(
         RepeatedKeyedFamilyCandidate(
             family_base_name=family_base_name,
             lookup_style=lookup_style,
-            roots=tuple(
-                sorted(
-                    items,
-                    key=lambda item: (item.file_path, item.line, item.class_name),
-                )
-            ),
+            roots=sorted_tuple(items, key=lambda item: (item.file_path, item.line, item.class_name)),
         )
         for (family_base_name, lookup_style), items in sorted(grouped.items())
         if len(items) >= min_roots
@@ -5236,9 +4991,7 @@ def _manual_keyed_record_table_group_candidates(
     return tuple(
         ManualKeyedRecordTableGroupCandidate(
             file_path=str(module.path),
-            classes=tuple(
-                sorted(items, key=lambda item: (item.line, item.class_name))
-            ),
+            classes=sorted_tuple(items, key=lambda item: (item.line, item.class_name)),
         )
         for _, items in sorted(grouped.items())
         if len(items) >= config.min_registration_sites
@@ -5314,7 +5067,7 @@ def _same_type_constructor_method_names(
             and _returns_constructor_call(method, accepted_names=accepted_instance_names)
         ):
             names.append(method.name)
-    return tuple(sorted(set(names)))
+    return sorted_tuple(set(names))
 
 
 def _shared_record_base_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -5334,13 +5087,7 @@ def _shared_record_mechanics_method_names(
     shared_roundtrip_method_names = set.intersection(
         *(set(candidate.roundtrip_method_names) for candidate in candidates)
     )
-    return tuple(
-        sorted(
-            {"validate"}
-            | shared_projection_method_names
-            | shared_roundtrip_method_names
-        )
-    )
+    return sorted_tuple({'validate'} | shared_projection_method_names | shared_roundtrip_method_names)
 
 
 def _manual_structural_record_mechanics_group_candidates(
@@ -5362,13 +5109,7 @@ def _manual_structural_record_mechanics_group_candidates(
         validate_method = _class_method_named(node, "validate")
         if validate_method is None or _validation_guard_count(validate_method) < 3:
             continue
-        projection_method_names = tuple(
-            sorted(
-                method.name
-                for method in _iter_class_methods(node)
-                if _returns_tuple_of_self_attributes(method)
-            )
-        )
+        projection_method_names = sorted_tuple((method.name for method in _iter_class_methods(node) if _returns_tuple_of_self_attributes(method)))
         if not projection_method_names:
             continue
         roundtrip_method_names = _same_type_constructor_method_names(
@@ -5412,9 +5153,7 @@ def _manual_structural_record_mechanics_group_candidates(
         ManualStructuralRecordMechanicsGroupCandidate(
             file_path=str(module.path),
             base_names=base_names,
-            classes=tuple(
-                sorted(items, key=lambda item: (item.line, item.class_name))
-            ),
+            classes=sorted_tuple(items, key=lambda item: (item.line, item.class_name)),
         )
         for base_names, items in sorted(grouped.items())
         if len(items) >= threshold
@@ -5508,9 +5247,7 @@ def _module_union_type_aliases(
             or not isinstance(statement.targets[0], ast.Name)
         ):
             continue
-        member_names = tuple(
-            sorted(set(_flatten_union_member_type_names(statement.value)))
-        )
+        member_names = sorted_tuple(set(_flatten_union_member_type_names(statement.value)))
         if len(member_names) < 2:
             continue
         aliases[statement.targets[0].id] = member_names
@@ -5559,8 +5296,8 @@ def _resolved_isinstance_type_names(
         else:
             concrete_names.append(display_name)
     return (
-        tuple(sorted(set(concrete_names))),
-        tuple(sorted(set(abstract_names))),
+        sorted_tuple(set(concrete_names)),
+        sorted_tuple(set(abstract_names)),
     )
 
 
@@ -5608,17 +5345,7 @@ def _common_abstract_base_names(
     common_symbols = set(_indexed_ancestor_symbols(class_index, indexed_classes[0].symbol))
     for indexed_class in indexed_classes[1:]:
         common_symbols &= set(_indexed_ancestor_symbols(class_index, indexed_class.symbol))
-    abstract_bases = tuple(
-        sorted(
-            (
-                indexed_class
-                for symbol in common_symbols
-                if (indexed_class := class_index.class_for(symbol)) is not None
-                and _is_abstract_class(indexed_class.node)
-            ),
-            key=lambda item: item.symbol,
-        )
-    )
+    abstract_bases = sorted_tuple((indexed_class for symbol in common_symbols if (indexed_class := class_index.class_for(symbol)) is not None and _is_abstract_class(indexed_class.node)), key=lambda item: item.symbol)
     return _indexed_class_display_names(abstract_bases, class_index)
 
 
@@ -5657,19 +5384,11 @@ def _concrete_type_case_function_candidates(
                 continue
             grouped_checks[subject_expression].append((concrete_names, abstract_names))
         for subject_expression, checks in sorted(grouped_checks.items()):
-            concrete_class_names = tuple(
-                sorted({name for concrete_names, _ in checks for name in concrete_names})
-            )
+            concrete_class_names = sorted_tuple({name for concrete_names, _ in checks for name in concrete_names})
             if len(concrete_class_names) < 2:
                 continue
             subject_role = subject_expression.rsplit(".", 1)[-1]
-            union_alias_names = tuple(
-                sorted(
-                    alias_name
-                    for alias_name, member_names in union_aliases.items()
-                    if set(concrete_class_names) <= set(member_names)
-                )
-            )
+            union_alias_names = sorted_tuple((alias_name for alias_name, member_names in union_aliases.items() if set(concrete_class_names) <= set(member_names)))
             candidates.append(
                 ConcreteTypeCaseFunctionCandidate(
                     file_path=str(module.path),
@@ -5678,25 +5397,12 @@ def _concrete_type_case_function_candidates(
                     subject_expression=subject_expression,
                     subject_role=subject_role,
                     concrete_class_names=concrete_class_names,
-                    abstract_class_names=tuple(
-                        sorted(
-                            {
-                                name
-                                for _, abstract_names in checks
-                                for name in abstract_names
-                            }
-                        )
-                    ),
+                    abstract_class_names=sorted_tuple({name for _, abstract_names in checks for name in abstract_names}),
                     union_alias_names=union_alias_names,
                     case_site_count=len(checks),
                 )
             )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.subject_role, item.line),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.subject_role, item.line))
 
 
 def _repeated_concrete_type_case_analysis_candidates(
@@ -5716,15 +5422,7 @@ def _repeated_concrete_type_case_analysis_candidates(
         for subject_role, functions in sorted(grouped.items()):
             if len(functions) < min_function_count:
                 continue
-            concrete_class_names = tuple(
-                sorted(
-                    {
-                        class_name
-                        for function in functions
-                        for class_name in function.concrete_class_names
-                    }
-                )
-            )
+            concrete_class_names = sorted_tuple({class_name for function in functions for class_name in function.concrete_class_names})
             if len(concrete_class_names) < min_class_count:
                 continue
             abstract_base_names = _common_abstract_base_names(
@@ -5732,15 +5430,7 @@ def _repeated_concrete_type_case_analysis_candidates(
                 class_index,
                 concrete_class_names,
             )
-            union_alias_names = tuple(
-                sorted(
-                    {
-                        alias_name
-                        for function in functions
-                        for alias_name in function.union_alias_names
-                    }
-                )
-            )
+            union_alias_names = sorted_tuple({alias_name for function in functions for alias_name in function.union_alias_names})
             shared_suffix = _longest_common_suffix(concrete_class_names)
             shared_prefix = _longest_common_prefix(concrete_class_names)
             if (
@@ -5752,12 +5442,7 @@ def _repeated_concrete_type_case_analysis_candidates(
             candidates.append(
                 RepeatedConcreteTypeCaseAnalysisCandidate(
                     file_path=str(module.path),
-                    functions=tuple(
-                        sorted(
-                            functions,
-                            key=lambda item: (item.line, item.function_name),
-                        )
-                    ),
+                    functions=sorted_tuple(functions, key=lambda item: (item.line, item.function_name)),
                     abstract_base_names=abstract_base_names,
                 )
             )
@@ -5797,7 +5482,7 @@ def _self_cast_alias_names(
             continue
         aliases.add(statement.targets[0].id)
         cast_type_names.add(cast_type_name)
-    return (tuple(sorted(aliases)), tuple(sorted(cast_type_names)))
+    return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
 
 
 def _implicit_self_contract_mixin_candidates(
@@ -5848,7 +5533,7 @@ def _implicit_self_contract_mixin_candidates(
                 mixin_name=_indexed_class_display_name(indexed_class, class_index),
                 method_names=tuple(method_names),
                 method_lines=tuple(method_lines),
-                cast_type_names=tuple(sorted(cast_type_names)),
+                cast_type_names=sorted_tuple(cast_type_names),
                 consumer_class_names=_indexed_class_display_names(
                     consumer_classes,
                     class_index,
@@ -5856,7 +5541,7 @@ def _implicit_self_contract_mixin_candidates(
                 consumer_lines=tuple(
                     consumer_class.line for consumer_class in consumer_classes
                 ),
-                accessed_attribute_names=tuple(sorted(accessed_attr_names)),
+                accessed_attribute_names=sorted_tuple(accessed_attr_names),
             )
         )
     return tuple(candidates)
@@ -5885,16 +5570,8 @@ def _attribute_names_for_roots(
     *,
     root_names: set[str],
 ) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                subnode.attr
-                for subnode in _walk_nodes(node)
-                if isinstance(subnode, ast.Attribute)
-                and isinstance(subnode.value, ast.Name)
-                and subnode.value.id in root_names
-            }
-        )
+    return sorted_tuple(
+        {subnode.attr for subnode in _walk_nodes(node) if isinstance(subnode, ast.Attribute) and isinstance(subnode.value, ast.Name) and (subnode.value.id in root_names)},
     )
 
 
@@ -5925,17 +5602,7 @@ def _guard_validator_function_candidate(
     if access_profile is None:
         return None
     guard_count, accessed_attr_names = access_profile
-    helper_call_names = tuple(
-        sorted(
-            {
-                call_name
-                for subnode in _walk_nodes(function)
-                if isinstance(subnode, ast.Call)
-                for call_name in (_call_name(subnode.func),)
-                if call_name is not None
-            }
-        )
-    )
+    helper_call_names = sorted_tuple({call_name for subnode in _walk_nodes(function) if isinstance(subnode, ast.Call) for call_name in (_call_name(subnode.func),) if call_name is not None})
     return GuardValidatorFunctionCandidate(
         file_path=str(module.path),
         line=function.lineno,
@@ -6012,23 +5679,11 @@ def _repeated_guard_validator_family_candidates(
     for (subject_param_name, alias_source_attr), items in sorted(grouped.items()):
         if len(items) < min_family_size:
             continue
-        shared_attr_names = tuple(
-            sorted(
-                set.intersection(
-                    *(set(item.accessed_attr_names) for item in items)
-                )
-            )
-        )
+        shared_attr_names = sorted_tuple(set.intersection(*(set(item.accessed_attr_names) for item in items)))
         if len(shared_attr_names) < min_guard_count:
             continue
-        shared_helper_call_names = tuple(
-            sorted(
-                set.intersection(
-                    *(set(item.helper_call_names) for item in items)
-                )
-            )
-        )
-        ordered = tuple(sorted(items, key=lambda item: (item.line, item.function_name)))
+        shared_helper_call_names = sorted_tuple(set.intersection(*(set(item.helper_call_names) for item in items)))
+        ordered = sorted_tuple(items, key=lambda item: (item.line, item.function_name))
         families.append(
             RepeatedGuardValidatorFamilyCandidate(
                 file_path=str(module.path),
@@ -6112,13 +5767,7 @@ def _validate_shape_guard_method_candidate(
     )
     if len(guard_statements) < min_guard_count:
         return None
-    shape_guard_signatures = tuple(
-        sorted(
-            signature
-            for statement in guard_statements
-            for signature in _shape_guard_signatures(statement.test)
-        )
-    )
+    shape_guard_signatures = sorted_tuple((signature for statement in guard_statements for signature in _shape_guard_signatures(statement.test)))
     if len(set(shape_guard_signatures)) < min_guard_count:
         return None
     return ValidateShapeGuardMethodCandidate(
@@ -6193,12 +5842,12 @@ def _group_repeated_validate_shape_guard_candidates(
     ) -> None:
         if not prospective and not excluded:
             if len(current) >= min_family_size:
-                clique = tuple(sorted(current))
+                clique = sorted_tuple(current)
                 if clique not in clique_keys:
                     clique_keys.add(clique)
                     maximal_cliques.append(clique)
             return
-        for vertex in tuple(sorted(prospective)):
+        for vertex in sorted_tuple(prospective):
             neighbors = adjacency.get(vertex, set())
             bron_kerbosch(
                 current | {vertex},
@@ -6210,28 +5859,13 @@ def _group_repeated_validate_shape_guard_candidates(
 
     bron_kerbosch(set(), set(vertices), set())
     for clique in maximal_cliques:
-        ordered_methods = tuple(
-            sorted(
-                (method_candidates[item] for item in clique),
-                key=lambda candidate: (
-                    candidate.file_path,
-                    candidate.line,
-                    candidate.symbol,
-                ),
-            )
-        )
+        ordered_methods = sorted_tuple((method_candidates[item] for item in clique), key=lambda candidate: (candidate.file_path, candidate.line, candidate.symbol))
         signature_support = Counter(
             signature
             for method in ordered_methods
             for signature in set(method.shape_guard_signatures)
         )
-        shared_shape_guard_signatures = tuple(
-            sorted(
-                signature
-                for signature, count in signature_support.items()
-                if count >= 2
-            )
-        )
+        shared_shape_guard_signatures = sorted_tuple((signature for signature, count in signature_support.items() if count >= 2))
         if len(shared_shape_guard_signatures) < min_shared_shape_guards:
             continue
         groups.append(
@@ -6241,15 +5875,9 @@ def _group_repeated_validate_shape_guard_candidates(
                 shared_shape_guard_signatures=shared_shape_guard_signatures,
             )
         )
-    return tuple(
-        sorted(
-            groups,
-            key=lambda candidate: (
-                candidate.methods[0].file_path,
-                candidate.methods[0].line,
-                candidate.methods[0].symbol,
-            ),
-        )
+    return sorted_tuple(
+        groups,
+        key=lambda candidate: (candidate.methods[0].file_path, candidate.methods[0].line, candidate.methods[0].symbol),
     )
 
 
@@ -6612,9 +6240,7 @@ def _manual_registry_candidates(
             )
             if len(decorated_class_names) < 2:
                 continue
-            unregistered_class_names = tuple(
-                sorted(set(handler_classes) - set(decorated_class_names))
-            )
+            unregistered_class_names = sorted_tuple(set(handler_classes) - set(decorated_class_names))
             candidates.append(
                 ManualRegistryCandidate(
                     file_path=str(module.path),
@@ -6678,18 +6304,7 @@ def _structural_confusability_candidates(
     candidates: list[StructuralConfusabilityCandidate] = []
     for qualname, function in _iter_named_functions(module):
         for parameter_name in _parameter_names(function):
-            observed_method_names = tuple(
-                sorted(
-                    {
-                        subnode.func.attr
-                        for subnode in _walk_nodes(function)
-                        if isinstance(subnode, ast.Call)
-                        and isinstance(subnode.func, ast.Attribute)
-                        and isinstance(subnode.func.value, ast.Name)
-                        and subnode.func.value.id == parameter_name
-                    }
-                )
-            )
+            observed_method_names = sorted_tuple({subnode.func.attr for subnode in _walk_nodes(function) if isinstance(subnode, ast.Call) and isinstance(subnode.func, ast.Attribute) and isinstance(subnode.func.value, ast.Name) and (subnode.func.value.id == parameter_name)})
             if len(observed_method_names) < 2:
                 continue
             confusable_classes = tuple(
@@ -6775,7 +6390,7 @@ def _normalized_semantic_role_fields(
         for role_name in _normalize_semantic_field_roles(field_name):
             role_to_fields[role_name].add(field_name)
     return tuple(
-        (role_name, tuple(sorted(field_names)))
+        (role_name, sorted_tuple(field_names))
         for role_name, field_names in sorted(role_to_fields.items())
     )
 
@@ -6868,19 +6483,13 @@ def _witness_carrier_family_candidates(
     for token, items in sorted(grouped.items()):
         if len(items) < 3:
             continue
-        ordered_items = tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
+        ordered_items = sorted_tuple(items, key=lambda item: (item.line, item.class_name))
         class_names = tuple(item.class_name for item in ordered_items)
         if class_names in seen_class_names:
             continue
         shared_role_names = cast(
             tuple[str, ...],
-            tuple(
-                sorted(
-                    set.intersection(
-                        *(set(candidate.normalized_roles) for candidate in ordered_items)
-                    )
-                )
-            ),
+            sorted_tuple(set.intersection(*(set(candidate.normalized_roles) for candidate in ordered_items))),
         )
         if len(shared_role_names) < 3:
             continue
@@ -7382,15 +6991,9 @@ def _materialize_observations(
     observations: tuple[StructuralObservation, ...],
     lookup: dict[tuple[str, int, str], object],
 ) -> tuple[object, ...]:
-    return tuple(
-        sorted(
-            (
-                lookup[item.structural_identity]
-                for item in observations
-                if item.structural_identity in lookup
-            ),
-            key=_carrier_identity,
-        )
+    return sorted_tuple(
+        (lookup[item.structural_identity] for item in observations if item.structural_identity in lookup),
+        key=_carrier_identity,
     )
 
 
@@ -8614,14 +8217,8 @@ class ManualStructuralRecordMechanicsGroupCandidate:
 
     @property
     def transform_method_names(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    method_name
-                    for candidate in self.classes
-                    for method_name in candidate.transform_method_names
-                }
-            )
+        return sorted_tuple(
+            {method_name for candidate in self.classes for method_name in candidate.transform_method_names},
         )
 
 
@@ -8647,26 +8244,14 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
 
     @property
     def concrete_class_names(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    class_name
-                    for function in self.functions
-                    for class_name in function.concrete_class_names
-                }
-            )
+        return sorted_tuple(
+            {class_name for function in self.functions for class_name in function.concrete_class_names},
         )
 
     @property
     def union_alias_names(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    alias_name
-                    for function in self.functions
-                    for alias_name in function.union_alias_names
-                }
-            )
+        return sorted_tuple(
+            {alias_name for function in self.functions for alias_name in function.union_alias_names},
         )
 
     @property
@@ -8808,7 +8393,7 @@ class PublicApiPrivateDelegateSurface(ABC):
 
     @property
     def external_module_names(self) -> tuple[str, ...]:
-        return tuple(sorted({site.module_name for site in self.external_callsites}))
+        return sorted_tuple({site.module_name for site in self.external_callsites})
 
 
 @dataclass(frozen=True)
@@ -9040,6 +8625,19 @@ class CanonicalFindingSpecBuilderCandidate(ClassLineWitnessCandidate):
     constructor_name: str
     builder_name: str
     keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualSortedTupleReturnCandidate(QualnameLineWitnessCandidate):
+    sorted_expression: str
+    key_expression: str | None
+    reverse_expression: str | None
+    line_count: int
+
+
+@dataclass(frozen=True)
+class ManualSortedTupleExpressionCandidate(ManualSortedTupleReturnCandidate):
+    context_kind: str
 
 
 @dataclass(frozen=True)

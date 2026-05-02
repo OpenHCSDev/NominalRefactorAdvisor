@@ -184,12 +184,7 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
     def _finding_from_group(
         self, shapes: tuple[object, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
-        methods = tuple(
-            sorted(
-                (_as_method_shape(shape) for shape in shapes),
-                key=lambda item: (item.file_path, item.lineno),
-            )
-        )
+        methods = sorted_tuple((_as_method_shape(shape) for shape in shapes), key=lambda item: (item.file_path, item.lineno))
         class_names = {method.class_name for method in methods}
         if len(methods) < 2 or len(class_names) < 2:
             return None
@@ -431,15 +426,7 @@ def _class_role_quotient_candidates(
                 ):
                     self_state_attributes.add(child.attr)
 
-        role_method_counts = tuple(
-            sorted(
-                (
-                    (role, len(role_methods))
-                    for role, role_methods in nontrivial_roles.items()
-                ),
-                key=lambda item: (-item[1], item[0]),
-            )
-        )
+        role_method_counts = sorted_tuple(((role, len(role_methods)) for role, role_methods in nontrivial_roles.items()), key=lambda item: (-item[1], item[0]))
         representatives: list[tuple[str, int, str]] = []
         for role, _ in role_method_counts:
             role_methods = sorted(
@@ -463,15 +450,9 @@ def _class_role_quotient_candidates(
                 cross_role_self_call_count=cross_role_self_call_count,
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda candidate: (
-                candidate.file_path,
-                candidate.line,
-                candidate.class_name,
-            ),
-        )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (candidate.file_path, candidate.line, candidate.class_name),
     )
 
 
@@ -567,9 +548,7 @@ def _pass_through_composition_facade_candidates(
                 base_names=base_names,
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 
 class PassThroughCompositionFacadeDetector(ModuleCollectorCandidateDetector[PassThroughCompositionFacadeCandidate]):
@@ -673,7 +652,7 @@ def _projection_property_family_candidates(
             properties.append((statement, base_name))
         if len(properties) < 3:
             continue
-        ordered = tuple(sorted(properties, key=lambda item: item[0].lineno))
+        ordered = sorted_tuple(properties, key=lambda item: item[0].lineno)
         candidates.append(
             ProjectionPropertyFamilyCandidate(
                 file_path=str(module.path),
@@ -681,12 +660,10 @@ def _projection_property_family_candidates(
                 class_name=class_node.name,
                 property_names=tuple(function.name for function, _ in ordered),
                 line_numbers=tuple(function.lineno for function, _ in ordered),
-                base_names=tuple(sorted({base_name for _, base_name in ordered})),
+                base_names=sorted_tuple({base_name for _, base_name in ordered}),
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 
 class ProjectionPropertyFamilyDetector(ModuleCollectorCandidateDetector[ProjectionPropertyFamilyCandidate]):
@@ -753,7 +730,7 @@ def _live_template_payload_family_candidates(
         )
         if len(template_methods) < 3:
             continue
-        ordered = tuple(sorted(template_methods, key=lambda item: item.lineno))
+        ordered = sorted_tuple(template_methods, key=lambda item: item.lineno)
         candidates.append(
             LiveTemplatePayloadFamilyCandidate(
                 file_path=str(module.path),
@@ -763,9 +740,7 @@ def _live_template_payload_family_candidates(
                 line_numbers=tuple(method.lineno for method in ordered),
             )
         )
-    return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 
 class LiveTemplatePayloadFamilyDetector(ModuleCollectorCandidateDetector[LiveTemplatePayloadFamilyCandidate]):
@@ -2712,6 +2687,95 @@ class CanonicalFindingSpecBuilderDetector(
             mapping_site_count=1,
             mapping_name=candidate.class_name,
             field_names=candidate.keyword_names,
+        ),
+    )
+
+
+class ManualSortedTupleReturnDetector(
+    ModuleCollectorCandidateDetector[ManualSortedTupleReturnCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Manual sorted tuple finalization should use collection algebra",
+        "A return value shaped as `tuple(sorted(...))` is a standard immutable ordering projection. "
+            "Spelling the constructor nesting at each site repeats collection mechanics instead of naming "
+            "the algebraic operation once.",
+        "typed sorted_tuple collection algebra reused across finalization sites",
+        "function manually nests tuple construction around sorted ordering",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[ManualSortedTupleReturnCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.qualname}` returns a manual `tuple(sorted(...))` finalizer "
+            f"over `{candidate.sorted_expression}` spanning {candidate.line_count} line(s)."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: (
+            "from nominal_refactor_advisor.collection_algebra import sorted_tuple\n\n"
+            "return sorted_tuple(items, key=key_function)"
+        ),
+        codemod_patch=lambda candidate: (
+            "# Replace `return tuple(sorted(...))` with `return sorted_tuple(...)` "
+            "so tuple immutability and ordering are one named collection algebra."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=1,
+            mapping_name=candidate.qualname,
+            field_names=tuple(
+                name
+                for name, value in (
+                    ("items", candidate.sorted_expression),
+                    ("key", candidate.key_expression),
+                    ("reverse", candidate.reverse_expression),
+                )
+                if value is not None
+            ),
+        ),
+    )
+
+
+class ManualSortedTupleExpressionDetector(
+    ModuleCollectorCandidateDetector[ManualSortedTupleExpressionCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Manual sorted tuple expression should use collection algebra",
+        "A nested `tuple(sorted(...))` expression is a standard immutable ordering projection. "
+            "When it appears inside assignments, constructor payloads, or comprehensions, it is still "
+            "collection mechanics that should be named once by the shared algebra.",
+        "typed sorted_tuple collection algebra reused inside expression payloads",
+        "expression manually nests tuple construction around sorted ordering",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+    finding_renderer = CandidateFindingRenderer[ManualSortedTupleExpressionCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.qualname}` contains a manual `tuple(sorted(...))` "
+            f"{candidate.context_kind} expression over `{candidate.sorted_expression}` "
+            f"spanning {candidate.line_count} line(s)."
+        ),
+        evidence=lambda candidate: (candidate.evidence,),
+        scaffold=lambda candidate: (
+            "from nominal_refactor_advisor.collection_algebra import sorted_tuple\n\n"
+            "value = sorted_tuple(items, key=key_function)"
+        ),
+        codemod_patch=lambda candidate: (
+            "# Replace nested `tuple(sorted(...))` with `sorted_tuple(...)` "
+            "so expression payloads use the shared collection algebra."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=1,
+            mapping_name=candidate.qualname,
+            field_names=tuple(
+                name
+                for name, value in (
+                    ("items", candidate.sorted_expression),
+                    ("key", candidate.key_expression),
+                    ("reverse", candidate.reverse_expression),
+                )
+                if value is not None
+            ),
         ),
     )
 

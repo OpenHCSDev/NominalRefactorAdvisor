@@ -35,7 +35,7 @@ def _witness_mixin_enforcement_candidate(
             grouped[token].append(candidate)
     classes = max(
         (
-            tuple(sorted(items, key=lambda item: (item.line, item.class_name)))
+            sorted_tuple(items, key=lambda item: (item.line, item.class_name))
             for items in grouped.values()
             if len(items) >= 3
         ),
@@ -57,21 +57,13 @@ def _witness_mixin_enforcement_candidate(
             role_to_classes[role_name][candidate.class_name] = candidate
             role_to_fields[role_name].update(field_names)
     role_field_names = tuple(
-        (role_name, tuple(sorted(role_to_fields[role_name])))
+        (role_name, sorted_tuple(role_to_fields[role_name]))
         for role_name in _WITNESS_MIXIN_ROLE_NAMES
         if len(role_to_classes[role_name]) >= 2 and len(role_to_fields[role_name]) >= 2
     )
     if not role_field_names:
         return None
-    class_names = tuple(
-        sorted(
-            {
-                class_name
-                for role_name, _ in role_field_names
-                for class_name in role_to_classes[role_name]
-            }
-        )
-    )
+    class_names = sorted_tuple({class_name for role_name, _ in role_field_names for class_name in role_to_classes[role_name]})
     return WitnessMixinEnforcementCandidate(
         file_path=str(module.path),
         class_names=class_names,
@@ -167,7 +159,7 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
             minimum_witnesses=2,
             minimum_fibers=2,
         ):
-            field_names = tuple(sorted(cohort.observed_names))
+            field_names = sorted_tuple(cohort.observed_names)
             supporting_classes = cohort.nominal_witnesses
             shared_field_set = set(field_names)
             if any(
@@ -180,18 +172,7 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
                 for class_name in supporting_classes
             ):
                 continue
-            supporting_observations: tuple[FieldObservation, ...] = tuple(
-                sorted(
-                    (
-                        item
-                        for item in observations
-                        if item.execution_level == execution_level
-                        and item.class_name in supporting_classes
-                        and item.field_name in field_names
-                    ),
-                    key=lambda item: (item.file_path, item.lineno, item.symbol),
-                )
-            )
+            supporting_observations: tuple[FieldObservation, ...] = sorted_tuple((item for item in observations if item.execution_level == execution_level and item.class_name in supporting_classes and (item.field_name in field_names)), key=lambda item: (item.file_path, item.lineno, item.symbol))
             field_type_map = _shared_field_type_map(
                 supporting_observations,
                 field_names,
@@ -234,15 +215,9 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
         ):
             continue
         maximal_candidates.append(candidate)
-    return tuple(
-        sorted(
-            maximal_candidates,
-            key=lambda item: (
-                item.execution_level,
-                item.class_names,
-                item.field_names,
-            ),
-        )
+    return sorted_tuple(
+        maximal_candidates,
+        key=lambda item: (item.execution_level, item.class_names, item.field_names),
     )
 
 def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
@@ -310,7 +285,7 @@ def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
     )
 
 def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(sorted(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES))
+    return sorted_tuple(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
 
 def _connected_role_components(
     role_to_members: dict[str, dict[str, FieldObservation]],
@@ -342,7 +317,7 @@ def _connected_role_components(
             component.add(current)
             stack.extend(sorted(adjacency[current] - component))
         seen.update(component)
-        components.append(tuple(sorted(component)))
+        components.append(sorted_tuple(component))
     return tuple(components)
 
 def _prefixed_role_bundle_candidate_for_class(
@@ -374,21 +349,7 @@ def _prefixed_role_bundle_candidate_for_class(
             role_to_members,
             min_shared_members=config.min_prefixed_role_shared_fields,
         ):
-            shared_member_names = tuple(
-                sorted(
-                    member_name
-                    for member_name in {
-                        member_name
-                        for role_name in role_names
-                        for member_name in role_to_members[role_name]
-                    }
-                    if sum(
-                        member_name in role_to_members[role_name]
-                        for role_name in role_names
-                    )
-                    >= 2
-                )
-            )
+            shared_member_names = sorted_tuple((member_name for member_name in {member_name for role_name in role_names for member_name in role_to_members[role_name]} if sum((member_name in role_to_members[role_name] for role_name in role_names)) >= 2))
             if len(shared_member_names) < config.min_prefixed_role_shared_fields:
                 continue
             if all(
@@ -417,16 +378,7 @@ def _prefixed_role_bundle_candidate_for_class(
                 for _, field_names in role_field_map
                 for field_name in field_names
             }
-            candidate_observations = tuple(
-                sorted(
-                    (
-                        observation
-                        for observation in observations
-                        if observation.field_name in candidate_field_names
-                    ),
-                    key=lambda item: (item.lineno, item.field_name),
-                )
-            )
+            candidate_observations = sorted_tuple((observation for observation in observations if observation.field_name in candidate_field_names), key=lambda item: (item.lineno, item.field_name))
             candidates.append(
                 PrefixedRoleFieldBundleCandidate(
                     file_path=str(module.path),
@@ -478,12 +430,7 @@ def _prefixed_role_field_bundle_candidates(
         )
         if candidate is not None:
             candidates.append(candidate)
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line, item.class_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line, item.class_name))
 
 def _prefixed_role_bundle_scaffold(
     candidate: PrefixedRoleFieldBundleCandidate,
@@ -1001,18 +948,8 @@ class ExportPolicyPredicateDetector(IssueDetector):
             SourceLocation(candidate.file_path, candidate.line, candidate.function_name)
             for candidate in candidates[:6]
         )
-        all_roles = tuple(
-            sorted({role for candidate in candidates for role in candidate.role_names})
-        )
-        root_type_names = tuple(
-            sorted(
-                {
-                    type_name
-                    for candidate in candidates
-                    for type_name in candidate.root_type_names
-                }
-            )
-        )
+        all_roles = sorted_tuple({role for candidate in candidates for role in candidate.role_names})
+        root_type_names = sorted_tuple({type_name for candidate in candidates for type_name in candidate.root_type_names})
         return [
             self.build_finding(
                 (
@@ -1397,12 +1334,7 @@ def _class_method_shape_groups(
             groups.append(
                 (
                     class_node,
-                    tuple(
-                        sorted(
-                            methods,
-                            key=lambda item: (item.line, item.method_name),
-                        )
-                    ),
+                    sorted_tuple(methods, key=lambda item: (item.line, item.method_name)),
                 )
             )
     return tuple(groups)
@@ -1431,12 +1363,7 @@ def _constructor_variant_family_candidates(
                 varying_coordinate_names=varying_coordinates,
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line_numbers, item.class_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
 
 def _accumulator_fold_method(
@@ -1551,12 +1478,7 @@ def _accumulator_fold_family_candidates(
                 step_method_names=tuple(method.step_method_name for method in ordered),
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line_numbers, item.class_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.class_name))
 
 
 def _docstring_line_ranges(root: ast.AST) -> set[int]:
@@ -1756,7 +1678,7 @@ def _catalog_installing_mixin_family_candidates(
                 items.append((class_node.name, catalog_attribute, statement.lineno))
     if len(items) < 2:
         return ()
-    ordered = tuple(sorted(items, key=lambda item: (item[2], item[0])))
+    ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
     return (
         CatalogInstallingMixinFamilyCandidate(
             file_path=str(module.path),
@@ -1982,9 +1904,7 @@ def _regex_group_extractor_family_candidates(
         for group_index, grouped_methods in grouped.items():
             if len(grouped_methods) < 2:
                 continue
-            ordered = tuple(
-                sorted(grouped_methods, key=lambda item: (item.line, item.method_name))
-            )
+            ordered = sorted_tuple(grouped_methods, key=lambda item: (item.line, item.method_name))
             candidates.append(
                 RegexGroupExtractorFamilyCandidate(
                     file_path=str(module.path),
@@ -2030,10 +1950,10 @@ def _sparse_constructor_variant_family_candidates(
             methods.append((statement, keyword_names))
         if len(methods) < 2:
             continue
-        union_keywords = tuple(sorted({name for _, names in methods for name in names}))
+        union_keywords = sorted_tuple({name for _, names in methods for name in names})
         if not union_keywords:
             continue
-        ordered = tuple(sorted(methods, key=lambda item: (item[0].lineno, item[0].name)))
+        ordered = sorted_tuple(methods, key=lambda item: (item[0].lineno, item[0].name))
         candidates.append(
             SparseConstructorVariantFamilyCandidate(
                 file_path=str(module.path),
@@ -2116,7 +2036,7 @@ def _support_prelude_module_family_candidates(
     for (_, support_import), items in grouped.items():
         if len(items) < 3:
             continue
-        ordered = tuple(sorted(items, key=lambda item: str(item[0].path)))
+        ordered = sorted_tuple(items, key=lambda item: str(item[0].path))
         candidates.append(
             SupportPreludeModuleFamilyCandidate(
                 support_module_name=support_import,
@@ -2155,7 +2075,7 @@ def _module_constructor_policy_family_candidates(
     for (constructor_name, field_names), rows in grouped.items():
         if len(rows) < 2:
             continue
-        ordered = tuple(sorted(rows, key=lambda item: (item[1], item[0])))
+        ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
         candidates.append(
             ModuleConstructorPolicyFamilyCandidate(
                 file_path=str(module.path),
@@ -2165,12 +2085,7 @@ def _module_constructor_policy_family_candidates(
                 field_names=field_names,
             )
         )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (item.file_path, item.line_numbers, item.constructor_name),
-        )
-    )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line_numbers, item.constructor_name))
 
 
 class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[AlternateConstructorFamilyGroup]):

@@ -14,6 +14,7 @@ from functools import lru_cache
 from typing import Any, Callable, ClassVar, cast
 
 from .export_tools import PublicExportPolicy, derive_public_exports
+from .collection_algebra import sorted_tuple
 
 from .observation_shapes import (
     AccessorWrapperCandidate,
@@ -116,15 +117,9 @@ def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
         for current in _descendant_types(FamilyGeneratingSpec)
         if current.__dict__.get("family_specs")
     ]
-    return tuple(
-        sorted(
-            ordered,
-            key=lambda spec_type: (
-                spec_type.__module__,
-                getattr(spec_type, "__firstlineno__", 0),
-                spec_type.__qualname__,
-            ),
-        )
+    return sorted_tuple(
+        ordered,
+        key=lambda spec_type: (spec_type.__module__, getattr(spec_type, '__firstlineno__', 0), spec_type.__qualname__),
     )
 
 

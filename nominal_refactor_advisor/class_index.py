@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 from .ast_tools import ParsedModule
+from .collection_algebra import sorted_tuple
 
 
 @dataclass(frozen=True)
@@ -223,11 +224,11 @@ def _build_class_family_index_cached(
             children_by_symbol_lists[base_symbol].append(symbol)
 
     symbols_by_simple_name = {
-        name: tuple(sorted(symbols))
+        name: sorted_tuple(symbols)
         for name, symbols in symbols_by_simple_name_multimap.items()
     }
     children_by_symbol = {
-        symbol: tuple(sorted(children))
+        symbol: sorted_tuple(children)
         for symbol, children in children_by_symbol_lists.items()
     }
     descendants_by_symbol: dict[str, tuple[str, ...]] = {}
