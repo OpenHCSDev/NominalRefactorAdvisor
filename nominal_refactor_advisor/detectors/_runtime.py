@@ -42,10 +42,7 @@ def _literal_dispatch_authority_scaffold(
         for index, case in enumerate(observation.literal_cases, start=1)
     )
     case_class_blocks = "\n\n".join(
-        f"class {class_name}(DispatchCase):\n"
-        f"    case = {case}\n\n"
-        "    def apply(self, *args, **kwargs):\n"
-        "        ..."
+        f'class {class_name}(DispatchCase):\n    case = {case}\n\n    def apply(self, *args, **kwargs):\n        ...'
         for class_name, case in zip(case_classes, observation.literal_cases)
     )
     case_rows = "\n".join(
@@ -53,16 +50,7 @@ def _literal_dispatch_authority_scaffold(
         for class_name in case_classes
     )
     return (
-        "class DispatchCase(ABC):\n"
-        "    case: object\n"
-        "    @abstractmethod\n"
-        "    def apply(self, *args, **kwargs): ...\n\n"
-        f"{case_class_blocks}\n\n"
-        f"{table_name} = {{\n"
-        f"{case_rows}\n"
-        "}\n\n"
-        f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
-        f"    return {table_name}[axis_value].apply(*args, **kwargs)"
+        f'class DispatchCase(ABC):\n    case: object\n    @abstractmethod\n    def apply(self, *args, **kwargs): ...\n\n{case_class_blocks}\n\n{table_name} = {{\n{case_rows}\n}}\n\ndef {dispatch_name}(axis_value, *args, **kwargs):\n    return {table_name}[axis_value].apply(*args, **kwargs)'
     )
 
 
@@ -70,9 +58,7 @@ def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
     return (
-        f"# Replace the repeated `{observation.axis_expression} == literal` branches with one typed case table.\n"
-        "# Move the shared branch mechanics into the dispatcher/renderer; keep per-case semantics on `DispatchCase` subclasses.\n"
-        "# If each case owns behavior instead of data, promote the rows into AutoRegisterMeta subclasses keyed by the same axis."
+        f'# Replace the repeated `{observation.axis_expression} == literal` branches with one typed case table.\n# Move the shared branch mechanics into the dispatcher/renderer; keep per-case semantics on `DispatchCase` subclasses.\n# If each case owns behavior instead of data, promote the rows into AutoRegisterMeta subclasses keyed by the same axis.'
     )
 
 class RepeatedBuilderCallDetector(IssueDetector):
@@ -412,24 +398,7 @@ class PredicateSelectedConcreteFamilyDetector(ConfiguredCrossModuleCollectorCand
             ),
             tuple(evidence[:6]),
             scaffold=(
-                "from abc import ABC\n"
-                "import re\n"
-                "from metaclass_registry import AutoRegisterMeta\n"
-                "from typing import Generic, Self, TypeVar\n\n"
-                "ContextT = TypeVar(\"ContextT\")\n\n"
-                "class PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n"
-                f"{_derived_registry_key_block(family_candidate.concrete_class_names)}\n\n"
-                "    @classmethod\n"
-                "    def matches_context(cls, context: ContextT) -> bool:\n"
-                "        return True\n\n"
-                "    @classmethod\n"
-                "    def select_matching_type(cls, context: ContextT) -> type[Self]:\n"
-                "        matches = tuple(\n"
-                "            candidate\n"
-                "            for candidate in cls.__registry__.values()\n"
-                "            if candidate.matches_context(context)\n"
-                "        )\n"
-                "        ...\n"
+                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
             ),
             codemod_patch=(
                 f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
@@ -1566,9 +1535,7 @@ class DeadEmbeddedStaticPayloadDetector(ConfiguredModuleCollectorCandidateDetect
             ),
             (payload_candidate.evidence,),
             scaffold=(
-                f"# First verify whether `{payload_candidate.qualname}` is externally or dynamically invoked.\n"
-                "# If not, delete the emitter and its embedded payload.\n"
-                "# If it is live, move the payload into a template/resource or generate the artifact from one authoritative schema."
+                f'# First verify whether `{payload_candidate.qualname}` is externally or dynamically invoked.\n# If not, delete the emitter and its embedded payload.\n# If it is live, move the payload into a template/resource or generate the artifact from one authoritative schema.'
             ),
             codemod_patch=(
                 f"# Collapse `{payload_candidate.qualname}` as a dead or duplicate static-payload view.\n"
@@ -2833,10 +2800,7 @@ class AccessorWrapperDetector(ModuleCollectorCandidateDetector[tuple[AccessorWra
                 f"same class repeats {wrapper_shapes} around owned attributes instead of exposing one authoritative access path"
             ),
             scaffold=(
-                "Collapse these transport wrappers to direct dot access when they only expose owned state. "
-                "If a one-step computed view must remain public, express it as an `@property`.\n\n"
-                "Example replacements:\n"
-                f"{replacement_examples}"
+                f'Collapse these transport wrappers to direct dot access when they only expose owned state. If a one-step computed view must remain public, express it as an `@property`.\n\nExample replacements:\n{replacement_examples}'
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(ordered),
@@ -2972,13 +2936,11 @@ class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidat
         evidence = tuple(item.evidence for item in chain_candidate.wrappers[:6])
         projected_attributes = sorted_tuple({attr for item in chain_candidate.wrappers for attr in item.projected_attributes})
         scaffold = (
-            "Keep one authoritative view/carrier and derive the smaller wrapper views directly from it.\n\n"
-            f"Wrapper chain: {' -> '.join(wrapper_symbols)} -> {chain_candidate.leaf_delegate_symbol}"
+            f"Keep one authoritative view/carrier and derive the smaller wrapper views directly from it.\n\nWrapper chain: {' -> '.join(wrapper_symbols)} -> {chain_candidate.leaf_delegate_symbol}"
         )
         if projected_attributes:
             scaffold += (
-                "\n"
-                f"Projected attributes observed in the chain: {', '.join(projected_attributes)}"
+                f"\nProjected attributes observed in the chain: {', '.join(projected_attributes)}"
             )
         return self.build_finding(
             (
@@ -3206,8 +3168,7 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
                         else MEDIUM_CONFIDENCE
                     ),
                     relation_context=(
-                        f"same semantic field family is carried through a {candidate.context_kind.replace('_', ' ')} "
-                        "instead of a nominal record"
+                        f"same semantic field family is carried through a {candidate.context_kind.replace('_', ' ')} instead of a nominal record"
                     ),
                     scaffold=(
                         f"{recommendation.rationale}\n"

@@ -760,20 +760,10 @@ class PrivateCohortShouldBeModuleDetector(ConfiguredModuleCollectorCandidateDete
             ),
             cohort.evidence,
             scaffold=(
-                f"# {target_module}.py\n"
-                "@dataclass(frozen=True)\n"
-                f"class {_camel_case('_'.join(cohort.shared_tokens[:2]) or 'subsystem')}Context:\n"
-                "    ...\n\n"
-                f"def run_{'_'.join(cohort.shared_tokens[:2]) or 'subsystem'}(...):\n"
-                "    ...\n\n"
-                "# Move the private context/result carriers and worker helpers here.\n"
-                "# Leave only public orchestration entry points in the original module."
+                f"# {target_module}.py\n@dataclass(frozen=True)\nclass {_camel_case('_'.join(cohort.shared_tokens[:2]) or 'subsystem')}Context:\n    ...\n\ndef run_{'_'.join(cohort.shared_tokens[:2]) or 'subsystem'}(...):\n    ...\n\n# Move the private context/result carriers and worker helpers here.\n# Leave only public orchestration entry points in the original module."
             ),
             codemod_patch=(
-                f"# Extract the private {shared_tokens} cohort into `{target_module}.py`.\n"
-                "# Move the cohort's private dataclasses, helper functions, and result carriers together.\n"
-                "# Import the extracted helpers back into the original module only where public entry points still need them.\n"
-                "# Keep sequencing, public APIs, and thin phase boundaries in the original file."
+                f"# Extract the private {shared_tokens} cohort into `{target_module}.py`.\n# Move the cohort's private dataclasses, helper functions, and result carriers together.\n# Import the extracted helpers back into the original module only where public entry points still need them.\n# Keep sequencing, public APIs, and thin phase boundaries in the original file."
             ),
         )
 
@@ -862,11 +852,7 @@ class SiblingRoleHelperSymmetryDetector(ModuleCollectorCandidateDetector[Sibling
             ),
             helper_candidate.evidence,
             scaffold=(
-                f"def resolve_{shared_summary}(...):\n"
-                "    # Compute the role-specific values together while the branch facts are live.\n"
-                "    ...\n"
-                "    return left_value, right_value\n\n"
-                "# Use a small record only if this result crosses a boundary; keep local-only pairs as values."
+                f'def resolve_{shared_summary}(...):\n    # Compute the role-specific values together while the branch facts are live.\n    ...\n    return left_value, right_value\n\n# Use a small record only if this result crosses a boundary; keep local-only pairs as values.'
             ),
             codemod_patch=(
                 f"# Collapse sibling helpers {helper_candidate.method_names} into one local authority.\n"
@@ -921,22 +907,7 @@ class ResidualClosedAxisIndirectionDetector(ModuleCollectorCandidateDetector[Res
             ),
             axis_candidate.evidence,
             scaffold=(
-                "from abc import ABC, abstractmethod\n"
-                "from typing import ClassVar\n"
-                "from metaclass_registry import AutoRegisterMeta\n\n"
-                "class AxisPolicy(ABC, metaclass=AutoRegisterMeta):\n"
-                "    __registry_key__ = \"axis_key\"\n"
-                "    __skip_if_no_key__ = True\n"
-                f"    axis_key: ClassVar[{axis_candidate.enum_name}]\n\n"
-                "    @classmethod\n"
-                f"    def for_key(cls, key: {axis_candidate.enum_name}):\n"
-                "        return cls.__registry__[key]()\n\n"
-                "    @abstractmethod\n"
-                "    def project(self, source): ...\n\n"
-                "    @abstractmethod\n"
-                "    def run(self, ctx): ...\n\n"
-                "# Move the table projection and residual branch behavior into enum-keyed policy subclasses.\n"
-                "# Derive table-like views from AxisPolicy.__registry__ only if callers still need them."
+                f'from abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\nclass AxisPolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "axis_key"\n    __skip_if_no_key__ = True\n    axis_key: ClassVar[{axis_candidate.enum_name}]\n\n    @classmethod\n    def for_key(cls, key: {axis_candidate.enum_name}):\n        return cls.__registry__[key]()\n\n    @abstractmethod\n    def project(self, source): ...\n\n    @abstractmethod\n    def run(self, ctx): ...\n\n# Move the table projection and residual branch behavior into enum-keyed policy subclasses.\n# Derive table-like views from AxisPolicy.__registry__ only if callers still need them.'
             ),
             codemod_patch=(
                 f"# Replace `{axis_candidate.table_name}[{axis_candidate.axis_expression}]` plus residual "
@@ -1006,18 +977,7 @@ class InlineEnumSubsetGuardDetector(ModuleCollectorCandidateDetector[InlineEnumS
             ),
             (guard_candidate.evidence,),
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                "class PolicyRow:\n"
-                f"    key: {guard_candidate.enum_name}\n"
-                "    requires_policy: bool\n\n"
-                "def exhaustive_enum_lookup(enum_type, rows):\n"
-                "    by_key = {row.key: row for row in rows}\n"
-                "    if set(by_key) != set(enum_type):\n"
-                "        raise TypeError('incomplete enum policy')\n"
-                "    return by_key\n\n"
-                "POLICY_BY_KEY = exhaustive_enum_lookup(...)\n"
-                f"if POLICY_BY_KEY[{guard_candidate.axis_expression}].requires_policy:\n"
-                "    ..."
+                f"@dataclass(frozen=True)\nclass PolicyRow:\n    key: {guard_candidate.enum_name}\n    requires_policy: bool\n\ndef exhaustive_enum_lookup(enum_type, rows):\n    by_key = {{row.key: row for row in rows}}\n    if set(by_key) != set(enum_type):\n        raise TypeError('incomplete enum policy')\n    return by_key\n\nPOLICY_BY_KEY = exhaustive_enum_lookup(...)\nif POLICY_BY_KEY[{guard_candidate.axis_expression}].requires_policy:\n    ..."
             ),
             codemod_patch=(
                 f"# Replace inline subset {{{cases}}} with a policy owned by `{guard_candidate.enum_name}`.\n"
@@ -1112,8 +1072,7 @@ class EmptyLeafProductFamilyDetector(ModuleCollectorCandidateDetector[EmptyLeafP
             ),
             metrics=DispatchCountMetrics.from_literal_family(
                 dispatch_axis=(
-                    f"{' | '.join(product_candidate.left_axis_base_names)} x "
-                    f"{' | '.join(product_candidate.right_axis_base_names)}"
+                    f"{' | '.join(product_candidate.left_axis_base_names)} x {' | '.join(product_candidate.right_axis_base_names)}"
                 ),
                 literal_cases=product_candidate.leaf_class_names,
             ),
@@ -1200,9 +1159,7 @@ class DerivedWrapperSpecShadowDetector(ModuleCollectorCandidateDetector[DerivedW
                 '@dataclass(frozen=True)\nclass ExecutionSpec:\n    key: object\n    runner: object\n    wrapper_name: str | None = None\n    wrapper_defaults: dict[str, object] = field(default_factory=dict)\n\ndef build_wrapper(spec: ExecutionSpec): ...\n'
             ),
             codemod_patch=(
-                f"# Remove parallel family `{shadow_candidate.derived_family_name}`.\n"
-                f"# Move `{', '.join(shadow_candidate.extra_field_names) or 'wrapper metadata'}` onto the authoritative "
-                f"`{shadow_candidate.primary_constructor_name}` records and derive wrappers directly from that family."
+                f"# Remove parallel family `{shadow_candidate.derived_family_name}`.\n# Move `{', '.join(shadow_candidate.extra_field_names) or 'wrapper metadata'}` onto the authoritative `{shadow_candidate.primary_constructor_name}` records and derive wrappers directly from that family."
             ),
             metrics=MappingMetrics(
                 mapping_site_count=len(shadow_candidate.primary_constant_names),
@@ -1279,10 +1236,7 @@ class ResidualClosedAxisBranchingDetector(CrossModuleCollectorCandidateDetector[
             residual_candidate.evidence,
             scaffold=(
                 _axis_policy_registry_scaffold("apply(self, context)")
-                + "\n\n"
-                "def run(context):\n"
-                f"    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(context.axis)\n"
-                "    return policy.apply(context)\n"
+                + f'\n\ndef run(context):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(context.axis)\n    return policy.apply(context)\n'
             ),
             codemod_patch=(
                 f"# Remove residual `{residual_candidate.key_type_name}` branch ladder in `{residual_candidate.qualname}`.\n"
@@ -1387,17 +1341,7 @@ class ParallelKeyedTableAndFamilyDetector(CrossModuleCollectorCandidateDetector[
             table_candidate.evidence,
             scaffold=(
                 _axis_policy_registry_scaffold("build(self)")
-                + "\n\n"
-                "@dataclass(frozen=True)\n"
-                "class DerivedAxisRow:\n"
-                f"    key: {_AXIS_POLICY_KEY_TYPE_NAME}\n"
-                f"    policy_type: type[{_AXIS_POLICY_ROOT_NAME}]\n"
-                "    config: object\n\n"
-                "def build_axis_rows() -> tuple[DerivedAxisRow, ...]:\n"
-                "    return tuple(\n"
-                "        DerivedAxisRow(key=key, policy_type=policy_type, config=...)\n"
-                f"        for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n"
-                "    )"
+                + f'\n\n@dataclass(frozen=True)\nclass DerivedAxisRow:\n    key: {_AXIS_POLICY_KEY_TYPE_NAME}\n    policy_type: type[{_AXIS_POLICY_ROOT_NAME}]\n    config: object\n\ndef build_axis_rows() -> tuple[DerivedAxisRow, ...]:\n    return tuple(\n        DerivedAxisRow(key=key, policy_type=policy_type, config=...)\n        for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n    )'
             ),
             codemod_patch=(
                 f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
@@ -1434,11 +1378,7 @@ class EnumKeyedTableClassAxisShadowDetector(ModuleCollectorCandidateDetector[Enu
             axis_candidate.evidence,
             scaffold=(
                 _axis_policy_registry_scaffold("route_type(self)")
-                + "\n\n"
-                "AXIS_BY_KEY = {\n"
-                "    key: policy_type\n"
-                f"    for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n"
-                "}\n"
+                + f'\n\nAXIS_BY_KEY = {{\n    key: policy_type\n    for key, policy_type in {_AXIS_POLICY_ROOT_NAME}.__registry__.items()\n}}\n'
             ),
             codemod_patch=(
                 f"# Remove `{axis_candidate.table_name}` as a second writable authority.\n"
@@ -1719,17 +1659,10 @@ class RepeatedConcreteTypeCaseAnalysisDetector(ConfiguredCrossModuleCollectorCan
             ),
             case_candidate.evidence,
             scaffold=(
-                f"class {suggested_family_name}(ABC):\n"
-                "    @property\n"
-                "    @abstractmethod\n"
-                "    def case_label(self) -> str: ...\n\n"
-                "    def explain_case(self, context):\n"
-                "        return None\n"
+                f'class {suggested_family_name}(ABC):\n    @property\n    @abstractmethod\n    def case_label(self) -> str: ...\n\n    def explain_case(self, context):\n        return None\n'
             ),
             codemod_patch=(
-                f"# Type `{case_candidate.subject_role}` against one nominal ABC family instead of a concrete union surface.\n"
-                "# Move repeated concrete `isinstance` recovery into abstract properties or case hooks on that family.\n"
-                "# Keep only irreducible case-local residue in the concrete subclasses."
+                f'# Type `{case_candidate.subject_role}` against one nominal ABC family instead of a concrete union surface.\n# Move repeated concrete `isinstance` recovery into abstract properties or case hooks on that family.\n# Keep only irreducible case-local residue in the concrete subclasses.'
             ),
             metrics=DispatchCountMetrics(
                 dispatch_site_count=len(case_candidate.functions),
@@ -1855,18 +1788,7 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
             ),
             family_candidate.evidence,
             scaffold=(
-                "class ShapeValidatedRecord(ABC):\n"
-                "    def validate(self):\n"
-                "        for predicate, message in self._shape_guard_rules():\n"
-                "            if predicate(self):\n"
-                "                raise ValueError(message)\n"
-                "        self._validate_residue()\n\n"
-                "    @classmethod\n"
-                "    @abstractmethod\n"
-                "    def _shape_guard_rules(cls): ...\n\n"
-                "    def _validate_residue(self):\n"
-                "        return None"
-                f"{preview_suffix}"
+                f'class ShapeValidatedRecord(ABC):\n    def validate(self):\n        for predicate, message in self._shape_guard_rules():\n            if predicate(self):\n                raise ValueError(message)\n        self._validate_residue()\n\n    @classmethod\n    @abstractmethod\n    def _shape_guard_rules(cls): ...\n\n    def _validate_residue(self):\n        return None{preview_suffix}'
             ),
             codemod_patch=(
                 '# Collapse repeated `validate()` shape guards into one authoritative validated-record base or field-spec table.\n# Keep only the truly variable residue checks, messages, or field roster on each concrete record.'
@@ -1939,15 +1861,7 @@ class _NormalFormScaffoldSpec:
     def render(self) -> str:
         step_rows = "\n".join(f"        {step_name}()," for step_name in self.step_names)
         return (
-            f"class {self.step_base_name}(EffectStep, ABC):\n"
-            f"    normal_form = {self.normal_form!r}\n\n"
-            "@dataclass(frozen=True)\n"
-            f"class {self.matcher_name}:\n"
-            f"    steps: tuple[{self.step_base_name}, ...] = (\n"
-            f"{step_rows}\n"
-            "    )\n\n"
-            f"    def {self.method_name}(self, {self.input_name}):\n"
-            f"        return Maybe.of({self.input_name}).bind_all(self.steps)"
+            f'class {self.step_base_name}(EffectStep, ABC):\n    normal_form = {self.normal_form!r}\n\n@dataclass(frozen=True)\nclass {self.matcher_name}:\n    steps: tuple[{self.step_base_name}, ...] = (\n{step_rows}\n    )\n\n    def {self.method_name}(self, {self.input_name}):\n        return Maybe.of({self.input_name}).bind_all(self.steps)'
         )
 
 
@@ -2083,16 +1997,7 @@ class FailSoftEffectPipelineDetector(ConfiguredModuleCollectorCandidateDetector[
 def _effect_step_payoff_scaffold(candidate: EffectStepAmortizationCandidate) -> str:
     normal_form_class = _camel_case(candidate.normal_form)
     return (
-        f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n"
-        "    __registry_key__ = 'step_id'\n"
-        "    __skip_if_no_key__ = True\n"
-        "    step_id: ClassVar[str | None] = None\n"
-        "    registration_order: ClassVar[int] = 0\n\n"
-        "@dataclass(frozen=True)\n"
-        f"class {normal_form_class}Matcher:\n"
-        f"    steps: tuple[{normal_form_class}Step, ...]\n\n"
-        "    def match(self, source):\n"
-        "        return Maybe.of(source).bind_all(self.steps)"
+        f"class {normal_form_class}Step(EffectStep, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id: ClassVar[str | None] = None\n    registration_order: ClassVar[int] = 0\n\n@dataclass(frozen=True)\nclass {normal_form_class}Matcher:\n    steps: tuple[{normal_form_class}Step, ...]\n\n    def match(self, source):\n        return Maybe.of(source).bind_all(self.steps)"
     )
 
 
@@ -2276,11 +2181,7 @@ class FindingSpecDefaultFieldBoilerplateDetector(
             ),
             (field_candidate.evidence,),
             scaffold=(
-                f"{field_candidate.recommended_constructor_name}(\n"
-                "    pattern_id=...,\n"
-                "    title=...,\n"
-                "    ...\n"
-                ")"
+                f'{field_candidate.recommended_constructor_name}(\n    pattern_id=...,\n    title=...,\n    ...\n)'
             ),
             codemod_patch=(
                 f"# Replace `{field_candidate.constructor_name}` with "
@@ -2343,9 +2244,7 @@ class DirectBuildFindingRendererDetector(
                 'finding_renderer = CandidateFindingRenderer[Candidate](\n    summary=lambda candidate: ...,\n    evidence=lambda candidate: ...,\n)'
             ),
             codemod_patch=(
-                f"# Move the `{renderer.method_name}` payload in `{renderer.class_name}` "
-                "to a `CandidateFindingRenderer` classvar.\n"
-                "# Let `CandidateFindingDetector._finding_for_candidate` run the renderer."
+                f'# Move the `{renderer.method_name}` payload in `{renderer.class_name}` to a `CandidateFindingRenderer` classvar.\n# Let `CandidateFindingDetector._finding_for_candidate` run the renderer.'
             ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=1,
@@ -2441,13 +2340,7 @@ class CanonicalFindingSpecBuilderDetector(
         ),
         evidence=lambda candidate: (candidate.evidence,),
         scaffold=lambda candidate: (
-            f"finding_spec = {candidate.builder_name}(\n"
-            "    PatternId.EXAMPLE,\n"
-            "    title,\n"
-            "    why,\n"
-            "    capability_gap,\n"
-            "    relation_context,\n"
-            ")"
+            f'finding_spec = {candidate.builder_name}(\n    PatternId.EXAMPLE,\n    title,\n    why,\n    capability_gap,\n    relation_context,\n)'
         ),
         codemod_patch=lambda candidate: (
             f"# Replace `{candidate.constructor_name}(pattern_id=..., title=..., ...)` "
@@ -2598,9 +2491,7 @@ class SimplePropertyAliasMethodDetector(
         ),
         evidence=lambda candidate: (candidate.evidence,),
         scaffold=lambda candidate: (
-            "from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\n"
-            f"{candidate.method_name} = AliasProperty["
-            f"{candidate.return_annotation or 'ValueType'}](\"{candidate.source_name}\")"
+            f'''from nominal_refactor_advisor.descriptor_algebra import AliasProperty\n\n{candidate.method_name} = AliasProperty[{candidate.return_annotation or 'ValueType'}]("{candidate.source_name}")'''
         ),
         codemod_patch=lambda candidate: (
             '# Replace the `@property return self.<source>` method with an `AliasProperty[...]` descriptor on the class body.'
@@ -2632,11 +2523,7 @@ class FieldOnlyFrozenDataclassDetector(
         ),
         evidence=lambda candidate: (candidate.evidence,),
         scaffold=lambda candidate: (
-            "from nominal_refactor_advisor.record_algebra import product_record\n\n"
-            f"{candidate.class_name} = product_record(\n"
-            f"    \"{candidate.class_name}\",\n"
-            "    \"field_name: FieldType; other_field: OtherType\",\n"
-            ")"
+            f'from nominal_refactor_advisor.record_algebra import product_record\n\n{candidate.class_name} = product_record(\n    "{candidate.class_name}",\n    "field_name: FieldType; other_field: OtherType",\n)'
         ),
         codemod_patch=lambda candidate: (
             '# Replace the field-only `@dataclass(frozen=True)` class shell with `product_record(...)`, preserving bases, field annotations, defaults, docstring, and dataclass keyword-only semantics.'
@@ -2752,10 +2639,7 @@ class SemanticTagTupleBoilerplateDetector(
             ),
             tag_candidate.evidence,
             scaffold=(
-                f"{tag_candidate.constant_name} = (\n"
-                "    ...\n"
-                ")\n\n"
-                f"finding_spec = HighConfidenceFindingSpec({tag_candidate.keyword_name}={tag_candidate.constant_name})"
+                f'{tag_candidate.constant_name} = (\n    ...\n)\n\nfinding_spec = HighConfidenceFindingSpec({tag_candidate.keyword_name}={tag_candidate.constant_name})'
             ),
             codemod_patch=(
                 f"# Add `{tag_candidate.constant_name}` for the repeated tag tuple.\n"
@@ -2799,9 +2683,7 @@ class DerivedMetricCountBoilerplateDetector(
             ),
             (metric_candidate.evidence,),
             scaffold=(
-                f"{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(\n"
-                "    ...\n"
-                ")"
+                f'{metric_candidate.metric_class_name}.{metric_candidate.recommended_constructor_name}(\n    ...\n)'
             ),
             codemod_patch=(
                 f"# Replace `{metric_candidate.metric_class_name}(...)` with "

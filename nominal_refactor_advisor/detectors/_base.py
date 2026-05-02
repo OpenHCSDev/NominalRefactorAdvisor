@@ -6463,9 +6463,7 @@ def _manual_registry_scaffold(candidate: ManualRegistryCandidate) -> str:
 
 def _manual_registry_patch(candidate: ManualRegistryCandidate) -> str:
     return (
-        f"# Replace decorator `{candidate.decorator_name}` and registry `{candidate.registry_name}`\n"
-        "# with `from metaclass_registry import AutoRegisterMeta`, a declarative class key, and\n"
-        "# `cls.__registry__` so class creation and registration are one event."
+        f'# Replace decorator `{candidate.decorator_name}` and registry `{candidate.registry_name}`\n# with `from metaclass_registry import AutoRegisterMeta`, a declarative class key, and\n# `cls.__registry__` so class creation and registration are one event.'
     )
 
 
@@ -6707,13 +6705,7 @@ _WITNESS_MIXIN_ROLE_SPECS = {
     _WITNESS_NAME_FAMILY_ROLE: WitnessMixinRoleSpec(
         mixin_name="NameFamilyMixin",
         scaffold=(
-            "class NameFamilyMixin(ABC):\n"
-            "    @property\n"
-            "    @abstractmethod\n"
-            f"    def {_WITNESS_NAME_FAMILY_ROLE}(self) -> tuple[str, ...]: ...\n\n"
-            "    @property\n"
-            "    def primary_name(self) -> str | None:\n"
-            f"        return self.{_WITNESS_NAME_FAMILY_ROLE}[0] if self.{_WITNESS_NAME_FAMILY_ROLE} else None"
+            f'class NameFamilyMixin(ABC):\n    @property\n    @abstractmethod\n    def {_WITNESS_NAME_FAMILY_ROLE}(self) -> tuple[str, ...]: ...\n\n    @property\n    def primary_name(self) -> str | None:\n        return self.{_WITNESS_NAME_FAMILY_ROLE}[0] if self.{_WITNESS_NAME_FAMILY_ROLE} else None'
         ),
     ),
     _WITNESS_LINE_ROLE: WitnessMixinRoleSpec(
@@ -6773,9 +6765,7 @@ def _witness_mixin_enforcement_patch(
         for role_name, field_names in candidate.role_field_names
     )
     return (
-        f"# Collapse renamed semantic role slices {role_summary} into reusable mixins.\n"
-        "# Normalize the leaf carriers onto the shared semantic base plus those mixins.\n"
-        "# Use multiple inheritance when one carrier needs several orthogonal witness roles."
+        f'# Collapse renamed semantic role slices {role_summary} into reusable mixins.\n# Normalize the leaf carriers onto the shared semantic base plus those mixins.\n# Use multiple inheritance when one carrier needs several orthogonal witness roles.'
     )
 
 
@@ -6784,12 +6774,7 @@ def _orchestration_stage_scaffold(profile: FunctionProfile) -> str:
         f"{profile.qualname.split('.')[-1].title().replace('_', '')}StageContext"
     )
     return (
-        f"@dataclass(frozen=True)\n"
-        f"class {stage_context_name}:\n"
-        f"    ...\n\n"
-        f"def prepare_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\n"
-        f"def execute_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\n"
-        f"def finalize_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ..."
+        f"@dataclass(frozen=True)\nclass {stage_context_name}:\n    ...\n\ndef prepare_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef execute_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ...\ndef finalize_{profile.qualname.split('.')[-1]}_stage(ctx: {stage_context_name}): ..."
     )
 
 
@@ -8163,6 +8148,9 @@ EnumMetadataTableCandidate = product_record('EnumMetadataTableCandidate', 'table
 
 
 MultilineStringLiteralCandidate = product_record('MultilineStringLiteralCandidate', 'end_line: int; line_count: int; char_count: int', bases=(LineWitnessCandidate,))
+
+
+MultilineFStringLiteralCandidate = product_record('MultilineFStringLiteralCandidate', 'end_line: int; line_count: int; expression_count: int; char_count: int', bases=(LineWitnessCandidate,))
 
 
 @dataclass(frozen=True)

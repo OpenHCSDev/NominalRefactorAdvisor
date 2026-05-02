@@ -4310,17 +4310,7 @@ def _abc_patch_for_methods(methods: tuple[MethodShape, ...]) -> str:
     )
     hook_name = methods[0].method_name
     return (
-        "*** Begin Patch\n"
-        f"*** Update File: {target_file}\n"
-        f"@@\n"
-        f"+class {base_name}(ABC):\n"
-        f"+    def run(self, request):\n"
-        f"+        normalized = self._normalize(request)\n"
-        f"+        return self.{hook_name}(normalized)\n"
-        f"+\n"
-        f"+    @abstractmethod\n"
-        f"+    def {hook_name}(self, normalized): ...\n"
-        "*** End Patch"
+        f'*** Begin Patch\n*** Update File: {target_file}\n@@\n+class {base_name}(ABC):\n+    def run(self, request):\n+        normalized = self._normalize(request)\n+        return self.{hook_name}(normalized)\n+\n+    @abstractmethod\n+    def {hook_name}(self, normalized): ...\n*** End Patch'
     )
 
 def _abc_family_patch(
@@ -4330,28 +4320,14 @@ def _abc_family_patch(
     target_file = groups[0][0].file_path
     base_name = _shared_family_name(ordered) or "FamilyBase"
     return (
-        "*** Begin Patch\n"
-        f"*** Update File: {target_file}\n"
-        "@@\n"
-        f"+class {base_name}(ABC):\n"
-        "+    def run(self, request): ...\n"
-        "+\n"
-        "+    @abstractmethod\n"
-        "+    def hook(self, request): ...\n"
-        "*** End Patch"
+        f'*** Begin Patch\n*** Update File: {target_file}\n@@\n+class {base_name}(ABC):\n+    def run(self, request): ...\n+\n+    @abstractmethod\n+    def hook(self, request): ...\n*** End Patch'
     )
 
 def _builder_patch(builders: tuple[BuilderCallShape, ...]) -> str:
     target_file = builders[0].file_path
     callee_name = builders[0].callee_name
     return (
-        "*** Begin Patch\n"
-        f"*** Update File: {target_file}\n"
-        "@@\n"
-        f"+@classmethod\n"
-        f"+def from_source(cls, source):\n"
-        f"+    return {callee_name}(...)\n"
-        "*** End Patch"
+        f'*** Begin Patch\n*** Update File: {target_file}\n@@\n+@classmethod\n+def from_source(cls, source):\n+    return {callee_name}(...)\n*** End Patch'
     )
 
 def _single_owner_builder_family_patch(owner_symbol: str, callee_name: str) -> str:
@@ -4363,16 +4339,7 @@ def _single_owner_builder_family_patch(owner_symbol: str, callee_name: str) -> s
 def _projection_schema_patch(export_shapes: tuple[ExportDictShape, ...]) -> str:
     target_file = export_shapes[0].file_path
     return (
-        "*** Begin Patch\n"
-        f"*** Update File: {target_file}\n"
-        "@@\n"
-        "+@dataclass(frozen=True)\n"
-        "+class ProjectionSchema:\n"
-        "+    ...\n"
-        "+\n"
-        "+    @classmethod\n"
-        "+    def from_source(cls, source): ...\n"
-        "*** End Patch"
+        f'*** Begin Patch\n*** Update File: {target_file}\n@@\n+@dataclass(frozen=True)\n+class ProjectionSchema:\n+    ...\n+\n+    @classmethod\n+    def from_source(cls, source): ...\n*** End Patch'
     )
 
 def _autoregister_patch(
@@ -4406,9 +4373,7 @@ def _autoregister_patch(
         else _declared_registry_key_block("registry_key")
     )
     return (
-        "*** Begin Patch\n"
-        f"*** Update File: {target_file}\n"
-        "@@\n"
+        f'*** Begin Patch\n*** Update File: {target_file}\n@@\n'
         + (
             "+from metaclass_registry import AutoRegisterMeta\n"
             + ("+import re\n" if use_extractor else "")
@@ -4477,15 +4442,7 @@ def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
 
 def _single_owner_builder_family_scaffold(callee_name: str) -> str:
     return (
-        "@dataclass(frozen=True)\n"
-        "class InvocationSpec:\n"
-        "    args: tuple[object, ...]\n"
-        "    kwargs: dict[str, object]\n\n"
-        "INVOCATION_SPECS = (\n"
-        "    InvocationSpec(args=(...), kwargs={\"flag\": True}),\n"
-        ")\n\n"
-        f"for spec in INVOCATION_SPECS:\n"
-        f"    owner.{callee_name}(*spec.args, **spec.kwargs)"
+        f'@dataclass(frozen=True)\nclass InvocationSpec:\n    args: tuple[object, ...]\n    kwargs: dict[str, object]\n\nINVOCATION_SPECS = (\n    InvocationSpec(args=(...), kwargs={{"flag": True}}),\n)\n\nfor spec in INVOCATION_SPECS:\n    owner.{callee_name}(*spec.args, **spec.kwargs)'
     )
 
 def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> str:
@@ -4493,12 +4450,7 @@ def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> s
     field_block = "\n".join(f"    {key}: object" for key in keys[:4])
     mapping_block = "\n".join(f"            {key}=source.{key}," for key in keys[:4])
     return (
-        "@dataclass(frozen=True)\n"
-        "class ProjectionSchema:\n"
-        f"{field_block}\n\n"
-        "    @classmethod\n"
-        "    def from_source(cls, source):\n"
-        f"        return cls(\n{mapping_block}\n        )"
+        f'@dataclass(frozen=True)\nclass ProjectionSchema:\n{field_block}\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(\n{mapping_block}\n        )'
     )
 
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
@@ -4507,12 +4459,7 @@ def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
     config_block = _derived_registry_key_block(sample)
     subclass_block = "\n".join(f"class {name}({base_name}):\n    ..." for name in sample)
     return (
-        "from abc import ABC\n"
-        "import re\n"
-        "from metaclass_registry import AutoRegisterMeta\n\n"
-        f"class {base_name}(ABC, metaclass=AutoRegisterMeta):\n"
-        f"{config_block}\n\n"
-        f"{subclass_block}"
+        f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass {base_name}(ABC, metaclass=AutoRegisterMeta):\n{config_block}\n\n{subclass_block}'
     )
 
 def _shared_family_name(class_names: list[str]) -> str | None:
@@ -4627,10 +4574,7 @@ def _projection_helper_scaffold(shapes: Sequence[ProjectionHelperShape]) -> str:
     function_names = ", ".join(shape.function_name for shape in shapes)
     attributes = ", ".join(sorted({shape.projected_attribute for shape in shapes}))
     return (
-        "def _render_projection(items, projector):\n"
-        "    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n"
-        f"# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n"
-        f"# Projected fields: {attributes}"
+        f'def _render_projection(items, projector):\n    return tuple(_dedupe_preserve_order(projector(item) for item in items))\n\n# Replace {function_names} with `_render_projection(..., lambda item: item.<field>)`.\n# Projected fields: {attributes}'
     )
 
 def _supports_accessor_wrapper_finding(
@@ -7155,7 +7099,7 @@ def _enum_metadata_table_candidates(
 
 
 def _is_docstring_constant(
-    node: ast.Constant,
+    node: ast.AST,
     parent_stack: Sequence[ast.AST],
 ) -> bool:
     if len(parent_stack) < 2:
@@ -7212,6 +7156,50 @@ def _multiline_string_literal_candidates(
                         char_count=len(node.value),
                     )
                 )
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+def _multiline_f_string_literal_candidates(
+    module: ParsedModule,
+) -> tuple[MultilineFStringLiteralCandidate, ...]:
+    candidates: list[MultilineFStringLiteralCandidate] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.parent_stack: list[ast.AST] = []
+
+        def visit(self, node: ast.AST) -> None:
+            self.parent_stack.append(node)
+            super().visit(node)
+            self.parent_stack.pop()
+
+        def visit_JoinedStr(self, node: ast.JoinedStr) -> None:
+            if (
+                node.end_lineno is not None
+                and node.end_lineno > node.lineno
+                and not any(
+                    isinstance(parent, ast.JoinedStr)
+                    for parent in self.parent_stack[:-1]
+                )
+                and not _is_docstring_constant(node, self.parent_stack[:-1])
+                and _string_token_count(module.source, node) > 1
+            ):
+                candidates.append(
+                    MultilineFStringLiteralCandidate(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        end_line=node.end_lineno,
+                        line_count=node.end_lineno - node.lineno + 1,
+                        expression_count=sum(
+                            isinstance(value, ast.FormattedValue)
+                            for value in ast.walk(node)
+                        ),
+                        char_count=len(ast.unparse(node)),
+                    )
+                )
+            self.generic_visit(node)
 
     Visitor().visit(module.module)
     return tuple(candidates)

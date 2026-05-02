@@ -245,12 +245,7 @@ def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
         tmp_path,
         "pkg/mod.py",
         (
-            "def orchestrate(request):\n"
-            "    value = start(request)\n"
-            f"{branch_body}\n"
-            "    finalized = finalize(value)\n"
-            "    publish(finalized)\n"
-            "    return finalized\n"
+            f'def orchestrate(request):\n    value = start(request)\n{branch_body}\n    finalized = finalize(value)\n    publish(finalized)\n    return finalized\n'
         ),
     )
 
@@ -277,34 +272,7 @@ def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
         tmp_path,
         "pkg/pipeline.py",
         (
-            f"{filler}\n"
-            "class _ReturnedPoseSelection:\n"
-            "    def __init__(self, winner, support):\n"
-            "        self.winner = winner\n"
-            "        self.support = support\n\n"
-            "class _ReturnedPoseProofContext:\n"
-            "    def __init__(self, scores):\n"
-            "        self.scores = scores\n\n"
-            "def _returned_pose_support_indices(context):\n"
-            "    support = []\n"
-            "    for index, _score in enumerate(context.scores):\n"
-            "        if index < 2:\n"
-            "            support.append(index)\n"
-            "    return tuple(support)\n\n"
-            "def _returned_pose_selection(context):\n"
-            "    support = _returned_pose_support_indices(context)\n"
-            "    winner = support[0] if support else 0\n"
-            "    return _ReturnedPoseSelection(winner, support)\n\n"
-            "def _returned_pose_proof_plan(context):\n"
-            "    selection = _returned_pose_selection(context)\n"
-            f"{repeated_lines}\n"
-            "    return {'winner': selection.winner, 'support': selection.support}\n\n"
-            "def _returned_pose_certification(context):\n"
-            "    plan = _returned_pose_proof_plan(context)\n"
-            "    return plan['winner'], plan['support']\n\n"
-            "def run_pipeline(scores):\n"
-            "    context = _ReturnedPoseProofContext(scores)\n"
-            "    return _returned_pose_certification(context)\n"
+            f"{filler}\nclass _ReturnedPoseSelection:\n    def __init__(self, winner, support):\n        self.winner = winner\n        self.support = support\n\nclass _ReturnedPoseProofContext:\n    def __init__(self, scores):\n        self.scores = scores\n\ndef _returned_pose_support_indices(context):\n    support = []\n    for index, _score in enumerate(context.scores):\n        if index < 2:\n            support.append(index)\n    return tuple(support)\n\ndef _returned_pose_selection(context):\n    support = _returned_pose_support_indices(context)\n    winner = support[0] if support else 0\n    return _ReturnedPoseSelection(winner, support)\n\ndef _returned_pose_proof_plan(context):\n    selection = _returned_pose_selection(context)\n{repeated_lines}\n    return {{'winner': selection.winner, 'support': selection.support}}\n\ndef _returned_pose_certification(context):\n    plan = _returned_pose_proof_plan(context)\n    return plan['winner'], plan['support']\n\ndef run_pipeline(scores):\n    context = _ReturnedPoseProofContext(scores)\n    return _returned_pose_certification(context)\n"
         ),
     )
 
@@ -332,15 +300,7 @@ def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None
         tmp_path,
         "pkg/helpers.py",
         (
-            f"{filler}\n"
-            "def _build_payload(value):\n"
-            "    return {'value': value}\n\n"
-            "def _load_registry(name):\n"
-            "    return {'name': name}\n\n"
-            "def _write_audit(event):\n"
-            "    return event\n\n"
-            "def run_helpers(value):\n"
-            "    return _write_audit(_build_payload(value))\n"
+            f"{filler}\ndef _build_payload(value):\n    return {{'value': value}}\n\ndef _load_registry(name):\n    return {{'name': name}}\n\ndef _write_audit(event):\n    return event\n\ndef run_helpers(value):\n    return _write_audit(_build_payload(value))\n"
         ),
     )
 

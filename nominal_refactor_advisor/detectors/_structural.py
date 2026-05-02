@@ -230,10 +230,7 @@ def _field_family_scaffold(candidate: FieldFamilyCandidate) -> str:
     )
     if candidate.dataclass_count == len(candidate.class_names):
         return (
-            "@dataclass(frozen=True)\n"
-            f"class {base_name}(ABC):\n"
-            f"{field_block}\n\n"
-            f"# Move shared dataclass fields from {', '.join(candidate.class_names)} into {base_name}."
+            f"@dataclass(frozen=True)\nclass {base_name}(ABC):\n{field_block}\n\n# Move shared dataclass fields from {', '.join(candidate.class_names)} into {base_name}."
         )
     init_params = ", ".join(candidate.field_names)
     assignments = "\n".join(
@@ -445,12 +442,7 @@ def _prefixed_role_bundle_scaffold(
         for role_name in candidate.role_names
     )
     return (
-        "from abc import ABC\n\n"
-        "@dataclass(frozen=True)\n"
-        f"class {base_name}(ABC):\n"
-        f"{member_block}\n\n"
-        f"{role_classes}\n\n"
-        f"# Replace role-prefixed fields on `{candidate.class_name}` with explicit role records."
+        f'from abc import ABC\n\n@dataclass(frozen=True)\nclass {base_name}(ABC):\n{member_block}\n\n{role_classes}\n\n# Replace role-prefixed fields on `{candidate.class_name}` with explicit role records.'
     )
 
 def _public_class_name(name: str) -> str:
@@ -529,13 +521,11 @@ class PrefixedRoleFieldBundleDetector(ConfiguredModuleCollectorCandidateDetector
         transport_summary = ""
         if bundle_candidate.manual_transport_methods:
             transport_summary = (
-                " Manual transport methods also repeat the shape: "
-                f"{', '.join(bundle_candidate.manual_transport_methods)}."
+                f" Manual transport methods also repeat the shape: {', '.join(bundle_candidate.manual_transport_methods)}."
             )
         elif bundle_candidate.pytree_base_names:
             transport_summary = (
-                " The record also participates in PyTree transport via "
-                f"{', '.join(bundle_candidate.pytree_base_names)}."
+                f" The record also participates in PyTree transport via {', '.join(bundle_candidate.pytree_base_names)}."
             )
         return self.build_finding(
             (
@@ -630,10 +620,7 @@ class ConstantPropertyHookDetector(ModuleCollectorCandidateDetector[ConstantProp
         constant_name = hook_group.property_name.upper()
         if len(unique_returns) == 1:
             scaffold = (
-                f"class {_camel_case(unique_returns[0].replace('.', '_'))}{_camel_case(hook_group.property_name)}Mixin(ABC):\n"
-                "    @property\n"
-                f"    def {hook_group.property_name}(self):\n"
-                f"        return {unique_returns[0]}"
+                f"class {_camel_case(unique_returns[0].replace('.', '_'))}{_camel_case(hook_group.property_name)}Mixin(ABC):\n    @property\n    def {hook_group.property_name}(self):\n        return {unique_returns[0]}"
             )
             patch = f"# Move `{hook_group.property_name}` <- `{unique_returns[0]}` into one fixed-value mixin for `{hook_group.base_name}`."
         else:
@@ -773,14 +760,7 @@ class ClassvarOnlySiblingLeafDetector(ModuleCollectorCandidateDetector[Declarati
             ),
             evidence,
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                f"class {spec_name}:\n"
-                "    family_name: str\n"
-                "    item_type: type[object]\n"
-                "    spec_root: type[object] | None = None\n"
-                "    spec: object | None = None\n\n"
-                f"def declare_{group.base_names[0].lower()}(spec: {spec_name}) -> type[CollectedFamily]:\n"
-                "    return type(spec.family_name, (...,), {...})"
+                f'@dataclass(frozen=True)\nclass {spec_name}:\n    family_name: str\n    item_type: type[object]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n\ndef declare_{group.base_names[0].lower()}(spec: {spec_name}) -> type[CollectedFamily]:\n    return type(spec.family_name, (...,), {{...}})'
             ),
             codemod_patch=(
                 f"# Replace repeated family leaf classes for bases {group.base_names} with one declarative family-definition table.\n"
@@ -1031,17 +1011,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             else f" with filter hooks {group.filter_names}"
         )
         scaffold = (
-            "import re\n"
-            "from abc import ABC\n"
-            "from metaclass_registry import AutoRegisterMeta\n\n"
-            "class RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n"
-            f"{_derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\n"
-            "def materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n"
-            "    return tuple(\n"
-            "        materialize(item)\n"
-            "        for item in root.__registry__.values()\n"
-            "        if include(item)\n"
-            "    )"
+            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
             if group.registry_attribute_names
             else (
                 'from metaclass_registry import AutoRegisterMeta\n\ndef walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    seen = set()\n    ordered = []\n    queue = list(root.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not include(current) or current in seen:\n            continue\n        seen.add(current)\n        ordered.append(materialize(current))\n    return tuple(ordered)\n\n# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n# read registered classes from cls.__registry__.values() instead of maintaining a second walker.'
@@ -2012,14 +1982,7 @@ class AlternateConstructorFamilyDetector(ModuleCollectorCandidateDetector[Altern
             ),
             evidence,
             scaffold=(
-                "@singledispatchmethod\n"
-                "@classmethod\n"
-                f"def from_source(cls, source, **context) -> {group.class_name}:\n"
-                "    raise TypeError\n\n"
-                "@from_source.register\n"
-                "@classmethod\n"
-                "def _(cls, source: SomeSource, **context):\n"
-                "    return cls(...)"
+                f'@singledispatchmethod\n@classmethod\ndef from_source(cls, source, **context) -> {group.class_name}:\n    raise TypeError\n\n@from_source.register\n@classmethod\ndef _(cls, source: SomeSource, **context):\n    return cls(...)'
             ),
             codemod_patch=(
                 f"# Collapse {group.method_names} into one provenance-dispatched constructor for `{group.class_name}`.\n"
@@ -2105,6 +2068,30 @@ class MultilineStringLiteralDetector(ModuleCollectorCandidateDetector[MultilineS
             mapping_site_count=literal.line_count,
             mapping_name="multiline-string-literal",
             field_names=("runtime_string_value",),
+        ),
+    )
+
+
+class MultilineFStringLiteralDetector(ModuleCollectorCandidateDetector[MultilineFStringLiteralCandidate]):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Split formatted string literal should collapse into one literal authority",
+        'A formatted string assembled from several adjacent physical string tokens still has one runtime value and one interpolation graph. The token split is not semantic; keep the formatted value in one literal authority.',
+        "single source literal for one runtime formatted string value",
+        "one formatted string value is split across multiple physical source tokens",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    finding_renderer = CandidateFindingRenderer[MultilineFStringLiteralCandidate](
+        summary=lambda literal: f"`{literal.file_path}` has a {literal.line_count}-line formatted string literal at {literal.line}-{literal.end_line} with {literal.expression_count} interpolations.",
+        evidence=lambda literal: (literal.evidence,),
+        scaffold=lambda literal: 'literal = f"single source string with {interpolation} and escaped newlines"',
+        codemod_patch=lambda literal: f"# Replace the physical formatted-string split at {literal.file_path}:{literal.line}-{literal.end_line} with one escaped f-string literal.",
+        metrics=lambda literal: MappingMetrics.from_field_names(
+            mapping_site_count=literal.line_count,
+            mapping_name="multiline-f-string-literal",
+            field_names=("runtime_formatted_string_value",),
         ),
     )
 

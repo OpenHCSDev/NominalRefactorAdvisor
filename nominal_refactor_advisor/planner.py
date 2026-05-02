@@ -81,9 +81,7 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
         field_execution_level = _field_execution_level_from_findings(findings)
         if field_names and field_execution_level != "unknown_level":
             return (
-                f"Create one ABC field base for `{subsystem}` and lift shared fields "
-                f"{_human_join(list(field_names))} from {_class_list_from_findings(findings)} at "
-                f"{field_execution_level.replace('_', ' ')}."
+                f"Create one ABC field base for `{subsystem}` and lift shared fields {_human_join(list(field_names))} from {_class_list_from_findings(findings)} at {field_execution_level.replace('_', ' ')}."
             )
         site_count = sum(finding.metrics.shared_algorithm_sites for finding in findings)
         return (

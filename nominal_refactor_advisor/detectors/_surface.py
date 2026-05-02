@@ -44,19 +44,7 @@ class ManualFamilyRosterDetector(IssueDetector):
                         ),
                         tuple(evidence[:6]),
                         scaffold=(
-                            "from abc import ABC\n"
-                            "import re\n"
-                            "from metaclass_registry import AutoRegisterMeta\n"
-                            "from typing import ClassVar\n\n"
-                            f"class Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n"
-                            f"{_derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n"
-                            "    registration_order: ClassVar[int] = 0\n\n"
-                            "ordered_types = tuple(\n"
-                            "    sorted(\n"
-                            f"        Registered{candidate.family_base_name}.__registry__.values(),\n"
-                            "        key=lambda registered_type: registered_type.registration_order,\n"
-                            "    )\n"
-                            ")"
+                            f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import ClassVar\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n    registration_order: ClassVar[int] = 0\n\nordered_types = tuple(\n    sorted(\n        Registered{candidate.family_base_name}.__registry__.values(),\n        key=lambda registered_type: registered_type.registration_order,\n    )\n)"
                         ),
                         codemod_patch=(
                             f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"
@@ -96,13 +84,7 @@ class FragmentedFamilyAuthorityDetector(ModuleCollectorCandidateDetector[Fragmen
             ),
             evidence[:6],
             scaffold=(
-                "@dataclass(frozen=True)\n"
-                f"class {authority_candidate.key_family_name}Spec:\n"
-                f"    key: {authority_candidate.key_family_name}\n"
-                "    priority: int\n"
-                "    dependencies: tuple[object, ...] = ()\n"
-                "    synergy_with: tuple[object, ...] = ()\n"
-                "    builder: object | None = None"
+                f'@dataclass(frozen=True)\nclass {authority_candidate.key_family_name}Spec:\n    key: {authority_candidate.key_family_name}\n    priority: int\n    dependencies: tuple[object, ...] = ()\n    synergy_with: tuple[object, ...] = ()\n    builder: object | None = None'
             ),
             codemod_patch=(
                 f"# Collapse {authority_candidate.mapping_names} into one `{authority_candidate.key_family_name}`-keyed spec table.\n"
@@ -402,11 +384,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                     ),
                     evidence,
                     scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        f"class {callee_name}Builder:\n"
-                        "    @classmethod\n"
-                        "    def from_sources(cls, ...):\n"
-                        f"        return {callee_name}(...)"
+                        f'@dataclass(frozen=True)\nclass {callee_name}Builder:\n    @classmethod\n    def from_sources(cls, ...):\n        return {callee_name}(...)'
                     ),
                     codemod_patch=(
                         f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
@@ -521,10 +499,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
             ),
             evidence,
             scaffold=(
-                "class ProjectionTemplate(ABC):\n"
-                "    @property\n"
-                f"    def {property_name}(self) -> {constructor_name}:\n"
-                f"        return {constructor_name}(...)"
+                f'class ProjectionTemplate(ABC):\n    @property\n    def {property_name}(self) -> {constructor_name}:\n        return {constructor_name}(...)'
             ),
             codemod_patch=(
                 f"# Introduce one projection template for `{property_name}` over roles {keyword_names}.\n"
