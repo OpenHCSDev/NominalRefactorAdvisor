@@ -7019,14 +7019,7 @@ class SemanticDataclassRecommendation:
 SemanticDictBagCandidate = product_record('SemanticDictBagCandidate', 'line: int; symbol: str; key_names: tuple[str, ...]; context_kind: str; recommendation: SemanticDataclassRecommendation')
 
 
-@dataclass(frozen=True)
-class FieldFamilyCandidate:
-    class_names: tuple[str, ...]
-    field_names: tuple[str, ...]
-    execution_level: StructuralExecutionLevel
-    observations: tuple[FieldObservation, ...]
-    dataclass_count: int
-    field_type_map: tuple[tuple[str, str], ...] = ()
+FieldFamilyCandidate = product_record('FieldFamilyCandidate', 'class_names: tuple[str, ...]; field_names: tuple[str, ...]; execution_level: StructuralExecutionLevel; observations: tuple[FieldObservation, ...]; dataclass_count: int; field_type_map: tuple[tuple[str, str], ...]', defaults={'field_type_map': ()})
 
 
 @dataclass(frozen=True)
@@ -7216,11 +7209,7 @@ FindingAssemblyPipelineCandidate = product_record('FindingAssemblyPipelineCandid
 GuardedDelegatorCandidate = product_record('GuardedDelegatorCandidate', 'method_name: str; guard_role: str; delegate_name: str; scope_role: str', bases=(WitnessCarrierCandidate,))
 
 
-@dataclass(frozen=True)
-class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
-    property_name: str
-    constructor_name: str
-    keyword_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("name_family")
+StructuralObservationPropertyCandidate = product_record('StructuralObservationPropertyCandidate', 'property_name: str; constructor_name: str; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]', bases=(WitnessCarrierCandidate,), defaults={'keyword_names': AliasProperty('name_family')})
 
 
 @dataclass(frozen=True)
@@ -7381,12 +7370,7 @@ StringBackedReflectiveNominalLookupCandidate = product_record('StringBackedRefle
 ConcreteConfigFieldProbeCandidate = product_record('ConcreteConfigFieldProbeCandidate', 'method_name: str; config_attr_name: str; config_type_name: str; missing_field_names: tuple[str, ...]; probe_builtin_names: tuple[str, ...]', bases=(ClassLineWitnessCandidate,))
 
 
-@dataclass(frozen=True)
-class _ManualSubclassRegistrationSite:
-    registry_name: str
-    guard_summary: str | None
-    selector_attr_name: str | None = None
-    requires_concrete_subclass: bool = False
+_ManualSubclassRegistrationSite = product_record('_ManualSubclassRegistrationSite', 'registry_name: str; guard_summary: str | None; selector_attr_name: str | None; requires_concrete_subclass: bool', defaults={'selector_attr_name': None, 'requires_concrete_subclass': False})
 
 
 IndexedFamilyWrapperCandidate = product_record('IndexedFamilyWrapperCandidate', 'function_name: str; lineno: int; collector_name: str; spec_root_name: str; item_type_name: str')
@@ -8194,7 +8178,7 @@ SimplePropertyAliasClassCandidate = product_record('SimplePropertyAliasClassCand
 SimplePropertyAliasMethodCandidate = product_record('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', bases=(ClassMethodLineWitnessCandidate,))
 
 
-FieldOnlyFrozenDataclassCandidate = product_record('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; line_count: int', bases=(ClassLineWitnessCandidate,))
+FieldOnlyFrozenDataclassCandidate = product_record('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; default_specs: tuple[tuple[str, str], ...]; docstring: str | None; kw_only: bool; line_count: int', bases=(ClassLineWitnessCandidate,))
 
 
 @dataclass(frozen=True)

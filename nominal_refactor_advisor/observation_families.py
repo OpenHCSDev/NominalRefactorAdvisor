@@ -7,6 +7,8 @@ to keep one nominal authority per family and derive runtime family surfaces from
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -96,13 +98,7 @@ from .ast_tools import (
 )
 
 
-@dataclass(frozen=True)
-class GeneratedFamilySpec:
-    """Declarative recipe for one generated collected family export."""
-
-    item_type: type[object]
-    family_root: type[CollectedFamily]
-    export_name: str | None = None
+GeneratedFamilySpec = product_record('GeneratedFamilySpec', 'item_type: type[object]; family_root: type[CollectedFamily]; export_name: str | None', defaults={'export_name': None}, doc='Declarative recipe for one generated collected family export.')
 
 
 class FamilyGeneratingSpec(ABC):

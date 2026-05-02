@@ -186,15 +186,7 @@ class PatternActionBuilder(ABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
-class ActionTemplate:
-    kind: str
-    description: str
-    confidence: ConfidenceLevel
-    create_symbol: str | None = None
-    replace_with: str | None = None
-    remove_symbols_from_evidence: bool = False
-    statement_operation: str | None = None
+ActionTemplate = product_record('ActionTemplate', 'kind: str; description: str; confidence: ConfidenceLevel; create_symbol: str | None; replace_with: str | None; remove_symbols_from_evidence: bool; statement_operation: str | None', defaults={'create_symbol': None, 'replace_with': None, 'remove_symbols_from_evidence': False, 'statement_operation': None})
 
 
 ActionContext = product_record('ActionContext', 'subsystem: str; evidence: tuple[SourceLocation, ...]; symbols: tuple[str, ...]; base_name: str; template_method_name: str; statement_sequence: str; registry_name: str; registry_hook_examples: str; class_list: str; mapping_symbol: str; mapping_call: str; mapping_problem: str; field_list: str; identity_field_list: str; field_execution_level: str; dispatch_symbol: str; dispatch_axis: str; dispatch_cases: str; statement_count: int')

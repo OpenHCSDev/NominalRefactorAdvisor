@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -104,12 +106,7 @@ class ObservationTag(StrEnum):
         return _OBSERVATION_LABELS[self]
 
 
-@dataclass(frozen=True)
-class CapabilitySpec:
-    """Display metadata for one :class:`CapabilityTag`."""
-
-    label: str
-    distinction: str
+CapabilitySpec = product_record('CapabilitySpec', 'label: str; distinction: str', doc='Display metadata for one :class:`CapabilityTag`.')
 
 
 _CAPABILITY_SPECS = {

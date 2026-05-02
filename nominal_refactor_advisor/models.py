@@ -39,13 +39,7 @@ class SemanticRecord(ABC):
         return asdict(record)
 
 
-@dataclass(frozen=True)
-class SourceLocation(SemanticRecord):
-    """One evidence site in source code."""
-
-    file_path: str
-    line: int
-    symbol: str
+SourceLocation = product_record('SourceLocation', 'file_path: str; line: int; symbol: str', bases=(SemanticRecord,), doc='One evidence site in source code.')
 
 
 @dataclass(frozen=True)
@@ -579,19 +573,7 @@ class ParameterThreadMetrics(FindingMetrics):
     plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty("shared_parameter_names")
 
 
-@dataclass(frozen=True, kw_only=True)
-class FindingSemantics(SemanticRecord):
-    """Stable descriptive fields shared by specs and emitted findings."""
-
-    pattern_id: PatternId
-    title: str
-    why: str
-    capability_gap: str
-    relation_context: str
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
-    certification: CertificationLevel = STRONG_HEURISTIC
-    capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
-    observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
+FindingSemantics = product_record('FindingSemantics', 'pattern_id: PatternId; title: str; why: str; capability_gap: str; relation_context: str; confidence: ConfidenceLevel; certification: CertificationLevel; capability_tags: tuple[CapabilityTag, ...]; observation_tags: tuple[ObservationTag, ...]', bases=(SemanticRecord,), defaults={'confidence': MEDIUM_CONFIDENCE, 'certification': STRONG_HEURISTIC, 'capability_tags': field(default_factory=tuple), 'observation_tags': field(default_factory=tuple)}, doc='Stable descriptive fields shared by specs and emitted findings.', kw_only=True)
 
 
 @dataclass(frozen=True)
@@ -688,80 +670,25 @@ class FindingSpec(FindingSemantics):
         )
 
 
-@dataclass(frozen=True)
-class HighConfidenceFindingSpec(FindingSpec):
-    """Finding spec whose confidence is intentionally high by construction."""
-
-    confidence: ConfidenceLevel = HIGH_CONFIDENCE
+HighConfidenceFindingSpec = product_record('HighConfidenceFindingSpec', 'confidence: ConfidenceLevel', bases=(FindingSpec,), defaults={'confidence': HIGH_CONFIDENCE}, doc='Finding spec whose confidence is intentionally high by construction.')
 
 
-@dataclass(frozen=True)
-class CertifiedFindingSpec(FindingSpec):
-    """Finding spec whose certification is intentionally certified by construction."""
-
-    certification: CertificationLevel = CERTIFIED
+CertifiedFindingSpec = product_record('CertifiedFindingSpec', 'certification: CertificationLevel', bases=(FindingSpec,), defaults={'certification': CERTIFIED}, doc='Finding spec whose certification is intentionally certified by construction.')
 
 
-@dataclass(frozen=True)
-class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
-    """Finding spec whose high-confidence certified status is constructor-level."""
-
-    certification: CertificationLevel = CERTIFIED
+HighConfidenceCertifiedFindingSpec = product_record('HighConfidenceCertifiedFindingSpec', 'certification: CertificationLevel', bases=(HighConfidenceFindingSpec,), defaults={'certification': CERTIFIED}, doc='Finding spec whose high-confidence certified status is constructor-level.')
 
 
-@dataclass(frozen=True)
-class RefactorAction(SemanticRecord):
-    """One proposed transformation step inside a subsystem refactor plan."""
-
-    kind: str
-    description: str
-    target: str | None = None
-    create_symbol: str | None = None
-    replace_with: str | None = None
-    statement_operation: str | None = None
-    symbols: tuple[str, ...] = ()
-    remove_symbols: tuple[str, ...] = ()
-    evidence: tuple[SourceLocation, ...] = ()
-    statement_sites: tuple[SourceLocation, ...] = ()
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
+RefactorAction = product_record('RefactorAction', 'kind: str; description: str; target: str | None; create_symbol: str | None; replace_with: str | None; statement_operation: str | None; symbols: tuple[str, ...]; remove_symbols: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; statement_sites: tuple[SourceLocation, ...]; confidence: ConfidenceLevel', bases=(SemanticRecord,), defaults={'target': None, 'create_symbol': None, 'replace_with': None, 'statement_operation': None, 'symbols': (), 'remove_symbols': (), 'evidence': (), 'statement_sites': (), 'confidence': MEDIUM_CONFIDENCE}, doc='One proposed transformation step inside a subsystem refactor plan.')
 
 
-@dataclass(frozen=True)
-class RefactorPlan(SemanticRecord):
-    """Subsystem-level composition of findings into an ordered refactor plan."""
-
-    subsystem: str
-    summary: str
-    current_partial_view: str
-    collapsed_distinctions: tuple[str, ...]
-    missing_capabilities: tuple[str, ...]
-    certification: CertificationLevel
-    primary_pattern_id: PatternId
-    secondary_pattern_ids: tuple[PatternId, ...]
-    application_order: tuple[PatternId, ...]
-    canonical_normal_form: str
-    plan_steps: tuple[str, ...]
-    supporting_findings: tuple[str, ...]
-    evidence: tuple[SourceLocation, ...]
-    outcome: OutcomeEstimate
-    actions: tuple[RefactorAction, ...] = ()
+RefactorPlan = product_record('RefactorPlan', 'subsystem: str; summary: str; current_partial_view: str; collapsed_distinctions: tuple[str, ...]; missing_capabilities: tuple[str, ...]; certification: CertificationLevel; primary_pattern_id: PatternId; secondary_pattern_ids: tuple[PatternId, ...]; application_order: tuple[PatternId, ...]; canonical_normal_form: str; plan_steps: tuple[str, ...]; supporting_findings: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; outcome: OutcomeEstimate; actions: tuple[RefactorAction, ...]', bases=(SemanticRecord,), defaults={'actions': ()}, doc='Subsystem-level composition of findings into an ordered refactor plan.')
 
 
-@dataclass(frozen=True)
-class AnalysisReport(SemanticRecord):
-    """Top-level report containing findings and synthesized plans."""
-
-    findings: tuple[RefactorFinding, ...] = ()
-    plans: tuple[RefactorPlan, ...] = ()
+AnalysisReport = product_record('AnalysisReport', 'findings: tuple[RefactorFinding, ...]; plans: tuple[RefactorPlan, ...]', bases=(SemanticRecord,), defaults={'findings': (), 'plans': ()}, doc='Top-level report containing findings and synthesized plans.')
 
 
-@dataclass(frozen=True)
-class SemanticBagDescriptor(SemanticRecord):
-    """Schema descriptor for metric bags accepted by semantic dict-bag detection."""
-
-    class_name: str
-    base_class_name: str
-    accepted_key_sets: tuple[frozenset[str], ...]
+SemanticBagDescriptor = product_record('SemanticBagDescriptor', 'class_name: str; base_class_name: str; accepted_key_sets: tuple[frozenset[str], ...]', bases=(SemanticRecord,), doc='Schema descriptor for metric bags accepted by semantic dict-bag detection.')
 
 
 def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:

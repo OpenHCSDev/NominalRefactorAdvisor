@@ -2888,7 +2888,8 @@ class FieldOnlyFrozenDataclassDetector(
         ),
         codemod_patch=lambda candidate: (
             "# Replace the field-only `@dataclass(frozen=True)` class shell with "
-            "`product_record(...)`, preserving bases and field annotations."
+            "`product_record(...)`, preserving bases, field annotations, defaults, "
+            "docstring, and dataclass keyword-only semantics."
         ),
         metrics=lambda candidate: MappingMetrics.from_field_names(
             mapping_site_count=1,

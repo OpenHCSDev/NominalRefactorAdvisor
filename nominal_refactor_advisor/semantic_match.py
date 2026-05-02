@@ -125,10 +125,7 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
 AttributeCallMatch = product_record('AttributeCallMatch', 'call: ast.Call; attribute: ast.Attribute; owner: OwnerT; single_argument: ast.AST | None', bases=(Generic[OwnerT],))
 
 
-@dataclass(frozen=True)
-class CallArgumentMatch:
-    argument: ast.AST | None
-    arguments: tuple[ast.AST, ...] = ()
+CallArgumentMatch = product_record('CallArgumentMatch', 'argument: ast.AST | None; arguments: tuple[ast.AST, ...]', defaults={'arguments': ()})
 
 
 NamedCallAssignment = product_record('NamedCallAssignment', 'target_name: str; call: ast.Call')

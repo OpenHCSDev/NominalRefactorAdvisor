@@ -99,15 +99,7 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
 )
 
 
-@dataclass(frozen=True)
-class ParsedModule:
-    """Parsed Python module together with its source text and path."""
-
-    path: Path
-    module_name: str
-    is_package_init: bool
-    module: ast.Module
-    source: str
+ParsedModule = product_record('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.')
 
 
 AstNameFamily = product_record('AstNameFamily', 'names: frozenset[str]')

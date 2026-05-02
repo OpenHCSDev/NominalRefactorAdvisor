@@ -6918,6 +6918,21 @@ def _is_frozen_dataclass_decorator(node: ast.AST) -> bool:
     )
 
 
+def _dataclass_keyword_bool(node: ast.ClassDef, keyword_name: str) -> bool:
+    for decorator in node.decorator_list:
+        call = as_ast(decorator, ast.Call)
+        if call is None or name_id(call.func) != "dataclass":
+            continue
+        for keyword in call.keywords:
+            if (
+                keyword.arg == keyword_name
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, bool)
+            ):
+                return keyword.value.value
+    return False
+
+
 class _FieldOnlyFrozenDataclassShapeStep(RegisteredEffectStep):
     pass
 
@@ -6933,40 +6948,47 @@ class _FrozenDataclassClassStep(
         return any(
             _is_frozen_dataclass_decorator(decorator)
             for decorator in value.decorator_list
-        ) and not (value.body and _is_docstring_expr(value.body[0]))
+        )
 
     def project(self, value: ast.ClassDef) -> ast.ClassDef | None:
         return value
 
 
-def _value_free_ann_assign_field_spec(
+def _ann_assign_product_field_spec(
     statement: ast.stmt,
-) -> tuple[str, str] | None:
+) -> tuple[str, str, str | None] | None:
     assignment = as_ast(statement, ast.AnnAssign)
-    if assignment is None or assignment.value is not None:
+    if assignment is None:
         return None
     target = as_ast(assignment.target, ast.Name)
     if target is None:
         return None
-    return target.id, ast.unparse(assignment.annotation)
+    return (
+        target.id,
+        ast.unparse(assignment.annotation),
+        ast.unparse(assignment.value) if assignment.value is not None else None,
+    )
 
 
-class _ValueFreeAnnotatedFieldsStep(
+class _ProductRecordAnnotatedFieldsStep(
     _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[ast.ClassDef, tuple[ast.ClassDef, tuple[tuple[str, str], ...]]],
+    GuardedEffectStep[
+        ast.ClassDef,
+        tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]],
+    ],
 ):
-    step_id = "value_free_annotated_fields"
+    step_id = "product_record_annotated_fields"
     registration_order = 20
 
     def project(
         self,
         value: ast.ClassDef,
-    ) -> tuple[ast.ClassDef, tuple[tuple[str, str], ...]] | None:
-        field_specs: list[tuple[str, str]] = []
+    ) -> tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]] | None:
+        field_specs: list[tuple[str, str, str | None]] = []
         for statement in _trim_docstring_body(value.body):
             if isinstance(statement, ast.Pass):
                 continue
-            field_spec = _value_free_ann_assign_field_spec(statement)
+            field_spec = _ann_assign_product_field_spec(statement)
             if field_spec is None:
                 return None
             field_specs.append(field_spec)
@@ -6978,8 +7000,14 @@ class _ValueFreeAnnotatedFieldsStep(
 class _ProductRecordShapeStep(
     _FieldOnlyFrozenDataclassShapeStep,
     GuardedEffectStep[
-        tuple[ast.ClassDef, tuple[tuple[str, str], ...]],
-        tuple[tuple[str, ...], tuple[tuple[str, str], ...]],
+        tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]],
+        tuple[
+            tuple[str, ...],
+            tuple[tuple[str, str], ...],
+            tuple[tuple[str, str], ...],
+            str | None,
+            bool,
+        ],
     ],
 ):
     step_id = "product_record_shape"
@@ -6987,17 +7015,45 @@ class _ProductRecordShapeStep(
 
     def project(
         self,
-        value: tuple[ast.ClassDef, tuple[tuple[str, str], ...]],
-    ) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
-        node, field_specs = value
-        return tuple(ast.unparse(base) for base in node.bases), field_specs
+        value: tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]],
+    ) -> tuple[
+        tuple[str, ...],
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+        str | None,
+        bool,
+    ] | None:
+        node, product_fields = value
+        return (
+            tuple(ast.unparse(base) for base in node.bases),
+            tuple((name, annotation) for name, annotation, _ in product_fields),
+            tuple(
+                (name, default)
+                for name, _, default in product_fields
+                if default is not None
+            ),
+            ast.get_docstring(node),
+            _dataclass_keyword_bool(node, "kw_only"),
+        )
 
 
 def _field_only_frozen_dataclass_shape(
     node: ast.ClassDef,
-) -> tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None:
+) -> tuple[
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+    str | None,
+    bool,
+] | None:
     return cast(
-        tuple[tuple[str, ...], tuple[tuple[str, str], ...]] | None,
+        tuple[
+            tuple[str, ...],
+            tuple[tuple[str, str], ...],
+            tuple[tuple[str, str], ...],
+            str | None,
+            bool,
+        ] | None,
         Maybe.of(node)
         .bind_all(registered_effect_steps(_FieldOnlyFrozenDataclassShapeStep))
         .unwrap_or_none(),
@@ -7007,15 +7063,24 @@ def _field_only_frozen_dataclass_shape(
 def _field_only_frozen_dataclass_candidate(
     module: ParsedModule,
     node: ast.ClassDef,
-    shape: tuple[tuple[str, ...], tuple[tuple[str, str], ...]],
+    shape: tuple[
+        tuple[str, ...],
+        tuple[tuple[str, str], ...],
+        tuple[tuple[str, str], ...],
+        str | None,
+        bool,
+    ],
 ) -> FieldOnlyFrozenDataclassCandidate:
-    base_names, field_specs = shape
+    base_names, field_specs, default_specs, docstring, kw_only = shape
     return FieldOnlyFrozenDataclassCandidate(
         file_path=str(module.path),
         line=node.lineno,
         class_name=node.name,
         base_names=base_names,
         field_specs=field_specs,
+        default_specs=default_specs,
+        docstring=docstring,
+        kw_only=kw_only,
         line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
     )
 

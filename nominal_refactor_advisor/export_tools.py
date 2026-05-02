@@ -2,23 +2,15 @@
 
 from __future__ import annotations
 
+from .record_algebra import product_record
+
 import inspect
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 
-@dataclass(frozen=True)
-class PublicExportPolicy:
-    """Declarative policy for deriving a module's public export surface."""
-
-    module_name: str
-    types_only: bool = True
-    allow_callables: bool = False
-    include_enums: bool = False
-    exclude_abstract: bool = False
-    root_types: tuple[type[object], ...] = ()
-    explicit_names: frozenset[str] = frozenset()
+PublicExportPolicy = product_record('PublicExportPolicy', 'module_name: str; types_only: bool; allow_callables: bool; include_enums: bool; exclude_abstract: bool; root_types: tuple[type[object], ...]; explicit_names: frozenset[str]', defaults={'types_only': True, 'allow_callables': False, 'include_enums': False, 'exclude_abstract': False, 'root_types': (), 'explicit_names': frozenset()}, doc="Declarative policy for deriving a module's public export surface.")
 
 
 def matches_public_export_policy(
