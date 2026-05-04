@@ -7762,16 +7762,19 @@ def _enum_metadata_table_candidates(
 
 
 _READABILITY_COMPRESSED_LINE_LIMIT = 140
+_READABILITY_STRING_TOKEN_TYPE_NAMES = (
+    "STRING",
+    "FSTRING_START",
+    "FSTRING_MIDDLE",
+    "FSTRING_END",
+    "TSTRING_START",
+    "TSTRING_MIDDLE",
+    "TSTRING_END",
+)
 _READABILITY_STRING_TOKEN_TYPES = frozenset(
-    {
-        tokenize.STRING,
-        tokenize.FSTRING_START,
-        tokenize.FSTRING_MIDDLE,
-        tokenize.FSTRING_END,
-        tokenize.TSTRING_START,
-        tokenize.TSTRING_MIDDLE,
-        tokenize.TSTRING_END,
-    }
+    getattr(tokenize, token_type_name)
+    for token_type_name in _READABILITY_STRING_TOKEN_TYPE_NAMES
+    if hasattr(tokenize, token_type_name)
 )
 _READABILITY_INLINE_SUITE_TYPES = (
     ast.FunctionDef,
