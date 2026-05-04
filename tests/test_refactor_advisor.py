@@ -661,13 +661,38 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
+_REPEATED_BUILDER_SOURCE = '''
+def main(builder):
+    builder.register("--json", action="store_true", help="Emit JSON output")
+    builder.register(
+        "--include-plans",
+        action="store_true",
+        help="Include planning details",
+    )
+    builder.register(
+        "--min-builder-keywords",
+        type=int,
+        default=3,
+        help="Minimum builder keywords",
+    )
+    builder.register(
+        "--exclude-pattern",
+        action="append",
+        dest="excluded_pattern_ids",
+        default=[],
+        help="Exclude one pattern id",
+    )
+    return builder
+'''
+
+
 def test_calibration_manifest_certifies_detector_expectations(
     tmp_path: Path,
 ) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+        _REPEATED_BUILDER_SOURCE,
     )
     manifest_path = tmp_path / "calibration.json"
     manifest_path.write_text(
@@ -706,7 +731,7 @@ def test_calibration_manifest_names_missing_and_forbidden_detectors(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+        _REPEATED_BUILDER_SOURCE,
     )
     manifest_path = tmp_path / "calibration.json"
     manifest_path.write_text(
@@ -2821,7 +2846,7 @@ def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+        _REPEATED_BUILDER_SOURCE,
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -2830,11 +2855,27 @@ def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
             for finding in findings
             if finding.detector_id == "repeated_builder_calls"
             and "main" in finding.summary
-            and ("add_argument" in finding.summary)
+            and ("register" in finding.summary)
         )
     )
     assert "InvocationSpec" in (finding.scaffold or "")
     assert "declarative invocation table" in (finding.codemod_patch or "")
+
+
+def test_ignores_argparse_add_argument_builder_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "repeated_builder_calls"
+        and "add_argument" in finding.summary
+        for finding in findings
+    )
 
 
 def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
@@ -5193,7 +5234,7 @@ def test_detects_module_constructor_policy_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SelectionPolicy:\n    names: frozenset[str]\n    suffixes: tuple[str, ...]\n    predicate: object\n\n\nALPHA_SELECTION_POLICY = SelectionPolicy(\n    ALPHA_NAMES,\n    ALPHA_SUFFIXES,\n    is_alpha,\n)\n\n\nBETA_SELECTION_POLICY = SelectionPolicy(\n    BETA_NAMES,\n    BETA_SUFFIXES,\n    is_beta,\n)\n",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SelectionPolicy:\n    names: frozenset[str]\n    suffixes: tuple[str, ...]\n    predicate: object\n\n\nALPHA_SELECTION_POLICY = SelectionPolicy(\n    ALPHA_NAMES,\n    ALPHA_SUFFIXES,\n    is_alpha,\n)\n\n\nBETA_SELECTION_POLICY = SelectionPolicy(\n    BETA_NAMES,\n    BETA_SUFFIXES,\n    is_beta,\n)\n\n\nGAMMA_SELECTION_POLICY = SelectionPolicy(\n    GAMMA_NAMES,\n    GAMMA_SUFFIXES,\n    is_gamma,\n)\n\n\nDELTA_SELECTION_POLICY = SelectionPolicy(\n    DELTA_NAMES,\n    DELTA_SUFFIXES,\n    is_delta,\n)\n",
     )
     finding = next(
         (
@@ -5205,3 +5246,16 @@ def test_detects_module_constructor_policy_family(tmp_path: Path) -> None:
     assert "SelectionPolicy" in finding.summary
     assert "ALPHA_SELECTION_POLICY" in finding.summary
     assert "PolicyCatalog" in (finding.scaffold or "")
+
+
+def test_ignores_small_module_constructor_policy_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass TableSpec:\n    columns: tuple[str, ...]\n    rows: object\n\n\nOBSERVATION_TABLE = TableSpec(\n    OBSERVATION_COLUMNS,\n    observation_rows,\n)\n\n\nPHASE_TABLE = TableSpec(\n    PHASE_COLUMNS,\n    phase_rows,\n)\n\n\nSUMMARY_TABLE = TableSpec(\n    SUMMARY_COLUMNS,\n    summary_rows,\n)\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "module_constructor_policy_family"
+        for finding in findings
+    )

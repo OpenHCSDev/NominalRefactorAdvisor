@@ -2263,7 +2263,7 @@ def _module_constructor_policy_family_candidates(
 
     candidates: list[ModuleConstructorPolicyFamilyCandidate] = []
     for (constructor_name, field_names), rows in grouped.items():
-        if len(rows) < 2:
+        if len(rows) < 4:
             continue
         ordered = sorted_tuple(rows, key=lambda item: (item[1], item[0]))
         candidates.append(

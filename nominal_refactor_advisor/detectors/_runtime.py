@@ -189,6 +189,8 @@ class RepeatedBuilderCallDetector(IssueDetector):
             (tuple[str, tuple[str, ...], tuple[str, ...]], list[BuilderCallShape])
         ] = defaultdict(list)
         for builder in builders:
+            if _is_external_declarative_builder_call(builder):
+                continue
             if len(builder.keyword_names) < config.min_builder_keywords:
                 continue
             grouped[
@@ -237,6 +239,8 @@ class RepeatedBuilderCallDetector(IssueDetector):
     ) -> list[RefactorFinding]:
         grouped: dict[tuple[str, str], list[BuilderCallShape]] = defaultdict(list)
         for builder in builders:
+            if _is_external_declarative_builder_call(builder):
+                continue
             if not builder.keyword_names:
                 continue
             grouped[(builder.owner_prefix, builder.callee_name)].append(builder)
@@ -284,6 +288,18 @@ class RepeatedBuilderCallDetector(IssueDetector):
                 )
             )
         return findings
+
+
+_EXTERNAL_DECLARATIVE_BUILDER_CALLS = frozenset(
+    {
+        "add_argument",
+    }
+)
+
+
+def _is_external_declarative_builder_call(builder: BuilderCallShape) -> bool:
+    """Return whether the call is already owned by an external declaration DSL."""
+    return builder.callee_name in _EXTERNAL_DECLARATIVE_BUILDER_CALLS
 
 
 class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
