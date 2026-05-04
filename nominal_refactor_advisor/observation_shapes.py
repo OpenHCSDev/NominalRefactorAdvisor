@@ -14,6 +14,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
+from .class_composition import CompositeClassSpec
 from .constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
@@ -143,16 +144,52 @@ class LinenoObservationMixin(ABC):
 
 
 class SymbolOwnerMixin(ABC):
+    symbol: str
+
     @property
     def owner_symbol(self) -> str:
         return cast(Any, self).symbol
 
 
-@dataclass(frozen=True)
-class FunctionBodyCallLikeShape(
+class SymbolNominalWitnessMixin(ABC):
+    @property
+    def nominal_witness(self) -> str:
+        return cast(Any, self).symbol
+
+
+class LineSymbolObservationMixin(
+    LineObservationMixin,
+    SymbolOwnerMixin,
+    SymbolNominalWitnessMixin,
+    ABC,
+):
+    file_path: str
+
+
+FunctionBodyLineSymbolObservationMixin = CompositeClassSpec(
+    "FunctionBodyLineSymbolObservationMixin",
+    (FunctionBodyExecutionMixin, LineSymbolObservationMixin, ABC),
+).build(__name__)
+
+
+ModuleBodyLineSymbolObservationMixin = CompositeClassSpec(
+    "ModuleBodyLineSymbolObservationMixin",
+    (ModuleBodyExecutionMixin, LineSymbolObservationMixin, ABC),
+).build(__name__)
+
+
+class FunctionBodyLinenoSymbolObservationMixin(
     FunctionBodyExecutionMixin,
     LinenoObservationMixin,
     SymbolOwnerMixin,
+    ABC,
+):
+    file_path: str
+
+
+@dataclass(frozen=True)
+class FunctionBodyCallLikeShape(
+    FunctionBodyLinenoSymbolObservationMixin,
     StructuralObservationTemplate,
     ABC,
 ):
@@ -181,12 +218,6 @@ class FunctionBodyCallLikeShape(
 class FunctionNameOwnerMixin(ABC):
     function_name: str
     owner_symbol = AliasProperty[str]("function_name")
-
-
-class SymbolNominalWitnessMixin(ABC):
-    @property
-    def nominal_witness(self) -> str:
-        return cast(Any, self).symbol
 
 
 class ClassNameNominalWitnessMixin(ABC):
@@ -249,9 +280,7 @@ class FieldObservation(
 @dataclass(frozen=True)
 class AttributeProbeObservation(
     ExecutionLevelObservationMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    LineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.ATTRIBUTE_PROBE
@@ -301,9 +330,7 @@ class LiteralDispatchObservation(
 
 @dataclass(frozen=True)
 class ProjectionHelperShape(
-    FunctionBodyExecutionMixin,
-    LinenoObservationMixin,
-    SymbolOwnerMixin,
+    FunctionBodyLinenoSymbolObservationMixin,
     FunctionNameNominalWitnessMixin,
     StructuralObservationTemplate,
 ):
@@ -327,9 +354,7 @@ class ProjectionHelperShape(
 
 @dataclass(frozen=True)
 class AccessorWrapperCandidate(
-    FunctionBodyExecutionMixin,
-    LinenoObservationMixin,
-    SymbolOwnerMixin,
+    FunctionBodyLinenoSymbolObservationMixin,
     ClassNameNominalWitnessMixin,
     ObservedAttributeObservedNameMixin,
     StructuralObservationTemplate,
@@ -394,10 +419,7 @@ class ScopedShapeWrapperSpec(
 
 @dataclass(frozen=True)
 class ConfigDispatchObservation(
-    FunctionBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    FunctionBodyLineSymbolObservationMixin,
     ObservedAttributeObservedNameMixin,
     StructuralObservationTemplate,
 ):
@@ -411,10 +433,7 @@ class ConfigDispatchObservation(
 
 @dataclass(frozen=True)
 class ClassMarkerObservation(
-    FunctionBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    FunctionBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.CLASS_MARKER
@@ -428,10 +447,7 @@ class ClassMarkerObservation(
 
 @dataclass(frozen=True)
 class InterfaceGenerationObservation(
-    FunctionBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    FunctionBodyLineSymbolObservationMixin,
     GeneratorNameObservedNameMixin,
     GeneratorNameFiberKeyMixin,
     StructuralObservationTemplate,
@@ -444,10 +460,7 @@ class InterfaceGenerationObservation(
 
 @dataclass(frozen=True)
 class SentinelTypeObservation(
-    ModuleBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    ModuleBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.SENTINEL_TYPE
@@ -461,10 +474,7 @@ class SentinelTypeObservation(
 
 @dataclass(frozen=True)
 class DynamicMethodInjectionObservation(
-    FunctionBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    FunctionBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.DYNAMIC_METHOD_INJECTION
@@ -478,10 +488,7 @@ class DynamicMethodInjectionObservation(
 
 @dataclass(frozen=True)
 class RuntimeTypeGenerationObservation(
-    ModuleBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    ModuleBodyLineSymbolObservationMixin,
     GeneratorNameObservedNameMixin,
     GeneratorNameFiberKeyMixin,
     StructuralObservationTemplate,
@@ -494,10 +501,7 @@ class RuntimeTypeGenerationObservation(
 
 @dataclass(frozen=True)
 class LineageMappingObservation(
-    ModuleBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    ModuleBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.LINEAGE_MAPPING
@@ -511,10 +515,7 @@ class LineageMappingObservation(
 
 @dataclass(frozen=True)
 class DualAxisResolutionObservation(
-    FunctionBodyExecutionMixin,
-    LineObservationMixin,
-    SymbolOwnerMixin,
-    SymbolNominalWitnessMixin,
+    FunctionBodyLineSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.DUAL_AXIS_RESOLUTION
@@ -532,9 +533,7 @@ class DualAxisResolutionObservation(
 
 @dataclass(frozen=True)
 class MethodShape(
-    FunctionBodyExecutionMixin,
-    LinenoObservationMixin,
-    SymbolOwnerMixin,
+    FunctionBodyLinenoSymbolObservationMixin,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.METHOD_SHAPE

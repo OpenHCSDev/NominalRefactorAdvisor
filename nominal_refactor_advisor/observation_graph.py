@@ -73,7 +73,7 @@ class StructuralObservation:
 
 
 class StructuralObservationCarrier(ABC):
-    """Protocol for objects that can project to a structural observation."""
+    """ABC for objects that can project to a structural observation."""
 
     @property
     @abstractmethod

@@ -8,7 +8,11 @@ directly.
 
 from __future__ import annotations
 
-from .record_algebra import product_record
+from .record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 import ast
 import copy
@@ -98,33 +102,97 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
 )
 
 
-ParsedModule = product_record(
-    "ParsedModule",
-    "path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str",
-    doc="Parsed Python module together with its source text and path.",
-)
-
-
-AstNameFamily = product_record("AstNameFamily", "names: frozenset[str]")
-
-
-AstCallObservation = product_record(
-    "AstCallObservation", "call: ast.Call; matched_name: str"
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.'),
+    product_record_spec('AstNameFamily', 'names: frozenset[str]'),
+    product_record_spec('AstCallObservation', 'call: ast.Call; matched_name: str'),
+))
+# fmt: on
 
 
 AstScopedNode: TypeAlias = ast.AST
 
 
-ScopedAstObservation = product_record(
-    "ScopedAstObservation",
-    "node: AstScopedNode; class_name: str | None; function_name: str | None",
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('ScopedAstObservation', 'node: AstScopedNode; class_name: str | None; function_name: str | None'),
+    product_record_spec('ClassAstObservation', 'node: ast.ClassDef; is_dataclass_family: bool'),
+))
+# fmt: on
 
 
-ClassAstObservation = product_record(
-    "ClassAstObservation", "node: ast.ClassDef; is_dataclass_family: bool"
-)
+class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
+    """Nominal AST visitor base that owns class/function scope stack lifecycle."""
+
+    def __init__(self) -> None:
+        self.class_stack: list[str] = []
+        self.function_stack: list[str] = []
+
+    @property
+    def current_class_name(self) -> str | None:
+        return self.class_stack[-1] if self.class_stack else None
+
+    @property
+    def current_function_name(self) -> str | None:
+        return self.function_stack[-1] if self.function_stack else None
+
+    @property
+    def qualname(self) -> str:
+        return ".".join((*self.class_stack, *self.function_stack)) or "<module>"
+
+    def before_visit_class(self, node: ast.ClassDef) -> None:
+        del node
+
+    def before_visit_function(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        del node
+
+    def traverse_statements(self, body: list[ast.stmt]) -> None:
+        for statement in body:
+            self.visit(statement)
+
+    def traverse_trimmed_statements(self, body: list[ast.stmt]) -> None:
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            body = body[1:]
+        self.traverse_statements(body)
+
+    def traverse_node_body(
+        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        self.generic_visit(node)
+
+    def traverse_trimmed_node_body(
+        self, node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> None:
+        self.traverse_trimmed_statements(node.body)
+
+    traverse_class_body = traverse_node_body
+    traverse_function_body = traverse_node_body
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.before_visit_class(node)
+        self.class_stack.append(node.name)
+        try:
+            self.traverse_class_body(node)
+        finally:
+            self.class_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.before_visit_function(node)
+        self.function_stack.append(node.name)
+        try:
+            self.traverse_function_body(node)
+        finally:
+            self.function_stack.pop()
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
 
 _TRegistered = TypeVar("_TRegistered")
@@ -662,35 +730,23 @@ def _collect_all_scoped_observations(
 ) -> tuple[ScopedAstObservation, ...]:
     observations: list[ScopedAstObservation] = []
 
-    class Visitor(ast.NodeVisitor):
-        def __init__(self) -> None:
-            self.class_stack: list[str] = []
-            self.function_stack: list[str] = []
-
+    class Visitor(ClassFunctionStackNodeVisitor):
         def _record(self, node: ast.AST) -> None:
             observations.append(
                 ScopedAstObservation(
                     node=node,
-                    class_name=self.class_stack[-1] if self.class_stack else None,
-                    function_name=(
-                        self.function_stack[-1] if self.function_stack else None
-                    ),
+                    class_name=self.current_class_name,
+                    function_name=self.current_function_name,
                 )
             )
 
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        def before_visit_class(self, node: ast.ClassDef) -> None:
             self._record(node)
-            self.class_stack.append(node.name)
-            self.generic_visit(node)
-            self.class_stack.pop()
 
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        def before_visit_function(
+            self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        ) -> None:
             self._record(node)
-            self.function_stack.append(node.name)
-            self.generic_visit(node)
-            self.function_stack.pop()
-
-        visit_AsyncFunctionDef = visit_FunctionDef
 
         def generic_visit(self, node: ast.AST) -> None:
             if not isinstance(
@@ -926,9 +982,9 @@ def _literal_dispatch_case(
     )
 
 
-_LiteralDispatchCompare = product_record(
-    "_LiteralDispatchCompare", "left: ast.AST; right: ast.AST"
-)
+# fmt: off
+materialize_product_record(product_record_spec('_LiteralDispatchCompare', 'left: ast.AST; right: ast.AST'))
+# fmt: on
 
 
 class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompare]):
@@ -1199,10 +1255,9 @@ def _projection_outer_inner_calls(
     return outer_call_name, inner_call
 
 
-_ProjectionGeneratorMatch = product_record(
-    "_ProjectionGeneratorMatch",
-    "node: ast.GeneratorExp; comprehension: ast.comprehension",
-)
+# fmt: off
+materialize_product_record(product_record_spec('_ProjectionGeneratorMatch', 'node: ast.GeneratorExp; comprehension: ast.comprehension'))
+# fmt: on
 
 
 class _ProjectionGeneratorAttributeStep(RegisteredEffectStep):

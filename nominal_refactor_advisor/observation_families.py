@@ -10,6 +10,7 @@ from __future__ import annotations
 from .record_algebra import product_record
 
 import ast
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
@@ -105,6 +106,59 @@ GeneratedFamilySpec = product_record(
 )
 
 
+_GeneratedClassDeclaration = product_record(
+    "_GeneratedClassDeclaration",
+    "class_name: str; base_names: tuple[str, ...]; attributes: tuple[tuple[str, object], ...]",
+    defaults={"attributes": ()},
+    doc="Declarative recipe for one metadata-only generated class.",
+)
+
+
+def _class_declaration(
+    class_name: str,
+    *base_names: str,
+    **attributes: object,
+) -> _GeneratedClassDeclaration:
+    return _GeneratedClassDeclaration(
+        class_name,
+        tuple((name for group in base_names for name in group.split())),
+        tuple(attributes.items()),
+    )
+
+
+def _family_specs(
+    item_type: type[object],
+    family_root: type[CollectedFamily],
+    export_name: str | None = None,
+) -> tuple[GeneratedFamilySpec, ...]:
+    return (GeneratedFamilySpec(item_type, family_root, export_name),)
+
+
+def _materialize_class_declarations(
+    declarations: tuple[_GeneratedClassDeclaration, ...],
+) -> None:
+    frame = inspect.currentframe()
+    caller = None if frame is None else frame.f_back
+    base_lineno = 0 if caller is None else caller.f_lineno
+    module_globals = cast(dict[str, object], globals())
+    for offset, declaration in enumerate(declarations):
+        namespace: dict[str, object] = {
+            "__module__": __name__,
+            "__qualname__": declaration.class_name,
+            "__firstlineno__": base_lineno + offset,
+        }
+        namespace.update(dict(declaration.attributes))
+        bases = tuple(
+            (
+                cast(type[object], module_globals[base_name])
+                for base_name in declaration.base_names
+            )
+        )
+        module_globals[declaration.class_name] = AutoRegisterMeta(
+            declaration.class_name, bases, namespace
+        )
+
+
 class FamilyGeneratingSpec(ABC):
     """Spec mixin that declares which collected families derive from the spec."""
 
@@ -139,6 +193,143 @@ class ShapeFamily(CollectedFamily, ABC):
     _registry_root = True
 
 
+def _root_spec_declaration(
+    class_name: str,
+    item_type: type[object],
+    family_root: type[CollectedFamily],
+    *base_names: str,
+    export_name: str | None = None,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        class_name,
+        "FamilyGeneratingSpec",
+        *base_names,
+        _registry_root=True,
+        family_specs=_family_specs(item_type, family_root, export_name),
+    )
+
+
+def _observation_root_spec(
+    class_name: str,
+    item_type: type[object],
+    *base_names: str,
+    export_name: str | None = None,
+) -> _GeneratedClassDeclaration:
+    return _root_spec_declaration(
+        class_name,
+        item_type,
+        ObservationFamily,
+        *base_names,
+        export_name=export_name,
+    )
+
+
+def _derived_type(stem: str, suffix: str) -> type[object]:
+    return cast(type[object], globals()[f"{stem}{suffix}"])
+
+
+def _obs_root(
+    stem: str,
+    *base_names: str,
+    item_type: type[object] | None = None,
+) -> _GeneratedClassDeclaration:
+    return _observation_root_spec(
+        f"{stem}ObservationSpec",
+        item_type or _derived_type(stem, "Observation"),
+        "AutoRegisteredModuleShapeSpec",
+        *base_names,
+    )
+
+
+def _std_obs(
+    stem: str,
+    helper: Callable[..., object | None],
+    *base_names: str,
+    **attributes: object,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        f"Standard{stem}ObservationSpec",
+        f"{stem}ObservationSpec",
+        *base_names,
+        shape_helper=helper,
+        **attributes,
+    )
+
+
+def _multi_obs_root(
+    class_name: str,
+    *base_names: str,
+    family_specs: tuple[GeneratedFamilySpec, ...],
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        class_name,
+        "FamilyGeneratingSpec",
+        *base_names,
+        _registry_root=True,
+        family_specs=family_specs,
+    )
+
+
+def _shape_root(
+    stem: str,
+    *base_names: str,
+    item_type: type[object] | None = None,
+    export_name: str | None = None,
+) -> _GeneratedClassDeclaration:
+    return _root_spec_declaration(
+        f"{stem}ShapeSpec",
+        item_type or _derived_type(stem, "Shape"),
+        ShapeFamily,
+        *base_names,
+        export_name=export_name,
+    )
+
+
+def _ctx_shape(
+    stem: str,
+    node_type: type[ast.AST],
+    *,
+    item_type: type[object] | None = None,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        f"{stem}ShapeSpec",
+        "FamilyGeneratingSpec",
+        "ContextHelperShapeSpec",
+        family_specs=_family_specs(
+            item_type or _derived_type(stem, "Shape"), ShapeFamily
+        ),
+        node_type=node_type,
+    )
+
+
+def _helper_decl(
+    class_name: str,
+    helper: Callable[..., object | None],
+    *base_names: str,
+    **attributes: object,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        class_name,
+        *base_names,
+        shape_helper=helper,
+        **attributes,
+    )
+
+
+_FUNCTION_HELPER = "HelperBackedFunctionObservationSpec"
+_TUPLE_FUNCTION_HELPER = "TupleResultMixin HelperBackedFunctionObservationSpec"
+_MODULE_SCOPED_FUNCTION_HELPER = (
+    "ModuleOnlyFunctionObservationSpec HelperBackedScopedFunctionObservationSpec"
+)
+_MODULE_SYNC_SCOPED_FUNCTION_HELPER = (
+    "ModuleOnlyFunctionObservationSpec SyncFunctionOnlyMixin "
+    "HelperBackedScopedFunctionObservationSpec"
+)
+_MODULE_SCOPED_ASSIGN_HELPER = (
+    "ModuleOnlyAssignObservationSpec HelperBackedScopedAssignObservationSpec"
+)
+
+
 class TypedLiteralObservationFamily(ObservationFamily, ABC):
     """Observation family root specialized by a literal-kind discriminator."""
 
@@ -166,6 +357,42 @@ class TypedLiteralObservationFamily(ObservationFamily, ABC):
         ]
 
 
+def _literal_spec(
+    stem: str,
+    base_name: str,
+    literal_type: type[object],
+    literal_kind: LiteralKind,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        f"{stem}LiteralDispatchObservationSpec",
+        "FamilyGeneratingSpec",
+        base_name,
+        family_specs=_family_specs(
+            LiteralDispatchObservation, TypedLiteralObservationFamily
+        ),
+        literal_type=literal_type,
+        literal_kind=literal_kind,
+    )
+
+
+def _probe_spec(
+    stem: str,
+    call_family: AstNameFamily,
+    probe_kind: str,
+    minimum_args: int,
+    *,
+    attribute_arg_index: int | None = 1,
+) -> _GeneratedClassDeclaration:
+    return _class_declaration(
+        f"{stem}ProbeObservationSpec",
+        "CallAttributeProbeObservationSpec",
+        call_family=call_family,
+        probe_kind=probe_kind,
+        minimum_args=minimum_args,
+        attribute_arg_index=attribute_arg_index,
+    )
+
+
 class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
     family_specs = (GeneratedFamilySpec(MethodShape, ShapeFamily),)
 
@@ -191,14 +418,12 @@ class MethodShapeSpec(FamilyGeneratingSpec, FunctionObservationSpec):
         )
 
 
-class BuilderCallShapeSpec(FamilyGeneratingSpec, ContextHelperShapeSpec):
-    family_specs = (GeneratedFamilySpec(BuilderCallShape, ShapeFamily),)
-    node_type = ast.Call
-
-
-class ExportDictShapeSpec(FamilyGeneratingSpec, ContextHelperShapeSpec):
-    family_specs = (GeneratedFamilySpec(ExportDictShape, ShapeFamily),)
-    node_type = ast.Dict
+_materialize_class_declarations(
+    (
+        _ctx_shape("BuilderCall", ast.Call),
+        _ctx_shape("ExportDict", ast.Dict),
+    )
+)
 
 
 BuilderCallShapeSpec.shape_helper = _builder_call_shape
@@ -207,13 +432,6 @@ ExportDictShapeSpec.shape_helper = _export_dict_shape
 _METHOD_SHAPE_SPEC = MethodShapeSpec()
 _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
 _EXPORT_DICT_SHAPE_SPEC = ExportDictShapeSpec()
-
-
-class ConfigDispatchObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(ConfigDispatchObservation, ObservationFamily),)
 
 
 class ScopeFilteredFunctionObservationSpec(FunctionObservationSpec, ABC):
@@ -440,136 +658,75 @@ class ObservationContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
         return (node, observation)
 
 
-class StandardConfigDispatchObservationSpec(
-    ConfigDispatchObservationSpec,
-    ModuleOnlyFunctionObservationSpec,
-    RequiredFunctionParameterMixin,
-    TupleResultMixin,
-    HelperBackedScopedFunctionObservationSpec,
-):
-    required_parameter_name = "config"
-    shape_helper = _config_dispatch_observations
-
-
-class ClassMarkerObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(ClassMarkerObservation, ObservationFamily),)
-
-
-class StandardClassMarkerObservationSpec(
-    ClassMarkerObservationSpec,
-    TupleResultMixin,
-    HelperBackedFunctionObservationSpec,
-):
-    shape_helper = _class_marker_observations
-
-
-class InterfaceGenerationObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
-):
-    _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(InterfaceGenerationObservation, ObservationFamily),
+_materialize_class_declarations(
+    (
+        _obs_root("ConfigDispatch", "FunctionObservationSpec"),
+        _std_obs(
+            "ConfigDispatch",
+            _config_dispatch_observations,
+            "ModuleOnlyFunctionObservationSpec RequiredFunctionParameterMixin TupleResultMixin HelperBackedScopedFunctionObservationSpec",
+            required_parameter_name="config",
+        ),
+        _obs_root("ClassMarker", "FunctionObservationSpec"),
+        _std_obs(
+            "ClassMarker",
+            _class_marker_observations,
+            _TUPLE_FUNCTION_HELPER,
+        ),
+        _obs_root("InterfaceGeneration", "FunctionObservationSpec"),
+        _std_obs(
+            "InterfaceGeneration",
+            _interface_generation_observation,
+            _FUNCTION_HELPER,
+        ),
+        _obs_root("SentinelType", "ABC"),
+        _helper_decl(
+            "SentinelTypeAssignmentObservationSpec",
+            _sentinel_type_observation,
+            f"SentinelTypeObservationSpec {_MODULE_SCOPED_ASSIGN_HELPER}",
+        ),
+        _obs_root(
+            "DynamicMethodInjection",
+            "FunctionObservationSpec",
+        ),
+        _std_obs(
+            "DynamicMethodInjection",
+            _dynamic_method_injection_observations,
+            _TUPLE_FUNCTION_HELPER,
+        ),
+        _obs_root(
+            "RuntimeTypeGeneration",
+            "ObservationShapeSpec ABC",
+        ),
+        _helper_decl(
+            "TypeCallGenerationObservationSpec",
+            _runtime_type_generation_observation,
+            "RuntimeTypeGenerationObservationSpec ObservationContextHelperShapeSpec",
+            node_type=ast.Call,
+        ),
+        _obs_root("LineageMapping", "AssignObservationSpec ABC"),
+        _std_obs(
+            "LineageMapping",
+            _lineage_mapping_observation,
+            "HelperBackedAssignObservationSpec",
+        ),
+        _obs_root(
+            "DualAxisResolution",
+            "FunctionObservationSpec ABC",
+        ),
+        _std_obs(
+            "DualAxisResolution",
+            _dual_axis_resolution_observation,
+            _FUNCTION_HELPER,
+        ),
+        _obs_root("AttributeProbe", "ABC"),
     )
-
-
-class StandardInterfaceGenerationObservationSpec(
-    InterfaceGenerationObservationSpec,
-    HelperBackedFunctionObservationSpec,
-):
-    shape_helper = _interface_generation_observation
-
-
-class SentinelTypeObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(SentinelTypeObservation, ObservationFamily),)
-
-
-class SentinelTypeAssignmentObservationSpec(
-    SentinelTypeObservationSpec,
-    ModuleOnlyAssignObservationSpec,
-    HelperBackedScopedAssignObservationSpec,
-):
-    shape_helper = _sentinel_type_observation
+)
 
 
 class SentinelTypeUsageObservationSpec(SentinelTypeObservationSpec):
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         return list(_sentinel_type_usage_observations(parsed_module))
-
-
-class DynamicMethodInjectionObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec
-):
-    _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(DynamicMethodInjectionObservation, ObservationFamily),
-    )
-
-
-class StandardDynamicMethodInjectionObservationSpec(
-    DynamicMethodInjectionObservationSpec,
-    TupleResultMixin,
-    HelperBackedFunctionObservationSpec,
-):
-    shape_helper = _dynamic_method_injection_observations
-
-
-class RuntimeTypeGenerationObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ObservationShapeSpec, ABC
-):
-    _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(RuntimeTypeGenerationObservation, ObservationFamily),
-    )
-
-
-class TypeCallGenerationObservationSpec(
-    RuntimeTypeGenerationObservationSpec, ObservationContextHelperShapeSpec
-):
-    node_type = ast.Call
-    shape_helper = _runtime_type_generation_observation
-
-
-class LineageMappingObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, AssignObservationSpec, ABC
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(LineageMappingObservation, ObservationFamily),)
-
-
-class StandardLineageMappingObservationSpec(
-    LineageMappingObservationSpec,
-    HelperBackedAssignObservationSpec,
-):
-    shape_helper = _lineage_mapping_observation
-
-
-class DualAxisResolutionObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
-):
-    _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(DualAxisResolutionObservation, ObservationFamily),
-    )
-
-
-class StandardDualAxisResolutionObservationSpec(
-    DualAxisResolutionObservationSpec,
-    HelperBackedFunctionObservationSpec,
-):
-    shape_helper = _dual_axis_resolution_observation
-
-
-class AttributeProbeObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(AttributeProbeObservation, ObservationFamily),)
 
 
 class CallAttributeProbeObservationSpec(
@@ -610,18 +767,22 @@ class CallAttributeProbeObservationSpec(
         )
 
 
-class HasAttrProbeObservationSpec(CallAttributeProbeObservationSpec):
-    call_family = _HASATTR_CALL_FAMILY
-    probe_kind = "hasattr"
-    minimum_args = 2
-    attribute_arg_index = 1
-
-
-class GetAttrProbeObservationSpec(CallAttributeProbeObservationSpec):
-    call_family = _GETATTR_CALL_FAMILY
-    probe_kind = "getattr"
-    minimum_args = 3
-    attribute_arg_index = 1
+_materialize_class_declarations(
+    (
+        _probe_spec(
+            "HasAttr",
+            _HASATTR_CALL_FAMILY,
+            "hasattr",
+            2,
+        ),
+        _probe_spec(
+            "GetAttr",
+            _GETATTR_CALL_FAMILY,
+            "getattr",
+            3,
+        ),
+    )
+)
 
 
 class AttributeErrorProbeObservationSpec(
@@ -685,26 +846,6 @@ class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
         )
 
 
-class StringLiteralDispatchObservationSpec(
-    FamilyGeneratingSpec, LiteralDispatchObservationSpec
-):
-    family_specs = (
-        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
-    )
-    literal_type = str
-    literal_kind = LiteralKind.STRING
-
-
-class NumericLiteralDispatchObservationSpec(
-    FamilyGeneratingSpec, LiteralDispatchObservationSpec
-):
-    family_specs = (
-        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
-    )
-    literal_type = int
-    literal_kind = LiteralKind.NUMERIC
-
-
 class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     _registry_root = True
     _registry_skip = True
@@ -718,19 +859,33 @@ class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
         )
 
 
-class InlineStringLiteralDispatchObservationSpec(
-    FamilyGeneratingSpec, InlineLiteralDispatchObservationSpec
-):
-    family_specs = (
-        GeneratedFamilySpec(LiteralDispatchObservation, TypedLiteralObservationFamily),
+_materialize_class_declarations(
+    (
+        _literal_spec(
+            "String",
+            "LiteralDispatchObservationSpec",
+            str,
+            LiteralKind.STRING,
+        ),
+        _literal_spec(
+            "Numeric",
+            "LiteralDispatchObservationSpec",
+            int,
+            LiteralKind.NUMERIC,
+        ),
+        _literal_spec(
+            "InlineString",
+            "InlineLiteralDispatchObservationSpec",
+            str,
+            LiteralKind.STRING,
+        ),
+        _shape_root(
+            "Registration",
+            "AutoRegisteredModuleShapeSpec",
+            "ABC",
+        ),
     )
-    literal_type = str
-    literal_kind = LiteralKind.STRING
-
-
-class RegistrationShapeSpec(FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(RegistrationShape, ShapeFamily),)
+)
 
 
 class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC):
@@ -832,9 +987,7 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
         return shapes
 
 
-class FieldObservationSpec(FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(FieldObservation, ObservationFamily),)
+_materialize_class_declarations((_obs_root("Field", "ABC"),))
 
 
 class ClassObservationSpec(FieldObservationSpec, ABC):
@@ -895,66 +1048,56 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
         return observations
 
 
-class ProjectionHelperObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(ProjectionHelperShape, ObservationFamily),)
-
-
-class AccessorWrapperObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, FunctionObservationSpec, ABC
-):
-    _registry_root = True
-    family_specs = (GeneratedFamilySpec(AccessorWrapperCandidate, ObservationFamily),)
-
-
-class StandardProjectionHelperObservationSpec(
-    ProjectionHelperObservationSpec,
-    ModuleOnlyFunctionObservationSpec,
-    HelperBackedScopedFunctionObservationSpec,
-):
-    shape_helper = _projection_helper_shape_from_function
-
-
-class StandardAccessorWrapperObservationSpec(
-    AccessorWrapperObservationSpec,
-    ClassNamedFunctionHelperObservationSpec,
-):
-    shape_helper = _accessor_wrapper_candidate_from_function
-
-
-class ScopedShapeWrapperObservationSpec(
-    FamilyGeneratingSpec, AutoRegisteredModuleShapeSpec, ABC
-):
-    _registry_root = True
-    family_specs = (
-        GeneratedFamilySpec(
-            ScopedShapeWrapperFunction,
-            ObservationFamily,
-            "ScopedShapeWrapperFunctionFamily",
+_materialize_class_declarations(
+    (
+        _obs_root(
+            "ProjectionHelper",
+            "FunctionObservationSpec ABC",
+            item_type=ProjectionHelperShape,
         ),
-        GeneratedFamilySpec(
-            ScopedShapeWrapperSpec, ObservationFamily, "ScopedShapeWrapperSpecFamily"
+        _obs_root(
+            "AccessorWrapper",
+            "FunctionObservationSpec ABC",
+            item_type=AccessorWrapperCandidate,
+        ),
+        _std_obs(
+            "ProjectionHelper",
+            _projection_helper_shape_from_function,
+            _MODULE_SCOPED_FUNCTION_HELPER,
+        ),
+        _std_obs(
+            "AccessorWrapper",
+            _accessor_wrapper_candidate_from_function,
+            "ClassNamedFunctionHelperObservationSpec",
+        ),
+        _multi_obs_root(
+            "ScopedShapeWrapperObservationSpec",
+            "AutoRegisteredModuleShapeSpec ABC",
+            family_specs=(
+                *_family_specs(
+                    ScopedShapeWrapperFunction,
+                    ObservationFamily,
+                    "ScopedShapeWrapperFunctionFamily",
+                ),
+                *_family_specs(
+                    ScopedShapeWrapperSpec,
+                    ObservationFamily,
+                    "ScopedShapeWrapperSpecFamily",
+                ),
+            ),
+        ),
+        _helper_decl(
+            "ScopedShapeWrapperFunctionObservationSpec",
+            _scoped_shape_wrapper_function_from_function,
+            f"ScopedShapeWrapperObservationSpec {_MODULE_SYNC_SCOPED_FUNCTION_HELPER}",
+        ),
+        _helper_decl(
+            "ScopedShapeWrapperSpecObservationSpec",
+            _scoped_shape_wrapper_spec_from_assign,
+            f"ScopedShapeWrapperObservationSpec {_MODULE_SCOPED_ASSIGN_HELPER}",
         ),
     )
-
-
-class ScopedShapeWrapperFunctionObservationSpec(
-    ScopedShapeWrapperObservationSpec,
-    ModuleOnlyFunctionObservationSpec,
-    SyncFunctionOnlyMixin,
-    HelperBackedScopedFunctionObservationSpec,
-):
-    shape_helper = _scoped_shape_wrapper_function_from_function
-
-
-class ScopedShapeWrapperSpecObservationSpec(
-    ScopedShapeWrapperObservationSpec,
-    ModuleOnlyAssignObservationSpec,
-    HelperBackedScopedAssignObservationSpec,
-):
-    shape_helper = _scoped_shape_wrapper_spec_from_assign
+)
 
 
 def _registered_family_types() -> tuple[type[CollectedFamily], ...]:

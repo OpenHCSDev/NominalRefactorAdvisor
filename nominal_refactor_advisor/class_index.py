@@ -8,7 +8,11 @@ reliably from the local AST.
 
 from __future__ import annotations
 
-from .record_algebra import product_record
+from .record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 import ast
 from collections import defaultdict
@@ -18,10 +22,9 @@ from functools import lru_cache
 from .ast_tools import ParsedModule
 from .collection_algebra import sorted_tuple
 
-IndexedClass = product_record(
-    "IndexedClass",
-    "symbol: str; module_name: str; qualname: str; simple_name: str; file_path: str; line: int; node: ast.ClassDef; declared_base_names: tuple[str, ...]; resolved_base_symbols: tuple[str, ...]",
-)
+# fmt: off
+materialize_product_record(product_record_spec('IndexedClass', 'symbol: str; module_name: str; qualname: str; simple_name: str; file_path: str; line: int; node: ast.ClassDef; declared_base_names: tuple[str, ...]; resolved_base_symbols: tuple[str, ...]'))
+# fmt: on
 
 
 @dataclass(frozen=True)

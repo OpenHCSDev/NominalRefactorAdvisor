@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import inspect
+import json
 from pathlib import Path
 from typing import cast
 
@@ -34,12 +36,30 @@ from nominal_refactor_advisor.ast_tools import (
     collect_scoped_observations,
     parse_python_modules,
 )
+from nominal_refactor_advisor.calibration import (
+    format_calibration_markdown,
+    run_calibration_manifest,
+)
+from nominal_refactor_advisor.cli import _calibration_exit_code
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
+from nominal_refactor_advisor.cli import _format_economics_proof_markdown
 from nominal_refactor_advisor.cli import _format_markdown
 from nominal_refactor_advisor.cli import _json_payload
+from nominal_refactor_advisor.cli import _proof_exit_code
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.detectors import DetectorConfig
-from nominal_refactor_advisor.models import DispatchCountMetrics
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.economics import (
+    EconomicsProofReport,
+    RecommendationEconomics,
+    RepositoryChangeBudget,
+    ScanEconomicsProof,
+)
+from nominal_refactor_advisor.models import (
+    DispatchCountMetrics,
+    FindingSpec,
+    SourceLocation,
+)
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
     ObservationKind,
@@ -48,10 +68,25 @@ from nominal_refactor_advisor.observation_graph import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.record_algebra import product_record
 from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
+from nominal_refactor_advisor.semantic_algebra import (
+    AlgebraicRentProfile,
+    FiberGeometry,
+    FiniteAxisSystem,
+    ObjectFamilyShape,
+    ceil_log2_cardinality,
+)
+from nominal_refactor_advisor.semantic_description_length import (
+    ClassFamilyCompressionProfile,
+    CompressionCertificate,
+    OrbitPartition,
+    SemanticCostVector,
+)
 
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
+DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
@@ -87,6 +122,532 @@ def test_maybe_binds_nominal_effect_steps() -> None:
     )
 
 
+def test_product_record_preserves_classvar_descriptor_defaults() -> None:
+    record_type = product_record(
+        "DescriptorBackedRecord",
+        "name_family: tuple[str, ...]; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]",
+        defaults={"keyword_names": AliasProperty("name_family")},
+    )
+
+    record = record_type(name_family=("alpha", "beta"))
+
+    assert record.keyword_names == ("alpha", "beta")
+    assert "keyword_names" not in inspect.signature(record_type).parameters
+
+
+def test_fiber_geometry_computes_exact_identity_debt() -> None:
+    representation = {
+        "Alpha": "000",
+        "Beta": "000",
+        "Gamma": "100",
+        "Delta": "111",
+    }
+
+    geometry = FiberGeometry.from_projection(
+        tuple(representation), representation.__getitem__
+    )
+
+    assert geometry.max_fiber_size == 2
+    assert geometry.worst_case_auxiliary_bits == 1
+    assert geometry.collision_excess == 1
+    assert not geometry.is_injective
+    assert ceil_log2_cardinality(5) == 3
+    assert geometry.adaptive_auxiliary_bits == (("000", 1), ("100", 0), ("111", 0))
+
+
+def test_axis_closure_finds_shape_blind_nominal_gap() -> None:
+    axis_system = FiniteAxisSystem.from_rows(
+        (
+            (
+                "shape_only",
+                {
+                    "namespace": ("run",),
+                    "bases": (),
+                    "nominal_capability": False,
+                },
+            ),
+            (
+                "abc_impl",
+                {
+                    "namespace": ("run",),
+                    "bases": ("Runner",),
+                    "nominal_capability": True,
+                },
+            ),
+            (
+                "abc_child",
+                {
+                    "namespace": ("run", "stop"),
+                    "bases": ("Runner",),
+                    "nominal_capability": True,
+                },
+            ),
+        )
+    )
+
+    assert "bases" not in axis_system.closure(("namespace",))
+    assert axis_system.gain_witnesses(("namespace",), "bases") == (
+        ("shape_only", "abc_impl"),
+    )
+    assert "nominal_capability" in axis_system.closure(("bases",))
+    assert (
+        axis_system.coordinate_rank(
+            ("nominal_capability",), available_axes=("namespace", "bases")
+        )
+        == 1
+    )
+
+
+def test_coordinate_view_confusability_keeps_nonclique_failure_geometry() -> None:
+    square = FiniteAxisSystem.from_rows(
+        (
+            ("00", {"x": 0, "y": 0}),
+            ("01", {"x": 0, "y": 1}),
+            ("10", {"x": 1, "y": 0}),
+            ("11", {"x": 1, "y": 1}),
+        )
+    )
+
+    graph = square.confusability_graph((("x",), ("y",)))
+
+    assert graph.edge_count == 4
+    assert graph.edge_objects == (
+        ("00", "01"),
+        ("00", "10"),
+        ("01", "11"),
+        ("10", "11"),
+    )
+    assert not graph.is_transitive
+
+
+def test_abstraction_rent_budget_derives_from_semantic_object_family() -> None:
+    replacement_shape = ObjectFamilyShape(
+        shared_objects=("carrier", "registry"),
+        per_axis_objects=("leaf", "hook"),
+    )
+
+    rent = AlgebraicRentProfile.from_axes(
+        manual_object_count=9,
+        replacement_shape=replacement_shape,
+        axes=("shape", "shape", "bases"),
+    )
+    under_amortized = AlgebraicRentProfile.from_axes(
+        manual_object_count=7,
+        replacement_shape=replacement_shape,
+        axes=("shape", "bases"),
+    )
+
+    assert rent.axis_count == 2
+    assert rent.replacement_object_count == 6
+    assert rent.net_object_savings == 3
+    assert rent.semantic_margin_floor == 2
+    assert rent.pays_rent
+    assert not under_amortized.pays_rent
+
+
+def test_orbit_partition_measures_symmetry_under_canonical_projection() -> None:
+    rows = (
+        ("AlphaJsonReader", ("reader", "parse", "json")),
+        ("BetaJsonReader", ("reader", "parse", "json")),
+        ("AlphaCsvWriter", ("writer", "emit", "csv")),
+        ("BetaCsvWriter", ("writer", "emit", "csv")),
+        ("GammaXmlValidator", ("validator", "check", "xml")),
+    )
+    partition = OrbitPartition.from_projection(
+        rows,
+        lambda item: item[1],
+    )
+
+    assert partition.object_count == 5
+    assert partition.orbit_count == 3
+    assert partition.duplicate_count == 2
+    assert tuple((orbit.size for orbit in partition.ambiguous_orbits)) == (2, 2)
+    assert partition.description_cost == SemanticCostVector(residual_objects=5)
+
+
+def test_compression_certificate_separates_grammar_from_margin_cost() -> None:
+    replacement_shape = ObjectFamilyShape(
+        shared_objects=("abc", "registry"),
+        per_axis_objects=("hook",),
+    )
+
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=9,
+        replacement_shape=replacement_shape,
+        semantic_axes=("format", "direction", "format"),
+        max_collision_fiber_size=4,
+    )
+    under_amortized = CompressionCertificate.from_object_family(
+        manual_object_count=5,
+        replacement_shape=replacement_shape,
+        semantic_axes=("format", "direction"),
+        max_collision_fiber_size=4,
+    )
+
+    assert certificate.before_description_length == 9
+    assert certificate.after_description_length == 4
+    assert certificate.margin_description_length == 2
+    assert certificate.description_length_savings == 5
+    assert certificate.certified_description_length_savings == 3
+    assert certificate.pays_rent
+    assert not under_amortized.pays_rent
+
+
+def test_finding_carries_compression_certificate_into_markdown() -> None:
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=8,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("abc",),
+            per_axis_objects=("hook",),
+        ),
+        semantic_axes=("role", "format"),
+    )
+    finding = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Collapse repeated class family",
+        why="Repeated behavior has one grammar.",
+        capability_gap="certified grammar compression",
+        relation_context="same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        compression_certificate=certificate,
+    )
+
+    markdown = _format_markdown([finding])
+
+    assert finding.compression_certificate == certificate
+    assert "Semantic description length: 8 -> 3" in markdown
+    assert "certified savings 5" in markdown
+
+
+def test_planner_ranks_by_certified_description_length_savings(
+    tmp_path: Path,
+) -> None:
+    spec = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Compress family",
+        why="Manual declarations are derivable.",
+        capability_gap="description length reduction",
+        relation_context="same semantic grammar",
+    )
+    shape = ObjectFamilyShape(shared_objects=("abc",), per_axis_objects=("hook",))
+    low_savings = CompressionCertificate.from_object_family(
+        manual_object_count=5,
+        replacement_shape=shape,
+        semantic_axes=("role",),
+    )
+    high_savings = CompressionCertificate.from_object_family(
+        manual_object_count=10,
+        replacement_shape=shape,
+        semantic_axes=("role",),
+    )
+
+    plans = build_refactor_plans(
+        [
+            spec.build(
+                "low",
+                "low-savings subsystem",
+                (SourceLocation(str(tmp_path / "aaa.py"), 1, "Low.run"),),
+                compression_certificate=low_savings,
+            ),
+            spec.build(
+                "high",
+                "high-savings subsystem",
+                (SourceLocation(str(tmp_path / "zzz.py"), 1, "High.run"),),
+                compression_certificate=high_savings,
+            ),
+        ],
+        tmp_path,
+    )
+
+    assert [plan.outcome.description_length_savings for plan in plans] == [8, 3]
+
+
+def test_class_family_compression_profile_prices_abc_extraction() -> None:
+    profile = ClassFamilyCompressionProfile.from_repeated_method_family(
+        class_count=3,
+        shared_statement_count=4,
+        hook_count=1,
+    )
+    certificate = profile.compression_certificate
+
+    assert profile.manual_object_count == 12
+    assert profile.residual_object_count == 3
+    assert certificate.before_description_length == 12
+    assert certificate.description_cost.description_length == 7
+    assert certificate.certified_description_length_savings == 5
+
+
+def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
+    spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Centralize dispatch",
+        why="Repeated dispatch has one authority.",
+        capability_gap="one authoritative dispatch table",
+        relation_context="same dispatch axis",
+    )
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=9,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("schema",),
+            per_axis_objects=("field",),
+        ),
+        semantic_axes=("role", "format"),
+    )
+    semantic_finding = spec.build(
+        "semantic",
+        "semantic family pays rent",
+        (SourceLocation("pkg/mod.py", 10, "Alpha"),),
+        scaffold="class Schema: ...",
+        compression_certificate=certificate,
+    )
+    loc_finding = spec.build(
+        "loc",
+        "dispatch sites collapse",
+        (SourceLocation("pkg/mod.py", 20, "dispatch"),),
+        codemod_patch="# delete repeated dispatch",
+        metrics=DispatchCountMetrics(dispatch_site_count=4),
+    )
+    unproven_finding = spec.build(
+        "unproven",
+        "manual helper should move",
+        (SourceLocation("pkg/mod.py", 30, "helper"),),
+        scaffold="def helper(): ...",
+    )
+
+    economics = RecommendationEconomics.from_findings_and_plans(
+        [semantic_finding, loc_finding, unproven_finding]
+    )
+
+    assert economics.finding_count == 3
+    assert economics.certificate_count == 1
+    assert economics.semantic_payoff_finding_count == 1
+    assert economics.loc_payoff_finding_count == 1
+    assert economics.proven_finding_count == 2
+    assert economics.backend_lower_bound_removable_loc == 3
+    assert economics.certified_description_length_savings == 6
+    assert not economics.payoff_guard_passes
+    assert economics.unproven_infrastructure_detector_ids == ("unproven",)
+
+
+def test_repository_change_budget_separates_backend_detector_and_tests() -> None:
+    budget = RepositoryChangeBudget.from_numstat_rows(
+        (
+            "7\t2\tnominal_refactor_advisor/models.py",
+            "11\t3\tnominal_refactor_advisor/detectors/_base.py",
+            "13\t5\ttests/test_refactor_advisor.py",
+            "17\t0\tdocs/paper.md",
+            "19\t4\tdist/archive.tar.gz",
+        )
+    )
+
+    assert budget.advisor_backend.net_added == 5
+    assert budget.detectors.net_added == 8
+    assert budget.tests.net_added == 8
+    assert budget.docs.net_added == 17
+    assert budget.generated.net_added == 15
+
+
+def test_economics_markdown_and_json_expose_payoff_proof() -> None:
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=8,
+        replacement_shape=ObjectFamilyShape(shared_objects=("abc",)),
+    )
+    finding = FindingSpec(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Collapse repeated class family",
+        why="Repeated behavior has one grammar.",
+        capability_gap="certified grammar compression",
+        relation_context="same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        compression_certificate=certificate,
+    )
+    economics = RecommendationEconomics.from_findings_and_plans([finding])
+    change_budget = RepositoryChangeBudget.from_numstat_rows(
+        ("5\t1\tnominal_refactor_advisor/economics.py",)
+    )
+
+    markdown = _format_markdown(
+        [finding], economics=economics, change_budget=change_budget
+    )
+    payload = _json_payload([finding], [], [], economics=economics)
+
+    assert "Economics:" in markdown
+    assert "Recommended backend LOC savings: 0-0" in markdown
+    assert "Semantic description length: 8 -> 1" in markdown
+    assert "advisor backend +5/-1 (net +4)" in markdown
+    assert payload["economics"]["certified_description_length_savings"] == 7
+
+
+def test_scan_economics_proof_splits_production_from_test_findings(
+    tmp_path: Path,
+) -> None:
+    spec = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Centralize dispatch",
+        why="Repeated dispatch has one authority.",
+        capability_gap="one authoritative dispatch table",
+        relation_context="same dispatch axis",
+    )
+    production_finding = spec.build(
+        "prod_detector",
+        "production dispatch sites collapse",
+        (SourceLocation("pkg/mod.py", 20, "dispatch"),),
+        metrics=DispatchCountMetrics(dispatch_site_count=3),
+    )
+    test_finding = spec.build(
+        "test_detector",
+        "test fixture dispatch sites collapse",
+        (SourceLocation("tests/test_mod.py", 30, "dispatch"),),
+        metrics=DispatchCountMetrics(dispatch_site_count=2),
+    )
+
+    proof = ScanEconomicsProof.from_findings_and_plans(
+        label="repository",
+        path=tmp_path,
+        elapsed_seconds=0.25,
+        scan_budget_seconds=20.0,
+        findings=(production_finding, test_finding),
+        plans=(),
+    )
+
+    assert proof.finding_count == 2
+    assert proof.production_finding_count == 1
+    assert proof.test_only_finding_count == 1
+    assert proof.production_detector_ids == ("prod_detector",)
+    assert proof.scan_budget_passes
+    assert not proof.production_scan_clean
+    assert not proof.proof_passes
+
+
+def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> None:
+    clean_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="package",
+        path=tmp_path / "nominal_refactor_advisor",
+        elapsed_seconds=1.0,
+        scan_budget_seconds=20.0,
+        findings=(),
+        plans=(),
+    )
+    repository_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="repository",
+        path=tmp_path,
+        elapsed_seconds=2.0,
+        scan_budget_seconds=20.0,
+        findings=(),
+        plans=(),
+    )
+    report = EconomicsProofReport(
+        package_scan=clean_scan,
+        repository_scan=repository_scan,
+        change_budget=RepositoryChangeBudget.from_numstat_rows(
+            ("7\t2\tnominal_refactor_advisor/models.py",)
+        ),
+    )
+
+    payload = report.to_dict()
+    markdown = _format_economics_proof_markdown(report)
+
+    assert report.proof_passes
+    assert payload["proof_passes"] is True
+    assert payload["repository_scan"]["scan_budget_passes"] is True
+    assert payload["change_budget"]["advisor_backend"]["net_added"] == 5
+    assert "Economics proof:" in markdown
+    assert "Overall: pass" in markdown
+    assert "repository: 0 finding(s), 0 production, 0 test-only" in markdown
+
+
+def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> None:
+    finding = FindingSpec(
+        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
+        title="Move helper",
+        why="Infrastructure recommendations need payoff proof.",
+        capability_gap="payoff proof",
+        relation_context="manual helper proposal",
+    ).build(
+        "unproven_detector",
+        "production helper move has no payoff proof",
+        (SourceLocation("pkg/mod.py", 12, "helper"),),
+        scaffold="def helper(): ...",
+    )
+    package_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="package",
+        path=tmp_path / "nominal_refactor_advisor",
+        elapsed_seconds=21.0,
+        scan_budget_seconds=20.0,
+        findings=(finding,),
+        plans=(),
+    )
+    repository_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="repository",
+        path=tmp_path,
+        elapsed_seconds=22.0,
+        scan_budget_seconds=20.0,
+        findings=(finding,),
+        plans=(),
+    )
+    report = EconomicsProofReport(
+        package_scan=package_scan,
+        repository_scan=repository_scan,
+        change_budget=RepositoryChangeBudget.unavailable("git diff failed"),
+    )
+
+    assert report.regression_reasons == (
+        "package_production_findings",
+        "package_scan_budget",
+        "package_payoff_guard",
+        "repository_production_findings",
+        "repository_scan_budget",
+        "repository_payoff_guard",
+        "change_budget_unavailable",
+    )
+    assert not report.proof_passes
+    assert report.to_dict()["regression_reasons"] == report.regression_reasons
+    assert "Regression reasons: package_production_findings" in (
+        _format_economics_proof_markdown(report)
+    )
+
+
+def test_strict_economics_proof_exit_code_is_ci_enforceable(
+    tmp_path: Path,
+) -> None:
+    passing_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="package",
+        path=tmp_path / "nominal_refactor_advisor",
+        elapsed_seconds=1.0,
+        scan_budget_seconds=20.0,
+        findings=(),
+        plans=(),
+    )
+    failing_scan = ScanEconomicsProof.from_findings_and_plans(
+        label="repository",
+        path=tmp_path,
+        elapsed_seconds=21.0,
+        scan_budget_seconds=20.0,
+        findings=(),
+        plans=(),
+    )
+    passing_report = EconomicsProofReport(
+        package_scan=passing_scan,
+        repository_scan=passing_scan,
+        change_budget=RepositoryChangeBudget(),
+    )
+    failing_report = EconomicsProofReport(
+        package_scan=passing_scan,
+        repository_scan=failing_scan,
+        change_budget=RepositoryChangeBudget(),
+    )
+
+    assert _proof_exit_code(failing_report, fail_on_proof_regression=False) == 0
+    assert _proof_exit_code(failing_report, fail_on_proof_regression=True) == 1
+    assert _proof_exit_code(passing_report, fail_on_proof_regression=True) == 0
+
+
 STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
     "string_backed_reflective_nominal_lookup"
 )
@@ -98,6 +659,89 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path = root / relative_path
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
+
+
+def test_calibration_manifest_certifies_detector_expectations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+    )
+    manifest_path = tmp_path / "calibration.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {
+                        "name": "builder-table",
+                        "path": "pkg",
+                        "expected_detectors": [
+                            {
+                                "detector_id": "repeated_builder_calls",
+                                "min_count": 1,
+                            }
+                        ],
+                        "forbidden_detectors": ["orchestration_hub"],
+                        "max_scan_seconds": 20.0,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_calibration_manifest(manifest_path)
+    result = report.target_results[0]
+
+    assert report.passes
+    assert result.detector_count("repeated_builder_calls") >= 1
+    assert "builder-table: pass" in format_calibration_markdown(report)
+
+
+def test_calibration_manifest_names_missing_and_forbidden_detectors(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nimport argparse\n\n\ndef main():\n    parser = argparse.ArgumentParser()\n    parser.add_argument("--json", action="store_true", help="Emit JSON output")\n    parser.add_argument(\n        "--include-plans",\n        action="store_true",\n        help="Include planning details",\n    )\n    parser.add_argument(\n        "--min-builder-keywords",\n        type=int,\n        default=3,\n        help="Minimum builder keywords",\n    )\n    parser.add_argument(\n        "--exclude-pattern",\n        action="append",\n        dest="excluded_pattern_ids",\n        default=[],\n        help="Exclude one pattern id",\n    )\n    return parser\n',
+    )
+    manifest_path = tmp_path / "calibration.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "targets": [
+                    {
+                        "name": "builder-regression",
+                        "path": "pkg",
+                        "expected_detectors": ["not_a_real_detector"],
+                        "forbidden_detectors": ["repeated_builder_calls"],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_calibration_manifest(manifest_path)
+
+    assert not report.passes
+    assert any(
+        ("builder-regression:missing_detector:not_a_real_detector" == reason)
+        for reason in report.regression_reasons
+    )
+    assert any(
+        (reason.startswith("builder-regression:forbidden_detector:"))
+        for reason in report.regression_reasons
+    )
+    assert _calibration_exit_code(
+        report, fail_on_calibration_regression=False
+    ) == 0
+    assert _calibration_exit_code(
+        report, fail_on_calibration_regression=True
+    ) == 1
 
 
 def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
@@ -130,6 +774,9 @@ def test_detects_repeated_private_method_shape(tmp_path: Path) -> None:
     assert any(
         (finding.pattern_id == 5 and finding.codemod_patch for finding in findings)
     )
+    finding = next((finding for finding in findings if finding.pattern_id == 5))
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_sibling_role_helper_symmetry(tmp_path: Path) -> None:
@@ -1005,7 +1652,7 @@ def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nimport ast\n\ndef match_projected_attribute(node):\n    if not isinstance(node, ast.Call):\n        return None\n    if len(node.args) != 1:\n        return None\n    inner = node.args[0]\n    if not isinstance(inner, ast.Attribute):\n        return None\n    if not isinstance(inner.value, ast.Name):\n        return None\n    return inner.attr\n",
+        '\nimport ast\n\ndef match_projected_attribute(node):\n    call = as_ast(node, ast.Call)\n    if call is None:\n        return None\n    if len(call.args) != 1:\n        return None\n    inner = single_item(tuple(call.args))\n    if inner is None:\n        return None\n    attribute = as_ast(inner, ast.Attribute)\n    if attribute is None:\n        return None\n    owner = as_ast(attribute.value, ast.Name)\n    if owner is None:\n        return None\n    owner_name = name_id(owner)\n    if owner_name is None:\n        return None\n    wrapper_name = name_id(call.func)\n    if wrapper_name is None:\n        return None\n    pair = ast_sequence(call.args, ast.Attribute)\n    if pair is None:\n        return None\n    if len(call.keywords) != 0:\n        return None\n    if attribute.attr not in {"name", "kind", "value"}:\n        return None\n    return owner_name, wrapper_name, attribute.attr\n',
     )
     finding = next(
         (
@@ -1016,6 +1663,12 @@ def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
     )
     assert finding.pattern_id == PatternId.STAGED_ORCHESTRATION
     assert "payoff score" in finding.summary
+    assert "generated budget" in finding.summary
+    assert "net object savings" in finding.summary
+    assert "semantic description length" in finding.summary
+    assert "certified savings" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
     assert "AST type guards" in finding.summary
     assert "EffectStep" in (finding.scaffold or "")
     assert "AutoRegisterMeta" in (finding.scaffold or "")
@@ -1048,6 +1701,29 @@ def test_detects_under_amortized_effect_infrastructure(tmp_path: Path) -> None:
     assert "single_use_matcher" in finding.summary
     assert "SingleUseCarrier" in finding.summary
     assert "shared_matcher" not in finding.summary
+
+
+def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/detectors.py",
+        '\ndeclare_candidate_rule_detector(\n    ManualHelperCandidate,\n    high_confidence_spec(\n        PatternId.STAGED_ORCHESTRATION,\n        "Collector should share helper machinery",\n        "A detector that asks users to move repeated work into a shared helper must not just reshuffle code.",\n        "shared helper machinery owns the collector traversal",\n        "collector repeats helper-shaped mechanics",\n    ),\n    summary=lambda item: "move this collector into a shared helper",\n    scaffold=lambda item: "def helper(item):\\n    return item",\n    codemod_patch=lambda item: "# Move the repeated body into the helper.",\n    candidate_collector=_manual_helper_candidates,\n)\n\ndeclare_candidate_rule_detector(\n    PayingHelperCandidate,\n    high_confidence_spec(\n        PatternId.STAGED_ORCHESTRATION,\n        "Collector helper should prove its payoff",\n        "The detector includes a structured metrics budget and deletes manual code before adding shared helper infrastructure.",\n        "structured detector payoff metrics",\n        "manual collector code can be deleted through shared helper metrics",\n    ),\n    summary=lambda item: "delete manual collector lines",\n    scaffold=lambda item: "def helper(item):\\n    return item",\n    codemod_patch=lambda item: "# Delete the repeated body.",\n    metrics=lambda item: OrchestrationMetrics(\n        function_line_count=item.line_count,\n        branch_site_count=1,\n        call_site_count=1,\n        parameter_count=1,\n        callee_family_count=1,\n    ),\n    candidate_collector=_paying_helper_candidates,\n)\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID
+    ]
+    assert [finding.evidence[0].symbol for finding in findings] == [
+        "ManualHelperDetector"
+    ]
+    assert "structured_payoff_metrics" in findings[0].summary
+    assert "backend_loc_budget" in findings[0].summary
+    assert "net_reduction_action" in findings[0].summary
+    assert "amortization_or_fanout_gate" in findings[0].summary
+    assert "compression_certificate_or_explicit_fanout" in findings[0].summary
 
 
 def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
@@ -1090,6 +1766,74 @@ def test_detects_typed_candidate_cast_boilerplate(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "LocalDetector._finding_for_candidate" == findings[0].evidence[0].symbol
     assert "Payload" in findings[0].summary
+
+
+def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalObservationDetector(StaticModulePatternDetector):\n    finding_spec = finding_spec_template(\n        PatternId.AUTHORITATIVE_SCHEMA,\n        "Local observation",\n        "Local observation",\n        "local observation",\n        "local observation",\n    )\n\n    def _module_evidence(self, module, config):\n        observations: tuple[LocalObservation, ...] = _collect_typed_family_items(\n            module, LocalObservationFamily, LocalObservation\n        )\n        return tuple(\n            SourceLocation(item.file_path, item.line, item.symbol)\n            for item in observations\n        )\n\n    def _minimum_evidence(self, config):\n        return 2\n\n    def _summary(self, module, evidence):\n        return f"{module.path} contains {len(evidence)} local observation sites."\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "static_typed_observation_detector"
+    ]
+    assert len(findings) == 1
+    assert "LocalObservationDetector" in findings[0].summary
+    assert "LocalObservationFamily" in findings[0].summary
+    assert "declare_typed_observation_detector" in findings[0].scaffold
+
+
+def test_detects_inline_candidate_renderer_declaration(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndeclare_module_detector(\n    LocalCandidate,\n    finding_spec,\n    CandidateFindingRenderer[LocalCandidate](\n        summary=lambda candidate: candidate.summary,\n        evidence=lambda candidate: (candidate.evidence,),\n        scaffold=lambda candidate: None,\n        codemod_patch=lambda candidate: None,\n        metrics=lambda candidate: None,\n    ),\n    detector_priority=-1,\n    candidate_collector=_local_candidates,\n)\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "inline_candidate_renderer_declaration"
+    ]
+    assert len(findings) == 1
+    assert "LocalCandidate" in findings[0].summary
+    assert "declare_candidate_rule_detector" in (findings[0].scaffold or "")
+
+
+def test_detects_named_function_collector_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef _local_candidates(module):\n    candidates = []\n    for qualname, function in _iter_named_functions(module):\n        if qualname.startswith("_"):\n            continue\n        candidates.append(\n            LocalCandidate(\n                file_path=str(module.path),\n                line=function.lineno,\n                function_name=qualname,\n            )\n        )\n    return tuple(candidates)\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "named_function_collector_boilerplate"
+    ]
+    assert len(findings) == 1
+    assert "_local_candidates" in findings[0].summary
+    assert "LocalCandidate" in findings[0].summary
+    assert "_collect_named_function_candidates" in (findings[0].scaffold or "")
+
+
+def test_detects_ast_stream_collector_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _local_candidates(module):\n    local_items = []\n    for node in _walk_nodes(module.module):\n        if not isinstance(node, ast.Call):\n            continue\n        local_items.append(\n            LocalCandidate(\n                file_path=str(module.path),\n                line=node.lineno,\n                function_name=ast.unparse(node.func),\n            )\n        )\n    return tuple(local_items)\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "ast_stream_collector_boilerplate"
+    ]
+    assert len(findings) == 1
+    assert "_local_candidates" in findings[0].summary
+    assert "LocalCandidate" in findings[0].summary
+    assert "local_items" in findings[0].summary
+    assert "_collect_ast_node_candidates" in (findings[0].scaffold or "")
 
 
 def test_detects_finding_spec_default_field_boilerplate(tmp_path: Path) -> None:
@@ -1203,6 +1947,8 @@ def test_detects_manual_sorted_tuple_return(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "ordered_names" in findings[0].summary
     assert "sorted_tuple" in (findings[0].codemod_patch or "")
+    assert findings[0].compression_certificate is not None
+    assert findings[0].compression_certificate.pays_rent
 
 
 def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
@@ -1219,6 +1965,8 @@ def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "ordered_payload" in findings[0].summary
     assert "expression payloads" in (findings[0].codemod_patch or "")
+    assert findings[0].compression_certificate is not None
+    assert findings[0].compression_certificate.pays_rent
 
 
 def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
@@ -1253,6 +2001,59 @@ def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
     assert "AliasProperty" in (findings[0].scaffold or "")
 
 
+def test_detects_source_location_evidence_property(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n    @property\n    def evidence(self):\n        return SourceLocation(self.file_path, self.lineno, self.qualname)\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "source_location_evidence_property"
+    ]
+    assert len(findings) == 1
+    assert "LocalRecord.evidence" in findings[0].summary
+    assert "SourceLocationEvidenceProperty" in (findings[0].scaffold or "")
+
+
+def test_detects_zipped_source_location_evidence_property(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n    @property\n    def evidence_locations(self):\n        return tuple(\n            SourceLocation(self.file_path, line, function_name)\n            for line, function_name in zip(\n                self.line_numbers, self.function_names, strict=True\n            )\n        )\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "zipped_source_location_evidence_property"
+    ]
+    assert len(findings) == 1
+    assert "LocalRecord.evidence_locations" in findings[0].summary
+    assert "ZippedSourceLocationEvidenceProperty" in (findings[0].scaffold or "")
+
+
+def test_detects_private_helper_shadow(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/shared.py",
+        "\ndef materialize_schema(spec):\n    return spec.build()\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/local.py",
+        "\ndef _materialize_schema(spec):\n    return spec.build()\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "private_helper_shadow"
+    ]
+    assert len(findings) == 1
+    assert "_materialize_schema" in findings[0].summary
+    assert "materialize_schema" in (findings[0].codemod_patch or "")
+
+
 def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -1267,6 +2068,24 @@ def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
     assert len(findings) == 1
     assert "LocalProduct" in findings[0].summary
     assert "product_record" in (findings[0].codemod_patch or "")
+    assert findings[0].compression_certificate is not None
+    assert findings[0].compression_certificate.pays_rent
+
+
+def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nimport ast\n\n\ndef collect(tree):\n    class Visitor(ast.NodeVisitor):\n        def __init__(self) -> None:\n            self.class_stack: list[str] = []\n            self.function_stack: list[str] = []\n\n        def visit_ClassDef(self, node: ast.ClassDef) -> None:\n            self.class_stack.append(node.name)\n            self.generic_visit(node)\n            self.class_stack.pop()\n\n        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:\n            self.function_stack.append(node.name)\n            self.generic_visit(node)\n            self.function_stack.pop()\n\n    Visitor().visit(tree)\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "node_visitor_stack_boilerplate"
+    ]
+    assert len(findings) == 1
+    assert "collect.Visitor" in findings[0].summary
+    assert "ClassFunctionStackNodeVisitor" in (findings[0].scaffold or "")
 
 
 def test_detects_repeated_structural_type_annotation_alias_need(
@@ -2027,6 +2846,11 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
         [
             "--json",
             "--include-plans",
+            "--prove-economics",
+            "--fail-on-proof-regression",
+            "--calibrate",
+            "calibration.json",
+            "--fail-on-calibration-regression",
             "--exclude-pattern",
             "14",
             "nominal_refactor_advisor",
@@ -2035,6 +2859,10 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
 
     assert args.json is True
     assert args.include_plans is True
+    assert args.prove_economics is True
+    assert args.fail_on_proof_regression is True
+    assert args.calibrate == Path("calibration.json")
+    assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.path == "nominal_refactor_advisor"
 
@@ -2901,6 +3729,8 @@ def test_detects_manual_process_step_ladders(tmp_path: Path) -> None:
     assert "build_submission" in finding.summary
     assert "ProcessStagePlan" in (finding.scaffold or "")
     assert "typed stage plan" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_ignores_single_manual_process_step_ladder(tmp_path: Path) -> None:
@@ -2933,6 +3763,8 @@ def test_detects_mirrored_file_rewrite_loops(tmp_path: Path) -> None:
     assert "rewrite_package" in finding.summary
     assert "TextRewritePlan" in (finding.scaffold or "")
     assert "typed rewrite plan" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_ignores_single_file_rewrite_loop(tmp_path: Path) -> None:
@@ -2999,6 +3831,8 @@ def test_detects_algebraic_duplicate_compound_blocks(tmp_path: Path) -> None:
     assert "render_right" in finding.summary
     assert "quotient-normal-form AST" in finding.why
     assert "BlockAlgebra" in (finding.scaffold or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_ignores_flat_repeated_loops_without_nested_control(tmp_path: Path) -> None:
@@ -3675,6 +4509,24 @@ def test_detects_constant_property_hooks_across_subclasses(tmp_path: Path) -> No
     assert "ObservationKind.METHOD" in finding.summary
 
 
+def test_detects_constant_property_default_bundle(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Metrics:\n    @property\n    def count(self):\n        return 0\n\n    @property\n    def names(self):\n        return ()\n\n    @property\n    def label(self):\n        return None\n\n    @property\n    def flags(self):\n        return ()\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "constant_property_default_bundle"
+        )
+    )
+    assert "Metrics" in finding.summary
+    assert "ConstantProperty" in (finding.codemod_patch or "")
+
+
 def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3691,6 +4543,8 @@ def test_detects_reflective_self_attribute_escape(tmp_path: Path) -> None:
     )
     assert "getattr(self, 'file_path')" in finding.summary
     assert "file_path" in (finding.scaffold or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None:
@@ -3710,6 +4564,25 @@ def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None
     assert "ClassTaskAdapter" in finding.summary
     assert "HelperBackedTaskAdapter" in finding.summary
     assert "HelperBackedTemplate" in (finding.scaffold or "")
+
+
+def test_helper_backed_observation_spec_requires_shared_entrypoint(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass AlgebraCarrier:\n    pass\n\n\nclass FiberGeometry(AlgebraCarrier):\n    def worst_case_bits(self):\n        return ceil_log2_cardinality(self.max_fiber_size)\n\n\nclass AxisPoint(AlgebraCarrier):\n    def from_mapping(self):\n        return build_axis_point(self.axis_values)\n\n\nclass ConfusabilityGraph(AlgebraCarrier):\n    def component_tag_bits(self):\n        return ceil_log2_cardinality(self.component_count)\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (
+            finding.detector_id == "helper_backed_observation_spec"
+            for finding in findings
+        )
+    )
 
 
 def test_detects_dynamic_self_field_selection(tmp_path: Path) -> None:
@@ -3811,6 +4684,64 @@ def test_detects_classvar_only_sibling_leaf(tmp_path: Path) -> None:
     assert "payload_cls" in finding.summary
     assert "renderer_cls" in finding.summary
     assert "declarative family-definition table" in (finding.codemod_patch or "")
+
+
+def test_detects_metadata_only_class_family_with_varying_bases(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass AlphaRuleSpec(ABC):\n    family_specs = (GeneratedFamilySpec(AlphaRule),)\n    shape_helper = alpha_rule\n\n\nclass BetaRuleSpec(RuleRoot, ABC):\n    family_specs = (GeneratedFamilySpec(BetaRule),)\n    required_parameter_name = "beta"\n\n\nclass GammaRuleSpec(RuleRoot, TupleResultMixin):\n    family_specs = (GeneratedFamilySpec(GammaRule),)\n    shape_helper = gamma_rule\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "metadata_only_class_family"
+        )
+    )
+    assert "RuleSpec" in finding.summary
+    assert "metadata-only class shells" in finding.summary
+    assert "typed declaration table" in (finding.codemod_patch or "")
+
+
+def test_detects_self_naming_builder_catalog(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nAlpha = declare_record("Alpha", "value: int", bases=(Root,))\nBeta = declare_record("Beta", "value: int", bases=(Root,))\nGamma = declare_record("Gamma", "value: int", bases=(Root,))\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "self_naming_builder_catalog"
+        )
+    )
+    assert "declare_record" in finding.summary
+    assert "self-naming declaration calls" in finding.summary
+    assert "declaration catalog" in (finding.codemod_patch or "")
+
+
+def test_detects_repeated_base_bundle(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha(RoleMixin, LineMixin, SymbolMixin, TemplateBase):\n    pass\n\nclass Beta(RoleMixin, LineMixin, SymbolMixin, TemplateBase):\n    pass\n\nclass Gamma(RoleMixin, LineMixin, SymbolMixin, TemplateBase):\n    pass\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "repeated_base_bundle"
+        )
+    )
+    assert "RoleMixin" in finding.summary
+    assert "ABC/mixin" in (finding.codemod_patch or "")
 
 
 def test_detects_type_indexed_definition_boilerplate(tmp_path: Path) -> None:

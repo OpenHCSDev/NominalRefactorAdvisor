@@ -12,8 +12,22 @@ import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
+from .analysis import analyze_modules, analyze_path, plan_path
 from .ast_tools import parse_python_modules
-from .detectors import DetectorConfig, default_detectors
+from .calibration import (
+    CalibrationReport,
+    format_calibration_markdown,
+    run_calibration_manifest,
+)
+from .detectors import DetectorConfig
+from .economics import (
+    EconomicsProofReport,
+    LineChangeBudget,
+    RecommendationEconomics,
+    RepositoryChangeBudget,
+    ScanEconomicsProof,
+    build_economics_proof_report,
+)
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
@@ -96,6 +110,47 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             help="Emit only subsystem-level composed refactor plans.",
         ),
+        CliArgumentSpec(
+            flags=("--include-economics",),
+            action="store_true",
+            help="Emit portfolio-level payoff economics.",
+        ),
+        CliArgumentSpec(
+            flags=("--include-change-budget",),
+            action="store_true",
+            help="Also split working-tree LOC changes by backend/detector/test role.",
+        ),
+        CliArgumentSpec(
+            flags=("--prove-economics",),
+            action="store_true",
+            help="Run the standard long-term economics proof report.",
+        ),
+        CliArgumentSpec(
+            flags=("--fail-on-proof-regression",),
+            action="store_true",
+            help="Return exit code 1 when --prove-economics fails its gate.",
+        ),
+        CliArgumentSpec(
+            flags=("--calibrate",),
+            value_type=Path,
+            help="Run a detector calibration manifest instead of a path scan.",
+        ),
+        CliArgumentSpec(
+            flags=("--fail-on-calibration-regression",),
+            action="store_true",
+            help="Return exit code 1 when --calibrate fails its manifest gate.",
+        ),
+        CliArgumentSpec(
+            flags=("--scan-budget-seconds",),
+            value_type=float,
+            default=20.0,
+            help="Per-scan runtime budget for --prove-economics.",
+        ),
+        CliArgumentSpec(
+            flags=("--compare-ref",),
+            default="HEAD",
+            help="Git ref used for --include-change-budget.",
+        ),
     )
     + _config_argument_specs()
     + (
@@ -111,47 +166,30 @@ _CLI_ARGUMENT_SPECS = (
 )
 
 
-def analyze_modules(
-    modules: list, config: DetectorConfig | None = None
-) -> list[RefactorFinding]:
-    """Run all registered detectors against parsed modules."""
-    config = config or DetectorConfig()
-    findings: list[RefactorFinding] = []
-    for detector in default_detectors():
-        findings.extend(detector.detect(modules, config))
-    return sorted(
-        findings,
-        key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
-    )
-
-
-def analyze_path(
-    root: Path, config: DetectorConfig | None = None
-) -> list[RefactorFinding]:
-    """Parse a filesystem root and return sorted refactor findings."""
-    modules = parse_python_modules(root)
-    return analyze_modules(modules, config)
-
-
-def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
-    """Analyze a path and synthesize subsystem-level refactor plans."""
-    findings = analyze_path(root, config)
-    return build_refactor_plans(findings, root)
-
-
 def _json_payload(
-    findings: list[RefactorFinding], plans: list[RefactorPlan], modules: list
+    findings: list[RefactorFinding],
+    plans: list[RefactorPlan],
+    modules: list,
+    economics: RecommendationEconomics | None = None,
+    change_budget: RepositoryChangeBudget | None = None,
 ) -> dict[str, object]:
     report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
     graph = build_observation_graph(modules)
     payload = report.to_dict()
     payload["observations"] = [asdict(item) for item in graph.observations]
     payload["fibers"] = [asdict(item) for item in graph.fibers]
+    if economics is not None:
+        payload["economics"] = economics.to_dict()
+    if change_budget is not None:
+        payload["change_budget"] = change_budget.to_dict()
     return payload
 
 
 def _format_markdown(
-    findings: list[RefactorFinding], plans: list[RefactorPlan] | None = None
+    findings: list[RefactorFinding],
+    plans: list[RefactorPlan] | None = None,
+    economics: RecommendationEconomics | None = None,
+    change_budget: RepositoryChangeBudget | None = None,
 ) -> str:
     sections: list[str] = []
     if findings:
@@ -160,6 +198,8 @@ def _format_markdown(
         sections.append("No refactoring findings.")
     if plans is not None:
         sections.append(_format_plans_markdown(plans))
+    if economics is not None:
+        sections.append(_format_economics_markdown(economics, change_budget))
     return "\n\n".join(section for section in sections if section)
 
 
@@ -179,6 +219,14 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
         lines.append(f"   - Relation: {finding.relation_context}")
         lines.append(f"   - Confidence: {finding.confidence}")
         lines.append(f"   - Certification: {finding.certification}")
+        if finding.compression_certificate is not None:
+            certificate = finding.compression_certificate
+            lines.append(
+                "   - Semantic description length: "
+                f"{certificate.before_description_length} -> "
+                f"{certificate.description_cost.description_length}; "
+                f"certified savings {certificate.certified_description_length_savings}"
+            )
         for step in pattern.first_moves:
             lines.append(f"   - First move: {step}")
         for skeleton in pattern.example_skeletons:
@@ -229,6 +277,13 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
         lines.append(
             f"   - Outcome: removable LOC {plan.outcome.lower_bound_removable_loc}-{plan.outcome.upper_bound_removable_loc}; loci {plan.outcome.loci_of_change_before}->{plan.outcome.loci_of_change_after}; mappings {plan.outcome.repeated_mappings_centralized}; dispatch {plan.outcome.dispatch_sites_eliminated}; registrations {plan.outcome.registration_sites_removed}; shared algorithms {plan.outcome.shared_algorithm_sites_centralized}"
         )
+        if plan.outcome.description_length_before:
+            lines.append(
+                "   - Semantic description length: "
+                f"{plan.outcome.description_length_before} -> "
+                f"{plan.outcome.description_length_after}; certified savings "
+                f"{plan.outcome.description_length_savings}"
+            )
         for action in plan.actions:
             lines.append(f"   - Action: {action.kind} -> {action.description}")
             if action.statement_operation and action.statement_sites:
@@ -247,6 +302,137 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
     return "\n".join(lines)
 
 
+def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
+    return f"{name} +{budget.added}/-{budget.deleted} " f"(net {budget.net_added:+d})"
+
+
+def _format_economics_markdown(
+    economics: RecommendationEconomics,
+    change_budget: RepositoryChangeBudget | None = None,
+) -> str:
+    lines = ["Economics:"]
+    lines.append(
+        "   - Recommended backend LOC savings: "
+        f"{economics.backend_lower_bound_removable_loc}-"
+        f"{economics.backend_upper_bound_removable_loc}"
+    )
+    lines.append(
+        "   - Semantic description length: "
+        f"{economics.description_length_before} -> "
+        f"{economics.description_length_after}; certified savings "
+        f"{economics.certified_description_length_savings}"
+    )
+    lines.append(
+        "   - Payoff guard: "
+        f"{'pass' if economics.payoff_guard_passes else 'fail'}; "
+        f"{economics.proven_finding_count}/{economics.finding_count} findings "
+        "carry LOC or semantic proof"
+    )
+    if economics.unproven_infrastructure_detector_ids:
+        lines.append(
+            "   - Unproven infrastructure detectors: "
+            f"{', '.join(economics.unproven_infrastructure_detector_ids)}"
+        )
+    if change_budget is not None:
+        if change_budget.unavailable_reason is not None:
+            lines.append(
+                "   - Working-tree change budget unavailable: "
+                f"{change_budget.unavailable_reason}"
+            )
+        else:
+            lines.append(
+                "   - Working-tree change budget: "
+                + "; ".join(
+                    (
+                        _format_change_budget_item(
+                            "advisor backend", change_budget.advisor_backend
+                        ),
+                        _format_change_budget_item(
+                            "detectors", change_budget.detectors
+                        ),
+                        _format_change_budget_item("tests", change_budget.tests),
+                        _format_change_budget_item("docs", change_budget.docs),
+                        _format_change_budget_item(
+                            "generated", change_budget.generated
+                        ),
+                        _format_change_budget_item("other", change_budget.other),
+                    )
+                )
+            )
+    return "\n".join(lines)
+
+
+def _format_scan_proof_markdown(scan: ScanEconomicsProof) -> list[str]:
+    lines = [
+        f"   - {scan.label}: {scan.finding_count} finding(s), "
+        f"{scan.production_finding_count} production, "
+        f"{scan.test_only_finding_count} test-only; "
+        f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
+        f"     proof: {'pass' if scan.proof_passes else 'fail'}; "
+        f"payoff guard: {'pass' if scan.economics.payoff_guard_passes else 'fail'}",
+    ]
+    if scan.production_detector_ids:
+        lines.append(
+            "     production detectors: " + ", ".join(scan.production_detector_ids)
+        )
+    if scan.detector_ids:
+        lines.append("     all detectors: " + ", ".join(scan.detector_ids))
+    return lines
+
+
+def _format_economics_proof_markdown(report: EconomicsProofReport) -> str:
+    lines = [
+        "Economics proof:",
+        f"   - Overall: {'pass' if report.proof_passes else 'fail'}",
+    ]
+    if report.regression_reasons:
+        lines.append("   - Regression reasons: " + ", ".join(report.regression_reasons))
+    lines.extend(_format_scan_proof_markdown(report.package_scan))
+    lines.extend(_format_scan_proof_markdown(report.repository_scan))
+    if report.change_budget.unavailable_reason is not None:
+        lines.append(
+            "   - Working-tree change budget unavailable: "
+            f"{report.change_budget.unavailable_reason}"
+        )
+    else:
+        lines.append(
+            "   - Working-tree change budget: "
+            + "; ".join(
+                (
+                    _format_change_budget_item(
+                        "advisor backend", report.change_budget.advisor_backend
+                    ),
+                    _format_change_budget_item(
+                        "detectors", report.change_budget.detectors
+                    ),
+                    _format_change_budget_item("tests", report.change_budget.tests),
+                    _format_change_budget_item("docs", report.change_budget.docs),
+                    _format_change_budget_item(
+                        "generated", report.change_budget.generated
+                    ),
+                    _format_change_budget_item("other", report.change_budget.other),
+                )
+            )
+        )
+    return "\n".join(lines)
+
+
+def _proof_exit_code(
+    report: EconomicsProofReport, *, fail_on_proof_regression: bool
+) -> int:
+    if fail_on_proof_regression and not report.proof_passes:
+        return 1
+    return 0
+
+
+def _calibration_exit_code(
+    report: CalibrationReport, *, fail_on_calibration_regression: bool
+) -> int:
+    if fail_on_calibration_regression and not report.passes:
+        return 1
+    return 0
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -257,20 +443,79 @@ def main() -> int:
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)
+    if args.calibrate is not None:
+        calibration_report = run_calibration_manifest(args.calibrate, config=config)
+        if args.json:
+            print(json.dumps(calibration_report.to_dict(), indent=2))
+        else:
+            print(format_calibration_markdown(calibration_report))
+        return _calibration_exit_code(
+            calibration_report,
+            fail_on_calibration_regression=args.fail_on_calibration_regression,
+        )
+
     root = Path(args.path)
+    if args.prove_economics:
+        proof_report = build_economics_proof_report(
+            root,
+            config=config,
+            compare_ref=args.compare_ref,
+            scan_budget_seconds=args.scan_budget_seconds,
+        )
+        if args.json:
+            print(json.dumps(proof_report.to_dict(), indent=2))
+        else:
+            print(_format_economics_proof_markdown(proof_report))
+        return _proof_exit_code(
+            proof_report,
+            fail_on_proof_regression=args.fail_on_proof_regression,
+        )
+
     modules = parse_python_modules(root)
     findings = analyze_modules(modules, config)
     plans = None
     if args.include_plans or args.plans_only:
         plans = build_refactor_plans(findings, root)
+    include_economics = args.include_economics or args.include_change_budget
+    economics = (
+        RecommendationEconomics.from_findings_and_plans(findings, plans or [])
+        if include_economics
+        else None
+    )
+    change_budget = (
+        RepositoryChangeBudget.from_git_diff(root, compare_ref=args.compare_ref)
+        if args.include_change_budget
+        else None
+    )
     if args.json:
         json_findings = [] if args.plans_only else findings
-        print(json.dumps(_json_payload(json_findings, plans or [], modules), indent=2))
+        print(
+            json.dumps(
+                _json_payload(
+                    json_findings,
+                    plans or [],
+                    modules,
+                    economics=economics,
+                    change_budget=change_budget,
+                ),
+                indent=2,
+            )
+        )
     else:
         if args.plans_only:
-            print(_format_plans_markdown(plans or []))
+            sections = [_format_plans_markdown(plans or [])]
+            if economics is not None:
+                sections.append(_format_economics_markdown(economics, change_budget))
+            print("\n\n".join(sections))
         else:
-            print(_format_markdown(findings, plans))
+            print(
+                _format_markdown(
+                    findings,
+                    plans,
+                    economics=economics,
+                    change_budget=change_budget,
+                )
+            )
     return 0
 
 

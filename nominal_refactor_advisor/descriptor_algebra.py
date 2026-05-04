@@ -42,3 +42,30 @@ class AliasProperty(Generic[ValueT]):
         if instance is None:
             return self
         return self._project(instance)
+
+
+@dataclass(frozen=True)
+class ConstantProperty(Generic[ValueT]):
+    """Descriptor for properties that always return the same immutable value."""
+
+    value: ValueT
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type[object] | None = None
+    ) -> "ConstantProperty[ValueT]": ...
+
+    @overload
+    def __get__(
+        self, instance: object, owner: type[object] | None = None
+    ) -> ValueT: ...
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[object] | None = None,
+    ) -> ValueT | "ConstantProperty[ValueT]":
+        del owner
+        if instance is None:
+            return self
+        return self.value

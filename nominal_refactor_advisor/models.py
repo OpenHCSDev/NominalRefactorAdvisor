@@ -7,7 +7,11 @@ record vocabulary.
 
 from __future__ import annotations
 
-from .record_algebra import product_record
+from .record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
@@ -15,8 +19,9 @@ from typing import Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
 from .collection_algebra import sorted_tuple
-from .descriptor_algebra import AliasProperty
+from .descriptor_algebra import AliasProperty, ConstantProperty
 from .patterns import PatternId
+from .semantic_description_length import CompressionCertificate
 
 from .taxonomy import (
     HIGH_CONFIDENCE,
@@ -32,19 +37,16 @@ from .taxonomy import (
 
 
 class SemanticRecord(ABC):
-    """Base protocol for frozen records that can be serialized to dictionaries."""
+    """Base ABC for frozen records that can be serialized to dictionaries."""
 
     def to_dict(self) -> dict[str, object]:
         record: Any = self
         return asdict(record)
 
 
-SourceLocation = product_record(
-    "SourceLocation",
-    "file_path: str; line: int; symbol: str",
-    bases=(SemanticRecord,),
-    doc="One evidence site in source code.",
-)
+# fmt: off
+materialize_product_record(product_record_spec('SourceLocation', 'file_path: str; line: int; symbol: str', 'SemanticRecord', doc='One evidence site in source code.'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,9 @@ class ImpactDelta(SemanticRecord):
     dispatch_sites_eliminated: int = 0
     registration_sites_removed: int = 0
     shared_algorithm_sites_centralized: int = 0
+    description_length_before: int = 0
+    description_length_after: int = 0
+    description_length_savings: int = 0
 
     def __add__(self, other: "ImpactDelta") -> "ImpactDelta":
         return ImpactDelta(
@@ -77,6 +82,12 @@ class ImpactDelta(SemanticRecord):
             + other.registration_sites_removed,
             shared_algorithm_sites_centralized=self.shared_algorithm_sites_centralized
             + other.shared_algorithm_sites_centralized,
+            description_length_before=self.description_length_before
+            + other.description_length_before,
+            description_length_after=self.description_length_after
+            + other.description_length_after,
+            description_length_savings=self.description_length_savings
+            + other.description_length_savings,
         )
 
     @classmethod
@@ -126,73 +137,27 @@ class FindingMetrics(SemanticRecord, ABC):
                     return base.__name__
         return FindingMetrics.__name__
 
-    @property
-    def shared_algorithm_sites(self) -> int:
-        return 0
-
-    @property
-    def registration_sites(self) -> int:
-        return 0
-
-    @property
-    def mapping_sites(self) -> int:
-        return 0
-
-    @property
-    def dispatch_sites(self) -> int:
-        return 0
+    shared_algorithm_sites = ConstantProperty[int](0)
+    registration_sites = ConstantProperty[int](0)
+    mapping_sites = ConstantProperty[int](0)
+    dispatch_sites = ConstantProperty[int](0)
 
     @property
     def impact_delta(self) -> ImpactDelta:
         return ImpactDelta()
 
-    @property
-    def plan_class_names(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_field_names(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_registry_name(self) -> str | None:
-        return None
-
-    @property
-    def plan_mapping_name(self) -> str | None:
-        return None
-
-    @property
-    def plan_source_name(self) -> str | None:
-        return None
-
-    @property
-    def plan_identity_field_names(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_statement_count(self) -> int:
-        return 0
-
-    @property
-    def plan_shared_statement_texts(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_class_key_pairs(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_dispatch_axis(self) -> str | None:
-        return None
-
-    @property
-    def plan_literal_cases(self) -> tuple[str, ...]:
-        return ()
-
-    @property
-    def plan_field_execution_level(self) -> str | None:
-        return None
+    plan_class_names = ConstantProperty[tuple[str, ...]](())
+    plan_field_names = ConstantProperty[tuple[str, ...]](())
+    plan_registry_name = ConstantProperty[str | None](None)
+    plan_mapping_name = ConstantProperty[str | None](None)
+    plan_source_name = ConstantProperty[str | None](None)
+    plan_identity_field_names = ConstantProperty[tuple[str, ...]](())
+    plan_statement_count = ConstantProperty[int](0)
+    plan_shared_statement_texts = ConstantProperty[tuple[str, ...]](())
+    plan_class_key_pairs = ConstantProperty[tuple[str, ...]](())
+    plan_dispatch_axis = ConstantProperty[str | None](None)
+    plan_literal_cases = ConstantProperty[tuple[str, ...]](())
+    plan_field_execution_level = ConstantProperty[str | None](None)
 
 
 BehaviorFindingMetrics = CompositeClassSpec(
@@ -466,11 +431,9 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         )
 
 
-SentinelSimulationMetrics = product_record(
-    "SentinelSimulationMetrics",
-    "class_count: int; branch_site_count: int",
-    bases=(FindingMetrics,),
-)
+# fmt: off
+materialize_product_record(product_record_spec('SentinelSimulationMetrics', 'class_count: int; branch_site_count: int', 'FindingMetrics'))
+# fmt: on
 
 
 class CountedDispatchMetrics(DispatchFindingMetrics, ABC):
@@ -509,9 +472,9 @@ class BranchCountMetrics(CountedDispatchMetrics):
     count_value = AliasProperty[int]("branch_site_count")
 
 
-ResolutionAxisMetrics = product_record(
-    "ResolutionAxisMetrics", "resolution_axis_count: int", bases=(FindingMetrics,)
-)
+# fmt: off
+materialize_product_record(product_record_spec('ResolutionAxisMetrics', 'resolution_axis_count: int', 'FindingMetrics'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -594,19 +557,9 @@ class ParameterThreadMetrics(FindingMetrics):
     )
 
 
-FindingSemantics = product_record(
-    "FindingSemantics",
-    "pattern_id: PatternId; title: str; why: str; capability_gap: str; relation_context: str; confidence: ConfidenceLevel; certification: CertificationLevel; capability_tags: tuple[CapabilityTag, ...]; observation_tags: tuple[ObservationTag, ...]",
-    bases=(SemanticRecord,),
-    defaults={
-        "confidence": MEDIUM_CONFIDENCE,
-        "certification": STRONG_HEURISTIC,
-        "capability_tags": field(default_factory=tuple),
-        "observation_tags": field(default_factory=tuple),
-    },
-    doc="Stable descriptive fields shared by specs and emitted findings.",
-    kw_only=True,
-)
+# fmt: off
+materialize_product_record(product_record_spec('FindingSemantics', 'pattern_id: PatternId; title: str; why: str; capability_gap: str; relation_context: str; confidence: ConfidenceLevel; certification: CertificationLevel; capability_tags: tuple[CapabilityTag, ...]; observation_tags: tuple[ObservationTag, ...]', 'SemanticRecord', defaults={'confidence': MEDIUM_CONFIDENCE, 'certification': STRONG_HEURISTIC, 'capability_tags': field(default_factory=tuple), 'observation_tags': field(default_factory=tuple)}, doc='Stable descriptive fields shared by specs and emitted findings.', kw_only=True))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -618,6 +571,7 @@ class RefactorFinding(FindingSemantics):
     evidence: tuple[SourceLocation, ...] = field(default_factory=tuple)
     scaffold: str | None = None
     codemod_patch: str | None = None
+    compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
 
     @classmethod
@@ -636,6 +590,7 @@ class RefactorFinding(FindingSemantics):
         relation_context: str | None = None,
         scaffold: str | None = None,
         codemod_patch: str | None = None,
+        compression_certificate: CompressionCertificate | None = None,
         certification: CertificationLevel | None = None,
         capability_tags: tuple[CapabilityTag, ...] | None = None,
         observation_tags: tuple[ObservationTag, ...] | None = None,
@@ -653,6 +608,7 @@ class RefactorFinding(FindingSemantics):
             evidence=evidence,
             scaffold=scaffold,
             codemod_patch=codemod_patch,
+            compression_certificate=compression_certificate,
             certification=certification or spec.certification,
             capability_tags=capability_tags or spec.capability_tags,
             observation_tags=observation_tags or spec.observation_tags,
@@ -674,6 +630,7 @@ class FindingSpec(FindingSemantics):
         /,
         scaffold: str | None = None,
         codemod_patch: str | None = None,
+        compression_certificate: CompressionCertificate | None = None,
         metrics: FindingMetrics | None = None,
         title: str | None = None,
         why: str | None = None,
@@ -696,6 +653,7 @@ class FindingSpec(FindingSemantics):
             relation_context=relation_context,
             scaffold=scaffold,
             codemod_patch=codemod_patch,
+            compression_certificate=compression_certificate,
             certification=certification,
             capability_tags=capability_tags,
             observation_tags=observation_tags,
@@ -703,76 +661,17 @@ class FindingSpec(FindingSemantics):
         )
 
 
-HighConfidenceFindingSpec = product_record(
-    "HighConfidenceFindingSpec",
-    "confidence: ConfidenceLevel",
-    bases=(FindingSpec,),
-    defaults={"confidence": HIGH_CONFIDENCE},
-    doc="Finding spec whose confidence is intentionally high by construction.",
-)
-
-
-CertifiedFindingSpec = product_record(
-    "CertifiedFindingSpec",
-    "certification: CertificationLevel",
-    bases=(FindingSpec,),
-    defaults={"certification": CERTIFIED},
-    doc="Finding spec whose certification is intentionally certified by construction.",
-)
-
-
-HighConfidenceCertifiedFindingSpec = product_record(
-    "HighConfidenceCertifiedFindingSpec",
-    "certification: CertificationLevel",
-    bases=(HighConfidenceFindingSpec,),
-    defaults={"certification": CERTIFIED},
-    doc="Finding spec whose high-confidence certified status is constructor-level.",
-)
-
-
-RefactorAction = product_record(
-    "RefactorAction",
-    "kind: str; description: str; target: str | None; create_symbol: str | None; replace_with: str | None; statement_operation: str | None; symbols: tuple[str, ...]; remove_symbols: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; statement_sites: tuple[SourceLocation, ...]; confidence: ConfidenceLevel",
-    bases=(SemanticRecord,),
-    defaults={
-        "target": None,
-        "create_symbol": None,
-        "replace_with": None,
-        "statement_operation": None,
-        "symbols": (),
-        "remove_symbols": (),
-        "evidence": (),
-        "statement_sites": (),
-        "confidence": MEDIUM_CONFIDENCE,
-    },
-    doc="One proposed transformation step inside a subsystem refactor plan.",
-)
-
-
-RefactorPlan = product_record(
-    "RefactorPlan",
-    "subsystem: str; summary: str; current_partial_view: str; collapsed_distinctions: tuple[str, ...]; missing_capabilities: tuple[str, ...]; certification: CertificationLevel; primary_pattern_id: PatternId; secondary_pattern_ids: tuple[PatternId, ...]; application_order: tuple[PatternId, ...]; canonical_normal_form: str; plan_steps: tuple[str, ...]; supporting_findings: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; outcome: OutcomeEstimate; actions: tuple[RefactorAction, ...]",
-    bases=(SemanticRecord,),
-    defaults={"actions": ()},
-    doc="Subsystem-level composition of findings into an ordered refactor plan.",
-)
-
-
-AnalysisReport = product_record(
-    "AnalysisReport",
-    "findings: tuple[RefactorFinding, ...]; plans: tuple[RefactorPlan, ...]",
-    bases=(SemanticRecord,),
-    defaults={"findings": (), "plans": ()},
-    doc="Top-level report containing findings and synthesized plans.",
-)
-
-
-SemanticBagDescriptor = product_record(
-    "SemanticBagDescriptor",
-    "class_name: str; base_class_name: str; accepted_key_sets: tuple[frozenset[str], ...]",
-    bases=(SemanticRecord,),
-    doc="Schema descriptor for metric bags accepted by semantic dict-bag detection.",
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('HighConfidenceFindingSpec', 'confidence: ConfidenceLevel', 'FindingSpec', defaults={'confidence': HIGH_CONFIDENCE}, doc='Finding spec whose confidence is intentionally high by construction.'),
+    product_record_spec('CertifiedFindingSpec', 'certification: CertificationLevel', 'FindingSpec', defaults={'certification': CERTIFIED}, doc='Finding spec whose certification is intentionally certified by construction.'),
+    product_record_spec('HighConfidenceCertifiedFindingSpec', 'certification: CertificationLevel', 'HighConfidenceFindingSpec', defaults={'certification': CERTIFIED}, doc='Finding spec whose high-confidence certified status is constructor-level.'),
+    product_record_spec('RefactorAction', 'kind: str; description: str; target: str | None; create_symbol: str | None; replace_with: str | None; statement_operation: str | None; symbols: tuple[str, ...]; remove_symbols: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; statement_sites: tuple[SourceLocation, ...]; confidence: ConfidenceLevel', 'SemanticRecord', defaults={'target': None, 'create_symbol': None, 'replace_with': None, 'statement_operation': None, 'symbols': (), 'remove_symbols': (), 'evidence': (), 'statement_sites': (), 'confidence': MEDIUM_CONFIDENCE}, doc='One proposed transformation step inside a subsystem refactor plan.'),
+    product_record_spec('RefactorPlan', 'subsystem: str; summary: str; current_partial_view: str; collapsed_distinctions: tuple[str, ...]; missing_capabilities: tuple[str, ...]; certification: CertificationLevel; primary_pattern_id: PatternId; secondary_pattern_ids: tuple[PatternId, ...]; application_order: tuple[PatternId, ...]; canonical_normal_form: str; plan_steps: tuple[str, ...]; supporting_findings: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; outcome: OutcomeEstimate; actions: tuple[RefactorAction, ...]', 'SemanticRecord', defaults={'actions': ()}, doc='Subsystem-level composition of findings into an ordered refactor plan.'),
+    product_record_spec('AnalysisReport', 'findings: tuple[RefactorFinding, ...]; plans: tuple[RefactorPlan, ...]', 'SemanticRecord', defaults={'findings': (), 'plans': ()}, doc='Top-level report containing findings and synthesized plans.'),
+    product_record_spec('SemanticBagDescriptor', 'class_name: str; base_class_name: str; accepted_key_sets: tuple[frozenset[str], ...]', 'SemanticRecord', doc='Schema descriptor for metric bags accepted by semantic dict-bag detection.'),
+))
+# fmt: on
 
 
 def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:

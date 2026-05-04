@@ -6,10 +6,98 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 
 from __future__ import annotations
 
-from ..record_algebra import product_record
+from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_description_length import CompressionCertificate
+
+from ..record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 from ._base import *
 from ._helpers import *
+
+
+class _ReplacementShapeRole:
+    PROCESS_STAGE_PLAN = object()
+    TEXT_REWRITE_PLAN = object()
+    BLOCK_ALGEBRA = object()
+
+
+_REPLACEMENT_SHAPE_ROWS = (
+    (
+        _ReplacementShapeRole.PROCESS_STAGE_PLAN,
+        ObjectFamilyShape(
+            shared_objects=("process_stage_plan", "stage_runner"),
+            per_axis_objects=("stage_step",),
+        ),
+    ),
+    (
+        _ReplacementShapeRole.TEXT_REWRITE_PLAN,
+        ObjectFamilyShape(
+            shared_objects=("text_rewrite_plan", "file_application_surface"),
+            per_axis_objects=("file_collection",),
+        ),
+    ),
+    (
+        _ReplacementShapeRole.BLOCK_ALGEBRA,
+        ObjectFamilyShape(
+            shared_objects=("block_algebra", "block_runner"),
+            per_source_objects=("context_row",),
+        ),
+    ),
+)
+
+
+def _replacement_shape(role: object) -> ObjectFamilyShape:
+    return next(
+        (
+            replacement_shape
+            for candidate_role, replacement_shape in _REPLACEMENT_SHAPE_ROWS
+            if candidate_role is role
+        )
+    )
+
+
+def _manual_process_step_ladder_compression_certificate(
+    candidate: ManualProcessStepLadderCandidate,
+) -> CompressionCertificate:
+    table_count = len(candidate.step_table_names)
+    step_count = max(candidate.minimum_step_count, 1)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=table_count * (step_count + 1),
+        replacement_shape=_replacement_shape(_ReplacementShapeRole.PROCESS_STAGE_PLAN),
+        semantic_axes=tuple((f"step:{index}" for index in range(step_count))),
+    )
+
+
+def _mirrored_file_rewrite_loop_compression_certificate(
+    candidate: MirroredFileRewriteLoopCandidate,
+) -> CompressionCertificate:
+    loop_count = len(candidate.line_numbers)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=loop_count * 4,
+        replacement_shape=_replacement_shape(_ReplacementShapeRole.TEXT_REWRITE_PLAN),
+        semantic_axes=tuple(
+            (f"file_collection:{index}" for index in range(loop_count))
+        ),
+    )
+
+
+def _algebraic_duplicate_compound_block_compression_certificate(
+    candidate: AlgebraicDuplicateCompoundBlockCandidate,
+) -> CompressionCertificate:
+    source_count = len(candidate.function_names)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(
+            candidate.normal_form_size * source_count,
+            source_count * 4,
+        ),
+        replacement_shape=_replacement_shape(_ReplacementShapeRole.BLOCK_ALGEBRA),
+        semantic_axes=(candidate.block_kind,),
+        independent_source_count=source_count,
+    )
 
 
 def _literal_dispatch_authority_name(axis_expression: str) -> str:
@@ -573,8 +661,9 @@ class PredicateFactoryChainDetector(CandidateFindingDetector):
         )
 
 
-class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+declare_typed_observation_detector(
+    "ConfigAttributeDispatchDetector",
+    finding_spec_template(
         PatternId.CONFIG_CONTRACTS,
         "Config dispatch is encoded through fragile attribute probing",
         "The docs say polymorphic configuration should dispatch on declared config family identity, not on field-name probing or ad hoc attribute comparisons.",
@@ -582,30 +671,12 @@ class ConfigAttributeDispatchDetector(StaticModulePatternDetector):
         "same config-family choice expressed through attribute-level probing",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
         _ATTRIBUTE_PROBE_CONFIG_DISPATCH_OBSERVATION_TAGS,
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        observations: tuple[ConfigDispatchObservation, ...] = (
-            _collect_typed_family_items(
-                module, ConfigDispatchObservationFamily, ConfigDispatchObservation
-            )
-        )
-        return tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations
-            )
-        )
-
-    def _minimum_evidence(self, config: DetectorConfig) -> int:
-        return 2
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return f"{module.path} contains {len(evidence)} config-specific attribute probes or comparisons."
+    ),
+    ConfigDispatchObservationFamily,
+    ConfigDispatchObservation,
+    "{module_path} contains {evidence_count} config-specific attribute probes or comparisons.",
+    minimum_evidence_count=2,
+)
 
 
 class ConcreteConfigFieldProbeDetector(
@@ -726,8 +797,9 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         return findings
 
 
-class ManualVirtualMembershipDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+declare_typed_observation_detector(
+    "ManualVirtualMembershipDetector",
+    finding_spec_template(
         PatternId.VIRTUAL_MEMBERSHIP,
         "Manual class-marker membership should become custom isinstance semantics",
         "The docs say explicit runtime interface membership should be class-level and inspectable. Repeated marker checks suggest a custom isinstance/subclass boundary rather than scattered manual probing.",
@@ -735,35 +807,17 @@ class ManualVirtualMembershipDetector(StaticModulePatternDetector):
         "same membership question repeated through class-marker probing",
         _VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _CLASS_MARKER_PROBE_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        observations: tuple[ClassMarkerObservation, ...] = _collect_typed_family_items(
-            module, ClassMarkerObservationFamily, ClassMarkerObservation
-        )
-        return tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations
-            )
-        )
-
-    def _minimum_evidence(self, config: DetectorConfig) -> int:
-        return 2
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return f"{module.path} performs {len(evidence)} class-level marker checks on instances."
-
-
-_ExternalConcreteTypeIdentityTableCandidate = product_record(
-    "_ExternalConcreteTypeIdentityTableCandidate",
-    "symbol: str; row_pairs: tuple[tuple[str, str, int], ...]",
-    bases=(LineWitnessCandidate,),
+    ),
+    ClassMarkerObservationFamily,
+    ClassMarkerObservation,
+    "{module_path} performs {evidence_count} class-level marker checks on instances.",
+    minimum_evidence_count=2,
 )
+
+
+# fmt: off
+materialize_product_record(product_record_spec('_ExternalConcreteTypeIdentityTableCandidate', 'symbol: str; row_pairs: tuple[tuple[str, str, int], ...]', 'LineWitnessCandidate'))
+# fmt: on
 
 
 class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
@@ -973,8 +1027,9 @@ def _looks_like_external_concrete_type_identity(
 _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 
 
-class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+declare_typed_observation_detector(
+    "DynamicInterfaceGenerationDetector",
+    finding_spec_template(
         PatternId.DYNAMIC_INTERFACE,
         "Dynamic interface generation is present or required",
         "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles when structure alone cannot express membership.",
@@ -983,35 +1038,17 @@ class DynamicInterfaceGenerationDetector(StaticModulePatternDetector):
         _GENERATED_INTERFACE_IDENTITY_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _RUNTIME_TYPE_GENERATION_INTERFACE_IDENTITY_OBSERVATION_TAGS,
         certification=SPECULATIVE,
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        observations: tuple[InterfaceGenerationObservation, ...] = (
-            _collect_typed_family_items(
-                module,
-                InterfaceGenerationObservationFamily,
-                InterfaceGenerationObservation,
-            )
-        )
-        return tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations[:6]
-            )
-        )
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return (
-            f"{module.path} contains {len(evidence)} runtime-generated interface sites."
-        )
+    ),
+    InterfaceGenerationObservationFamily,
+    InterfaceGenerationObservation,
+    "{module_path} contains {evidence_count} runtime-generated interface sites.",
+    evidence_limit=6,
+)
 
 
-class SentinelTypeMarkerDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+declare_typed_observation_detector(
+    "SentinelTypeMarkerDetector",
+    finding_spec_template(
         PatternId.SENTINEL_TYPE_MARKER,
         "Unique sentinel type marker is present or should be used",
         "The docs distinguish sentinel types from sentinel attributes: unique nominal marker objects are appropriate when exact capability identity matters more than payload.",
@@ -1019,29 +1056,17 @@ class SentinelTypeMarkerDetector(StaticModulePatternDetector):
         "same module creates or uses unique nominal sentinel markers",
         _CAPABILITY_MARKER_IDENTITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _SENTINEL_TYPE_CAPABILITY_MARKER_OBSERVATION_TAGS,
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        observations: tuple[SentinelTypeObservation, ...] = _collect_typed_family_items(
-            module, SentinelTypeObservationFamily, SentinelTypeObservation
-        )
-        return tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations[:6]
-            )
-        )
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return f"{module.path} contains {len(evidence)} sentinel-type capability marker sites."
+    ),
+    SentinelTypeObservationFamily,
+    SentinelTypeObservation,
+    "{module_path} contains {evidence_count} sentinel-type capability marker sites.",
+    evidence_limit=6,
+)
 
 
-class DynamicMethodInjectionDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+declare_typed_observation_detector(
+    "DynamicMethodInjectionDetector",
+    finding_spec_template(
         PatternId.TYPE_NAMESPACE_INJECTION,
         "Dynamic method injection belongs in a type-namespace pattern",
         "The docs say behavior that must affect all current and future instances belongs in a class namespace pattern, not in repeated instance-level patching.",
@@ -1049,29 +1074,12 @@ class DynamicMethodInjectionDetector(StaticModulePatternDetector):
         "same module mutates class behavior through runtime namespace injection",
         _SHARED_TYPE_NAMESPACE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _DYNAMIC_METHOD_INJECTION_TYPE_NAMESPACE_OBSERVATION_TAGS,
-    )
-
-    def _module_evidence(
-        self, module: ParsedModule, config: DetectorConfig
-    ) -> tuple[SourceLocation, ...]:
-        observations: tuple[DynamicMethodInjectionObservation, ...] = (
-            _collect_typed_family_items(
-                module,
-                DynamicMethodInjectionObservationFamily,
-                DynamicMethodInjectionObservation,
-            )
-        )
-        return tuple(
-            (
-                SourceLocation(item.file_path, item.line, item.symbol)
-                for item in observations[:6]
-            )
-        )
-
-    def _summary(
-        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
-    ) -> str:
-        return f"{module.path} contains {len(evidence)} dynamic type-namespace injection sites."
+    ),
+    DynamicMethodInjectionObservationFamily,
+    DynamicMethodInjectionObservation,
+    "{module_path} contains {evidence_count} dynamic type-namespace injection sites.",
+    evidence_limit=6,
+)
 
 
 class AttributeProbeDetector(PerModuleIssueDetector):
@@ -1319,17 +1327,12 @@ _STATIC_PAYLOAD_WRITE_METHODS = frozenset(
 _WRITE_MODE_TOKENS = frozenset({"w", "a", "x", "wt", "at", "xt", "wb", "ab", "xb"})
 
 
-StaticPayloadStats = product_record(
-    "StaticPayloadStats",
-    "payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]",
-)
-
-
-EmbeddedStaticPayloadCandidate = product_record(
-    "EmbeddedStaticPayloadCandidate",
-    "function_name: str; line_count: int; static_payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]; sink_kinds: tuple[str, ...]; call_site_count: int",
-    bases=(QualnameLineWitnessCandidate,),
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('StaticPayloadStats', 'payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]'),
+    product_record_spec('EmbeddedStaticPayloadCandidate', 'function_name: str; line_count: int; static_payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]; sink_kinds: tuple[str, ...]; call_site_count: int', 'QualnameLineWitnessCandidate'),
+))
+# fmt: on
 
 
 def _function_line_count(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
@@ -1644,11 +1647,9 @@ class DeadEmbeddedStaticPayloadDetector(
         )
 
 
-UnreferencedPrivateFunctionCandidate = product_record(
-    "UnreferencedPrivateFunctionCandidate",
-    "function_name: str; line_count: int; call_site_count: int",
-    bases=(QualnameLineWitnessCandidate,),
-)
+# fmt: off
+materialize_product_record(product_record_spec('UnreferencedPrivateFunctionCandidate', 'function_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
+# fmt: on
 
 
 def _has_external_protocol_shape(
@@ -1762,26 +1763,9 @@ class UnreferencedPrivateFunctionDetector(
     )
 
 
-@dataclass(frozen=True)
-class SiblingSmallMethodTemplateCandidate(LineWitnessCandidate):
-    owner_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    statement_count: int
-    parameter_count: int
-
-    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("owner_name")
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, method_name)
-                for line, method_name in zip(
-                    self.line_numbers, self.method_names, strict=True
-                )
-            )
-        )
+# fmt: off
+materialize_product_record(product_record_spec('SiblingSmallMethodTemplateCandidate', 'owner_name: str; statement_count: int; parameter_count: int; witness_name: ClassVar[AliasProperty[str]]', 'MethodEvidenceLocationsCandidate', defaults={'witness_name': AliasProperty('owner_name')}))
+# fmt: on
 
 
 _NORMALIZED_TEMPLATE_STABLE_NAMES = frozenset(
@@ -2073,26 +2057,9 @@ class MirroredImportFallbackDetector(
         )
 
 
-@dataclass(frozen=True)
-class ConstantBackedDispatchAxisCandidate(LineWitnessCandidate):
-    axis_name: str
-    constant_prefix: str
-    constant_names: tuple[str, ...]
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-
-    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_name")
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, function_name)
-                for line, function_name in zip(
-                    self.line_numbers, self.function_names, strict=True
-                )
-            )
-        )
+# fmt: off
+materialize_product_record(product_record_spec('ConstantBackedDispatchAxisCandidate', 'axis_name: str; constant_prefix: str; constant_names: tuple[str, ...]; witness_name: ClassVar[AliasProperty[str]]', 'FunctionEvidenceLocationsCandidate', defaults={'witness_name': AliasProperty('axis_name')}))
+# fmt: on
 
 
 def _uppercase_constant_name(node: ast.AST) -> str | None:
@@ -2237,26 +2204,13 @@ class ConstantBackedDispatchAxisDetector(
 
 
 @dataclass(frozen=True)
-class ManualProcessStepLadderCandidate(LineWitnessCandidate):
+class ManualProcessStepLadderCandidate(FunctionEvidenceLocationsCandidate):
     step_table_names: tuple[str, ...]
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     minimum_step_count: int
 
     @property
     def witness_name(self) -> str:
         return "manual process step ladder"
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, function_name)
-                for line, function_name in zip(
-                    self.line_numbers, self.function_names, strict=True
-                )
-            )
-        )
 
 
 def _assigned_process_step_tables(
@@ -2380,6 +2334,9 @@ class ManualProcessStepLadderDetector(
             codemod_patch=(
                 "# Replace local command-step tables and repeated loops with one typed stage plan.\n# Derive command argv, labels, allowed failures, and callbacks from the plan rows."
             ),
+            compression_certificate=_manual_process_step_ladder_compression_certificate(
+                ladder_candidate
+            ),
             metrics=OrchestrationMetrics(
                 function_line_count=sum(ladder_candidate.line_numbers) * 0,
                 branch_site_count=len(ladder_candidate.step_table_names),
@@ -2487,6 +2444,9 @@ class MirroredFileRewriteLoopDetector(
             codemod_patch=(
                 "# Replace mirrored read/replace/write loops with one typed rewrite plan.\n# Pass only the varying file collections and display labels at call sites."
             ),
+            compression_certificate=_mirrored_file_rewrite_loop_compression_certificate(
+                loop_candidate
+            ),
             metrics=MappingMetrics(
                 mapping_site_count=len(loop_candidate.line_numbers),
                 field_count=0,
@@ -2499,26 +2459,13 @@ class MirroredFileRewriteLoopDetector(
 
 
 @dataclass(frozen=True)
-class RepeatedLocalRegexBundleCandidate(LineWitnessCandidate):
+class RepeatedLocalRegexBundleCandidate(FunctionEvidenceLocationsCandidate):
     owner_name: str
-    function_names: tuple[str, ...]
     regex_literals: tuple[str, ...]
-    line_numbers: tuple[int, ...]
 
     @property
     def witness_name(self) -> str:
         return "repeated local regex bundle"
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, function_name)
-                for line, function_name in zip(
-                    self.line_numbers, self.function_names, strict=True
-                )
-            )
-        )
 
 
 def _regex_literal_from_call(node: ast.Call) -> str | None:
@@ -2661,26 +2608,13 @@ class RepeatedLocalRegexBundleDetector(
 
 
 @dataclass(frozen=True)
-class AlgebraicDuplicateCompoundBlockCandidate(LineWitnessCandidate):
+class AlgebraicDuplicateCompoundBlockCandidate(FunctionEvidenceLocationsCandidate):
     block_kind: str
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     normal_form_size: int
 
     @property
     def witness_name(self) -> str:
         return "algebraic duplicate compound block"
-
-    @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, function_name)
-                for line, function_name in zip(
-                    self.line_numbers, self.function_names, strict=True
-                )
-            )
-        )
 
 
 def _algebraic_ast_key(node: object) -> object:
@@ -2815,6 +2749,9 @@ class AlgebraicDuplicateCompoundBlockDetector(
             ),
             codemod_patch=(
                 "# Extract the repeated quotient-normal-form block into one typed helper or algebra object.\n# Keep variation as context data; derive the shared control structure once."
+            ),
+            compression_certificate=_algebraic_duplicate_compound_block_compression_certificate(
+                block_candidate
             ),
             metrics=OrchestrationMetrics(
                 function_line_count=0,

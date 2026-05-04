@@ -6,13 +6,19 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 
 from __future__ import annotations
 
-from ..record_algebra import product_record
+from ..record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 import ast
 from abc import abstractmethod
 from collections.abc import Callable
 from typing import ClassVar, Generic, TypeVar
 
+from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_description_length import CompressionCertificate
 from ..semantic_match import (
     AstTypedEffectStep,
     GuardedEffectStep,
@@ -25,6 +31,22 @@ from ..semantic_match import (
 )
 from ._base import *
 from ._helpers import *
+
+_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
+    shared_objects=("nominal_attribute_contract",)
+)
+
+
+def _reflective_self_attribute_compression_certificate(
+    candidate: ReflectiveSelfAttributeCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=4,
+        replacement_shape=_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
+        semantic_axes=(candidate.attribute_name, candidate.reflective_builtin),
+    )
+
+
 from ._substrate_support import *
 
 
@@ -728,6 +750,31 @@ class ConstantPropertyHookDetector(
         )
 
 
+declare_candidate_rule_detector(
+    ConstantPropertyDefaultBundleCandidate,
+    high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Constant property defaults should derive from descriptors",
+        "A class that repeats many one-line properties returning literal defaults is using method syntax for data. The default surface should be declared as typed descriptors or a property-default table while real override behavior stays in subclasses.",
+        "typed constant-property descriptor defaults on the nominal base",
+        "same class repeats constant-return property methods for default hook values",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: f"`{candidate.class_name}` repeats {len(candidate.property_names)} constant property defaults over {candidate.return_expressions}.",
+    scaffold=lambda candidate: "from descriptor_algebra import ConstantProperty\n\nclass Base:\n    property_name = ConstantProperty(default_value)",
+    codemod_patch=lambda candidate: f"# Replace constant-return property methods on `{candidate.class_name}` with `ConstantProperty[...]` descriptors.\n# Keep method syntax only for defaults that allocate or compute.",
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.property_names),
+        mapping_name=candidate.class_name,
+        field_names=candidate.property_names,
+    ),
+    detector_priority=-4,
+    detector_name="ConstantPropertyDefaultBundleDetector",
+    candidate_collector=_constant_property_default_bundle_candidates,
+)
+
+
 class ReflectiveSelfAttributeEscapeDetector(
     ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]
 ):
@@ -765,6 +812,9 @@ class ReflectiveSelfAttributeEscapeDetector(
             codemod_patch=(
                 f"# Delete `{reflective_candidate.reflective_builtin}(self, '{reflective_candidate.attribute_name}')`.\n"
                 f"# Declare `{reflective_candidate.attribute_name}` once on the shared nominal carrier or abstract base instead of probing it by string."
+            ),
+            compression_certificate=_reflective_self_attribute_compression_certificate(
+                reflective_candidate
             ),
         )
 
@@ -871,6 +921,101 @@ class ClassvarOnlySiblingLeafDetector(
         )
 
 
+declare_candidate_rule_detector(
+    MetadataOnlyClassFamilyCandidate,
+    high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Metadata-only class families should be materialized from typed declarations",
+        "A repeated nominal class family whose bodies contain only declarative class-level data is a relation table wearing class syntax. The class shells should be derived from typed rows, while behavior stays on shared bases, mixins, and metaclasses.",
+        "one typed class-family declaration table plus a materializer for the nominal shells",
+        "same semantic class family repeats class declarations whose bodies are only metadata",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    ),
+    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat {candidate.line_count} lines of metadata-only class shells over classvars {candidate.assigned_names}.",
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\n"
+        "class ClassFamilyDeclaration:\n"
+        "    name: str\n"
+        "    bases: tuple[type[object], ...]\n"
+        "    namespace: Mapping[str, object]\n\n"
+        "def materialize_class_family(declaration: ClassFamilyDeclaration) -> type[object]:\n"
+        "    return AutoRegisterMeta(declaration.name, declaration.bases, dict(declaration.namespace))"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace the repeated `{candidate.family_suffix}` metadata-only classes with one typed declaration table.\n"
+        "# Derive class names, bases, classvars, registration, and export surface from the rows; keep real behavior in shared bases or orthogonal mixins."
+    ),
+    metrics=lambda candidate: RegistrationMetrics.from_class_names(
+        registration_site_count=len(candidate.class_names),
+        registry_name=candidate.family_suffix,
+        class_names=candidate.class_names,
+        class_key_pairs=candidate.assigned_names,
+    ),
+    detector_priority=-7,
+    detector_name="MetadataOnlyClassFamilyDetector",
+    candidate_collector=_metadata_only_class_family_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    SelfNamingBuilderCatalogCandidate,
+    high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Self-naming builder assignments should become a declaration catalog",
+        "A module that repeatedly assigns `Name = builder('Name', ...)` is encoding a relation between exported names and builder payloads in duplicated assignment syntax. The names, schemas, bases, and options should live in one typed catalog that materializes the declarations.",
+        "one declaration catalog feeding a builder materializer",
+        "same self-naming module-level builder call repeats across sibling declarations",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    ),
+    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.builder_name}` assignments repeat {candidate.line_count} lines of self-naming declaration calls with keywords {candidate.keyword_names}.",
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "DECLARATIONS = (...)\n"
+        "for declaration in DECLARATIONS:\n"
+        "    globals()[declaration.name] = builder(declaration.name, ...)"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace repeated `{candidate.builder_name}(name, ...)` assignments with one typed declaration catalog.\n"
+        "# Derive the assigned symbol from the row name and keep only irreducible builder payload in each row."
+    ),
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.class_names),
+        mapping_name=candidate.builder_name,
+        field_names=candidate.keyword_names,
+    ),
+    detector_priority=-6,
+    detector_name="SelfNamingBuilderCatalogDetector",
+    candidate_collector=_self_naming_builder_catalog_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    RepeatedBaseBundleCandidate,
+    high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Repeated MRO base bundle should become a named ABC mixin",
+        "Several classes repeat the same contiguous base bundle. That bundle is already a semantic composition unit, so it should have a nominal name and be reused as one ABC/mixin rather than respelled across implementation classes.",
+        "named ABC/mixin for one repeated semantic MRO bundle",
+        "class family repeats the same composable base sequence in each class declaration",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations.",
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: f"class SharedSemanticMixin({', '.join(candidate.base_names)}, ABC):\n    pass",
+    codemod_patch=lambda candidate: "# Extract the repeated contiguous base bundle into one named ABC/mixin.\n# Replace the repeated base sequence in each class with that nominal bundle and keep only class-specific orthogonal bases explicit.",
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=candidate.class_count,
+        mapping_name="mro-base-bundle",
+        field_names=candidate.base_names,
+    ),
+    detector_priority=-5,
+    detector_name="RepeatedBaseBundleDetector",
+    candidate_collector=_repeated_base_bundle_candidates,
+)
+
+
 class TypeIndexedDefinitionBoilerplateDetector(
     ModuleCollectorCandidateDetector[TypeIndexedDefinitionBoilerplateGroup]
 ):
@@ -958,7 +1103,7 @@ class DerivedExportSurfaceDetector(
         )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     ManualPublicApiSurfaceCandidate,
     high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -968,21 +1113,19 @@ declare_module_detector(
         "manual public export list repeats names already present in module bindings",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     ),
-    CandidateFindingRenderer[ManualPublicApiSurfaceCandidate](
-        summary=lambda api_candidate: f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings.",
-        evidence=lambda api_candidate: (
-            SourceLocation(
-                api_candidate.file_path, api_candidate.line, api_candidate.export_symbol
-            ),
+    summary=lambda api_candidate: f"`{api_candidate.export_symbol}` manually enumerates {len(api_candidate.exported_names)} public names that are already derivable from {api_candidate.source_name_count} module bindings.",
+    evidence=lambda api_candidate: (
+        SourceLocation(
+            api_candidate.file_path, api_candidate.line, api_candidate.export_symbol
         ),
-        scaffold=lambda api_candidate: "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)",
-        codemod_patch=lambda api_candidate: f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface.",
-        metrics=lambda api_candidate: MappingMetrics(
-            mapping_site_count=len(api_candidate.exported_names),
-            field_count=api_candidate.source_name_count,
-            mapping_name=api_candidate.export_symbol,
-            field_names=("module_public_bindings",),
-        ),
+    ),
+    scaffold=lambda api_candidate: "def is_public_api_export(name: str, value: object) -> bool:\n    return not name.startswith('_') and is_public_binding(value)\n\n__all__ = sorted(\n    name for name, value in globals().items() if is_public_api_export(name, value)\n)",
+    codemod_patch=lambda api_candidate: f"# Delete `{api_candidate.export_symbol}` as a handwritten public API list.\n# Derive the public export surface from module bindings instead of restating names in a second manual surface.",
+    metrics=lambda api_candidate: MappingMetrics(
+        mapping_site_count=len(api_candidate.exported_names),
+        field_count=api_candidate.source_name_count,
+        mapping_name=api_candidate.export_symbol,
+        field_names=("module_public_bindings",),
     ),
     candidate_collector=_manual_public_api_surface_candidates,
 )
@@ -1096,7 +1239,7 @@ class DerivedIndexedSurfaceDetector(
         )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     RegisteredUnionSurfaceCandidate,
     high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -1106,22 +1249,20 @@ declare_module_detector(
         "manual union of sibling registry queries repeats information already present in class-time registration",
         _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_ENUMERATION_CAPABILITY_TAGS,
     ),
-    CandidateFindingRenderer[RegisteredUnionSurfaceCandidate](
-        summary=lambda union_candidate: f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}.",
-        evidence=lambda union_candidate: (
-            SourceLocation(
-                union_candidate.file_path,
-                union_candidate.line,
-                union_candidate.owner_name,
-            ),
+    summary=lambda union_candidate: f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}.",
+    evidence=lambda union_candidate: (
+        SourceLocation(
+            union_candidate.file_path,
+            union_candidate.line,
+            union_candidate.owner_name,
         ),
-        scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
-        codemod_patch=lambda union_candidate: f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.",
-        metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
-            registration_site_count=len(union_candidate.root_names),
-            registry_name=union_candidate.accessor_name,
-            class_names=union_candidate.root_names,
-        ),
+    ),
+    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
+    codemod_patch=lambda union_candidate: f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.",
+    metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
+        registration_site_count=len(union_candidate.root_names),
+        registry_name=union_candidate.accessor_name,
+        class_names=union_candidate.root_names,
     ),
     candidate_collector=_registered_union_surface_candidates,
 )
@@ -1188,18 +1329,12 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
         ]
 
 
-ConstructorVariantFamilyCandidate = product_record(
-    "ConstructorVariantFamilyCandidate",
-    "callee_name: str; coordinate_count: int; varying_coordinate_names: tuple[str, ...]",
-    bases=(ClassMethodFamilyCandidate,),
-)
-
-
-AccumulatorFoldFamilyCandidate = product_record(
-    "AccumulatorFoldFamilyCandidate",
-    "accumulator_type_name: str; result_method_name: str; source_parameter_names: tuple[str, ...]; step_method_names: tuple[str, ...]",
-    bases=(ClassMethodFamilyCandidate,),
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('ConstructorVariantFamilyCandidate', 'callee_name: str; coordinate_count: int; varying_coordinate_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
+    product_record_spec('AccumulatorFoldFamilyCandidate', 'accumulator_type_name: str; result_method_name: str; source_parameter_names: tuple[str, ...]; step_method_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -1216,18 +1351,12 @@ class ExcessiveBlankLineRunCandidate:
         )
 
 
-CatalogInstallingMixinFamilyCandidate = product_record(
-    "CatalogInstallingMixinFamilyCandidate",
-    "catalog_attribute_names: tuple[str, ...]",
-    bases=(ClassLineNumbersGroup,),
-)
-
-
-RegexGroupExtractorFamilyCandidate = product_record(
-    "RegexGroupExtractorFamilyCandidate",
-    "pattern_attribute_names: tuple[str, ...]; matcher_names: tuple[str, ...]; group_index: int",
-    bases=(ClassMethodFamilyCandidate,),
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('CatalogInstallingMixinFamilyCandidate', 'catalog_attribute_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
+    product_record_spec('RegexGroupExtractorFamilyCandidate', 'pattern_attribute_names: tuple[str, ...]; matcher_names: tuple[str, ...]; group_index: int', 'ClassMethodFamilyCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -1235,11 +1364,9 @@ class SparseConstructorVariantFamilyCandidate(KeywordMethodFamilyCandidate):
     pass
 
 
-SupportPreludeModuleFamilyCandidate = product_record(
-    "SupportPreludeModuleFamilyCandidate",
-    "support_module_name: str",
-    bases=(MultiFileClassLineNumbersGroup,),
-)
+# fmt: off
+materialize_product_record(product_record_spec('SupportPreludeModuleFamilyCandidate', 'support_module_name: str', 'MultiFileClassLineNumbersGroup'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -1250,16 +1377,7 @@ class ModuleConstructorPolicyFamilyCandidate:
     line_numbers: tuple[int, ...]
     field_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, row_name)
-                for row_name, line in zip(
-                    self.row_names, self.line_numbers, strict=True
-                )
-            )
-        )
+    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "row_names")
 
 
 @dataclass(frozen=True)
@@ -1644,9 +1762,9 @@ def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
     )
 
 
-_CatalogInstallingMixinShape = product_record(
-    "_CatalogInstallingMixinShape", "first_call: ast.Call; second_call: ast.Call"
-)
+# fmt: off
+materialize_product_record(product_record_spec('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call'))
+# fmt: on
 
 
 class _CatalogInstallingMixinStep(RegisteredEffectStep):
@@ -1766,52 +1884,24 @@ def _catalog_installing_mixin_family_candidates(
     )
 
 
-_RegexGroupExtractorMethod = product_record(
-    "_RegexGroupExtractorMethod",
-    "method_name: str; line: int; pattern_attribute_name: str; matcher_name: str; group_index: int",
-)
+# fmt: off
+materialize_product_record(product_record_spec('_RegexGroupExtractorMethod', 'method_name: str; line: int; pattern_attribute_name: str; matcher_name: str; group_index: int'))
+# fmt: on
 
 
 _REGEX_MATCHER_NAMES = frozenset({"search", "match", "fullmatch"})
 
 
-_RegexExtractorBody = product_record(
-    "_RegexExtractorBody",
-    "method: ast.FunctionDef; assign: ast.Assign; returned: ast.Return",
-)
-
-
-_RegexExtractorMethodContext = product_record(
-    "_RegexExtractorMethodContext", "method: ast.FunctionDef; match_name: str"
-)
-
-
-_RegexExtractorReturnedContext = product_record(
-    "_RegexExtractorReturnedContext",
-    "returned: ast.Return",
-    bases=(_RegexExtractorMethodContext,),
-)
-
-
-_RegexExtractorAssignment = product_record(
-    "_RegexExtractorAssignment",
-    "call: ast.Call",
-    bases=(_RegexExtractorReturnedContext,),
-)
-
-
-_RegexExtractorMatcherCall = product_record(
-    "_RegexExtractorMatcherCall",
-    "pattern_attribute_name: str; matcher_name: str",
-    bases=(_RegexExtractorReturnedContext,),
-)
-
-
-_RegexExtractorConditionalReturn = product_record(
-    "_RegexExtractorConditionalReturn",
-    "group_call: ast.Call",
-    bases=(_RegexExtractorMatcherCall,),
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('_RegexExtractorBody', 'method: ast.FunctionDef; assign: ast.Assign; returned: ast.Return'),
+    product_record_spec('_RegexExtractorMethodContext', 'method: ast.FunctionDef; match_name: str'),
+    product_record_spec('_RegexExtractorReturnedContext', 'returned: ast.Return', '_RegexExtractorMethodContext'),
+    product_record_spec('_RegexExtractorAssignment', 'call: ast.Call', '_RegexExtractorReturnedContext'),
+    product_record_spec('_RegexExtractorMatcherCall', 'pattern_attribute_name: str; matcher_name: str', '_RegexExtractorReturnedContext'),
+    product_record_spec('_RegexExtractorConditionalReturn', 'group_call: ast.Call', '_RegexExtractorMatcherCall'),
+))
+# fmt: on
 
 
 class _RegexGroupExtractorStep(RegisteredEffectStep):
@@ -2232,7 +2322,7 @@ class AlternateConstructorFamilyDetector(
         )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     ConstructorVariantFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -2243,23 +2333,21 @@ declare_module_detector(
         _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[ConstructorVariantFamilyCandidate](
-        summary=lambda variant_candidate: f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}.",
-        evidence=lambda variant_candidate: variant_candidate.evidence,
-        scaffold=lambda variant_candidate: "@dataclass(frozen=True)\nclass ConstructorVariantSpec:\n    name: str\n    args: tuple[ConstructorArg, ...]\n\nclass ConstructorVariantMixin:\n    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n    def __init_subclass__(cls):\n        cls.__constructor_variants__.install(cls)",
-        codemod_patch=lambda variant_candidate: f"# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n# Each method name becomes data; one mixin derives the bound classmethods from the catalog.",
-        metrics=lambda variant_candidate: MappingMetrics(
-            mapping_site_count=len(variant_candidate.method_names),
-            field_count=variant_candidate.coordinate_count,
-            mapping_name=variant_candidate.class_name,
-            field_names=variant_candidate.varying_coordinate_names,
-        ),
+    summary=lambda variant_candidate: f"`{variant_candidate.class_name}` repeats constructor target `{variant_candidate.callee_name}` across methods {variant_candidate.method_names}; varying coordinates are {variant_candidate.varying_coordinate_names}.",
+    evidence=lambda variant_candidate: variant_candidate.evidence,
+    scaffold=lambda variant_candidate: "@dataclass(frozen=True)\nclass ConstructorVariantSpec:\n    name: str\n    args: tuple[ConstructorArg, ...]\n\nclass ConstructorVariantMixin:\n    __constructor_variants__: ClassVar[ConstructorVariantCatalog]\n    def __init_subclass__(cls):\n        cls.__constructor_variants__.install(cls)",
+    codemod_patch=lambda variant_candidate: f"# Replace classmethods {variant_candidate.method_names} on `{variant_candidate.class_name}` with one typed constructor-variant catalog.\n# Each method name becomes data; one mixin derives the bound classmethods from the catalog.",
+    metrics=lambda variant_candidate: MappingMetrics(
+        mapping_site_count=len(variant_candidate.method_names),
+        field_count=variant_candidate.coordinate_count,
+        mapping_name=variant_candidate.class_name,
+        field_names=variant_candidate.varying_coordinate_names,
     ),
     candidate_collector=_constructor_variant_family_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     AccumulatorFoldFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -2270,28 +2358,26 @@ declare_module_detector(
         _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[AccumulatorFoldFamilyCandidate](
-        summary=lambda fold_candidate: f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`.",
-        evidence=lambda fold_candidate: fold_candidate.evidence,
-        scaffold=lambda fold_candidate: "@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)",
-        codemod_patch=lambda fold_candidate: f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook.",
-        metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=len(fold_candidate.method_names),
-            statement_count=3,
-            class_count=1,
-            method_symbols=tuple(
-                (
-                    f"{fold_candidate.class_name}.{name}"
-                    for name in fold_candidate.method_names
-                )
-            ),
+    summary=lambda fold_candidate: f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`.",
+    evidence=lambda fold_candidate: fold_candidate.evidence,
+    scaffold=lambda fold_candidate: "@dataclass(frozen=True)\nclass AccumulatorFoldSpec:\n    name: str\n    step_method_name: str\n\nclass AccumulatorFoldMixin:\n    __accumulator_folds__: ClassVar[AccumulatorFoldCatalog]\n    def __init_subclass__(cls):\n        cls.__accumulator_folds__.install(cls)",
+    codemod_patch=lambda fold_candidate: f"# Replace fold methods {fold_candidate.method_names} on `{fold_candidate.class_name}` with one accumulator-fold catalog.\n# Keep accumulator type and result projection in one authority; each source method only declares its step hook.",
+    metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(fold_candidate.method_names),
+        statement_count=3,
+        class_count=1,
+        method_symbols=tuple(
+            (
+                f"{fold_candidate.class_name}.{name}"
+                for name in fold_candidate.method_names
+            )
         ),
     ),
     candidate_collector=_accumulator_fold_family_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     ExcessiveBlankLineRunCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
@@ -2302,23 +2388,20 @@ declare_module_detector(
         _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_CAPABILITY_TAGS,
         (ObservationTag.NORMALIZED_AST,),
     ),
-    CandidateFindingRenderer[ExcessiveBlankLineRunCandidate](
-        summary=lambda blank_candidate: f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}.",
-        evidence=lambda blank_candidate: (blank_candidate.evidence,),
-        scaffold=lambda blank_candidate: "# Delete the nonsemantic blank-line run.\n# Keep at most the canonical separator needed by the surrounding declarations.",
-        codemod_patch=lambda blank_candidate: f"# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`.",
-        metrics=lambda blank_candidate: RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=blank_candidate.blank_line_count,
-            statement_count=1,
-            class_count=0,
-            method_symbols=("blank-line-run",),
-        ),
+    summary=lambda blank_candidate: f"`{blank_candidate.file_path}` has {blank_candidate.blank_line_count} contiguous blank lines from {blank_candidate.start_line} to {blank_candidate.end_line}.",
+    scaffold=lambda blank_candidate: "# Delete the nonsemantic blank-line run.\n# Keep at most the canonical separator needed by the surrounding declarations.",
+    codemod_patch=lambda blank_candidate: f"# Collapse blank lines {blank_candidate.start_line}-{blank_candidate.end_line} in `{blank_candidate.file_path}`.",
+    metrics=lambda blank_candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=blank_candidate.blank_line_count,
+        statement_count=1,
+        class_count=0,
+        method_symbols=("blank-line-run",),
     ),
     candidate_collector=_excessive_blank_line_run_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     ReadabilityCompressedLineCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
@@ -2329,22 +2412,19 @@ declare_module_detector(
         _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _NORMALIZED_AST_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[ReadabilityCompressedLineCandidate](
-        summary=lambda line_candidate: f"`{line_candidate.file_path}` line {line_candidate.line} is readability-compressed ({line_candidate.reason}; {line_candidate.char_count} chars).",
-        evidence=lambda line_candidate: (line_candidate.evidence,),
-        scaffold=lambda line_candidate: "Expand physical layout with a formatter; keep semantic compression in named abstractions, not packed source lines.",
-        codemod_patch=lambda line_candidate: f"# Reformat `{line_candidate.file_path}` around line {line_candidate.line}; split statements/suites and wrap long expressions.",
-        metrics=lambda line_candidate: MappingMetrics.from_field_names(
-            mapping_site_count=line_candidate.statement_count,
-            mapping_name="readability-compressed-line",
-            field_names=tuple(line_candidate.reason.split(", ")),
-        ),
+    summary=lambda line_candidate: f"`{line_candidate.file_path}` line {line_candidate.line} is readability-compressed ({line_candidate.reason}; {line_candidate.char_count} chars).",
+    scaffold=lambda line_candidate: "Expand physical layout with a formatter; keep semantic compression in named abstractions, not packed source lines.",
+    codemod_patch=lambda line_candidate: f"# Reformat `{line_candidate.file_path}` around line {line_candidate.line}; split statements/suites and wrap long expressions.",
+    metrics=lambda line_candidate: MappingMetrics.from_field_names(
+        mapping_site_count=line_candidate.statement_count,
+        mapping_name="readability-compressed-line",
+        field_names=tuple(line_candidate.reason.split(", ")),
     ),
     candidate_collector=_readability_compressed_line_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     CatalogInstallingMixinFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -2355,28 +2435,26 @@ declare_module_detector(
         _SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_AUTHORITATIVE_CAPABILITY_TAGS,
         _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[CatalogInstallingMixinFamilyCandidate](
-        summary=lambda catalog_candidate: f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.",
-        evidence=lambda catalog_candidate: catalog_candidate.evidence,
-        scaffold=lambda catalog_candidate: "class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)",
-        codemod_patch=lambda catalog_candidate: "# Move the repeated `__init_subclass__` body into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.",
-        metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(
-            duplicate_site_count=len(catalog_candidate.class_names),
-            statement_count=2,
-            class_count=len(catalog_candidate.class_names),
-            method_symbols=tuple(
-                (
-                    f"{class_name}.__init_subclass__"
-                    for class_name in catalog_candidate.class_names
-                )
-            ),
+    summary=lambda catalog_candidate: f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}.",
+    evidence=lambda catalog_candidate: catalog_candidate.evidence,
+    scaffold=lambda catalog_candidate: "class CatalogInstallingMixin:\n    __catalog_attribute__: ClassVar[str]\n    def __init_subclass__(cls):\n        super().__init_subclass__()\n        getattr(cls, cls.__catalog_attribute__).install(cls)",
+    codemod_patch=lambda catalog_candidate: "# Delete the repeated `__init_subclass__` bodies after moving the lifecycle code into one catalog-installing mixin.\n# Leave only `__catalog_attribute__` on each concrete catalog mixin.",
+    metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(catalog_candidate.class_names),
+        statement_count=2,
+        class_count=len(catalog_candidate.class_names),
+        method_symbols=tuple(
+            (
+                f"{class_name}.__init_subclass__"
+                for class_name in catalog_candidate.class_names
+            )
         ),
     ),
     candidate_collector=_catalog_installing_mixin_family_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     RegexGroupExtractorFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -2387,22 +2465,20 @@ declare_module_detector(
         _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[RegexGroupExtractorFamilyCandidate](
-        summary=lambda regex_candidate: f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}.",
-        evidence=lambda regex_candidate: regex_candidate.evidence,
-        scaffold=lambda regex_candidate: "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ...",
-        codemod_patch=lambda regex_candidate: "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index.",
-        metrics=lambda regex_candidate: MappingMetrics.from_field_names(
-            mapping_site_count=len(regex_candidate.method_names),
-            mapping_name=regex_candidate.class_name,
-            field_names=regex_candidate.pattern_attribute_names,
-        ),
+    summary=lambda regex_candidate: f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}.",
+    evidence=lambda regex_candidate: regex_candidate.evidence,
+    scaffold=lambda regex_candidate: "@dataclass(frozen=True)\nclass RegexGroupExtractor:\n    pattern_attr: str\n    matcher_name: str = 'search'\n    group_index: int = 1\n    def __get__(self, instance, owner): ...",
+    codemod_patch=lambda regex_candidate: "# Replace repeated regex extractor methods with descriptor rows.\n# Each method name becomes a descriptor assignment declaring pattern attribute, matcher mode, and group index.",
+    metrics=lambda regex_candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(regex_candidate.method_names),
+        mapping_name=regex_candidate.class_name,
+        field_names=regex_candidate.pattern_attribute_names,
     ),
     candidate_collector=_regex_group_extractor_family_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     SparseConstructorVariantFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -2413,13 +2489,11 @@ declare_module_detector(
         _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[SparseConstructorVariantFamilyCandidate](
-        summary=lambda sparse_candidate: f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}.",
-        evidence=lambda sparse_candidate: sparse_candidate.evidence,
-        scaffold=lambda sparse_candidate: "ConstructorVariantCatalog(\n    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n)",
-        codemod_patch=lambda sparse_candidate: f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n# Keep dataclass defaults as the base point and declare only each variant's overridden fields.",
-        metrics=lambda sparse_candidate: sparse_candidate.mapping_metrics,
-    ),
+    summary=lambda sparse_candidate: f"`{sparse_candidate.class_name}` repeats sparse constructor variants {sparse_candidate.method_names} over defaulted fields {sparse_candidate.keyword_names}.",
+    evidence=lambda sparse_candidate: sparse_candidate.evidence,
+    scaffold=lambda sparse_candidate: "ConstructorVariantCatalog(\n    (ConstructorVariantSpec(name='...', parameters=(), args=(), kwargs=(...)),)\n)",
+    codemod_patch=lambda sparse_candidate: f"# Replace sparse classmethods {sparse_candidate.method_names} on `{sparse_candidate.class_name}` with constructor-variant rows.\n# Delete the classmethod bodies; keep dataclass defaults as the base point.",
+    metrics=lambda sparse_candidate: sparse_candidate.mapping_metrics,
     candidate_collector=_sparse_constructor_variant_family_candidates,
 )
 
@@ -2463,7 +2537,7 @@ class SupportPreludeModuleFamilyDetector(IssueDetector):
         return findings
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     ModuleConstructorPolicyFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -2474,23 +2548,21 @@ declare_module_detector(
         _AUTHORITATIVE_NOMINAL_IDENTITY_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
         _KEYWORD_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[ModuleConstructorPolicyFamilyCandidate](
-        summary=lambda policy_candidate: f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}.",
-        evidence=lambda policy_candidate: policy_candidate.evidence,
-        scaffold=lambda policy_candidate: "@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ...",
-        codemod_patch=lambda policy_candidate: "# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog.",
-        metrics=lambda policy_candidate: MappingMetrics(
-            mapping_site_count=len(policy_candidate.row_names),
-            field_count=len(policy_candidate.field_names),
-            mapping_name=policy_candidate.constructor_name,
-            field_names=policy_candidate.row_names,
-        ),
+    summary=lambda policy_candidate: f"Module constants {', '.join(policy_candidate.row_names)} repeat `{policy_candidate.constructor_name}` constructor rows with schema {policy_candidate.field_names}.",
+    evidence=lambda policy_candidate: policy_candidate.evidence,
+    scaffold=lambda policy_candidate: "@dataclass(frozen=True)\nclass PolicyRowSpec:\n    role_name: str\n    constructor_args: tuple[object, ...]\n\nclass PolicyCatalog:\n    def materialize(self) -> dict[str, object]: ...",
+    codemod_patch=lambda policy_candidate: "# Replace repeated module-level constructor rows with one semantic policy catalog.\n# Keep role names and constructor coordinates as data, then derive the module constants from the catalog.",
+    metrics=lambda policy_candidate: MappingMetrics(
+        mapping_site_count=len(policy_candidate.row_names),
+        field_count=len(policy_candidate.field_names),
+        mapping_name=policy_candidate.constructor_name,
+        field_names=policy_candidate.row_names,
     ),
     candidate_collector=_module_constructor_policy_family_candidates,
 )
 
 
-declare_module_detector(
+declare_candidate_rule_detector(
     DynamicSelfFieldSelectionCandidate,
     high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
@@ -2500,16 +2572,13 @@ declare_module_detector(
         "class template selects its own state through dynamic reflective field names",
         _FAIL_LOUD_CONTRACTS_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
     ),
-    CandidateFindingRenderer[DynamicSelfFieldSelectionCandidate](
-        summary=lambda dynamic_candidate: f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal hook.",
-        evidence=lambda dynamic_candidate: (dynamic_candidate.evidence,),
-        scaffold=lambda dynamic_candidate: "class DeclaredCountHook(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ...",
-        codemod_patch=lambda dynamic_candidate: f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier.",
-    ),
+    summary=lambda dynamic_candidate: f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value.",
+    scaffold=lambda dynamic_candidate: "class DeclaredCountValue(ABC):\n    @property\n    @abstractmethod\n    def count_value(self) -> int: ...",
+    codemod_patch=lambda dynamic_candidate: f"# Delete `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})`.\n# Replace selector-driven reflection with one declared property or one canonical field on the nominal carrier.",
     candidate_collector=_dynamic_self_field_selection_candidates,
 )
 
-declare_module_detector(
+declare_candidate_rule_detector(
     StringBackedReflectiveNominalLookupCandidate,
     high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -2520,15 +2589,12 @@ declare_module_detector(
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
         _STRING_DISPATCH_SEMANTIC_STRING_LITERAL_CLASS_FAMILY_OBSERVATION_TAGS,
     ),
-    CandidateFindingRenderer[StringBackedReflectiveNominalLookupCandidate](
-        summary=lambda reflective_candidate: f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes.",
-        evidence=lambda reflective_candidate: (reflective_candidate.evidence,),
-        scaffold=lambda reflective_candidate: "class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ...",
-        codemod_patch=lambda reflective_candidate: f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method.",
-        metrics=lambda reflective_candidate: SentinelSimulationMetrics(
-            class_count=len(reflective_candidate.concrete_class_names),
-            branch_site_count=1,
-        ),
+    summary=lambda reflective_candidate: f"`{reflective_candidate.class_name}.{reflective_candidate.method_name}` resolves `{reflective_candidate.selector_attr_name}` through `{reflective_candidate.lookup_kind}` over {len(reflective_candidate.concrete_class_names)} concrete classes.",
+    scaffold=lambda reflective_candidate: "class DeclaredNominalRole(ABC):\n    @classmethod\n    @abstractmethod\n    def declared_handle(cls) -> object: ...",
+    codemod_patch=lambda reflective_candidate: f"# Delete the reflective `{reflective_candidate.lookup_kind}` lookup keyed by `{reflective_candidate.selector_attr_name}`.\n# Move the family boundary to one declared hook, typed handle, or polymorphic method.",
+    metrics=lambda reflective_candidate: SentinelSimulationMetrics(
+        class_count=len(reflective_candidate.concrete_class_names),
+        branch_site_count=1,
     ),
     detector_base=ConfiguredModuleCollectorCandidateDetector,
     candidate_collector=_string_backed_reflective_nominal_lookup_candidates,

@@ -7,7 +7,11 @@ detector implementations.
 
 from __future__ import annotations
 
-from ..record_algebra import product_record
+from ..record_algebra import (
+    materialize_product_record as _materialize_product_record,
+    materialize_product_records as _materialize_product_records,
+    product_record_spec as _product_record_spec,
+)
 
 import ast
 import inspect
@@ -16,22 +20,38 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from dataclasses import MISSING, dataclass, field, fields
+from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
-from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Concatenate,
+    Generic,
+    Iterable,
+    ParamSpec,
+    Sequence,
+    TypedDict,
+    TypeAlias,
+    TypeVar,
+    Unpack,
+    cast,
+)
 
 from metaclass_registry import AutoRegisterMeta
 
 from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
 from ..descriptor_algebra import AliasProperty
+from ..observation_shapes import LineSymbolObservationMixin
 from ..semantic_match import (
     AstTypedEffectStep,
     FirstSuccessfulEffectStep,
     GuardedEffectStep,
     Maybe,
     NamedCallAssignment,
+    NamedValueBinding,
     RegisteredEffectStep,
     SingleCompareEffectStep,
     as_ast,
@@ -57,6 +77,7 @@ from ..semantic_match import (
     single_return_call,
     single_return_value,
 )
+from ..semantic_description_length import CompressionCertificate
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -66,6 +87,7 @@ from ..ast_tools import (
     BuilderCallShapeFamily,
     ClassMarkerObservation,
     ClassMarkerObservationFamily,
+    ClassFunctionStackNodeVisitor,
     CollectedFamily,
     ConfigDispatchObservation,
     FieldObservation,
@@ -516,36 +538,29 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         summary: str,
         evidence: tuple[SourceLocation, ...],
         /,
-        scaffold: str | None = None,
-        codemod_patch: str | None = None,
-        metrics: FindingMetrics | None = None,
-        title: str | None = None,
-        why: str | None = None,
-        capability_gap: str | None = None,
-        confidence: ConfidenceLevel | None = None,
-        relation_context: str | None = None,
-        certification: CertificationLevel | None = None,
-        capability_tags: tuple[CapabilityTag, ...] | None = None,
-        observation_tags: tuple[ObservationTag, ...] | None = None,
+        context: "FindingBuildContext | None" = None,
+        **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
         detector_id = self.detector_id
         if detector_id is None:
             raise TypeError(f"{type(self).__name__} has no detector_id")
+        context = FindingBuildContext.merge(context, **overrides)
         return type(self).finding_spec.build(
             detector_id,
             summary,
             evidence,
-            scaffold=scaffold,
-            codemod_patch=codemod_patch,
-            metrics=metrics,
-            title=title,
-            why=why,
-            capability_gap=capability_gap,
-            confidence=confidence,
-            relation_context=relation_context,
-            certification=certification,
-            capability_tags=capability_tags,
-            observation_tags=observation_tags,
+            scaffold=context.scaffold,
+            codemod_patch=context.codemod_patch,
+            compression_certificate=context.compression_certificate,
+            metrics=context.metrics,
+            title=context.title,
+            why=context.why,
+            capability_gap=context.capability_gap,
+            confidence=context.confidence,
+            relation_context=context.relation_context,
+            certification=context.certification,
+            capability_tags=context.capability_tags,
+            observation_tags=context.observation_tags,
         )
 
     @abstractmethod
@@ -575,22 +590,92 @@ class PerModuleIssueDetector(IssueDetector):
 
 CandidateItemT = TypeVar("CandidateItemT")
 FindingValueT = TypeVar("FindingValueT")
+CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
+CandidateEvidenceRenderer: TypeAlias = Callable[
+    [CandidateItemT], tuple[SourceLocation, ...]
+]
+OptionalCandidateTextRenderer: TypeAlias = (
+    Callable[[CandidateItemT], str | None] | None
+)
+OptionalCandidateCompressionRenderer: TypeAlias = (
+    Callable[[CandidateItemT], CompressionCertificate | None] | None
+)
+OptionalCandidateMetricsRenderer: TypeAlias = (
+    Callable[[CandidateItemT], FindingMetrics | None] | None
+)
+OptionalCandidateValueRenderer: TypeAlias = (
+    Callable[[CandidateItemT], FindingValueT | None] | None
+)
+NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
+
+
+class FindingBuildContextKwargs(TypedDict, total=False):
+    scaffold: str | None
+    codemod_patch: str | None
+    compression_certificate: CompressionCertificate | None
+    metrics: FindingMetrics | None
+    title: str | None
+    why: str | None
+    capability_gap: str | None
+    confidence: ConfidenceLevel | None
+    relation_context: str | None
+    certification: CertificationLevel | None
+    capability_tags: tuple[CapabilityTag, ...] | None
+    observation_tags: tuple[ObservationTag, ...] | None
+
+
+@dataclass(frozen=True)
+class FindingBuildContext:
+    """Nominal bundle for finding rendering, payoff, and override authority."""
+
+    scaffold: str | None = None
+    codemod_patch: str | None = None
+    compression_certificate: CompressionCertificate | None = None
+    metrics: FindingMetrics | None = None
+    title: str | None = None
+    why: str | None = None
+    capability_gap: str | None = None
+    confidence: ConfidenceLevel | None = None
+    relation_context: str | None = None
+    certification: CertificationLevel | None = None
+    capability_tags: tuple[CapabilityTag, ...] | None = None
+    observation_tags: tuple[ObservationTag, ...] | None = None
+
+    @classmethod
+    def merge(
+        cls,
+        base: "FindingBuildContext | None" = None,
+        **overrides: Unpack[FindingBuildContextKwargs],
+    ) -> "FindingBuildContext":
+        context = cls() if base is None else base
+        return context if not overrides else replace(context, **overrides)
 
 
 @dataclass(frozen=True)
 class CandidateFindingRenderer(Generic[CandidateItemT]):
-    summary: Callable[[CandidateItemT], str]
-    evidence: Callable[[CandidateItemT], tuple[SourceLocation, ...]]
-    scaffold: Callable[[CandidateItemT], str | None] | None = None
-    codemod_patch: Callable[[CandidateItemT], str | None] | None = None
-    metrics: Callable[[CandidateItemT], FindingMetrics | None] | None = None
+    summary: CandidateSummaryRenderer[CandidateItemT]
+    evidence: CandidateEvidenceRenderer[CandidateItemT]
+    scaffold: OptionalCandidateTextRenderer[CandidateItemT] = None
+    codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None
+    compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
+    metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
 
     def _optional_value(
         self,
         candidate: CandidateItemT,
-        value: Callable[[CandidateItemT], FindingValueT | None] | None,
+        value: OptionalCandidateValueRenderer[CandidateItemT, FindingValueT],
     ) -> FindingValueT | None:
         return None if value is None else value(candidate)
+
+    def build_context(self, candidate: CandidateItemT) -> FindingBuildContext:
+        return FindingBuildContext(
+            scaffold=self._optional_value(candidate, self.scaffold),
+            codemod_patch=self._optional_value(candidate, self.codemod_patch),
+            compression_certificate=self._optional_value(
+                candidate, self.compression_certificate
+            ),
+            metrics=self._optional_value(candidate, self.metrics),
+        )
 
     def build(
         self, detector: IssueDetector, candidate: CandidateItemT
@@ -598,10 +683,79 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
         return detector.build_finding(
             self.summary(candidate),
             self.evidence(candidate),
-            scaffold=self._optional_value(candidate, self.scaffold),
-            codemod_patch=self._optional_value(candidate, self.codemod_patch),
-            metrics=self._optional_value(candidate, self.metrics),
+            self.build_context(candidate),
         )
+
+
+def single_candidate_evidence(candidate: object) -> tuple[SourceLocation, ...]:
+    return (cast(SourceLocation, getattr(candidate, "evidence")),)
+
+
+_DEFAULT_FILE_PATH_ATTRIBUTE = "file_path"
+
+
+@dataclass(frozen=True)
+class SourceLocationEvidenceProperty:
+    file_attribute_name: str = _DEFAULT_FILE_PATH_ATTRIBUTE
+    line_attribute_name: str = "line"
+    symbol_attribute_name: str = "symbol"
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[object] | None = None,
+    ) -> SourceLocation | SourceLocationEvidenceProperty:
+        del owner
+        if instance is None:
+            return self
+        return SourceLocation(
+            getattr(instance, self.file_attribute_name),
+            getattr(instance, self.line_attribute_name),
+            getattr(instance, self.symbol_attribute_name),
+        )
+
+
+@dataclass(frozen=True)
+class ZippedSourceLocationEvidenceProperty:
+    line_numbers_attribute_name: str
+    symbol_names_attribute_name: str
+    file_attribute_name: str = _DEFAULT_FILE_PATH_ATTRIBUTE
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[object] | None = None,
+    ) -> tuple[SourceLocation, ...] | ZippedSourceLocationEvidenceProperty:
+        del owner
+        if instance is None:
+            return self
+        return tuple(
+            (
+                SourceLocation(
+                    getattr(instance, self.file_attribute_name), line, symbol
+                )
+                for line, symbol in zip(
+                    getattr(instance, self.line_numbers_attribute_name),
+                    getattr(instance, self.symbol_names_attribute_name),
+                    strict=True,
+                )
+            )
+        )
+
+
+_LINE_SYMBOL_EVIDENCE = SourceLocationEvidenceProperty()
+_LINE_WITNESS_NAME_EVIDENCE = SourceLocationEvidenceProperty(
+    symbol_attribute_name="witness_name"
+)
+_LINENO_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
+    line_attribute_name="lineno", symbol_attribute_name="qualname"
+)
+_LINE_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
+    symbol_attribute_name="qualname"
+)
+_LINE_FAMILY_NAME_EVIDENCE = SourceLocationEvidenceProperty(
+    symbol_attribute_name="family_name"
+)
 
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
@@ -754,36 +908,137 @@ def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
     return f"{candidate_type.__name__.removesuffix('Candidate')}Detector"
 
 
+@dataclass(frozen=True)
+class DetectorDeclarationOptions:
+    detector_name: str | None = None
+    detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector
+    candidate_collector: Callable[..., Sequence[Any]] | None = None
+    detector_priority: int | None = None
+
+    @classmethod
+    def from_kwargs(cls, options: dict[str, Any]) -> DetectorDeclarationOptions:
+        option_names = set(cls.__dataclass_fields__)
+        unknown_names = set(options) - option_names
+        if unknown_names:
+            raise TypeError(
+                f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
+            )
+        return cls(**options)
+
+
+_DEFAULT_DETECTOR_DECLARATION_OPTIONS = DetectorDeclarationOptions()
+
+
+@dataclass(frozen=True)
+class DetectorDeclaration:
+    candidate_type: type[object]
+    finding_spec: FindingSpec
+    finding_renderer: CandidateFindingRenderer[Any]
+    options: DetectorDeclarationOptions = _DEFAULT_DETECTOR_DECLARATION_OPTIONS
+
+    @property
+    def class_name(self) -> str:
+        return self.options.detector_name or _detector_name_from_candidate_type(
+            self.candidate_type
+        )
+
+    def namespace(self, module_name: str, firstlineno: int) -> dict[str, object]:
+        namespace: dict[str, object] = {
+            "__module__": module_name,
+            "__firstlineno__": firstlineno,
+            "finding_spec": self.finding_spec,
+            "finding_renderer": self.finding_renderer,
+        }
+        if self.options.candidate_collector is not None:
+            namespace["candidate_collector"] = self.options.candidate_collector
+        if self.options.detector_priority is not None:
+            namespace["detector_priority"] = self.options.detector_priority
+        return namespace
+
+    def install(
+        self, caller_globals: dict[str, Any], firstlineno: int
+    ) -> type[IssueDetector]:
+        detector_type = cast(
+            type[IssueDetector],
+            type(
+                self.class_name,
+                (self.options.detector_base,),
+                self.namespace(caller_globals["__name__"], firstlineno),
+            ),
+        )
+        caller_globals[self.class_name] = detector_type
+        return detector_type
+
+
+def _declare_module_detector_in(
+    caller_globals: dict[str, Any],
+    firstlineno: int,
+    declaration: DetectorDeclaration,
+) -> type[IssueDetector]:
+    return declaration.install(caller_globals, firstlineno)
+
+
 def declare_module_detector(
     candidate_type: type[object],
     finding_spec: FindingSpec,
     finding_renderer: CandidateFindingRenderer[Any],
-    *,
-    detector_name: str | None = None,
-    detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector,
-    candidate_collector: Callable[..., Sequence[Any]] | None = None,
-    detector_priority: int | None = None,
+    **detector_options: Any,
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
     caller = None if frame is None else frame.f_back
     if caller is None:
         raise RuntimeError("declare_module_detector() requires a caller frame")
-    class_name = detector_name or _detector_name_from_candidate_type(candidate_type)
-    namespace: dict[str, object] = {
-        "__module__": caller.f_globals["__name__"],
-        "__firstlineno__": caller.f_lineno,
-        "finding_spec": finding_spec,
-        "finding_renderer": finding_renderer,
-    }
-    if candidate_collector is not None:
-        namespace["candidate_collector"] = candidate_collector
-    if detector_priority is not None:
-        namespace["detector_priority"] = detector_priority
-    detector_type = cast(
-        type[IssueDetector], type(class_name, (detector_base,), namespace)
+    return _declare_module_detector_in(
+        caller.f_globals,
+        caller.f_lineno,
+        DetectorDeclaration(
+            candidate_type,
+            finding_spec,
+            finding_renderer,
+            DetectorDeclarationOptions.from_kwargs(detector_options),
+        ),
     )
-    caller.f_globals[class_name] = detector_type
-    return detector_type
+
+
+def declare_candidate_rule_detector(
+    candidate_type: type[CandidateItemT],
+    finding_spec: FindingSpec,
+    *,
+    summary: CandidateSummaryRenderer[CandidateItemT],
+    evidence: CandidateEvidenceRenderer[CandidateItemT] = single_candidate_evidence,
+    scaffold: OptionalCandidateTextRenderer[CandidateItemT] = None,
+    codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None,
+    compression_certificate: OptionalCandidateCompressionRenderer[
+        CandidateItemT
+    ] = None,
+    metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None,
+    **detector_options: Any,
+) -> type[IssueDetector]:
+    frame = inspect.currentframe()
+    helper_frame = None if frame is None else frame.f_back
+    if helper_frame is None:
+        raise RuntimeError("declare_candidate_rule_detector() requires a caller frame")
+    renderer = CandidateFindingRenderer(
+        summary=summary,
+        evidence=evidence,
+        scaffold=scaffold,
+        codemod_patch=codemod_patch,
+        compression_certificate=compression_certificate,
+        metrics=metrics,
+    )
+    try:
+        return _declare_module_detector_in(
+            helper_frame.f_globals,
+            helper_frame.f_lineno,
+            DetectorDeclaration(
+                candidate_type,
+                finding_spec,
+                renderer,
+                DetectorDeclarationOptions.from_kwargs(detector_options),
+            ),
+        )
+    finally:
+        del frame, helper_frame
 
 
 class EvidenceOnlyPerModuleDetector(PerModuleIssueDetector):
@@ -841,6 +1096,90 @@ class StaticModulePatternDetector(EvidenceOnlyPerModuleDetector):
         self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
     ) -> str:
         raise NotImplementedError
+
+
+TypedObservationItemT = TypeVar(
+    "TypedObservationItemT", bound=LineSymbolObservationMixin
+)
+
+
+class TypedObservationPatternDetector(
+    StaticModulePatternDetector,
+    Generic[TypedObservationItemT],
+    ABC,
+):
+    """Static detector derived from one typed observation family."""
+
+    observation_family: ClassVar[type[CollectedFamily]]
+    observation_type: ClassVar[type[LineSymbolObservationMixin]]
+    summary_template: ClassVar[str]
+    minimum_evidence_count: ClassVar[int] = 1
+    evidence_limit: ClassVar[int | None] = None
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        del config
+        observations = _collect_typed_family_items(
+            module, type(self).observation_family, type(self).observation_type
+        )
+        limit = type(self).evidence_limit
+        if limit is not None:
+            observations = observations[:limit]
+        return tuple(
+            (
+                SourceLocation(
+                    observation.file_path, observation.line, observation.symbol
+                )
+                for observation in observations
+            )
+        )
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        del config
+        return type(self).minimum_evidence_count
+
+    def _summary(
+        self, module: ParsedModule, evidence: tuple[SourceLocation, ...]
+    ) -> str:
+        return type(self).summary_template.format(
+            module_path=module.path,
+            evidence_count=len(evidence),
+        )
+
+
+def declare_typed_observation_detector(
+    detector_name: str,
+    finding_spec: FindingSpec,
+    observation_family: type[CollectedFamily],
+    observation_type: type[LineSymbolObservationMixin],
+    summary_template: str,
+    *,
+    minimum_evidence_count: int = 1,
+    evidence_limit: int | None = None,
+) -> type[IssueDetector]:
+    frame = inspect.currentframe()
+    caller = None if frame is None else frame.f_back
+    if caller is None:
+        raise RuntimeError(
+            "declare_typed_observation_detector() requires a caller frame"
+        )
+    namespace: dict[str, object] = {
+        "__module__": caller.f_globals["__name__"],
+        "__firstlineno__": caller.f_lineno,
+        "finding_spec": finding_spec,
+        "observation_family": observation_family,
+        "observation_type": observation_type,
+        "summary_template": summary_template,
+        "minimum_evidence_count": minimum_evidence_count,
+        "evidence_limit": evidence_limit,
+    }
+    detector_type = cast(
+        type[IssueDetector],
+        type(detector_name, (TypedObservationPatternDetector,), namespace),
+    )
+    caller.f_globals[detector_name] = detector_type
+    return detector_type
 
 
 class GroupedShapeIssueDetector(IssueDetector):
@@ -1846,6 +2185,45 @@ def _residual_enum_branch_cases(
     return sorted_tuple(case_names)
 
 
+def _residual_closed_axis_indirection_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    table_by_name: dict[str, EnumProjectionTableCandidate],
+) -> Iterable[ResidualClosedAxisIndirectionCandidate]:
+    axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
+    for node in _walk_nodes(function):
+        for table_name in table_by_name:
+            axis_expression = _subscript_axis_expr_for_table(node, table_name)
+            if axis_expression is not None:
+                axis_expressions_by_table[table_name].add(axis_expression)
+    for table_name, axis_expressions in axis_expressions_by_table.items():
+        table = table_by_name[table_name]
+        for axis_expression in sorted(axis_expressions):
+            residual_cases = _residual_enum_branch_cases(
+                function, enum_name=table.enum_name, axis_expression=axis_expression
+            )
+            shared_cases = tuple(
+                case_name
+                for case_name in table.case_names
+                if case_name in set(residual_cases)
+            )
+            if not shared_cases:
+                continue
+            yield ResidualClosedAxisIndirectionCandidate(
+                file_path=str(module.path),
+                qualname=qualname,
+                line=function.lineno,
+                table_name=table.table_name,
+                table_line=table.line,
+                enum_name=table.enum_name,
+                axis_expression=axis_expression,
+                table_case_names=table.case_names,
+                residual_case_names=shared_cases,
+                table_value_summaries=table.value_summaries,
+            )
+
+
 def _residual_closed_axis_indirection_candidates(
     module: ParsedModule,
 ) -> tuple[ResidualClosedAxisIndirectionCandidate, ...]:
@@ -1853,46 +2231,16 @@ def _residual_closed_axis_indirection_candidates(
     if not tables:
         return ()
     table_by_name = {table.table_name: table for table in tables}
-    candidates: list[ResidualClosedAxisIndirectionCandidate] = []
-    for qualname, function in _iter_named_functions(module):
-        axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
-        for node in _walk_nodes(function):
-            for table_name in table_by_name:
-                axis_expression = _subscript_axis_expr_for_table(node, table_name)
-                if axis_expression is not None:
-                    axis_expressions_by_table[table_name].add(axis_expression)
-        for table_name, axis_expressions in axis_expressions_by_table.items():
-            table = table_by_name[table_name]
-            for axis_expression in sorted(axis_expressions):
-                residual_cases = _residual_enum_branch_cases(
-                    function, enum_name=table.enum_name, axis_expression=axis_expression
-                )
-                shared_cases = tuple(
-                    (
-                        case_name
-                        for case_name in table.case_names
-                        if case_name in set(residual_cases)
-                    )
-                )
-                if not shared_cases:
-                    continue
-                candidates.append(
-                    ResidualClosedAxisIndirectionCandidate(
-                        file_path=str(module.path),
-                        qualname=qualname,
-                        line=function.lineno,
-                        table_name=table.table_name,
-                        table_line=table.line,
-                        enum_name=table.enum_name,
-                        axis_expression=axis_expression,
-                        table_case_names=table.case_names,
-                        residual_case_names=shared_cases,
-                        table_value_summaries=table.value_summaries,
-                    )
-                )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.qualname, item.table_name),
+    return _collect_named_function_candidates(
+        module,
+        _residual_closed_axis_indirection_candidates_for_function,
+        table_by_name,
+        sort_key=lambda item: (
+            item.file_path,
+            item.line,
+            item.qualname,
+            item.table_name,
+        ),
     )
 
 
@@ -1919,6 +2267,89 @@ def _iter_named_functions(
 
     Visitor().visit(module.module)
     return tuple(functions)
+
+
+NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
+NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
+NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+
+
+def _collect_named_function_candidates(
+    module: ParsedModule,
+    projector: Callable[
+        Concatenate[ParsedModule, str, NamedFunctionNode, NamedFunctionProjectorP],
+        Iterable[NamedFunctionCandidateT],
+    ],
+    *projector_args: NamedFunctionProjectorP.args,
+    sort_key: Callable[[NamedFunctionCandidateT], Any] | None = None,
+    **projector_kwargs: NamedFunctionProjectorP.kwargs,
+) -> tuple[NamedFunctionCandidateT, ...]:
+    projected = (
+        candidate
+        for qualname, function in _iter_named_functions(module)
+        for candidate in projector(
+            module, qualname, function, *projector_args, **projector_kwargs
+        )
+    )
+    return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
+
+
+ConfiguredNamedFunctionProjectorP = ParamSpec("ConfiguredNamedFunctionProjectorP")
+
+
+def _collect_configured_named_function_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+    projector: Callable[
+        Concatenate[
+            ParsedModule,
+            str,
+            NamedFunctionNode,
+            DetectorConfig,
+            ConfiguredNamedFunctionProjectorP,
+        ],
+        Iterable[NamedFunctionCandidateT],
+    ],
+    *projector_args: ConfiguredNamedFunctionProjectorP.args,
+    sort_key: Callable[[NamedFunctionCandidateT], Any] | None = None,
+    **projector_kwargs: ConfiguredNamedFunctionProjectorP.kwargs,
+) -> tuple[NamedFunctionCandidateT, ...]:
+    projected = (
+        candidate
+        for qualname, function in _iter_named_functions(module)
+        for candidate in projector(
+            module, qualname, function, config, *projector_args, **projector_kwargs
+        )
+    )
+    return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
+
+
+AstNodeCandidateT = TypeVar("AstNodeCandidateT")
+AstNodeProjectorP = ParamSpec("AstNodeProjectorP")
+AstNodeT = TypeVar("AstNodeT", bound=ast.AST)
+AstTraversal = Callable[[ast.AST], Iterable[ast.AST]]
+
+
+def _collect_ast_node_candidates(
+    module: ParsedModule,
+    root: ast.AST,
+    node_type: type[AstNodeT],
+    projector: Callable[
+        Concatenate[ParsedModule, AstNodeT, AstNodeProjectorP],
+        Iterable[AstNodeCandidateT],
+    ],
+    *projector_args: AstNodeProjectorP.args,
+    traversal: AstTraversal = _walk_nodes,
+    sort_key: Callable[[AstNodeCandidateT], Any] | None = None,
+    **projector_kwargs: AstNodeProjectorP.kwargs,
+) -> tuple[AstNodeCandidateT, ...]:
+    projected = (
+        candidate
+        for node in traversal(root)
+        if isinstance(node, node_type)
+        for candidate in projector(module, node, *projector_args, **projector_kwargs)
+    )
+    return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
 
 
 def _comparison_dispatch_case(test: ast.AST) -> tuple[str, str] | None:
@@ -2046,36 +2477,43 @@ def _enum_member_ref_family(
     return next(iter(enum_names)), tuple(member_name for _, member_name in refs)
 
 
+def _inline_enum_subset_guard_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    seen: set[tuple[str, int, str, tuple[str, ...]]],
+) -> Iterable[InlineEnumSubsetGuardCandidate]:
+    for node in _walk_nodes(function):
+        if not isinstance(node, ast.Compare):
+            continue
+        guard = _enum_subset_guard_from_compare(node)
+        if guard is None:
+            continue
+        axis_expression, enum_name, case_names, operator = guard
+        key = (qualname, node.lineno, enum_name, case_names)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield InlineEnumSubsetGuardCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            function_name=qualname,
+            axis_expression=axis_expression,
+            enum_name=enum_name,
+            case_names=case_names,
+            operator=operator,
+        )
+
+
 def _inline_enum_subset_guard_candidates(
     module: ParsedModule,
 ) -> tuple[InlineEnumSubsetGuardCandidate, ...]:
-    candidates: list[InlineEnumSubsetGuardCandidate] = []
     seen: set[tuple[str, int, str, tuple[str, ...]]] = set()
-    for qualname, function in _iter_named_functions(module):
-        for node in _walk_nodes(function):
-            if not isinstance(node, ast.Compare):
-                continue
-            guard = _enum_subset_guard_from_compare(node)
-            if guard is None:
-                continue
-            axis_expression, enum_name, case_names, operator = guard
-            key = (qualname, node.lineno, enum_name, case_names)
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                InlineEnumSubsetGuardCandidate(
-                    file_path=str(module.path),
-                    line=node.lineno,
-                    function_name=qualname,
-                    axis_expression=axis_expression,
-                    enum_name=enum_name,
-                    case_names=case_names,
-                    operator=operator,
-                )
-            )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.function_name)
+    return _collect_named_function_candidates(
+        module,
+        _inline_enum_subset_guard_candidates_for_function,
+        seen,
+        sort_key=lambda item: (item.file_path, item.line, item.function_name),
     )
 
 
@@ -2190,45 +2628,17 @@ def _repeated_enum_strategy_dispatch_candidates(
     )
 
 
-_LineCaseSpec = product_record(
-    "_LineCaseSpec", "line: int; case_names: tuple[str, ...]", bases=(ABC,)
-)
-
-
-_SelectorCaseSpec = product_record(
-    "_SelectorCaseSpec", "selector_method_name: str", bases=(_LineCaseSpec,)
-)
-
-
-_StrategySelectorSpec = product_record(
-    "_StrategySelectorSpec",
-    "root_name: str; mapping_name: str",
-    bases=(_SelectorCaseSpec,),
-)
-
-
-_GenericDispatchSpec = product_record(
-    "_GenericDispatchSpec", "function_name: str", bases=(_LineCaseSpec,)
-)
-
-
-_AxisExpressionSite = product_record(
-    "_AxisExpressionSite", "axis_expression: str; line: int", bases=(ABC,)
-)
-
-
-_SelectorAssignment = product_record(
-    "_SelectorAssignment",
-    "variable_name: str; selector_spec: _StrategySelectorSpec",
-    bases=(_AxisExpressionSite,),
-)
-
-
-_NestedGenericUsage = product_record(
-    "_NestedGenericUsage",
-    "callback_name: str; generic_spec: _GenericDispatchSpec",
-    bases=(_AxisExpressionSite,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('_LineCaseSpec', 'line: int; case_names: tuple[str, ...]', 'ABC'),
+    _product_record_spec('_SelectorCaseSpec', 'selector_method_name: str', '_LineCaseSpec'),
+    _product_record_spec('_StrategySelectorSpec', 'root_name: str; mapping_name: str', '_SelectorCaseSpec'),
+    _product_record_spec('_GenericDispatchSpec', 'function_name: str', '_LineCaseSpec'),
+    _product_record_spec('_AxisExpressionSite', 'axis_expression: str; line: int', 'ABC'),
+    _product_record_spec('_SelectorAssignment', 'variable_name: str; selector_spec: _StrategySelectorSpec', '_AxisExpressionSite'),
+    _product_record_spec('_NestedGenericUsage', 'callback_name: str; generic_spec: _GenericDispatchSpec', '_AxisExpressionSite'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -2247,25 +2657,14 @@ class _GuardedReturnCase:
         )
 
 
-_SelectedConstantReturnShape = product_record(
-    "_SelectedConstantReturnShape",
-    "constant_name: str; wrapper_name: str | None; template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]",
-)
-
-
-_ModuleConstantBinding = product_record(
-    "_ModuleConstantBinding", "line: int; constructor_name: str | None"
-)
-
-
-_SelectionHelperShape = product_record(
-    "_SelectionHelperShape", "function_name: str; selected_field_name: str; line: int"
-)
-
-
-_SelectionLookupShape = product_record(
-    "_SelectionLookupShape", "function_name: str; line: int"
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('_SelectedConstantReturnShape', 'constant_name: str; wrapper_name: str | None; template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]'),
+    _product_record_spec('_ModuleConstantBinding', 'line: int; constructor_name: str | None'),
+    _product_record_spec('_SelectionHelperShape', 'function_name: str; selected_field_name: str; line: int'),
+    _product_record_spec('_SelectionLookupShape', 'function_name: str; line: int'),
+))
+# fmt: on
 
 
 def _module_level_dict_literals(
@@ -2553,6 +2952,65 @@ def _callback_names_referenced(call: ast.Call) -> tuple[str, ...]:
     return sorted_tuple(referenced_names)
 
 
+def _split_dispatch_authority_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    selector_specs: tuple[_StrategySelectorSpec, ...],
+    generic_specs: tuple[_GenericDispatchSpec, ...],
+    candidate_keys: set[tuple[str, str, str, str]],
+) -> Iterable[SplitDispatchAuthorityCandidate]:
+    selector_assignments = _selector_assignments_for_function(function, selector_specs)
+    if not selector_assignments:
+        return
+    nested_generic_usages = _nested_generic_usages_for_function(function, generic_specs)
+    if not nested_generic_usages:
+        return
+    usage_by_callback = {usage.callback_name: usage for usage in nested_generic_usages}
+    for selector_assignment in selector_assignments:
+        strategy_calls = _strategy_bridge_calls(
+            function, strategy_variable_name=selector_assignment.variable_name
+        )
+        if not strategy_calls:
+            continue
+        for strategy_call in strategy_calls:
+            callback_names = _callback_names_referenced(strategy_call)
+            for callback_name in callback_names:
+                generic_usage = usage_by_callback.get(callback_name)
+                if generic_usage is None:
+                    continue
+                key = (
+                    qualname,
+                    selector_assignment.selector_spec.root_name,
+                    generic_usage.generic_spec.function_name,
+                    callback_name,
+                )
+                if key in candidate_keys:
+                    continue
+                candidate_keys.add(key)
+                strategy_call_method_name = (
+                    strategy_call.func.attr
+                    if isinstance(strategy_call.func, ast.Attribute)
+                    else "<call>"
+                )
+                yield SplitDispatchAuthorityCandidate(
+                    file_path=str(module.path),
+                    qualname=qualname,
+                    line=function.lineno,
+                    strategy_root_name=selector_assignment.selector_spec.root_name,
+                    selector_method_name=selector_assignment.selector_spec.selector_method_name,
+                    strategy_axis_expression=selector_assignment.axis_expression,
+                    strategy_case_names=selector_assignment.selector_spec.case_names,
+                    strategy_call_method_name=strategy_call_method_name,
+                    generic_function_name=generic_usage.generic_spec.function_name,
+                    generic_axis_expression=generic_usage.axis_expression,
+                    generic_case_names=generic_usage.generic_spec.case_names,
+                    bridge_callback_name=callback_name,
+                    selector_line=selector_assignment.line,
+                    generic_line=generic_usage.line,
+                )
+
+
 def _split_dispatch_authority_candidates(
     module: ParsedModule,
 ) -> tuple[SplitDispatchAuthorityCandidate, ...]:
@@ -2560,67 +3018,14 @@ def _split_dispatch_authority_candidates(
     generic_specs = _generic_dispatch_specs(module)
     if not selector_specs or not generic_specs:
         return ()
-    candidates: list[SplitDispatchAuthorityCandidate] = []
     candidate_keys: set[tuple[str, str, str, str]] = set()
-    for qualname, function in _iter_named_functions(module):
-        selector_assignments = _selector_assignments_for_function(
-            function, selector_specs
-        )
-        if not selector_assignments:
-            continue
-        nested_generic_usages = _nested_generic_usages_for_function(
-            function, generic_specs
-        )
-        if not nested_generic_usages:
-            continue
-        usage_by_callback = {
-            usage.callback_name: usage for usage in nested_generic_usages
-        }
-        for selector_assignment in selector_assignments:
-            strategy_calls = _strategy_bridge_calls(
-                function, strategy_variable_name=selector_assignment.variable_name
-            )
-            if not strategy_calls:
-                continue
-            for strategy_call in strategy_calls:
-                callback_names = _callback_names_referenced(strategy_call)
-                for callback_name in callback_names:
-                    generic_usage = usage_by_callback.get(callback_name)
-                    if generic_usage is None:
-                        continue
-                    key = (
-                        qualname,
-                        selector_assignment.selector_spec.root_name,
-                        generic_usage.generic_spec.function_name,
-                        callback_name,
-                    )
-                    if key in candidate_keys:
-                        continue
-                    candidate_keys.add(key)
-                    strategy_call_method_name = (
-                        strategy_call.func.attr
-                        if isinstance(strategy_call.func, ast.Attribute)
-                        else "<call>"
-                    )
-                    candidates.append(
-                        SplitDispatchAuthorityCandidate(
-                            file_path=str(module.path),
-                            qualname=qualname,
-                            line=function.lineno,
-                            strategy_root_name=selector_assignment.selector_spec.root_name,
-                            selector_method_name=selector_assignment.selector_spec.selector_method_name,
-                            strategy_axis_expression=selector_assignment.axis_expression,
-                            strategy_case_names=selector_assignment.selector_spec.case_names,
-                            strategy_call_method_name=strategy_call_method_name,
-                            generic_function_name=generic_usage.generic_spec.function_name,
-                            generic_axis_expression=generic_usage.axis_expression,
-                            generic_case_names=generic_usage.generic_spec.case_names,
-                            bridge_callback_name=callback_name,
-                            selector_line=selector_assignment.line,
-                            generic_line=generic_usage.line,
-                        )
-                    )
-    return tuple(candidates)
+    return _collect_named_function_candidates(
+        module,
+        _split_dispatch_authority_candidates_for_function,
+        selector_specs,
+        generic_specs,
+        candidate_keys,
+    )
 
 
 def _is_trivial_empty_class(node: ast.ClassDef) -> bool:
@@ -3187,21 +3592,13 @@ def _axis_keyword_names(
     return sorted_tuple(names)
 
 
-_SpecAxisEntry = product_record(
-    "_SpecAxisEntry",
-    "constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]",
-)
-
-
-_SpecAxisBinding = product_record(
-    "_SpecAxisBinding", "family_name: str; line: int; value: ast.AST"
-)
-
-
-_SpecAxisSource = product_record(
-    "_SpecAxisSource",
-    "family_name: str; line: int; constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]; is_standalone: bool",
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('_SpecAxisEntry', 'constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]'),
+    _product_record_spec('_SpecAxisBinding', 'family_name: str; line: int; value: ast.AST'),
+    _product_record_spec('_SpecAxisSource', 'family_name: str; line: int; constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]; is_standalone: bool'),
+))
+# fmt: on
 
 
 def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]:
@@ -3456,61 +3853,10 @@ def _cross_module_spec_axis_authority_candidates(
 def _registered_catalog_projection_candidates(
     module: ParsedModule,
 ) -> tuple[RegisteredCatalogProjectionCandidate, ...]:
-    candidates: list[RegisteredCatalogProjectionCandidate] = []
-    for qualname, function in _iter_named_functions(module):
-        body = _trim_docstring_body(list(function.body))
-        if (
-            len(body) != 1
-            or not isinstance(body[0], ast.Return)
-            or body[0].value is None
-        ):
-            continue
-        returned = body[0].value
-        if not isinstance(returned, ast.Call) or returned.args:
-            continue
-        if len(returned.keywords) != 1:
-            continue
-        keyword = returned.keywords[0]
-        if keyword.arg is None or keyword.value is None:
-            continue
-        if not isinstance(keyword.value, ast.Call) or keyword.value.keywords:
-            continue
-        collector_name = ast.unparse(keyword.value.func)
-        if len(keyword.value.args) != 2 or not isinstance(
-            keyword.value.args[0], ast.Name
-        ):
-            continue
-        structure_param_name = keyword.value.args[0].id
-        registry_call = keyword.value.args[1]
-        if not (
-            isinstance(registry_call, ast.Call)
-            and (not registry_call.args)
-            and (not registry_call.keywords)
-            and isinstance(registry_call.func, ast.Attribute)
-        ):
-            continue
-        extractor_base_name = ast.unparse(registry_call.func.value)
-        candidates.append(
-            RegisteredCatalogProjectionCandidate(
-                file_path=str(module.path),
-                line=function.lineno,
-                qualname=qualname,
-                catalog_type_name=ast.unparse(returned.func),
-                collector_name=collector_name,
-                structure_param_name=structure_param_name,
-                extractor_base_name=extractor_base_name,
-                registry_accessor_name=registry_call.func.attr,
-                return_keyword_names=tuple(
-                    (
-                        keyword_item.arg
-                        for keyword_item in returned.keywords
-                        if keyword_item.arg is not None
-                    )
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    return _collect_named_function_candidates(
+        module,
+        _registered_catalog_projection_candidates_for_function,
+        sort_key=lambda item: (item.file_path, item.line, item.qualname),
     )
 
 
@@ -3621,6 +3967,53 @@ def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.
 
 def _module_level_named_dicts(module: ParsedModule) -> dict[str, tuple[int, ast.Dict]]:
     return _module_level_named_instances(module, ast.Dict)
+
+
+def _registered_catalog_projection_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+) -> Iterable[RegisteredCatalogProjectionCandidate]:
+    body = _trim_docstring_body(list(function.body))
+    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
+        return
+    returned = body[0].value
+    if not isinstance(returned, ast.Call) or returned.args:
+        return
+    if len(returned.keywords) != 1:
+        return
+    keyword = returned.keywords[0]
+    if keyword.arg is None or keyword.value is None:
+        return
+    if not isinstance(keyword.value, ast.Call) or keyword.value.keywords:
+        return
+    collector_name = ast.unparse(keyword.value.func)
+    if len(keyword.value.args) != 2 or not isinstance(keyword.value.args[0], ast.Name):
+        return
+    structure_param_name = keyword.value.args[0].id
+    registry_call = keyword.value.args[1]
+    if not (
+        isinstance(registry_call, ast.Call)
+        and (not registry_call.args)
+        and (not registry_call.keywords)
+        and isinstance(registry_call.func, ast.Attribute)
+    ):
+        return
+    yield RegisteredCatalogProjectionCandidate(
+        file_path=str(module.path),
+        line=function.lineno,
+        qualname=qualname,
+        catalog_type_name=ast.unparse(returned.func),
+        collector_name=collector_name,
+        structure_param_name=structure_param_name,
+        extractor_base_name=ast.unparse(registry_call.func.value),
+        registry_accessor_name=registry_call.func.attr,
+        return_keyword_names=tuple(
+            keyword_item.arg
+            for keyword_item in returned.keywords
+            if keyword_item.arg is not None
+        ),
+    )
 
 
 def _single_return_case(
@@ -3770,73 +4163,73 @@ def _shared_reversed_token_suffix(
     return tuple(reversed(reversed_suffix))
 
 
+def _closed_constant_selector_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    constant_bindings: dict[str, _ModuleConstantBinding],
+) -> Iterable[ClosedConstantSelectorCandidate]:
+    guarded_cases = _guarded_return_cases(function)
+    if len(guarded_cases) < 2:
+        return
+    return_shapes = tuple(
+        _selected_constant_return_shape(case.return_value) for case in guarded_cases
+    )
+    if any((shape is None for shape in return_shapes)):
+        return
+    concrete_shapes = cast(tuple[_SelectedConstantReturnShape, ...], return_shapes)
+    constant_names = tuple(shape.constant_name for shape in concrete_shapes)
+    if len(set(constant_names)) < 2:
+        return
+    template_keys = {shape.template_key for shape in concrete_shapes}
+    if len(template_keys) != 1:
+        return
+    family_suffix = _shared_constant_suffix(constant_names)
+    constructor_names = {
+        binding.constructor_name
+        for name in constant_names
+        if (binding := constant_bindings.get(name)) is not None
+        and binding.constructor_name is not None
+    }
+    common_constructor_name = (
+        next(iter(constructor_names)) if len(constructor_names) == 1 else None
+    )
+    if family_suffix is None and common_constructor_name is None:
+        return
+    evidence: list[SourceLocation] = [
+        SourceLocation(str(module.path), function.lineno, qualname)
+    ]
+    for constant_name in constant_names:
+        binding = constant_bindings.get(constant_name)
+        if binding is None:
+            continue
+        evidence.append(SourceLocation(str(module.path), binding.line, constant_name))
+    yield ClosedConstantSelectorCandidate(
+        file_path=str(module.path),
+        qualname=qualname,
+        line=function.lineno,
+        guard_expressions=tuple(
+            case.guard_expression
+            for case in guarded_cases
+            if case.guard_expression is not None
+        ),
+        constant_names=tuple(dict.fromkeys(constant_names)),
+        wrapper_name=concrete_shapes[0].wrapper_name,
+        family_suffix=family_suffix,
+        common_constructor_name=common_constructor_name,
+        evidence_locations=tuple(evidence[:6]),
+    )
+
+
 def _closed_constant_selector_candidates(
     module: ParsedModule,
 ) -> tuple[ClosedConstantSelectorCandidate, ...]:
     constant_bindings = _module_constant_bindings(module)
-    candidates: list[ClosedConstantSelectorCandidate] = []
-    for qualname, function in _iter_named_functions(module):
-        guarded_cases = _guarded_return_cases(function)
-        if len(guarded_cases) < 2:
-            continue
-        return_shapes = tuple(
-            (
-                _selected_constant_return_shape(case.return_value)
-                for case in guarded_cases
-            )
-        )
-        if any((shape is None for shape in return_shapes)):
-            continue
-        concrete_shapes = cast(tuple[_SelectedConstantReturnShape, ...], return_shapes)
-        constant_names = tuple(shape.constant_name for shape in concrete_shapes)
-        if len(set(constant_names)) < 2:
-            continue
-        template_keys = {shape.template_key for shape in concrete_shapes}
-        if len(template_keys) != 1:
-            continue
-        family_suffix = _shared_constant_suffix(constant_names)
-        constructor_names = {
-            binding.constructor_name
-            for name in constant_names
-            if (binding := constant_bindings.get(name)) is not None
-            and binding.constructor_name is not None
-        }
-        common_constructor_name = (
-            next(iter(constructor_names)) if len(constructor_names) == 1 else None
-        )
-        if family_suffix is None and common_constructor_name is None:
-            continue
-        evidence: list[SourceLocation] = [
-            SourceLocation(str(module.path), function.lineno, qualname)
-        ]
-        for constant_name in constant_names:
-            binding = constant_bindings.get(constant_name)
-            if binding is None:
-                continue
-            evidence.append(
-                SourceLocation(str(module.path), binding.line, constant_name)
-            )
-        candidates.append(
-            ClosedConstantSelectorCandidate(
-                file_path=str(module.path),
-                qualname=qualname,
-                line=function.lineno,
-                guard_expressions=tuple(
-                    (
-                        case.guard_expression
-                        for case in guarded_cases
-                        if case.guard_expression is not None
-                    )
-                ),
-                constant_names=tuple(dict.fromkeys(constant_names)),
-                wrapper_name=concrete_shapes[0].wrapper_name,
-                family_suffix=family_suffix,
-                common_constructor_name=common_constructor_name,
-                evidence_locations=tuple(evidence[:6]),
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    return _collect_named_function_candidates(
+        module,
+        _closed_constant_selector_candidates_for_function,
+        constant_bindings,
+        sort_key=lambda item: (item.file_path, item.line, item.qualname),
     )
 
 
@@ -4200,39 +4593,16 @@ def _module_keyed_selection_helper_candidates(
     )
 
 
-_FileAxisCaseSpec = product_record(
-    "_FileAxisCaseSpec", "file_path: str; key_type_name: str", bases=(_LineCaseSpec,)
-)
-
-
-_FamilyAxisSpec = product_record(
-    "_FamilyAxisSpec", "family_name: str", bases=(_FileAxisCaseSpec,)
-)
-
-
-_KeyedFamilyAxisSpec = product_record(
-    "_KeyedFamilyAxisSpec",
-    "family_label: str | None; registry_key_attr_name: str",
-    bases=(_FamilyAxisSpec,),
-)
-
-
-_ManualSelectorAxisSpec = product_record(
-    "_ManualSelectorAxisSpec", "selector_method_name: str", bases=(_FamilyAxisSpec,)
-)
-
-
-_KeyedTableAxisSpec = product_record(
-    "_KeyedTableAxisSpec",
-    "table_name: str; value_shape_name: str | None",
-    bases=(_FileAxisCaseSpec,),
-)
-
-
-_ClassAssignedEnumAxisSpec = product_record(
-    "_ClassAssignedEnumAxisSpec",
-    "file_path: str; line: int; class_name: str; key_attr_name: str; key_type_name: str; case_name: str",
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('_FileAxisCaseSpec', 'file_path: str; key_type_name: str', '_LineCaseSpec'),
+    _product_record_spec('_FamilyAxisSpec', 'family_name: str', '_FileAxisCaseSpec'),
+    _product_record_spec('_KeyedFamilyAxisSpec', 'family_label: str | None; registry_key_attr_name: str', '_FamilyAxisSpec'),
+    _product_record_spec('_ManualSelectorAxisSpec', 'selector_method_name: str', '_FamilyAxisSpec'),
+    _product_record_spec('_KeyedTableAxisSpec', 'table_name: str; value_shape_name: str | None', '_FileAxisCaseSpec'),
+    _product_record_spec('_ClassAssignedEnumAxisSpec', 'file_path: str; line: int; class_name: str; key_attr_name: str; key_type_name: str; case_name: str'),
+))
+# fmt: on
 
 
 def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
@@ -4784,6 +5154,88 @@ def _enum_member_refs_for_known_key_types(
     }
 
 
+def _closed_axis_branch_refs_for_function(
+    function: NamedFunctionNode,
+    *,
+    key_type_names: frozenset[str],
+) -> tuple[Counter[str], dict[str, set[str]]]:
+    branch_site_count: Counter[str] = Counter()
+    case_names_by_key: dict[str, set[str]] = defaultdict(set)
+    for subnode in _non_nested_subnodes(function.body):
+        if isinstance(subnode, ast.If):
+            refs = _enum_member_refs_for_known_key_types(
+                subnode.test, key_type_names=key_type_names
+            )
+            for key_type_name, case_names in refs.items():
+                branch_site_count[key_type_name] += 1
+                case_names_by_key[key_type_name].update(case_names)
+            continue
+        if isinstance(subnode, ast.Match):
+            refs_by_key: dict[str, set[str]] = defaultdict(set)
+            for case in subnode.cases:
+                pattern_refs = _enum_member_refs_for_known_key_types(
+                    case.pattern, key_type_names=key_type_names
+                )
+                for key_type_name, case_names in pattern_refs.items():
+                    refs_by_key[key_type_name].update(case_names)
+                if case.guard is not None:
+                    guard_refs = _enum_member_refs_for_known_key_types(
+                        case.guard, key_type_names=key_type_names
+                    )
+                    for key_type_name, case_names in guard_refs.items():
+                        refs_by_key[key_type_name].update(case_names)
+            for key_type_name, case_names in refs_by_key.items():
+                branch_site_count[key_type_name] += 1
+                case_names_by_key[key_type_name].update(case_names)
+    return branch_site_count, case_names_by_key
+
+
+def _residual_closed_axis_branching_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    authoritative_specs_by_key: dict[str, list[_KeyedFamilyAxisSpec]],
+    key_type_names: frozenset[str],
+    seen: set[tuple[str, str, str]],
+) -> Iterable[ResidualClosedAxisBranchingCandidate]:
+    file_path = str(module.path)
+    branch_site_count, case_names_by_key = _closed_axis_branch_refs_for_function(
+        function, key_type_names=key_type_names
+    )
+    for key_type_name, branch_count in sorted(branch_site_count.items()):
+        if branch_count <= 0:
+            continue
+        specs = authoritative_specs_by_key.get(key_type_name, ())
+        if not specs:
+            continue
+        if any((spec.file_path == file_path for spec in specs)):
+            continue
+        authoritative_case_names = {
+            case_name for spec in specs for case_name in spec.case_names
+        }
+        shared_case_names = sorted_tuple(
+            case_names_by_key[key_type_name] & authoritative_case_names
+        )
+        if not shared_case_names:
+            continue
+        key = (file_path, qualname, key_type_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        authoritative_families = sorted_tuple(
+            ((spec.family_name, spec.file_path, spec.line) for spec in specs)
+        )
+        yield ResidualClosedAxisBranchingCandidate(
+            key_type_name=key_type_name,
+            file_path=file_path,
+            line=function.lineno,
+            qualname=qualname,
+            branch_site_count=branch_count,
+            case_names=shared_case_names,
+            authoritative_families=authoritative_families,
+        )
+
+
 def _residual_closed_axis_branching_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
@@ -4801,69 +5253,15 @@ def _residual_closed_axis_branching_candidates(
         file_path = str(module.path)
         if "/tests/" in file_path:
             continue
-        for qualname, function in _iter_named_functions(module):
-            branch_site_count: Counter[str] = Counter()
-            case_names_by_key: dict[str, set[str]] = defaultdict(set)
-            for subnode in _non_nested_subnodes(function.body):
-                if isinstance(subnode, ast.If):
-                    refs = _enum_member_refs_for_known_key_types(
-                        subnode.test, key_type_names=key_type_names
-                    )
-                    for key_type_name, case_names in refs.items():
-                        branch_site_count[key_type_name] += 1
-                        case_names_by_key[key_type_name].update(case_names)
-                    continue
-                if isinstance(subnode, ast.Match):
-                    refs_by_key: dict[str, set[str]] = defaultdict(set)
-                    for case in subnode.cases:
-                        pattern_refs = _enum_member_refs_for_known_key_types(
-                            case.pattern, key_type_names=key_type_names
-                        )
-                        for key_type_name, case_names in pattern_refs.items():
-                            refs_by_key[key_type_name].update(case_names)
-                        if case.guard is not None:
-                            guard_refs = _enum_member_refs_for_known_key_types(
-                                case.guard, key_type_names=key_type_names
-                            )
-                            for key_type_name, case_names in guard_refs.items():
-                                refs_by_key[key_type_name].update(case_names)
-                    for key_type_name, case_names in refs_by_key.items():
-                        branch_site_count[key_type_name] += 1
-                        case_names_by_key[key_type_name].update(case_names)
-            for key_type_name, branch_count in sorted(branch_site_count.items()):
-                if branch_count <= 0:
-                    continue
-                specs = authoritative_specs_by_key.get(key_type_name, ())
-                if not specs:
-                    continue
-                if any((spec.file_path == file_path for spec in specs)):
-                    continue
-                authoritative_case_names = {
-                    case_name for spec in specs for case_name in spec.case_names
-                }
-                shared_case_names = sorted_tuple(
-                    case_names_by_key[key_type_name] & authoritative_case_names
-                )
-                if not shared_case_names:
-                    continue
-                key = (file_path, qualname, key_type_name)
-                if key in seen:
-                    continue
-                seen.add(key)
-                authoritative_families = sorted_tuple(
-                    ((spec.family_name, spec.file_path, spec.line) for spec in specs)
-                )
-                candidates.append(
-                    ResidualClosedAxisBranchingCandidate(
-                        key_type_name=key_type_name,
-                        file_path=file_path,
-                        line=function.lineno,
-                        qualname=qualname,
-                        branch_site_count=branch_count,
-                        case_names=shared_case_names,
-                        authoritative_families=authoritative_families,
-                    )
-                )
+        candidates.extend(
+            _collect_named_function_candidates(
+                module,
+                _residual_closed_axis_branching_candidates_for_function,
+                authoritative_specs_by_key,
+                key_type_names,
+                seen,
+            )
+        )
     return sorted_tuple(
         candidates,
         key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
@@ -4982,19 +5380,13 @@ def _raise_exception_type_name(node: ast.Raise) -> str | None:
     return _call_name(node.exc)
 
 
-RegistryLookupShape = product_record(
-    "RegistryLookupShape", "key_expr: str; error_type_name: str | None; style: str"
-)
-
-
-_TryRegistryLookupBody = product_record(
-    "_TryRegistryLookupBody", "returned: ast.Return; handler: ast.ExceptHandler"
-)
-
-
-_GuardedRegistryLookupBody = product_record(
-    "_GuardedRegistryLookupBody", "guard: ast.If; returned: ast.Return; key_expr: str"
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('RegistryLookupShape', 'key_expr: str; error_type_name: str | None; style: str'),
+    _product_record_spec('_TryRegistryLookupBody', 'returned: ast.Return; handler: ast.ExceptHandler'),
+    _product_record_spec('_GuardedRegistryLookupBody', 'guard: ast.If; returned: ast.Return; key_expr: str'),
+))
+# fmt: on
 
 
 class _RegistryLookupShapeStep(RegisteredEffectStep):
@@ -5693,72 +6085,75 @@ def _common_abstract_base_names(
     return _indexed_class_display_names(abstract_bases, class_index)
 
 
+def _concrete_type_case_function_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    union_aliases: dict[str, tuple[str, ...]],
+    class_index: ClassFamilyIndex,
+) -> Iterable[ConcreteTypeCaseFunctionCandidate]:
+    alias_sources = _top_level_attribute_aliases(function)
+    grouped_checks: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = (
+        defaultdict(list)
+    )
+    for subnode in _walk_nodes(function):
+        if not (
+            isinstance(subnode, ast.Call)
+            and len(subnode.args) == 2
+            and (not subnode.keywords)
+            and (_ast_terminal_name(subnode.func) == "isinstance")
+        ):
+            continue
+        subject_expression = _attribute_family_subject_expression(
+            subnode.args[0], alias_sources=alias_sources
+        )
+        if subject_expression is None:
+            continue
+        concrete_names, abstract_names = _resolved_isinstance_type_names(
+            subnode.args[1], module=module, class_index=class_index
+        )
+        if not concrete_names:
+            continue
+        grouped_checks[subject_expression].append((concrete_names, abstract_names))
+    for subject_expression, checks in sorted(grouped_checks.items()):
+        concrete_class_names = sorted_tuple(
+            {name for concrete_names, _ in checks for name in concrete_names}
+        )
+        if len(concrete_class_names) < 2:
+            continue
+        subject_role = subject_expression.rsplit(".", 1)[-1]
+        union_alias_names = sorted_tuple(
+            alias_name
+            for alias_name, member_names in union_aliases.items()
+            if set(concrete_class_names) <= set(member_names)
+        )
+        yield ConcreteTypeCaseFunctionCandidate(
+            file_path=str(module.path),
+            line=function.lineno,
+            function_name=qualname,
+            subject_expression=subject_expression,
+            subject_role=subject_role,
+            concrete_class_names=concrete_class_names,
+            abstract_class_names=sorted_tuple(
+                {name for _, abstract_names in checks for name in abstract_names}
+            ),
+            union_alias_names=union_alias_names,
+            case_site_count=len(checks),
+        )
+
+
 def _concrete_type_case_function_candidates(
     module: ParsedModule,
     *,
     class_index: ClassFamilyIndex,
 ) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
     union_aliases = _module_union_type_aliases(module)
-    candidates: list[ConcreteTypeCaseFunctionCandidate] = []
-    for qualname, function in _iter_named_functions(module):
-        alias_sources = _top_level_attribute_aliases(function)
-        grouped_checks: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = (
-            defaultdict(list)
-        )
-        for subnode in _walk_nodes(function):
-            if not (
-                isinstance(subnode, ast.Call)
-                and len(subnode.args) == 2
-                and (not subnode.keywords)
-                and (_ast_terminal_name(subnode.func) == "isinstance")
-            ):
-                continue
-            subject_expression = _attribute_family_subject_expression(
-                subnode.args[0], alias_sources=alias_sources
-            )
-            if subject_expression is None:
-                continue
-            concrete_names, abstract_names = _resolved_isinstance_type_names(
-                subnode.args[1], module=module, class_index=class_index
-            )
-            if not concrete_names:
-                continue
-            grouped_checks[subject_expression].append((concrete_names, abstract_names))
-        for subject_expression, checks in sorted(grouped_checks.items()):
-            concrete_class_names = sorted_tuple(
-                {name for concrete_names, _ in checks for name in concrete_names}
-            )
-            if len(concrete_class_names) < 2:
-                continue
-            subject_role = subject_expression.rsplit(".", 1)[-1]
-            union_alias_names = sorted_tuple(
-                (
-                    alias_name
-                    for alias_name, member_names in union_aliases.items()
-                    if set(concrete_class_names) <= set(member_names)
-                )
-            )
-            candidates.append(
-                ConcreteTypeCaseFunctionCandidate(
-                    file_path=str(module.path),
-                    line=function.lineno,
-                    function_name=qualname,
-                    subject_expression=subject_expression,
-                    subject_role=subject_role,
-                    concrete_class_names=concrete_class_names,
-                    abstract_class_names=sorted_tuple(
-                        {
-                            name
-                            for _, abstract_names in checks
-                            for name in abstract_names
-                        }
-                    ),
-                    union_alias_names=union_alias_names,
-                    case_site_count=len(checks),
-                )
-            )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.subject_role, item.line)
+    return _collect_named_function_candidates(
+        module,
+        _concrete_type_case_function_candidates_for_function,
+        union_aliases,
+        class_index,
+        sort_key=lambda item: (item.file_path, item.subject_role, item.line),
     )
 
 
@@ -6709,6 +7104,47 @@ def _shared_abstract_nominal_authority(
     return bool(set.intersection(*lineage_sets))
 
 
+def _structural_confusability_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    class_nodes: Sequence[ast.ClassDef],
+    class_lookup: dict[str, ast.ClassDef],
+) -> Iterable[StructuralConfusabilityCandidate]:
+    for parameter_name in _parameter_names(function):
+        observed_method_names = sorted_tuple(
+            {
+                subnode.func.attr
+                for subnode in _walk_nodes(function)
+                if isinstance(subnode, ast.Call)
+                and isinstance(subnode.func, ast.Attribute)
+                and isinstance(subnode.func.value, ast.Name)
+                and (subnode.func.value.id == parameter_name)
+            }
+        )
+        if len(observed_method_names) < 2:
+            continue
+        confusable_classes = tuple(
+            node
+            for node in class_nodes
+            if set(observed_method_names) <= _method_names(node)
+        )
+        if len(confusable_classes) < 2:
+            continue
+        if _shared_abstract_nominal_authority(
+            confusable_classes, class_lookup=class_lookup
+        ):
+            continue
+        yield StructuralConfusabilityCandidate(
+            file_path=str(module.path),
+            line=function.lineno,
+            subject_name=qualname,
+            name_family=tuple((node.name for node in confusable_classes)),
+            parameter_name=parameter_name,
+            observed_method_names=observed_method_names,
+        )
+
+
 def _structural_confusability_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralConfusabilityCandidate, ...]:
@@ -6716,45 +7152,12 @@ def _structural_confusability_candidates(
         node for node in module.module.body if isinstance(node, ast.ClassDef)
     ]
     class_lookup = {node.name: node for node in class_nodes}
-    candidates: list[StructuralConfusabilityCandidate] = []
-    for qualname, function in _iter_named_functions(module):
-        for parameter_name in _parameter_names(function):
-            observed_method_names = sorted_tuple(
-                {
-                    subnode.func.attr
-                    for subnode in _walk_nodes(function)
-                    if isinstance(subnode, ast.Call)
-                    and isinstance(subnode.func, ast.Attribute)
-                    and isinstance(subnode.func.value, ast.Name)
-                    and (subnode.func.value.id == parameter_name)
-                }
-            )
-            if len(observed_method_names) < 2:
-                continue
-            confusable_classes = tuple(
-                (
-                    node
-                    for node in class_nodes
-                    if set(observed_method_names) <= _method_names(node)
-                )
-            )
-            if len(confusable_classes) < 2:
-                continue
-            if _shared_abstract_nominal_authority(
-                confusable_classes, class_lookup=class_lookup
-            ):
-                continue
-            candidates.append(
-                StructuralConfusabilityCandidate(
-                    file_path=str(module.path),
-                    line=function.lineno,
-                    subject_name=qualname,
-                    name_family=tuple((node.name for node in confusable_classes)),
-                    parameter_name=parameter_name,
-                    observed_method_names=observed_method_names,
-                )
-            )
-    return tuple(candidates)
+    return _collect_named_function_candidates(
+        module,
+        _structural_confusability_candidates_for_function,
+        class_nodes,
+        class_lookup,
+    )
 
 
 def _is_dataclass_decorator(node: ast.AST) -> bool:
@@ -6787,7 +7190,7 @@ def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
 
 def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
     roles: list[str] = []
-    if field_name == "file_path" or field_name.endswith("_path"):
+    if field_name == _DEFAULT_FILE_PATH_ATTRIBUTE or field_name.endswith("_path"):
         roles.append("source_path")
     if field_name in {"line", "lineno"} or field_name.endswith("_line"):
         roles.append("source_line")
@@ -7193,9 +7596,9 @@ _WITNESS_MIXIN_ROLE_NAMES = (
 )
 
 
-WitnessMixinRoleSpec = product_record(
-    "WitnessMixinRoleSpec", "mixin_name: str; scaffold: str"
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('WitnessMixinRoleSpec', 'mixin_name: str; scaffold: str'))
+# fmt: on
 
 
 _WITNESS_MIXIN_ROLE_SPECS = {
@@ -7464,17 +7867,12 @@ class SemanticDataclassRecommendation:
     )
 
 
-SemanticDictBagCandidate = product_record(
-    "SemanticDictBagCandidate",
-    "line: int; symbol: str; key_names: tuple[str, ...]; context_kind: str; recommendation: SemanticDataclassRecommendation",
-)
-
-
-FieldFamilyCandidate = product_record(
-    "FieldFamilyCandidate",
-    "class_names: tuple[str, ...]; field_names: tuple[str, ...]; execution_level: StructuralExecutionLevel; observations: tuple[FieldObservation, ...]; dataclass_count: int; field_type_map: tuple[tuple[str, str], ...]",
-    defaults={"field_type_map": ()},
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('SemanticDictBagCandidate', 'line: int; symbol: str; key_names: tuple[str, ...]; context_kind: str; recommendation: SemanticDataclassRecommendation'),
+    _product_record_spec('FieldFamilyCandidate', 'class_names: tuple[str, ...]; field_names: tuple[str, ...]; execution_level: StructuralExecutionLevel; observations: tuple[FieldObservation, ...]; dataclass_count: int; field_type_map: tuple[tuple[str, str], ...]', defaults={'field_type_map': ()}),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7486,9 +7884,7 @@ class LineWitnessCandidate(ABC):
     def witness_name(self) -> str:
         return type(self).__name__
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.witness_name)
+    evidence = _LINE_WITNESS_NAME_EVIDENCE
 
 
 class WitnessNameAliasMixin(ABC):
@@ -7508,9 +7904,9 @@ class QualnameWitnessNameMixin(WitnessNameAliasMixin):
     witness_name = AliasProperty[str]("qualname")
 
 
-EnumCaseFamilyMixin = product_record(
-    "EnumCaseFamilyMixin", "enum_name: str; case_names: tuple[str, ...]", bases=(ABC,)
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('EnumCaseFamilyMixin', 'enum_name: str; case_names: tuple[str, ...]', 'ABC'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7519,11 +7915,17 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-ClassLineWitnessCandidate = product_record(
-    "ClassLineWitnessCandidate",
-    "class_name: str",
-    bases=(ClassNameWitnessNameMixin, LineWitnessCandidate),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('FunctionEvidenceLocationsCandidate', 'function_names: tuple[str, ...]; line_numbers: tuple[int, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty('line_numbers', 'function_names')}),
+    _product_record_spec('MethodEvidenceLocationsCandidate', 'method_names: tuple[str, ...]; line_numbers: tuple[int, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty('line_numbers', 'method_names')}),
+))
+# fmt: on
+
+
+# fmt: off
+_materialize_product_record(_product_record_spec('ClassLineWitnessCandidate', 'class_name: str', 'ClassNameWitnessNameMixin LineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7577,17 +7979,12 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
         )
 
 
-NominalAuthorityShape = product_record(
-    "NominalAuthorityShape",
-    "file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool",
-)
-
-
-ManualFamilyRosterCandidate = product_record(
-    "ManualFamilyRosterCandidate",
-    "owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str",
-    bases=(LineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool'),
+    _product_record_spec('ManualFamilyRosterCandidate', 'owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str', 'LineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7609,11 +8006,9 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
         return tuple((location.symbol for location in self.consumer_locations))
 
 
-PredicateSelectedConcreteFamilyCandidate = product_record(
-    "PredicateSelectedConcreteFamilyCandidate",
-    "selector_method_name: str; predicate_method_name: str; context_param_name: str; concrete_class_names: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('PredicateSelectedConcreteFamilyCandidate', 'selector_method_name: str; predicate_method_name: str; context_param_name: str; concrete_class_names: tuple[str, ...]', 'ClassLineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7640,10 +8035,9 @@ class ParallelMirroredLeafFamilyCandidate:
         )
 
 
-FragmentedFamilyAuthorityCandidate = product_record(
-    "FragmentedFamilyAuthorityCandidate",
-    "file_path: str; mapping_names: tuple[str, ...]; line_numbers: tuple[int, ...]; key_family_name: str; shared_keys: tuple[str, ...]; total_keys: tuple[str, ...]",
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('FragmentedFamilyAuthorityCandidate', 'file_path: str; mapping_names: tuple[str, ...]; line_numbers: tuple[int, ...]; key_family_name: str; shared_keys: tuple[str, ...]; total_keys: tuple[str, ...]'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7683,26 +8077,13 @@ class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     forwarded_member_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-FindingAssemblyPipelineCandidate = product_record(
-    "FindingAssemblyPipelineCandidate",
-    "method_name: str; candidate_source_name: str; metrics_type_name: str | None; scaffold_helper_name: str | None; patch_helper_name: str | None",
-    bases=(WitnessCarrierCandidate,),
-)
-
-
-GuardedDelegatorCandidate = product_record(
-    "GuardedDelegatorCandidate",
-    "method_name: str; guard_role: str; delegate_name: str; scope_role: str",
-    bases=(WitnessCarrierCandidate,),
-)
-
-
-StructuralObservationPropertyCandidate = product_record(
-    "StructuralObservationPropertyCandidate",
-    "property_name: str; constructor_name: str; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]",
-    bases=(WitnessCarrierCandidate,),
-    defaults={"keyword_names": AliasProperty("name_family")},
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('FindingAssemblyPipelineCandidate', 'method_name: str; candidate_source_name: str; metrics_type_name: str | None; scaffold_helper_name: str | None; patch_helper_name: str | None', 'WitnessCarrierCandidate'),
+    _product_record_spec('GuardedDelegatorCandidate', 'method_name: str; guard_role: str; delegate_name: str; scope_role: str', 'WitnessCarrierCandidate'),
+    _product_record_spec('StructuralObservationPropertyCandidate', 'property_name: str; constructor_name: str; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]', 'WitnessCarrierCandidate', defaults={'keyword_names': AliasProperty('name_family')}),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7778,112 +8159,30 @@ class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
         )
 
 
-PropertyHookGroup = product_record(
-    "PropertyHookGroup",
-    "base_name: str; property_name: str",
-    bases=(ClassLineNumbersGroup,),
-)
-
-
-PropertyAliasHookGroup = product_record(
-    "PropertyAliasHookGroup", "returned_attribute: str", bases=(PropertyHookGroup,)
-)
-
-
-ConstantPropertyHookGroup = product_record(
-    "ConstantPropertyHookGroup",
-    "return_expressions: tuple[str, ...]",
-    bases=(PropertyHookGroup,),
-)
-
-
-HelperBackedObservationSpecCandidate = product_record(
-    "HelperBackedObservationSpecCandidate",
-    "base_names: tuple[str, ...]; method_name: str; helper_name: str; wrapper_kind: str; parameter_names: tuple[str, ...]",
-    bases=(WitnessCarrierCandidate,),
-)
-
-
-HelperBackedObservationSpecGroup = product_record(
-    "HelperBackedObservationSpecGroup",
-    "base_names: tuple[str, ...]; method_names: tuple[str, ...]; helper_names: tuple[str, ...]; wrapper_kinds: tuple[str, ...]",
-    bases=(ClassLineNumbersGroup,),
-)
-
-
-GuardedWrapperSpecPair = product_record(
-    "GuardedWrapperSpecPair",
-    "file_path: str; spec_name: str; spec_line: int; function_name: str; function_line: int; constructor_name: str; node_types: tuple[str, ...]",
-)
-
-
-DeclarativeFamilyLeafCandidate = product_record(
-    "DeclarativeFamilyLeafCandidate",
-    "base_names: tuple[str, ...]; assigned_names: tuple[str, ...]",
-    bases=(WitnessCarrierCandidate,),
-)
-
-
-DeclarativeFamilyBoilerplateGroup = product_record(
-    "DeclarativeFamilyBoilerplateGroup",
-    "base_names: tuple[str, ...]; assigned_names: tuple[str, ...]",
-    bases=(ClassLineNumbersGroup,),
-)
-
-
-TypeIndexedDefinitionBoilerplateGroup = product_record(
-    "TypeIndexedDefinitionBoilerplateGroup",
-    "file_path: str; base_names: tuple[str, ...]; definition_class_names: tuple[str, ...]; alias_names: tuple[str, ...]; line_numbers: tuple[int, ...]; assigned_names: tuple[str, ...]",
-)
-
-
-ExportSurfaceCandidate = product_record(
-    "ExportSurfaceCandidate",
-    "export_symbol: str; exported_names: tuple[str, ...]",
-    bases=(LineWitnessCandidate,),
-)
-
-
-DerivedExportSurfaceCandidate = product_record(
-    "DerivedExportSurfaceCandidate",
-    "derivable_root_names: tuple[str, ...]",
-    bases=(ExportSurfaceCandidate,),
-)
-
-
-ManualPublicApiSurfaceCandidate = product_record(
-    "ManualPublicApiSurfaceCandidate",
-    "source_name_count: int",
-    bases=(ExportSurfaceCandidate,),
-)
-
-
-DerivedIndexedSurfaceCandidate = product_record(
-    "DerivedIndexedSurfaceCandidate",
-    "surface_name: str; key_kind: str; value_names: tuple[str, ...]; derivable_root_names: tuple[str, ...]",
-    bases=(LineWitnessCandidate,),
-)
-
-
-RegisteredUnionSurfaceCandidate = product_record(
-    "RegisteredUnionSurfaceCandidate",
-    "owner_name: str; accessor_name: str; root_names: tuple[str, ...]",
-    bases=(LineWitnessCandidate,),
-)
-
-
-ExportPolicyPredicateCandidate = product_record(
-    "ExportPolicyPredicateCandidate",
-    "role_names: tuple[str, ...]; root_type_names: tuple[str, ...]",
-    bases=(WitnessCarrierCandidate, SubjectNameFunctionNameMixin),
-)
-
-
-RegistryTraversalGroup = product_record(
-    "RegistryTraversalGroup",
-    "method_names: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]",
-    bases=(ClassLineNumbersGroup,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('PropertyHookGroup', 'base_name: str; property_name: str', 'ClassLineNumbersGroup'),
+    _product_record_spec('PropertyAliasHookGroup', 'returned_attribute: str', 'PropertyHookGroup'),
+    _product_record_spec('ConstantPropertyHookGroup', 'return_expressions: tuple[str, ...]', 'PropertyHookGroup'),
+    _product_record_spec('ConstantPropertyDefaultBundleCandidate', 'property_names: tuple[str, ...]; return_expressions: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('HelperBackedObservationSpecCandidate', 'base_names: tuple[str, ...]; method_name: str; helper_name: str; wrapper_kind: str; parameter_names: tuple[str, ...]', 'WitnessCarrierCandidate'),
+    _product_record_spec('HelperBackedObservationSpecGroup', 'base_names: tuple[str, ...]; method_names: tuple[str, ...]; helper_names: tuple[str, ...]; wrapper_kinds: tuple[str, ...]', 'ClassLineNumbersGroup'),
+    _product_record_spec('GuardedWrapperSpecPair', 'file_path: str; spec_name: str; spec_line: int; function_name: str; function_line: int; constructor_name: str; node_types: tuple[str, ...]'),
+    _product_record_spec('DeclarativeFamilyLeafCandidate', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', 'WitnessCarrierCandidate'),
+    _product_record_spec('DeclarativeFamilyBoilerplateGroup', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
+    _product_record_spec('MetadataOnlyClassFamilyCandidate', 'family_suffix: str; base_name_families: tuple[tuple[str, ...], ...]; assigned_names: tuple[str, ...]; line_count: int', 'ClassLineNumbersGroup'),
+    _product_record_spec('SelfNamingBuilderCatalogCandidate', 'builder_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]; line_count: int', 'ClassLineNumbersGroup'),
+    _product_record_spec('RepeatedBaseBundleCandidate', 'base_names: tuple[str, ...]; bundle_width: int; class_count: int; line_count: int', 'ClassLineNumbersGroup'),
+    _product_record_spec('TypeIndexedDefinitionBoilerplateGroup', 'file_path: str; base_names: tuple[str, ...]; definition_class_names: tuple[str, ...]; alias_names: tuple[str, ...]; line_numbers: tuple[int, ...]; assigned_names: tuple[str, ...]'),
+    _product_record_spec('ExportSurfaceCandidate', 'export_symbol: str; exported_names: tuple[str, ...]', 'LineWitnessCandidate'),
+    _product_record_spec('DerivedExportSurfaceCandidate', 'derivable_root_names: tuple[str, ...]', 'ExportSurfaceCandidate'),
+    _product_record_spec('ManualPublicApiSurfaceCandidate', 'source_name_count: int', 'ExportSurfaceCandidate'),
+    _product_record_spec('DerivedIndexedSurfaceCandidate', 'surface_name: str; key_kind: str; value_names: tuple[str, ...]; derivable_root_names: tuple[str, ...]', 'LineWitnessCandidate'),
+    _product_record_spec('RegisteredUnionSurfaceCandidate', 'owner_name: str; accessor_name: str; root_names: tuple[str, ...]', 'LineWitnessCandidate'),
+    _product_record_spec('ExportPolicyPredicateCandidate', 'role_names: tuple[str, ...]; root_type_names: tuple[str, ...]', 'WitnessCarrierCandidate SubjectNameFunctionNameMixin'),
+    _product_record_spec('RegistryTraversalGroup', 'method_names: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7896,70 +8195,22 @@ class SubclassTraversalSite:
     registry_attribute_names: tuple[str, ...]
     filter_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
+    evidence = _LINE_SYMBOL_EVIDENCE
 
 
-SubclassTraversalGroup = product_record(
-    "SubclassTraversalGroup",
-    "symbols: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; root_expressions: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]; filter_names: tuple[str, ...]",
-)
-
-
-AlternateConstructorFamilyGroup = product_record(
-    "AlternateConstructorFamilyGroup",
-    "source_type_names: tuple[str, ...]",
-    bases=(KeywordMethodFamilyCandidate,),
-)
-
-
-SelfReflectiveBuiltinCandidate = product_record(
-    "SelfReflectiveBuiltinCandidate",
-    "method_name: str; reflective_builtin: str",
-    bases=(WitnessCarrierCandidate,),
-)
-
-
-ReflectiveSelfAttributeCandidate = product_record(
-    "ReflectiveSelfAttributeCandidate",
-    "attribute_name: str",
-    bases=(SelfReflectiveBuiltinCandidate,),
-)
-
-
-DynamicSelfFieldSelectionCandidate = product_record(
-    "DynamicSelfFieldSelectionCandidate",
-    "selector_expression: str",
-    bases=(SelfReflectiveBuiltinCandidate,),
-)
-
-
-StringBackedReflectiveNominalLookupCandidate = product_record(
-    "StringBackedReflectiveNominalLookupCandidate",
-    "method_name: str; selector_attr_name: str; lookup_kind: str; receiver_expression: str; concrete_class_names: tuple[str, ...]; selector_values: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-ConcreteConfigFieldProbeCandidate = product_record(
-    "ConcreteConfigFieldProbeCandidate",
-    "method_name: str; config_attr_name: str; config_type_name: str; missing_field_names: tuple[str, ...]; probe_builtin_names: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-_ManualSubclassRegistrationSite = product_record(
-    "_ManualSubclassRegistrationSite",
-    "registry_name: str; guard_summary: str | None; selector_attr_name: str | None; requires_concrete_subclass: bool",
-    defaults={"selector_attr_name": None, "requires_concrete_subclass": False},
-)
-
-
-IndexedFamilyWrapperCandidate = product_record(
-    "IndexedFamilyWrapperCandidate",
-    "function_name: str; lineno: int; collector_name: str; spec_root_name: str; item_type_name: str",
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('SubclassTraversalGroup', 'symbols: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; root_expressions: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]; filter_names: tuple[str, ...]'),
+    _product_record_spec('AlternateConstructorFamilyGroup', 'source_type_names: tuple[str, ...]', 'KeywordMethodFamilyCandidate'),
+    _product_record_spec('SelfReflectiveBuiltinCandidate', 'method_name: str; reflective_builtin: str', 'WitnessCarrierCandidate'),
+    _product_record_spec('ReflectiveSelfAttributeCandidate', 'attribute_name: str', 'SelfReflectiveBuiltinCandidate'),
+    _product_record_spec('DynamicSelfFieldSelectionCandidate', 'selector_expression: str', 'SelfReflectiveBuiltinCandidate'),
+    _product_record_spec('StringBackedReflectiveNominalLookupCandidate', 'method_name: str; selector_attr_name: str; lookup_kind: str; receiver_expression: str; concrete_class_names: tuple[str, ...]; selector_values: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('ConcreteConfigFieldProbeCandidate', 'method_name: str; config_attr_name: str; config_type_name: str; missing_field_names: tuple[str, ...]; probe_builtin_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('_ManualSubclassRegistrationSite', 'registry_name: str; guard_summary: str | None; selector_attr_name: str | None; requires_concrete_subclass: bool', defaults={'selector_attr_name': None, 'requires_concrete_subclass': False}),
+    _product_record_spec('IndexedFamilyWrapperCandidate', 'function_name: str; lineno: int; collector_name: str; spec_root_name: str; item_type_name: str'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -7987,29 +8238,16 @@ class FunctionProfile:
             )
         )
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-QualnameLineWitnessCandidate = product_record(
-    "QualnameLineWitnessCandidate",
-    "qualname: str",
-    bases=(QualnameWitnessNameMixin, LineWitnessCandidate),
-)
-
-
-ParameterThreadFamilyCandidate = product_record(
-    "ParameterThreadFamilyCandidate",
-    "shared_parameter_names: tuple[str, ...]; functions: tuple[FunctionProfile, ...]",
-)
-
-
-SuffixAxisSurfaceMethod = product_record(
-    "SuffixAxisSurfaceMethod",
-    "owner_name: str; operation_name: str; axis_name: str; parameter_names: tuple[str, ...]; statement_count: int",
-    bases=(QualnameLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('QualnameLineWitnessCandidate', 'qualname: str', 'QualnameWitnessNameMixin LineWitnessCandidate'),
+    _product_record_spec('ParameterThreadFamilyCandidate', 'shared_parameter_names: tuple[str, ...]; functions: tuple[FunctionProfile, ...]'),
+    _product_record_spec('SuffixAxisSurfaceMethod', 'owner_name: str; operation_name: str; axis_name: str; parameter_names: tuple[str, ...]; statement_count: int', 'QualnameLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8025,11 +8263,9 @@ class SuffixAxisSurfaceCandidate:
         return tuple((method.evidence for method in self.methods[:8]))
 
 
-SiblingRoleHelperMethod = product_record(
-    "SiblingRoleHelperMethod",
-    "owner_name: str; method_name: str; role_token: str; shared_tokens: tuple[str, ...]; parameter_names: tuple[str, ...]; control_shape: tuple[str, ...]; line_count: int",
-    bases=(QualnameLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('SiblingRoleHelperMethod', 'owner_name: str; method_name: str; role_token: str; shared_tokens: tuple[str, ...]; parameter_names: tuple[str, ...]; control_shape: tuple[str, ...]; line_count: int', 'QualnameLineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8089,9 +8325,7 @@ class PrivateTopLevelSymbolProfile:
     name_tokens: tuple[str, ...]
     referenced_private_symbols: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
+    evidence = _LINE_SYMBOL_EVIDENCE
 
 
 @dataclass(frozen=True)
@@ -8118,22 +8352,15 @@ class EnumStrategyDispatchCandidate:
     dispatch_axis: str
     case_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-RepeatedEnumStrategyDispatchCandidate = product_record(
-    "RepeatedEnumStrategyDispatchCandidate",
-    "file_path: str; enum_family: str; shared_case_names: tuple[str, ...]; functions: tuple[EnumStrategyDispatchCandidate, ...]",
-)
-
-
-InlineEnumSubsetGuardCandidate = product_record(
-    "InlineEnumSubsetGuardCandidate",
-    "axis_expression: str; operator: str",
-    bases=(EnumCaseFamilyMixin, FunctionLineWitnessCandidate),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('RepeatedEnumStrategyDispatchCandidate', 'file_path: str; enum_family: str; shared_case_names: tuple[str, ...]; functions: tuple[EnumStrategyDispatchCandidate, ...]'),
+    _product_record_spec('InlineEnumSubsetGuardCandidate', 'axis_expression: str; operator: str', 'EnumCaseFamilyMixin FunctionLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8151,9 +8378,7 @@ class SplitDispatchAuthorityCandidate(LineWitnessCandidate):
     selector_line: int
     generic_line: int
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    evidence = _LINE_QUALNAME_EVIDENCE
 
 
 @dataclass(frozen=True)
@@ -8197,9 +8422,9 @@ class AxisFamilySite(LineWitnessCandidate):
     witness_name = AliasProperty[str]("family_name")
 
 
-KeyedAxisFamilySite = product_record(
-    "KeyedAxisFamilySite", "family_label: str | None", bases=(AxisFamilySite,)
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('KeyedAxisFamilySite', 'family_label: str | None', 'AxisFamilySite'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8338,16 +8563,7 @@ class DerivedQueryIndexCandidate:
     return_expressions: tuple[str, ...]
     exception_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, function_name)
-                for function_name, line in zip(
-                    self.function_names, self.line_numbers, strict=True
-                )
-            )
-        )
+    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
 
 
 @dataclass(frozen=True)
@@ -8362,18 +8578,12 @@ class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-KeywordBagAdapterCandidate = product_record(
-    "KeywordBagAdapterCandidate",
-    "source_name: str; key_names: tuple[str, ...]; source_field_names: tuple[str, ...]",
-    bases=(FunctionLineWitnessCandidate,),
-)
-
-
-TransportShellTemplateCandidate = product_record(
-    "TransportShellTemplateCandidate",
-    "driver_method_name: str; selector_attr_name: str; selector_value_names: tuple[str, ...]; concrete_class_names: tuple[str, ...]; source_param_name: str; constructor_name: str; kwargs_helper_name: str | None; inner_hook_name: str; outer_hook_name: str",
-    bases=(ClassLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('KeywordBagAdapterCandidate', 'source_name: str; key_names: tuple[str, ...]; source_field_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('TransportShellTemplateCandidate', 'driver_method_name: str; selector_attr_name: str; selector_value_names: tuple[str, ...]; concrete_class_names: tuple[str, ...]; source_param_name: str; constructor_name: str; kwargs_helper_name: str | None; inner_hook_name: str; outer_hook_name: str', 'ClassLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8386,15 +8596,12 @@ class SpecAxisFamily:
     axis_pairs: tuple[tuple[str, str], ...]
     extra_keyword_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.family_name)
+    evidence = _LINE_FAMILY_NAME_EVIDENCE
 
 
-CrossModuleSpecAxisAuthorityCandidate = product_record(
-    "CrossModuleSpecAxisAuthorityCandidate",
-    "axis_field_names: tuple[str, str]; shared_axis_pairs: tuple[tuple[str, str], ...]; families: tuple[SpecAxisFamily, ...]",
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('CrossModuleSpecAxisAuthorityCandidate', 'axis_field_names: tuple[str, str]; shared_axis_pairs: tuple[tuple[str, str], ...]; families: tuple[SpecAxisFamily, ...]'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8407,47 +8614,19 @@ class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
     registry_accessor_name: str
     return_keyword_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    evidence = _LINE_QUALNAME_EVIDENCE
 
 
-ParallelRegistryProjectionFamilyCandidate = product_record(
-    "ParallelRegistryProjectionFamilyCandidate",
-    "file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]",
-)
-
-
-KeyedFamilyRootCandidate = product_record(
-    "KeyedFamilyRootCandidate",
-    "family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-RepeatedKeyedFamilyCandidate = product_record(
-    "RepeatedKeyedFamilyCandidate",
-    "family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]",
-)
-
-
-ManualRecordRegistrationShape = product_record(
-    "ManualRecordRegistrationShape",
-    "key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]",
-)
-
-
-ManualKeyedRecordTableClassCandidate = product_record(
-    "ManualKeyedRecordTableClassCandidate",
-    "register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-ManualKeyedRecordTableGroupCandidate = product_record(
-    "ManualKeyedRecordTableGroupCandidate",
-    "file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]",
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]'),
+    _product_record_spec('KeyedFamilyRootCandidate', 'family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('RepeatedKeyedFamilyCandidate', 'family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]'),
+    _product_record_spec('ManualRecordRegistrationShape', 'key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]'),
+    _product_record_spec('ManualKeyedRecordTableClassCandidate', 'register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('ManualKeyedRecordTableGroupCandidate', 'file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8489,11 +8668,9 @@ class ManualStructuralRecordMechanicsGroupCandidate:
         )
 
 
-ConcreteTypeCaseFunctionCandidate = product_record(
-    "ConcreteTypeCaseFunctionCandidate",
-    "subject_expression: str; subject_role: str; concrete_class_names: tuple[str, ...]; abstract_class_names: tuple[str, ...]; union_alias_names: tuple[str, ...]; case_site_count: int",
-    bases=(FunctionLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('ConcreteTypeCaseFunctionCandidate', 'subject_expression: str; subject_role: str; concrete_class_names: tuple[str, ...]; abstract_class_names: tuple[str, ...]; union_alias_names: tuple[str, ...]; case_site_count: int', 'FunctionLineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8531,11 +8708,9 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
         return tuple((function.evidence for function in self.functions[:6]))
 
 
-GuardValidatorFunctionCandidate = product_record(
-    "GuardValidatorFunctionCandidate",
-    "subject_param_name: str; alias_source_attr: str | None; guard_count: int; accessed_attr_names: tuple[str, ...]; helper_call_names: tuple[str, ...]",
-    bases=(FunctionLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('GuardValidatorFunctionCandidate', 'subject_param_name: str; alias_source_attr: str | None; guard_count: int; accessed_attr_names: tuple[str, ...]; helper_call_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8552,11 +8727,9 @@ class RepeatedGuardValidatorFamilyCandidate:
         return tuple((function.evidence for function in self.functions[:6]))
 
 
-ValidateShapeGuardMethodCandidate = product_record(
-    "ValidateShapeGuardMethodCandidate",
-    "guard_count: int; shape_guard_count: int; shape_guard_signatures: tuple[str, ...]",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('ValidateShapeGuardMethodCandidate', 'guard_count: int; shape_guard_count: int; shape_guard_signatures: tuple[str, ...]', 'ClassMethodLineWitnessCandidate'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8606,16 +8779,7 @@ class EmptyLeafProductFamilyCandidate:
     leaf_class_names: tuple[str, ...]
     leaf_lines: tuple[int, ...]
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, class_name)
-                for class_name, line in zip(
-                    self.leaf_class_names, self.leaf_lines, strict=True
-                )
-            )
-        )
+    evidence = ZippedSourceLocationEvidenceProperty("leaf_lines", "leaf_class_names")
 
 
 @dataclass(frozen=True)
@@ -8628,9 +8792,7 @@ class FunctionWrapperCandidate:
     statement_count: int
     projected_attributes: tuple[str, ...] = ()
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
 @dataclass(frozen=True)
@@ -8641,14 +8803,12 @@ class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
     forwarded_parameter_names: tuple[str, ...]
     transported_value_sources: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    evidence = _LINE_QUALNAME_EVIDENCE
 
 
-ResolvedExternalCallsite = product_record(
-    "ResolvedExternalCallsite", "module_name: str; location: SourceLocation"
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('ResolvedExternalCallsite', 'module_name: str; location: SourceLocation'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8719,9 +8879,7 @@ class NominalPolicySurfaceMethodCandidate(LineWitnessCandidate):
     selector_source_exprs: tuple[str, ...]
     transported_value_sources: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    evidence = _LINE_QUALNAME_EVIDENCE
 
 
 @dataclass(frozen=True)
@@ -8753,10 +8911,9 @@ class NominalPolicySurfaceFamilyCandidate:
         return tuple((method.evidence for method in self.methods[:6]))
 
 
-WrapperChainCandidate = product_record(
-    "WrapperChainCandidate",
-    "file_path: str; wrappers: tuple[FunctionWrapperCandidate, ...]; leaf_delegate_symbol: str",
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('WrapperChainCandidate', 'file_path: str; wrappers: tuple[FunctionWrapperCandidate, ...]; leaf_delegate_symbol: str'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8785,36 +8942,17 @@ class ResultAssemblyPipelineFunction:
     lineno: int
     stages: tuple[PipelineAssemblyStage, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-RepeatedResultAssemblyPipelineCandidate = product_record(
-    "RepeatedResultAssemblyPipelineCandidate",
-    "file_path: str; shared_tail: tuple[PipelineAssemblyStage, ...]; functions: tuple[ResultAssemblyPipelineFunction, ...]",
-)
-
-
-FailSoftEffectPipelineCandidate = product_record(
-    "FailSoftEffectPipelineCandidate",
-    "line_count: int; guard_count: int; normal_form: str; guarded_binding_names: tuple[str, ...]; stage_kinds: tuple[str, ...]; success_return_kind: str; helper_call_names: tuple[str, ...]",
-    bases=(FunctionLineWitnessCandidate,),
-)
-
-
-EffectStepAmortizationCandidate = product_record(
-    "EffectStepAmortizationCandidate",
-    "line_count: int; payoff_score: int; none_return_count: int; ast_type_guard_count: int; cardinality_guard_count: int; semantic_helper_count: int; ast_type_names: tuple[str, ...]; semantic_helper_names: tuple[str, ...]; normal_form: str",
-    bases=(FunctionLineWitnessCandidate,),
-)
-
-
-EffectStepImplementationLeakCandidate = product_record(
-    "EffectStepImplementationLeakCandidate",
-    "none_return_count: int; raw_guard_count: int; suggested_base_name: str",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('RepeatedResultAssemblyPipelineCandidate', 'file_path: str; shared_tail: tuple[PipelineAssemblyStage, ...]; functions: tuple[ResultAssemblyPipelineFunction, ...]'),
+    _product_record_spec('FailSoftEffectPipelineCandidate', 'line_count: int; guard_count: int; normal_form: str; guarded_binding_names: tuple[str, ...]; stage_kinds: tuple[str, ...]; success_return_kind: str; helper_call_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('EffectStepAmortizationCandidate', 'line_count: int; payoff_score: int; none_return_count: int; ast_type_guard_count: int; cardinality_guard_count: int; semantic_helper_count: int; ast_type_names: tuple[str, ...]; semantic_helper_names: tuple[str, ...]; normal_form: str; estimated_step_count: int; generated_object_budget: int; net_object_savings: int; description_length_before: int; description_length_after: int; description_length_savings: int; compression_certificate: CompressionCertificate', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('EffectStepImplementationLeakCandidate', 'none_return_count: int; raw_guard_count: int; suggested_base_name: str', 'ClassMethodLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8828,18 +8966,12 @@ class UnderAmortizedInfrastructureCandidate(LineWitnessCandidate):
         return ", ".join(self.declaration_names[:4])
 
 
-CandidateCollectorBoilerplateCandidate = product_record(
-    "CandidateCollectorBoilerplateCandidate",
-    "collector_name: str; scope_kind: str; uses_config: bool; recommended_base_name: str",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
-
-
-TypedCandidateCastBoilerplateCandidate = product_record(
-    "TypedCandidateCastBoilerplateCandidate",
-    "parameter_name: str; local_name: str; candidate_type_name: str; detector_base_name: str",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('CandidateCollectorBoilerplateCandidate', 'collector_name: str; scope_kind: str; uses_config: bool; recommended_base_name: str', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('TypedCandidateCastBoilerplateCandidate', 'parameter_name: str; local_name: str; candidate_type_name: str; detector_base_name: str', 'ClassMethodLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8851,109 +8983,34 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
     witness_name = AliasProperty[str]("constructor_name")
 
 
-DirectBuildFindingRendererCandidate = product_record(
-    "DirectBuildFindingRendererCandidate",
-    "base_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
-
-
-DerivableDetectorIdCandidate = product_record(
-    "DerivableDetectorIdCandidate",
-    "detector_id_value: str",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-DerivableCandidateCollectorCandidate = product_record(
-    "DerivableCandidateCollectorCandidate",
-    "collector_name: str",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-CanonicalFindingSpecBuilderCandidate = product_record(
-    "CanonicalFindingSpecBuilderCandidate",
-    "constructor_name: str; builder_name: str; keyword_names: tuple[str, ...]",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-DeclarativeDetectorClassCandidate = product_record(
-    "DeclarativeDetectorClassCandidate",
-    "base_name: str; candidate_type_name: str; assignment_names: tuple[str, ...]; line_count: int",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-ManualSortedTupleReturnCandidate = product_record(
-    "ManualSortedTupleReturnCandidate",
-    "sorted_expression: str; key_expression: str | None; reverse_expression: str | None; line_count: int",
-    bases=(QualnameLineWitnessCandidate,),
-)
-
-
-ManualSortedTupleExpressionCandidate = product_record(
-    "ManualSortedTupleExpressionCandidate",
-    "context_kind: str",
-    bases=(ManualSortedTupleReturnCandidate,),
-)
-
-
-SimplePropertyAliasClassCandidate = product_record(
-    "SimplePropertyAliasClassCandidate",
-    "alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-SimplePropertyAliasMethodCandidate = product_record(
-    "SimplePropertyAliasMethodCandidate",
-    "source_name: str; return_annotation: str | None",
-    bases=(ClassMethodLineWitnessCandidate,),
-)
-
-
-FieldOnlyFrozenDataclassCandidate = product_record(
-    "FieldOnlyFrozenDataclassCandidate",
-    "base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; default_specs: tuple[tuple[str, str], ...]; docstring: str | None; kw_only: bool; line_count: int",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-SemanticTypeAliasCandidate = product_record(
-    "SemanticTypeAliasCandidate",
-    "annotation_text: str; occurrence_count: int; owner_symbols: tuple[str, ...]; suggested_alias_name: str",
-    bases=(EvidenceLocationsWitnessCandidate,),
-)
-
-
-DuplicateVisitorMethodBodyCandidate = product_record(
-    "DuplicateVisitorMethodBodyCandidate",
-    "method_names: tuple[str, ...]; statement_count: int",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-EnumMetadataTableCandidate = product_record(
-    "EnumMetadataTableCandidate",
-    "table_name: str; property_names: tuple[str, ...]; case_count: int",
-    bases=(ClassLineWitnessCandidate,),
-)
-
-
-ReadabilityCompressedLineCandidate = product_record(
-    "ReadabilityCompressedLineCandidate",
-    "char_count: int; reason: str; statement_count: int",
-    bases=(LineWitnessCandidate,),
-)
-
-
-DataclassNamespaceCliMirrorCandidate = product_record(
-    "DataclassNamespaceCliMirrorCandidate",
-    "argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int",
-    bases=(ClassLineWitnessCandidate,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('DirectBuildFindingRendererCandidate', 'base_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('DerivableDetectorIdCandidate', 'detector_id_value: str', 'ClassLineWitnessCandidate'),
+    _product_record_spec('DerivableCandidateCollectorCandidate', 'collector_name: str', 'ClassLineWitnessCandidate'),
+    _product_record_spec('CanonicalFindingSpecBuilderCandidate', 'constructor_name: str; builder_name: str; keyword_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('DetectorBackendPayoffGuardCandidate', 'candidate_type_name: str; abstraction_terms: tuple[str, ...]; missing_guard_names: tuple[str, ...]; declaration_line_count: int', 'QualnameLineWitnessCandidate'),
+    _product_record_spec('DeclarativeDetectorClassCandidate', 'base_name: str; candidate_type_name: str; assignment_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('StaticTypedObservationDetectorCandidate', 'observation_family_name: str; observation_type_name: str; minimum_evidence_count: int; summary_expression: str; line_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('InlineCandidateRendererDeclarationCandidate', 'candidate_type_name: str; renderer_keyword_names: tuple[str, ...]; detector_keyword_names: tuple[str, ...]; has_single_candidate_evidence: bool; line_count: int', 'QualnameLineWitnessCandidate'),
+    _product_record_spec('NamedFunctionCollectorBoilerplateCandidate', 'candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('AstStreamCollectorBoilerplateCandidate', 'accumulator_name: str; stream_call_names: tuple[str, ...]; candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('ManualSortedTupleReturnCandidate', 'sorted_expression: str; key_expression: str | None; reverse_expression: str | None; line_count: int', 'QualnameLineWitnessCandidate'),
+    _product_record_spec('ManualSortedTupleExpressionCandidate', 'context_kind: str', 'ManualSortedTupleReturnCandidate'),
+    _product_record_spec('SimplePropertyAliasClassCandidate', 'alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('SourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_attribute_name: str; symbol_attribute_name: str', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('ZippedSourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_numbers_attribute_name: str; symbol_names_attribute_name: str; line_count: int', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('PrivateHelperShadowCandidate', 'private_name: str; public_name: str; public_file_path: str; public_line: int', 'EvidenceLocationsWitnessCandidate'),
+    _product_record_spec('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; default_specs: tuple[tuple[str, str], ...]; docstring: str | None; kw_only: bool; line_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('SemanticTypeAliasCandidate', 'annotation_text: str; occurrence_count: int; owner_symbols: tuple[str, ...]; suggested_alias_name: str', 'EvidenceLocationsWitnessCandidate'),
+    _product_record_spec('NodeVisitorStackBoilerplateCandidate', 'stack_names: tuple[str, ...]; transition_method_names: tuple[str, ...]; line_count: int', 'QualnameLineWitnessCandidate'),
+    _product_record_spec('DuplicateVisitorMethodBodyCandidate', 'method_names: tuple[str, ...]; statement_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('EnumMetadataTableCandidate', 'table_name: str; property_names: tuple[str, ...]; case_count: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('ReadabilityCompressedLineCandidate', 'char_count: int; reason: str; statement_count: int', 'LineWitnessCandidate'),
+    _product_record_spec('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', 'ClassLineWitnessCandidate'),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -8986,9 +9043,7 @@ class NestedBuilderShellCandidate:
     residue_field_names: tuple[str, ...]
     residue_source_names: tuple[str, ...]
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.qualname)
+    evidence = _LINENO_QUALNAME_EVIDENCE
 
 
 @dataclass(frozen=True)
@@ -9018,15 +9073,9 @@ class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin
     registry_name = AliasProperty[str]("subject_name")
 
 
-StructuralConfusabilityCandidate = product_record(
-    "StructuralConfusabilityCandidate",
-    "parameter_name: str; observed_method_names: tuple[str, ...]",
-    bases=(
-        WitnessCarrierCandidate,
-        NameFamilyClassNamesMixin,
-        SubjectNameFunctionNameMixin,
-    ),
-)
+# fmt: off
+_materialize_product_record(_product_record_spec('StructuralConfusabilityCandidate', 'parameter_name: str; observed_method_names: tuple[str, ...]', 'WitnessCarrierCandidate NameFamilyClassNamesMixin SubjectNameFunctionNameMixin'))
+# fmt: on
 
 
 @dataclass(frozen=True)
@@ -9038,18 +9087,12 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-WitnessCarrierFamilyCandidate = product_record(
-    "WitnessCarrierFamilyCandidate",
-    "shared_role_names: tuple[str, ...]",
-    bases=(ClassLineNumbersGroup,),
-)
-
-
-WitnessMixinEnforcementCandidate = product_record(
-    "WitnessMixinEnforcementCandidate",
-    "role_field_names: tuple[tuple[str, tuple[str, ...]], ...]",
-    bases=(ClassLineNumbersGroup,),
-)
+# fmt: off
+_materialize_product_records((
+    _product_record_spec('WitnessCarrierFamilyCandidate', 'shared_role_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
+    _product_record_spec('WitnessMixinEnforcementCandidate', 'role_field_names: tuple[tuple[str, tuple[str, ...]], ...]', 'ClassLineNumbersGroup'),
+))
+# fmt: on
 
 
 def _axis_dispatch_metrics(

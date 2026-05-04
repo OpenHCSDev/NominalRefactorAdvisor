@@ -6,7 +6,11 @@ pattern-aware plans suitable for long-running maintenance work.
 
 from __future__ import annotations
 
-from .record_algebra import product_record
+from .record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
@@ -37,10 +41,9 @@ from .taxonomy import (
     ObservationTag,
 )
 
-_FindingCluster = product_record(
-    "_FindingCluster",
-    "subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]",
-)
+# fmt: off
+materialize_product_record(product_record_spec('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]'))
+# fmt: on
 
 
 class PatternPlanStepBuilder(ABC):
@@ -167,22 +170,12 @@ class PatternActionBuilder(ABC):
         raise NotImplementedError
 
 
-ActionTemplate = product_record(
-    "ActionTemplate",
-    "kind: str; description: str; confidence: ConfidenceLevel; create_symbol: str | None; replace_with: str | None; remove_symbols_from_evidence: bool; statement_operation: str | None",
-    defaults={
-        "create_symbol": None,
-        "replace_with": None,
-        "remove_symbols_from_evidence": False,
-        "statement_operation": None,
-    },
-)
-
-
-ActionContext = product_record(
-    "ActionContext",
-    "subsystem: str; evidence: tuple[SourceLocation, ...]; symbols: tuple[str, ...]; base_name: str; template_method_name: str; statement_sequence: str; registry_name: str; registry_hook_examples: str; class_list: str; mapping_symbol: str; mapping_call: str; mapping_problem: str; field_list: str; identity_field_list: str; field_execution_level: str; dispatch_symbol: str; dispatch_axis: str; dispatch_cases: str; statement_count: int",
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('ActionTemplate', 'kind: str; description: str; confidence: ConfidenceLevel; create_symbol: str | None; replace_with: str | None; remove_symbols_from_evidence: bool; statement_operation: str | None', defaults={'create_symbol': None, 'replace_with': None, 'remove_symbols_from_evidence': False, 'statement_operation': None}),
+    product_record_spec('ActionContext', 'subsystem: str; evidence: tuple[SourceLocation, ...]; symbols: tuple[str, ...]; base_name: str; template_method_name: str; statement_sequence: str; registry_name: str; registry_hook_examples: str; class_list: str; mapping_symbol: str; mapping_call: str; mapping_problem: str; field_list: str; identity_field_list: str; field_execution_level: str; dispatch_symbol: str; dispatch_axis: str; dispatch_cases: str; statement_count: int'),
+))
+# fmt: on
 
 
 _ABC_FIELD_ACTION_TEMPLATES = (
@@ -490,7 +483,14 @@ def build_refactor_plans(
     """Group findings by subsystem and synthesize refactor plans."""
     clusters = _cluster_findings(findings, root)
     plans = [_plan_for_cluster(cluster) for cluster in clusters]
-    return sorted(plans, key=lambda plan: (plan.subsystem, plan.primary_pattern_id))
+    return sorted(
+        plans,
+        key=lambda plan: (
+            -plan.outcome.description_length_savings,
+            plan.subsystem,
+            plan.primary_pattern_id,
+        ),
+    )
 
 
 def _cluster_findings(
@@ -767,6 +767,27 @@ def _estimate_outcome(
         total.loci_of_change_after, len(ordered_patterns), 1 if findings else 0
     )
     upper_bound = max(total.lower_bound_removable_loc, total.upper_bound_removable_loc)
+    description_length_before = sum(
+        (
+            finding.compression_certificate.before_description_length
+            for finding in findings
+            if finding.compression_certificate is not None
+        )
+    )
+    description_length_after = sum(
+        (
+            finding.compression_certificate.description_cost.description_length
+            for finding in findings
+            if finding.compression_certificate is not None
+        )
+    )
+    description_length_savings = sum(
+        (
+            finding.compression_certificate.certified_description_length_savings
+            for finding in findings
+            if finding.compression_certificate is not None
+        )
+    )
 
     return OutcomeEstimate(
         lower_bound_removable_loc=total.lower_bound_removable_loc,
@@ -777,6 +798,9 @@ def _estimate_outcome(
         dispatch_sites_eliminated=total.dispatch_sites_eliminated,
         registration_sites_removed=total.registration_sites_removed,
         shared_algorithm_sites_centralized=total.shared_algorithm_sites_centralized,
+        description_length_before=description_length_before,
+        description_length_after=description_length_after,
+        description_length_savings=description_length_savings,
     )
 
 

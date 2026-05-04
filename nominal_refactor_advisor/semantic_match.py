@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from .record_algebra import product_record
+from .record_algebra import (
+    materialize_product_record,
+    materialize_product_records,
+    product_record_spec,
+)
 
 import ast
 from abc import ABC, abstractmethod
@@ -101,9 +105,9 @@ class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
         raise NotImplementedError
 
 
-SingleCompareMatch = product_record(
-    "SingleCompareMatch", "left: ast.AST; operator: ast.cmpop; right: ast.AST"
-)
+# fmt: off
+materialize_product_record(product_record_spec('SingleCompareMatch', 'left: ast.AST; operator: ast.cmpop; right: ast.AST'))
+# fmt: on
 
 
 class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
@@ -123,46 +127,17 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
         raise NotImplementedError
 
 
-AttributeCallMatch = product_record(
-    "AttributeCallMatch",
-    "call: ast.Call; attribute: ast.Attribute; owner: OwnerT; single_argument: ast.AST | None",
-    bases=(Generic[OwnerT],),
-)
-
-
-CallArgumentMatch = product_record(
-    "CallArgumentMatch",
-    "argument: ast.AST | None; arguments: tuple[ast.AST, ...]",
-    defaults={"arguments": ()},
-)
-
-
-NamedCallAssignment = product_record(
-    "NamedCallAssignment", "target_name: str; call: ast.Call"
-)
-
-
-NamedValueBinding = product_record(
-    "NamedValueBinding", "name: str; value: ast.AST | None; line: int"
-)
-
-
-CollectionLiteral = product_record(
-    "CollectionLiteral",
-    "node: ast.Tuple | ast.List | ast.Set; elements: tuple[ast.AST, ...]",
-)
-
-
-_AttributeCallParts = product_record(
-    "_AttributeCallParts", "call: ast.Call; attribute: ast.Attribute"
-)
-
-
-_AttributeCallOwnedParts = product_record(
-    "_AttributeCallOwnedParts",
-    "call: ast.Call; attribute: ast.Attribute; owner: OwnerT",
-    bases=(Generic[OwnerT],),
-)
+# fmt: off
+materialize_product_records((
+    product_record_spec('AttributeCallMatch', 'call: ast.Call; attribute: ast.Attribute; owner: OwnerT; single_argument: ast.AST | None', bases=(Generic[OwnerT],)),
+    product_record_spec('CallArgumentMatch', 'argument: ast.AST | None; arguments: tuple[ast.AST, ...]', defaults={'arguments': ()}),
+    product_record_spec('NamedCallAssignment', 'target_name: str; call: ast.Call'),
+    product_record_spec('NamedValueBinding', 'name: str; value: ast.AST | None; line: int'),
+    product_record_spec('CollectionLiteral', 'node: ast.Tuple | ast.List | ast.Set; elements: tuple[ast.AST, ...]'),
+    product_record_spec('_AttributeCallParts', 'call: ast.Call; attribute: ast.Attribute'),
+    product_record_spec('_AttributeCallOwnedParts', 'call: ast.Call; attribute: ast.Attribute; owner: OwnerT', bases=(Generic[OwnerT],)),
+))
+# fmt: on
 
 
 @dataclass(frozen=True)
