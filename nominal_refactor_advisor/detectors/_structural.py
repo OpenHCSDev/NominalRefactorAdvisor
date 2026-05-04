@@ -15,7 +15,7 @@ from ..record_algebra import (
 import ast
 from abc import abstractmethod
 from collections.abc import Callable
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
@@ -35,6 +35,7 @@ from ._helpers import *
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
+RoleFieldObservationGroups: TypeAlias = dict[str, dict[str, FieldObservation]]
 
 
 def _reflective_self_attribute_compression_certificate(
@@ -320,8 +321,8 @@ def _prefixed_role_field_groups(
     observations: tuple[FieldObservation, ...],
     *,
     prefix_token_count: int,
-) -> dict[str, dict[str, FieldObservation]]:
-    groups: dict[str, dict[str, FieldObservation]] = defaultdict(dict)
+) -> RoleFieldObservationGroups:
+    groups: RoleFieldObservationGroups = defaultdict(dict)
     for observation in observations:
         tokens = _ordered_class_name_tokens(observation.field_name)
         if len(tokens) <= prefix_token_count:
@@ -349,7 +350,7 @@ def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
 
 
 def _connected_role_components(
-    role_to_members: dict[str, dict[str, FieldObservation]],
+    role_to_members: RoleFieldObservationGroups,
     *,
     min_shared_members: int,
 ) -> tuple[tuple[str, ...], ...]:

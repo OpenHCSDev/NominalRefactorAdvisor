@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import combinations
-from typing import ClassVar, Generic, Self, TypeVar
+from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty
@@ -21,6 +21,7 @@ ObjectT = TypeVar("ObjectT")
 ValueT = TypeVar("ValueT", bound=Hashable)
 AxisT = TypeVar("AxisT", bound=Hashable)
 ProjectionMemberT = TypeVar("ProjectionMemberT")
+ObjectEdgePairs: TypeAlias = tuple[tuple[ObjectT, ObjectT], ...]
 
 
 def structural_key(value: object) -> Hashable:
@@ -151,6 +152,9 @@ class RepresentationFiber(Generic[ObjectT, ValueT]):
         return self.size > 1
 
 
+RepresentationFibers: TypeAlias = tuple[RepresentationFiber[ObjectT, ValueT], ...]
+
+
 @dataclass(frozen=True)
 class FiberGeometry(
     GroupedProjectionPartition[
@@ -161,7 +165,7 @@ class FiberGeometry(
 ):
     """Collision-fiber geometry of a finite representation map."""
 
-    fibers: tuple[RepresentationFiber[ObjectT, ValueT], ...]
+    fibers: RepresentationFibers[ObjectT, ValueT]
 
     @staticmethod
     def projection_group_member(
@@ -170,7 +174,7 @@ class FiberGeometry(
         return RepresentationFiber(value, members)
 
     @property
-    def ambiguous_fibers(self) -> tuple[RepresentationFiber[ObjectT, ValueT], ...]:
+    def ambiguous_fibers(self) -> RepresentationFibers[ObjectT, ValueT]:
         return tuple((fiber for fiber in self.fibers if fiber.is_ambiguous))
 
     @property
@@ -246,7 +250,7 @@ class ConfusabilityGraph(Generic[ObjectT]):
         return len(self.edges)
 
     @property
-    def edge_objects(self) -> tuple[tuple[ObjectT, ObjectT], ...]:
+    def edge_objects(self) -> ObjectEdgePairs[ObjectT]:
         return tuple(
             ((self.vertices[left], self.vertices[right]) for left, right in self.edges)
         )
@@ -363,7 +367,7 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
 
     def gain_witnesses(
         self, source_axes: Iterable[AxisT], target_axis: AxisT
-    ) -> tuple[tuple[ObjectT, ObjectT], ...]:
+    ) -> ObjectEdgePairs[ObjectT]:
         source_axis_set = frozenset(source_axes)
         return tuple(
             (

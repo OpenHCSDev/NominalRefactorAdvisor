@@ -606,7 +606,20 @@ OptionalCandidateMetricsRenderer: TypeAlias = (
 OptionalCandidateValueRenderer: TypeAlias = (
     Callable[[CandidateItemT], FindingValueT | None] | None
 )
+InlineEnumSubsetGuardKey: TypeAlias = tuple[str, int, str, tuple[str, ...]]
+InlineEnumSubsetGuardSeen: TypeAlias = set[InlineEnumSubsetGuardKey]
+ManualRecordConstructorFieldPartition: TypeAlias = (
+    tuple[tuple[str, ...], tuple[str, ...]]
+)
+ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
+ProductAxisPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
+ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
+SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
+SemanticRoleNameOptions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
+SpecAxisEntry: TypeAlias = tuple[str, str]
+SpecAxisFieldNames: TypeAlias = tuple[str, str]
+SpecAxisEntryGroups: TypeAlias = dict[SpecAxisFieldNames, list[SpecAxisEntry]]
 
 
 class FindingBuildContextKwargs(TypedDict, total=False):
@@ -1913,7 +1926,7 @@ _SIBLING_ROLE_HELPER_STOPWORDS = frozenset(
 
 def _sibling_role_name_key_options(
     method_name: str,
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
+) -> SemanticRoleNameOptions:
     tokens = _ordered_class_name_tokens(method_name)
     if len(tokens) < 3:
         return ()
@@ -2272,6 +2285,7 @@ def _iter_named_functions(
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+NamedFunctionSortKey: TypeAlias = Callable[[NamedFunctionCandidateT], Any] | None
 
 
 def _collect_named_function_candidates(
@@ -2281,7 +2295,7 @@ def _collect_named_function_candidates(
         Iterable[NamedFunctionCandidateT],
     ],
     *projector_args: NamedFunctionProjectorP.args,
-    sort_key: Callable[[NamedFunctionCandidateT], Any] | None = None,
+    sort_key: NamedFunctionSortKey[NamedFunctionCandidateT] = None,
     **projector_kwargs: NamedFunctionProjectorP.kwargs,
 ) -> tuple[NamedFunctionCandidateT, ...]:
     projected = (
@@ -2311,7 +2325,7 @@ def _collect_configured_named_function_candidates(
         Iterable[NamedFunctionCandidateT],
     ],
     *projector_args: ConfiguredNamedFunctionProjectorP.args,
-    sort_key: Callable[[NamedFunctionCandidateT], Any] | None = None,
+    sort_key: NamedFunctionSortKey[NamedFunctionCandidateT] = None,
     **projector_kwargs: ConfiguredNamedFunctionProjectorP.kwargs,
 ) -> tuple[NamedFunctionCandidateT, ...]:
     projected = (
@@ -2481,7 +2495,7 @@ def _inline_enum_subset_guard_candidates_for_function(
     module: ParsedModule,
     qualname: str,
     function: NamedFunctionNode,
-    seen: set[tuple[str, int, str, tuple[str, ...]]],
+    seen: InlineEnumSubsetGuardSeen,
 ) -> Iterable[InlineEnumSubsetGuardCandidate]:
     for node in _walk_nodes(function):
         if not isinstance(node, ast.Compare):
@@ -2508,7 +2522,7 @@ def _inline_enum_subset_guard_candidates_for_function(
 def _inline_enum_subset_guard_candidates(
     module: ParsedModule,
 ) -> tuple[InlineEnumSubsetGuardCandidate, ...]:
-    seen: set[tuple[str, int, str, tuple[str, ...]]] = set()
+    seen: InlineEnumSubsetGuardSeen = set()
     return _collect_named_function_candidates(
         module,
         _inline_enum_subset_guard_candidates_for_function,
@@ -3054,7 +3068,7 @@ def _is_reusable_axis_base(
 
 def _bipartition_product_axes(
     edges: tuple[tuple[str, str], ...],
-) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+) -> ProductAxisPartition | None:
     adjacency: dict[str, set[str]] = defaultdict(set)
     for left_name, right_name in edges:
         adjacency[left_name].add(right_name)
@@ -3705,8 +3719,8 @@ def _spec_axis_source(binding: _SpecAxisBinding) -> _SpecAxisSource | None:
 
 def _spec_axis_entries_by_axis(
     axis_pairs: tuple[(tuple[tuple[str, str], tuple[str, str]], ...)],
-) -> dict[tuple[str, str], list[tuple[str, str]]]:
-    grouped: dict[tuple[str, str], list[tuple[str, str]]] = defaultdict(list)
+) -> SpecAxisEntryGroups:
+    grouped: SpecAxisEntryGroups = defaultdict(list)
     for axis_field_names, axis_pair in axis_pairs:
         grouped[axis_field_names].append(axis_pair)
     return grouped
@@ -3900,8 +3914,8 @@ def _module_constant_bindings(
 
 def _module_level_named_sequences(
     module: ParsedModule,
-) -> dict[str, tuple[int, tuple[ast.AST, ...]]]:
-    sequences: dict[str, tuple[int, tuple[ast.AST, ...]]] = {}
+) -> ModuleNamedSequenceMap:
+    sequences: ModuleNamedSequenceMap = {}
     for statement in _trim_docstring_body(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
@@ -4283,7 +4297,7 @@ def _comprehension_builder_names(
 
 
 def _named_family_for_constants(
-    named_sequences: dict[str, tuple[int, tuple[ast.AST, ...]]],
+    named_sequences: ModuleNamedSequenceMap,
     constant_names: tuple[str, ...],
 ) -> str | None:
     constant_set = set(constant_names)
@@ -4604,6 +4618,8 @@ _materialize_product_records((
 ))
 # fmt: on
 
+KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
+
 
 def _keyed_family_key_type_name(node: ast.ClassDef) -> str | None:
     for base in node.bases:
@@ -4856,7 +4872,7 @@ def _enum_keyed_table_class_axis_shadow_candidates(
 def _parallel_keyed_table_and_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
-    family_specs_by_file: dict[str, list[_KeyedFamilyAxisSpec]] = {}
+    family_specs_by_file: KeyedFamilyAxisSpecsByKey = {}
     for family_spec in _keyed_family_axis_specs(modules):
         family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
     candidates: list[ParallelKeyedTableAndFamilyCandidate] = []
@@ -5194,7 +5210,7 @@ def _residual_closed_axis_branching_candidates_for_function(
     module: ParsedModule,
     qualname: str,
     function: NamedFunctionNode,
-    authoritative_specs_by_key: dict[str, list[_KeyedFamilyAxisSpec]],
+    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey,
     key_type_names: frozenset[str],
     seen: set[tuple[str, str, str]],
 ) -> Iterable[ResidualClosedAxisBranchingCandidate]:
@@ -5239,9 +5255,7 @@ def _residual_closed_axis_branching_candidates_for_function(
 def _residual_closed_axis_branching_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
-    authoritative_specs_by_key: dict[str, list[_KeyedFamilyAxisSpec]] = defaultdict(
-        list
-    )
+    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
     for spec in _keyed_family_axis_specs(modules):
         authoritative_specs_by_key[spec.key_type_name].append(spec)
     if not authoritative_specs_by_key:
@@ -5615,7 +5629,7 @@ def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
 
 def _manual_record_registration_constructor(
     body: list[ast.stmt], key_expr: str
-) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+) -> ManualRecordConstructorFieldPartition | None:
     assignment = next(
         (
             statement
@@ -6001,7 +6015,7 @@ def _resolved_isinstance_type_names(
     *,
     module: ParsedModule,
     class_index: ClassFamilyIndex,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> ResolvedTypeNamePartition:
     if isinstance(node, ast.Tuple):
         items = node.elts
     else:
@@ -6093,9 +6107,7 @@ def _concrete_type_case_function_candidates_for_function(
     class_index: ClassFamilyIndex,
 ) -> Iterable[ConcreteTypeCaseFunctionCandidate]:
     alias_sources = _top_level_attribute_aliases(function)
-    grouped_checks: dict[str, list[tuple[tuple[str, ...], tuple[str, ...]]]] = (
-        defaultdict(list)
-    )
+    grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
     for subnode in _walk_nodes(function):
         if not (
             isinstance(subnode, ast.Call)
@@ -6231,7 +6243,7 @@ def _self_cast_type_name(node: ast.AST) -> str | None:
 
 def _self_cast_alias_names(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> SelfCastAliasPartition:
     aliases: set[str] = set()
     cast_type_names: set[str] = set()
     for statement in _walk_nodes(method):
@@ -7213,7 +7225,7 @@ def _normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
 
 def _normalized_semantic_role_fields(
     field_names: tuple[str, ...],
-) -> tuple[tuple[str, tuple[str, ...]], ...]:
+) -> NormalizedRoleFieldMap:
     role_to_fields: dict[str, set[str]] = defaultdict(set)
     for field_name in field_names:
         for role_name in _normalize_semantic_field_roles(field_name):
@@ -7950,7 +7962,7 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
 class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
     role_names: tuple[str, ...]
     shared_member_names: tuple[str, ...]
-    role_field_map: tuple[tuple[str, tuple[str, ...]], ...]
+    role_field_map: NormalizedRoleFieldMap
     manual_transport_methods: tuple[str, ...]
     pytree_base_names: tuple[str, ...]
     is_dataclass_family: bool
@@ -9083,7 +9095,7 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     base_names: tuple[str, ...]
     family_tokens: tuple[str, ...]
     normalized_roles: tuple[str, ...]
-    normalized_role_fields: tuple[tuple[str, tuple[str, ...]], ...]
+    normalized_role_fields: NormalizedRoleFieldMap
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 

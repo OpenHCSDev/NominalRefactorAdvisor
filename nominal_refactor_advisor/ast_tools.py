@@ -112,6 +112,7 @@ materialize_product_records((
 
 
 AstScopedNode: TypeAlias = ast.AST
+CollectedFamilyTypes: TypeAlias = tuple[type["CollectedFamily"], ...]
 
 
 # fmt: off
@@ -325,12 +326,12 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
     item_type: ClassVar[type[object]]
 
     @classmethod
-    def registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
+    def registered_families(cls) -> CollectedFamilyTypes:
         """Return concrete families registered directly under this root."""
         return _direct_registered_types(cls, registry_base=CollectedFamily)
 
     @classmethod
-    def all_registered_families(cls) -> tuple[type["CollectedFamily"], ...]:
+    def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return _ordered_registered_types(cls)
 

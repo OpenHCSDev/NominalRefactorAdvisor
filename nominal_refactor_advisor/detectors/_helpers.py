@@ -17,9 +17,40 @@ from ..semantic_description_length import CompressionCertificate
 import io
 import re
 import tokenize
+from typing import TypeAlias
 
 from ._base import *
 from ._substrate_support import *
+
+BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
+ExternalCallsitesByTarget: TypeAlias = dict[
+    str, tuple[ResolvedExternalCallsite, ...]
+]
+NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
+NamedStringSequenceSpecs: TypeAlias = tuple[NamedStringSequenceSpec, ...]
+MutableNamedStringSequenceSpecs: TypeAlias = list[NamedStringSequenceSpec]
+NamedStringSequenceSpecsByName: TypeAlias = dict[
+    str, MutableNamedStringSequenceSpecs
+]
+DerivedQuerySignature: TypeAlias = tuple[str, str, str]
+DerivedQuerySpecsBySignature: TypeAlias = dict[
+    DerivedQuerySignature, MutableNamedStringSequenceSpecs
+]
+ProductRecordFieldSpec: TypeAlias = tuple[str, str, str | None]
+ProductRecordFieldSpecs: TypeAlias = tuple[ProductRecordFieldSpec, ...]
+MutableProductRecordFieldSpecs: TypeAlias = list[ProductRecordFieldSpec]
+ProductRecordAnnotatedClass: TypeAlias = tuple[
+    ast.ClassDef, ProductRecordFieldSpecs
+]
+ProductRecordDataclassShape: TypeAlias = tuple[
+    tuple[str, ...],
+    tuple[tuple[str, str], ...],
+    tuple[tuple[str, str], ...],
+    str | None,
+    bool,
+]
+TopLevelDeclaration: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+TopLevelDeclarationMap: TypeAlias = dict[str, TopLevelDeclaration]
 
 
 class _BuiltinCollectionName(StrEnum):
@@ -783,7 +814,7 @@ def _enum_key_family(node: ast.AST) -> tuple[str, str] | None:
 def _fragmented_family_authority_candidates(
     module: ParsedModule,
 ) -> tuple[FragmentedFamilyAuthorityCandidate, ...]:
-    family_maps: dict[str, list[tuple[str, int, tuple[str, ...]]]] = defaultdict(list)
+    family_maps: NamedStringSequenceSpecsByName = defaultdict(list)
     for statement in _trim_docstring_body(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
@@ -1236,9 +1267,7 @@ def _linear_query_key_names(
 def _derived_query_index_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedQueryIndexCandidate, ...]:
-    grouped: dict[(tuple[str, str, str], list[tuple[str, int, tuple[str, ...]]])] = (
-        defaultdict(list)
-    )
+    grouped: DerivedQuerySpecsBySignature = defaultdict(list)
     for qualname, function in _iter_named_functions(module):
         signature = _linear_query_signature(function)
         if signature is None:
@@ -2450,8 +2479,8 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
 
 def _guarded_wrapper_function_candidates(
     module: ParsedModule,
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    candidates: list[tuple[str, int, tuple[str, ...]]] = []
+) -> NamedStringSequenceSpecs:
+    candidates: MutableNamedStringSequenceSpecs = []
     for statement in module.module.body:
         if not isinstance(statement, ast.FunctionDef):
             continue
@@ -3765,7 +3794,7 @@ def _is_contiguous_subtuple(needle: tuple[str, ...], haystack: tuple[str, ...]) 
 
 
 def _maximal_repeated_base_bundle_items(
-    grouped: dict[tuple[str, ...], list[ast.ClassDef]],
+    grouped: BaseBundleClassGroups,
 ) -> tuple[tuple[tuple[str, ...], tuple[ast.ClassDef, ...]], ...]:
     qualified = tuple(
         (
@@ -3795,7 +3824,7 @@ def _maximal_repeated_base_bundle_items(
 def _repeated_base_bundle_candidates(
     module: ParsedModule,
 ) -> tuple[RepeatedBaseBundleCandidate, ...]:
-    grouped: dict[tuple[str, ...], list[ast.ClassDef]] = defaultdict(list)
+    grouped: BaseBundleClassGroups = defaultdict(list)
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef) or node.end_lineno is None:
             continue
@@ -3844,8 +3873,8 @@ def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int,
 
 def _module_string_sequence_assignments(
     module: ParsedModule,
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    assignments: list[tuple[str, int, tuple[str, ...]]] = []
+) -> NamedStringSequenceSpecs:
+    assignments: MutableNamedStringSequenceSpecs = []
     for statement in _trim_docstring_body(module.module.body):
         target_name: str | None = None
         value: ast.AST | None = None
@@ -5549,14 +5578,14 @@ def _resolved_import_call_target_symbols(
 
 def _external_callsites_by_target(
     modules: Sequence[ParsedModule],
-) -> dict[str, tuple[ResolvedExternalCallsite, ...]]:
+) -> ExternalCallsitesByTarget:
     return _external_callsites_by_target_cached(tuple(modules))
 
 
 @lru_cache(maxsize=None)
 def _external_callsites_by_target_cached(
     modules: tuple[ParsedModule, ...],
-) -> dict[str, tuple[ResolvedExternalCallsite, ...]]:
+) -> ExternalCallsitesByTarget:
     callsites_by_target: dict[str, set[ResolvedExternalCallsite]] = defaultdict(set)
     for module in modules:
         import_aliases = _module_import_aliases(module)
@@ -5598,7 +5627,7 @@ def _external_callsites_by_target_cached(
 
 
 def _matching_external_callsites(
-    callsites_by_target: dict[str, tuple[ResolvedExternalCallsite, ...]],
+    callsites_by_target: ExternalCallsitesByTarget,
     *,
     target_symbol: str,
 ) -> tuple[ResolvedExternalCallsite, ...]:
@@ -6754,7 +6783,7 @@ def _effect_step_amortization_candidates(
 
 def _public_top_level_declarations(
     module: ParsedModule,
-) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef]:
+) -> TopLevelDeclarationMap:
     return {
         node.name: node
         for node in module.module.body
@@ -6764,7 +6793,7 @@ def _public_top_level_declarations(
 
 
 def _declares_effect_infrastructure(
-    declarations: dict[str, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef],
+    declarations: TopLevelDeclarationMap,
 ) -> bool:
     return any(
         (name.endswith(("EffectStep", "EffectCarrier")) for name in declarations)
@@ -9165,9 +9194,7 @@ def _ann_assign_product_field_spec(
 
 class _ProductRecordAnnotatedFieldsStep(
     _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[
-        (ast.ClassDef, tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]])
-    ],
+    GuardedEffectStep[(ast.ClassDef, ProductRecordAnnotatedClass)],
 ):
     step_id = "product_record_annotated_fields"
     registration_order = 20
@@ -9175,8 +9202,8 @@ class _ProductRecordAnnotatedFieldsStep(
     def project(
         self,
         value: ast.ClassDef,
-    ) -> tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]] | None:
-        field_specs: list[tuple[str, str, str | None]] = []
+    ) -> ProductRecordAnnotatedClass | None:
+        field_specs: MutableProductRecordFieldSpecs = []
         for statement in _trim_docstring_body(value.body):
             if isinstance(statement, ast.Pass):
                 continue
@@ -9191,34 +9218,14 @@ class _ProductRecordAnnotatedFieldsStep(
 
 class _ProductRecordShapeStep(
     _FieldOnlyFrozenDataclassShapeStep,
-    GuardedEffectStep[
-        (
-            tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]],
-            tuple[
-                tuple[str, ...],
-                tuple[tuple[str, str], ...],
-                tuple[tuple[str, str], ...],
-                str | None,
-                bool,
-            ],
-        )
-    ],
+    GuardedEffectStep[(ProductRecordAnnotatedClass, ProductRecordDataclassShape)],
 ):
     step_id = "product_record_shape"
     registration_order = 30
 
     def project(
-        self, value: tuple[ast.ClassDef, tuple[tuple[str, str, str | None], ...]]
-    ) -> (
-        tuple[
-            tuple[str, ...],
-            tuple[tuple[str, str], ...],
-            tuple[tuple[str, str], ...],
-            str | None,
-            bool,
-        ]
-        | None
-    ):
+        self, value: ProductRecordAnnotatedClass
+    ) -> ProductRecordDataclassShape | None:
         node, product_fields = value
         return (
             tuple((ast.unparse(base) for base in node.bases)),
@@ -9237,25 +9244,9 @@ class _ProductRecordShapeStep(
 
 def _field_only_frozen_dataclass_shape(
     node: ast.ClassDef,
-) -> (
-    tuple[
-        tuple[str, ...],
-        tuple[tuple[str, str], ...],
-        tuple[tuple[str, str], ...],
-        str | None,
-        bool,
-    ]
-    | None
-):
+) -> ProductRecordDataclassShape | None:
     return cast(
-        tuple[
-            tuple[str, ...],
-            tuple[tuple[str, str], ...],
-            tuple[tuple[str, str], ...],
-            str | None,
-            bool,
-        ]
-        | None,
+        ProductRecordDataclassShape | None,
         Maybe.of(node)
         .bind_all(registered_effect_steps(_FieldOnlyFrozenDataclassShapeStep))
         .unwrap_or_none(),
@@ -9792,9 +9783,9 @@ _READABILITY_STRING_TOKEN_TYPE_NAMES = (
     "TSTRING_END",
 )
 _READABILITY_STRING_TOKEN_TYPES = frozenset(
-    getattr(tokenize, token_type_name)
-    for token_type_name in _READABILITY_STRING_TOKEN_TYPE_NAMES
-    if hasattr(tokenize, token_type_name)
+    token_type
+    for token_type, token_type_name in tokenize.tok_name.items()
+    if token_type_name in _READABILITY_STRING_TOKEN_TYPE_NAMES
 )
 _READABILITY_INLINE_SUITE_TYPES = (
     ast.FunctionDef,
@@ -9806,7 +9797,6 @@ _READABILITY_INLINE_SUITE_TYPES = (
     ast.While,
     ast.With,
     ast.AsyncWith,
-    ast.Match,
 )
 
 
@@ -9863,7 +9853,7 @@ def _readability_compressed_line_candidates(
     for node in ast.walk(module.module):
         if not isinstance(node, _READABILITY_INLINE_SUITE_TYPES):
             continue
-        body = getattr(node, "body", ())
+        body = node.body
         if body and getattr(body[0], "lineno", None) == node.lineno:
             reasons_by_line[node.lineno].add(f"inline {type(node).__name__} suite")
             statement_counts_by_line[node.lineno] = max(
@@ -9949,8 +9939,8 @@ def _argument_spec_field_name(node: ast.AST) -> str | None:
 
 def _cli_argument_spec_fields(
     module: ParsedModule,
-) -> tuple[tuple[str, int, tuple[str, ...]], ...]:
-    specs: list[tuple[str, int, tuple[str, ...]]] = []
+) -> NamedStringSequenceSpecs:
+    specs: MutableNamedStringSequenceSpecs = []
     for statement in module.module.body:
         binding = named_value_binding(statement)
         if binding is None or not isinstance(binding.value, ast.Tuple):

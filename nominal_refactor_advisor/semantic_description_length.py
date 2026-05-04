@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
-from typing import Generic, TypeVar
+from typing import Generic, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .semantic_algebra import (
@@ -94,6 +94,9 @@ class SemanticOrbit(Generic[ObjectT, KeyT]):
         return max(self.size - 1, 0)
 
 
+SemanticOrbits: TypeAlias = tuple[SemanticOrbit[ObjectT, KeyT], ...]
+
+
 @dataclass(frozen=True)
 class OrbitPartition(
     SemanticDescription,
@@ -101,7 +104,7 @@ class OrbitPartition(
 ):
     """Partition of semantic objects by canonical shape."""
 
-    orbits: tuple[SemanticOrbit[ObjectT, KeyT], ...]
+    orbits: SemanticOrbits[ObjectT, KeyT]
 
     @staticmethod
     def projection_group_member(
@@ -122,7 +125,7 @@ class OrbitPartition(
         return sum((orbit.duplicate_count for orbit in self.orbits))
 
     @property
-    def ambiguous_orbits(self) -> tuple[SemanticOrbit[ObjectT, KeyT], ...]:
+    def ambiguous_orbits(self) -> SemanticOrbits[ObjectT, KeyT]:
         return tuple((orbit for orbit in self.orbits if orbit.size > 1))
 
     @property
