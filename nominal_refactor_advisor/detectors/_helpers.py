@@ -7653,6 +7653,204 @@ def _field_only_frozen_dataclass_candidates(
     )
 
 
+_STRUCTURAL_ALIAS_ROOTS = frozenset(
+    {
+        "Callable",
+        "Mapping",
+        "Sequence",
+        "dict",
+        "frozenset",
+        "list",
+        "set",
+        "tuple",
+    }
+)
+_STRUCTURAL_ALIAS_LEAF_NAMES = frozenset(
+    {
+        "Any",
+        "Callable",
+        "ClassVar",
+        "Final",
+        "Generic",
+        "Literal",
+        "Mapping",
+        "NamedTuple",
+        "Optional",
+        "Protocol",
+        "Sequence",
+        "Self",
+        "TypeAlias",
+        "TypeVar",
+        "Union",
+        "dict",
+        "frozenset",
+        "list",
+        "set",
+        "tuple",
+    }
+)
+
+
+def _annotation_root_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Subscript):
+        return _annotation_root_name(node.value)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotation_root_name(node.left) or _annotation_root_name(node.right)
+    return None
+
+
+def _structural_annotation_complexity(node: ast.AST) -> int:
+    if isinstance(node, ast.Subscript):
+        return (
+            1
+            + _structural_annotation_complexity(node.value)
+            + _structural_annotation_complexity(node.slice)
+        )
+    if isinstance(node, ast.Tuple):
+        return sum(_structural_annotation_complexity(element) for element in node.elts)
+    if isinstance(node, ast.List):
+        return sum(_structural_annotation_complexity(element) for element in node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return 1 + _structural_annotation_complexity(node.left) + _structural_annotation_complexity(node.right)
+    return 0
+
+
+def _domain_annotation_names(node: ast.AST) -> tuple[str, ...]:
+    return tuple(
+        name
+        for name in _annotation_type_names(node)
+        if name not in _STRUCTURAL_ALIAS_LEAF_NAMES
+    )
+
+
+def _semantic_alias_name(annotation: ast.AST) -> str:
+    domain_names = _domain_annotation_names(annotation)
+    if len(domain_names) >= 2:
+        return "_" + "".join(domain_names[:2])
+    if len(domain_names) == 1:
+        return f"_{domain_names[0]}Shape"
+    root_name = _annotation_root_name(annotation) or "Semantic"
+    return f"_{root_name.removesuffix('s').title()}Shape"
+
+
+def _annotation_is_alias_worthy(annotation: ast.AST) -> bool:
+    root_name = _annotation_root_name(annotation)
+    if root_name not in _STRUCTURAL_ALIAS_ROOTS:
+        return False
+    complexity = _structural_annotation_complexity(annotation)
+    if complexity < 2:
+        return False
+    annotation_text = ast.unparse(annotation)
+    return len(annotation_text) >= 35 or complexity >= 4
+
+
+def _semantic_type_alias_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticTypeAliasCandidate, ...]:
+    annotations_by_shape: dict[
+        str,
+        list[tuple[str, str, ast.AST, SourceLocation]],
+    ] = {}
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.function_stack: list[str] = []
+
+        def _owner_symbol(self, fallback: str) -> str:
+            parts = (*self.class_stack, *self.function_stack)
+            return ".".join(parts) if parts else fallback
+
+        def _record(self, annotation: ast.AST | None, line: int, symbol: str) -> None:
+            if annotation is None or not _annotation_is_alias_worthy(annotation):
+                return
+            fingerprint = ast.dump(annotation, include_attributes=False)
+            annotations_by_shape.setdefault(fingerprint, []).append(
+                (
+                    ast.unparse(annotation),
+                    symbol,
+                    annotation,
+                    SourceLocation(str(module.path), line, symbol),
+                )
+            )
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            for statement in _trim_docstring_body(node.body):
+                self.visit(statement)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            arguments = (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+            for argument in arguments:
+                self._record(
+                    argument.annotation,
+                    argument.lineno,
+                    f"{self._owner_symbol(node.name)}.{argument.arg}",
+                )
+            if node.args.vararg is not None:
+                self._record(
+                    node.args.vararg.annotation,
+                    node.args.vararg.lineno,
+                    f"{self._owner_symbol(node.name)}.*{node.args.vararg.arg}",
+                )
+            if node.args.kwarg is not None:
+                self._record(
+                    node.args.kwarg.annotation,
+                    node.args.kwarg.lineno,
+                    f"{self._owner_symbol(node.name)}.**{node.args.kwarg.arg}",
+                )
+            self._record(
+                node.returns,
+                node.lineno,
+                f"{self._owner_symbol(node.name)} return",
+            )
+            for statement in _trim_docstring_body(node.body):
+                self.visit(statement)
+            self.function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            target = ast.unparse(node.target)
+            self._record(
+                node.annotation,
+                node.lineno,
+                f"{self._owner_symbol(target)}.{target}",
+            )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    candidates: list[SemanticTypeAliasCandidate] = []
+    for occurrences in annotations_by_shape.values():
+        if len(occurrences) < 2:
+            continue
+        annotation_text, _, annotation, first_evidence = occurrences[0]
+        candidates.append(
+            SemanticTypeAliasCandidate(
+                file_path=str(module.path),
+                line=first_evidence.line,
+                evidence_locations=tuple(
+                    location for _, _, _, location in occurrences[:8]
+                ),
+                annotation_text=annotation_text,
+                occurrence_count=len(occurrences),
+                owner_symbols=tuple(symbol for _, symbol, _, _ in occurrences[:8]),
+                suggested_alias_name=_semantic_alias_name(annotation),
+            )
+        )
+    return tuple(candidates)
+
+
 def _method_body_fingerprint(method: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     body = _trim_docstring_body(method.body)
     return ast.dump(ast.Module(body=body, type_ignores=[]), include_attributes=False)

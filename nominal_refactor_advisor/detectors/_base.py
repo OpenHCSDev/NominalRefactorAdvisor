@@ -8921,6 +8921,13 @@ FieldOnlyFrozenDataclassCandidate = product_record(
 )
 
 
+SemanticTypeAliasCandidate = product_record(
+    "SemanticTypeAliasCandidate",
+    "annotation_text: str; occurrence_count: int; owner_symbols: tuple[str, ...]; suggested_alias_name: str",
+    bases=(EvidenceLocationsWitnessCandidate,),
+)
+
+
 DuplicateVisitorMethodBodyCandidate = product_record(
     "DuplicateVisitorMethodBodyCandidate",
     "method_names: tuple[str, ...]; statement_count: int",

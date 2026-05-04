@@ -2754,6 +2754,43 @@ declare_module_detector(
 
 
 declare_module_detector(
+    SemanticTypeAliasCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Repeated structural type annotation should use a semantic alias",
+        "A repeated nested structural annotation makes call signatures explain tuple/dict mechanics instead of domain roles. The semantic shape should be named once as a typed alias, then reused at fields, caches, and projector boundaries.",
+        "named semantic type alias for repeated structural annotation shape",
+        "same high-friction nested annotation appears at multiple semantic sites",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    CandidateFindingRenderer[SemanticTypeAliasCandidate](
+        summary=lambda candidate: (
+            f"`{candidate.annotation_text}` appears in "
+            f"{candidate.occurrence_count} annotations; name the domain shape once."
+        ),
+        evidence=lambda candidate: candidate.evidence_locations,
+        scaffold=lambda candidate: (
+            f"{candidate.suggested_alias_name} = {candidate.annotation_text}\n\n"
+            "# Replace repeated annotation sites with the alias so signatures read "
+            "in domain terms."
+        ),
+        codemod_patch=lambda candidate: (
+            "# Introduce a module-level semantic type alias for the repeated "
+            "annotation and replace each occurrence with that alias."
+        ),
+        metrics=lambda candidate: MappingMetrics.from_field_names(
+            mapping_site_count=candidate.occurrence_count,
+            mapping_name=candidate.suggested_alias_name,
+            field_names=candidate.owner_symbols,
+        ),
+    ),
+    candidate_collector=_semantic_type_alias_candidates,
+    detector_priority=-10,
+)
+
+
+declare_module_detector(
     FieldOnlyFrozenDataclassCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
