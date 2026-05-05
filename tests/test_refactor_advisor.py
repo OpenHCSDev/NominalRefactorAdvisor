@@ -55,6 +55,10 @@ from nominal_refactor_advisor.economics import (
     RepositoryChangeBudget,
     ScanEconomicsProof,
 )
+from nominal_refactor_advisor.lean_export import (
+    LEAN_EXPORT_SCHEMA,
+    findings_from_lean_export_payload,
+)
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     FindingSpec,
@@ -320,6 +324,49 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
     assert finding.compression_certificate == certificate
     assert "Semantic description length: 8 -> 3" in markdown
     assert "certified savings 5" in markdown
+
+
+def test_lean_export_payload_converts_to_standard_findings() -> None:
+    payload = {
+        "schema": LEAN_EXPORT_SCHEMA,
+        "source": "unit",
+        "declaration_count": 2,
+        "finding_count": 1,
+        "declarations": [],
+        "findings": [
+            {
+                "detector_id": "lean_repeated_structural_signature",
+                "title": "Repeated Lean declaration signature",
+                "summary": "2 Lean declarations share one signature orbit",
+                "evidence": [
+                    {
+                        "file_path": "<lean-env>",
+                        "line": 0,
+                        "symbol": "Leverage.Alpha",
+                    },
+                    {
+                        "file_path": "<lean-env>",
+                        "line": 0,
+                        "symbol": "Leverage.Beta",
+                    },
+                ],
+                "scaffold": "Introduce one theorem schema.",
+                "codemod_patch": "Factor through the theorem schema.",
+            }
+        ],
+    }
+
+    findings = findings_from_lean_export_payload(payload)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.detector_id == "lean_repeated_structural_signature"
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert finding.evidence == (
+        SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
+        SourceLocation("<lean-env>", 0, "Leverage.Beta"),
+    )
+    assert finding.scaffold == "Introduce one theorem schema."
 
 
 def test_planner_ranks_by_certified_description_length_savings(
@@ -661,7 +708,7 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
-_REPEATED_BUILDER_SOURCE = '''
+_REPEATED_BUILDER_SOURCE = """
 def main(builder):
     builder.register("--json", action="store_true", help="Emit JSON output")
     builder.register(
@@ -683,7 +730,7 @@ def main(builder):
         help="Exclude one pattern id",
     )
     return builder
-'''
+"""
 
 
 def test_calibration_manifest_certifies_detector_expectations(
@@ -761,12 +808,8 @@ def test_calibration_manifest_names_missing_and_forbidden_detectors(
         (reason.startswith("builder-regression:forbidden_detector:"))
         for reason in report.regression_reasons
     )
-    assert _calibration_exit_code(
-        report, fail_on_calibration_regression=False
-    ) == 0
-    assert _calibration_exit_code(
-        report, fail_on_calibration_regression=True
-    ) == 1
+    assert _calibration_exit_code(report, fail_on_calibration_regression=False) == 0
+    assert _calibration_exit_code(report, fail_on_calibration_regression=True) == 1
 
 
 def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:

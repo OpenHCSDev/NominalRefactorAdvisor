@@ -12,7 +12,7 @@ import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
-from .analysis import analyze_modules, analyze_path, plan_path
+from .analysis import analyze_lean_export, analyze_modules, analyze_path, plan_path
 from .ast_tools import parse_python_modules
 from .calibration import (
     CalibrationReport,
@@ -150,6 +150,11 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--compare-ref",),
             default="HEAD",
             help="Git ref used for --include-change-budget.",
+        ),
+        CliArgumentSpec(
+            flags=("--import-lean-export",),
+            value_type=Path,
+            help="Load findings from a Lean advisor export JSON file.",
         ),
     )
     + _config_argument_specs()
@@ -471,8 +476,12 @@ def main() -> int:
             fail_on_proof_regression=args.fail_on_proof_regression,
         )
 
-    modules = parse_python_modules(root)
-    findings = analyze_modules(modules, config)
+    if args.import_lean_export is None:
+        modules = parse_python_modules(root)
+        findings = analyze_modules(modules, config)
+    else:
+        modules = []
+        findings = analyze_lean_export(args.import_lean_export)
     plans = None
     if args.include_plans or args.plans_only:
         plans = build_refactor_plans(findings, root)
