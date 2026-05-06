@@ -112,12 +112,12 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
     PatternId.CLOSED_FAMILY_DISPATCH: PatternSpec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Closed-Family O(1) Dispatch",
-        "Use enum- or type-keyed dispatch instead of repeated string probing for closed backend families.",
-        "Enum/type keyed registry or dataclass rule table representing a closed family.",
+        "Use enum- or type-keyed dispatch instead of repeated string probing for closed backend families. When the cases own behavior, prefer an AutoRegisterMeta-backed nominal family so the registry itself becomes the dispatch authority.",
+        "Enum/type keyed registry, AutoRegisterMeta-backed nominal family, or dataclass rule table representing a closed family.",
         (
             "Name the closed variant axis.",
-            "Replace repeated literals with one registry/table.",
-            "Dispatch once on the nominal key.",
+            "Replace repeated literals with one registry/table; when cases own behavior, make it an auto-registered family.",
+            "Dispatch once on the nominal key instead of re-encoding the cases in branch ladders.",
         ),
         (CapabilityTag.CLOSED_FAMILY_DISPATCH, CapabilityTag.AUTHORITATIVE_DISPATCH),
         priority=58,

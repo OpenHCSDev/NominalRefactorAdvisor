@@ -2837,6 +2837,11 @@ def test_detects_string_dispatch(tmp_path: Path) -> None:
     assert finding.pattern_id == 3
     assert "`kind`" in finding.summary
     assert "'numpy'" in finding.summary
+    assert finding.scaffold is not None
+    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
+    assert "DispatchCase.for_case" in finding.scaffold
+    assert finding.codemod_patch is not None
+    assert "instead of if/elif or match/case" in finding.codemod_patch
     assert finding.certification == "certified"
 
 
@@ -2855,10 +2860,11 @@ def test_detects_inline_literal_dispatch_registry_smell(tmp_path: Path) -> None:
         )
     )
     assert finding.scaffold is not None
-    assert "DispatchCase(ABC)" in finding.scaffold
+    assert "DispatchCase(ABC, metaclass=AutoRegisterMeta)" in finding.scaffold
     assert "dispatch_node_kind" in finding.scaffold
+    assert "DispatchCase.for_case" in finding.scaffold
     assert finding.codemod_patch is not None
-    assert "typed case table" in finding.codemod_patch
+    assert "AutoRegisterMeta-backed case family" in finding.codemod_patch
 
 
 def test_detects_bidirectional_registry(tmp_path: Path) -> None:
@@ -3600,6 +3606,11 @@ def test_detects_numeric_literal_dispatch(tmp_path: Path) -> None:
     )
     assert "`pattern_id`" in finding.summary
     assert "3" in finding.summary
+    assert finding.scaffold is not None
+    assert "from metaclass_registry import AutoRegisterMeta" in finding.scaffold
+    assert "DispatchCase.for_case" in finding.scaffold
+    assert finding.codemod_patch is not None
+    assert "instead of if/elif or match/case" in finding.codemod_patch
     assert finding.certification == "certified"
 
 

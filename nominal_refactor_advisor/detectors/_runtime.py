@@ -125,7 +125,6 @@ def _literal_dispatch_authority_scaffold(
     observation: LiteralDispatchObservation,
 ) -> str:
     dispatch_name = _literal_dispatch_authority_name(observation.axis_expression)
-    table_name = _literal_dispatch_spec_table_name(observation.axis_expression)
     case_classes = tuple(
         (
             _literal_dispatch_case_class_name(case, index)
@@ -138,16 +137,29 @@ def _literal_dispatch_authority_scaffold(
             for class_name, case in zip(case_classes, observation.literal_cases)
         )
     )
-    case_rows = "\n".join(
-        (f"    {class_name}.case: {class_name}()," for class_name in case_classes)
+    return (
+        "from abc import ABC, abstractmethod\n"
+        "from typing import ClassVar\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        "class DispatchCase(ABC, metaclass=AutoRegisterMeta):\n"
+        "    __registry_key__ = \"case\"\n"
+        "    __skip_if_no_key__ = True\n"
+        "    case: ClassVar[object] = None\n\n"
+        "    @classmethod\n"
+        "    def for_case(cls, key):\n"
+        "        return cls.__registry__[key]()\n\n"
+        "    @abstractmethod\n"
+        "    def apply(self, *args, **kwargs): ...\n\n"
+        f"{case_class_blocks}\n\n"
+        f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
+        "    return DispatchCase.for_case(axis_value).apply(*args, **kwargs)"
     )
-    return f"class DispatchCase(ABC):\n    case: object\n    @abstractmethod\n    def apply(self, *args, **kwargs): ...\n\n{case_class_blocks}\n\n{table_name} = {{\n{case_rows}\n}}\n\ndef {dispatch_name}(axis_value, *args, **kwargs):\n    return {table_name}[axis_value].apply(*args, **kwargs)"
 
 
 def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
-    return f"# Replace the repeated `{observation.axis_expression} == literal` branches with one typed case table.\n# Move the shared branch mechanics into the dispatcher/renderer; keep per-case semantics on `DispatchCase` subclasses.\n# If each case owns behavior instead of data, promote the rows into AutoRegisterMeta subclasses keyed by the same axis."
+    return f"# Replace the repeated `{observation.axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
 
 
 class RepeatedBuilderCallDetector(IssueDetector):
@@ -1224,9 +1236,8 @@ class StringDispatchDetector(PerModuleIssueDetector):
                     relation_context=(
                         f"same observed axis `{observation.axis_expression}` is split across literal string cases {observation.literal_cases}"
                     ),
-                    codemod_patch=(
-                        "# Promote the closed string axis to a nominal key. If the cases select behavior, define an auto-registered family keyed by that axis and dispatch through `cls.__registry__`."
-                    ),
+                    scaffold=_literal_dispatch_authority_scaffold(observation),
+                    codemod_patch=_literal_dispatch_authority_patch(observation),
                     metrics=DispatchCountMetrics.from_literal_family(
                         observation.axis_expression,
                         observation.literal_cases,
@@ -1246,7 +1257,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
                         "same closed family encoded in string-key dispatch tables rather than one nominal dispatch boundary"
                     ),
                     codemod_patch=(
-                        "# Replace handwritten string-key dispatch tables with one authoritative nominal family. # Keep any string-key projection as a derived view of the auto-registered family."
+                        "# Replace handwritten string-key dispatch tables with one authoritative nominal family and dispatch through `Family.for_key(...)` / `Family.__registry__`. # Keep any string-key projection as a derived view of the auto-registered family."
                     ),
                     metrics=DispatchCountMetrics(
                         dispatch_site_count=len(dict_evidence)
@@ -1290,6 +1301,8 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
                         ),
                     ),
                     relation_context=f"same observed axis `{observation.axis_expression}` is split across numeric literal cases {observation.literal_cases}",
+                    scaffold=_literal_dispatch_authority_scaffold(observation),
+                    codemod_patch=_literal_dispatch_authority_patch(observation),
                     metrics=DispatchCountMetrics.from_literal_family(
                         observation.axis_expression, observation.literal_cases
                     ),
