@@ -14,11 +14,10 @@ from typing import Any, ClassVar, Mapping
 
 from metaclass_registry import AutoRegisterMeta
 
+from .detectors._base import high_confidence_spec
 from .models import FindingSpec, RefactorFinding, SourceLocation
 from .patterns import PatternId
 from .taxonomy import (
-    HIGH_CONFIDENCE,
-    STRONG_HEURISTIC,
     CapabilityTag,
     ObservationTag,
 )
@@ -94,6 +93,29 @@ def _fallback_pattern_id(row: JsonObject) -> PatternId:
         ) from error
 
 
+_NOMINAL_IDENTITY_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS = (
+    CapabilityTag.NOMINAL_IDENTITY,
+    CapabilityTag.PROVENANCE,
+    CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+)
+_NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.NORMALIZED_AST,)
+_LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
+    PatternId.NOMINAL_INTERFACE_WITNESS,
+    "Repeated Lean declaration signature should use a semantic abstraction",
+    (
+        "Exact Lean signature orbits indicate proof declarations are "
+        "structurally confusable without a named semantic owner."
+    ),
+    (
+        "named Lean structure, typeclass, theorem schema, or bridge object "
+        "that owns the repeated signature"
+    ),
+    "Lean environment declaration-signature orbit",
+    _NOMINAL_IDENTITY_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+    _NORMALIZED_AST_OBSERVATION_TAGS,
+)
+
+
 class LeanFindingAdapter(ABC, metaclass=AutoRegisterMeta):
     """Nominal adapter root for one Lean detector family."""
 
@@ -140,27 +162,7 @@ class LeanRepeatedStructuralSignatureAdapter(LeanFindingAdapter):
     """Adapter for exact Lean declaration-signature orbits."""
 
     detector_id = "lean_repeated_structural_signature"
-    finding_spec = FindingSpec(
-        pattern_id=PatternId.NOMINAL_INTERFACE_WITNESS,
-        title="Repeated Lean declaration signature should use a semantic abstraction",
-        why=(
-            "Exact Lean signature orbits indicate proof declarations are "
-            "structurally confusable without a named semantic owner."
-        ),
-        capability_gap=(
-            "named Lean structure, typeclass, theorem schema, or bridge object "
-            "that owns the repeated signature"
-        ),
-        relation_context="Lean environment declaration-signature orbit",
-        confidence=HIGH_CONFIDENCE,
-        certification=STRONG_HEURISTIC,
-        capability_tags=(
-            CapabilityTag.NOMINAL_IDENTITY,
-            CapabilityTag.PROVENANCE,
-            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        ),
-        observation_tags=(ObservationTag.NORMALIZED_AST,),
-    )
+    finding_spec = _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC
 
     @classmethod
     def build_finding(cls, row: JsonObject) -> RefactorFinding:

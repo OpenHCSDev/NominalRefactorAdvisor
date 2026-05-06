@@ -970,6 +970,40 @@ def _uses_autoregister_meta(node: ast.ClassDef) -> bool:
     return False
 
 
+def _autoregister_family_nodes(
+    module: ParsedModule, root_node: ast.ClassDef
+) -> tuple[ast.ClassDef, ...]:
+    class_nodes = tuple(
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    )
+    children_by_base_name: dict[str, list[ast.ClassDef]] = defaultdict(list)
+    for class_node in class_nodes:
+        for base_name in _class_base_names(class_node):
+            children_by_base_name[base_name].append(class_node)
+    family_nodes: list[ast.ClassDef] = []
+    queue = [root_node]
+    seen_names: set[str] = set()
+    while queue:
+        class_node = queue.pop()
+        if class_node.name in seen_names:
+            continue
+        seen_names.add(class_node.name)
+        family_nodes.append(class_node)
+        queue.extend(children_by_base_name.get(class_node.name, ()))
+    return tuple(family_nodes)
+
+
+def _autoregister_family_is_metadata_only(
+    module: ParsedModule, root_node: ast.ClassDef
+) -> bool:
+    return all(
+        (
+            _metadata_only_class_assignment_names(class_node) is not None
+            for class_node in _autoregister_family_nodes(module, root_node)
+        )
+    )
+
+
 class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
     """Detector for AutoRegisterMeta being used on metadata-only class families."""
 
@@ -999,6 +1033,8 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 continue
             assigned_names = _metadata_only_class_assignment_names(node)
             if assigned_names is None:
+                continue
+            if not _autoregister_family_is_metadata_only(module, node):
                 continue
             evidence.append(
                 SourceLocation(str(module.path), node.lineno, node.name)

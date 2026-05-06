@@ -107,10 +107,6 @@ def _literal_dispatch_authority_name(axis_expression: str) -> str:
     return f"dispatch_{words or 'case'}"
 
 
-def _literal_dispatch_spec_table_name(axis_expression: str) -> str:
-    return f"_{_literal_dispatch_authority_name(axis_expression).upper()}_SPECS"
-
-
 def _literal_dispatch_case_class_name(literal_case: str, index: int) -> str:
     words = "".join(
         (
@@ -160,6 +156,60 @@ def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
     return f"# Replace the repeated `{observation.axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
+
+
+def _literal_dispatch_finding(
+    detector: PerModuleIssueDetector,
+    module: ParsedModule,
+    observation: LiteralDispatchObservation,
+    *,
+    case_summary_label: str,
+    relation_case_label: str,
+) -> RefactorFinding:
+    return detector.build_finding(
+        f"{module.path} dispatches on `{observation.axis_expression}` through {case_summary_label} {observation.literal_cases}.",
+        (
+            SourceLocation(
+                observation.file_path, observation.line, observation.symbol
+            ),
+        ),
+        relation_context=(
+            f"same observed axis `{observation.axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
+        ),
+        scaffold=_literal_dispatch_authority_scaffold(observation),
+        codemod_patch=_literal_dispatch_authority_patch(observation),
+        metrics=DispatchCountMetrics.from_literal_family(
+            observation.axis_expression,
+            observation.literal_cases,
+        ),
+    )
+
+
+def _literal_dispatch_findings(
+    detector: PerModuleIssueDetector,
+    module: ParsedModule,
+    config: DetectorConfig,
+    observation_family: type[object],
+    *,
+    case_summary_label: str,
+    relation_case_label: str,
+) -> list[RefactorFinding]:
+    observations: tuple[LiteralDispatchObservation, ...] = _collect_typed_family_items(
+        module,
+        observation_family,
+        LiteralDispatchObservation,
+    )
+    return [
+        _literal_dispatch_finding(
+            detector,
+            module,
+            observation,
+            case_summary_label=case_summary_label,
+            relation_case_label=relation_case_label,
+        )
+        for observation in observations
+        if len(observation.literal_cases) >= config.min_string_cases
+    ]
 
 
 class RepeatedBuilderCallDetector(IssueDetector):
@@ -1212,38 +1262,14 @@ class StringDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        observations: tuple[LiteralDispatchObservation, ...] = (
-            _collect_typed_family_items(
-                module,
-                StringLiteralDispatchObservationFamily,
-                LiteralDispatchObservation,
-            )
+        findings = _literal_dispatch_findings(
+            self,
+            module,
+            config,
+            StringLiteralDispatchObservationFamily,
+            case_summary_label="cases",
+            relation_case_label="literal string cases",
         )
-        for observation in observations:
-            if len(observation.literal_cases) < config.min_string_cases:
-                continue
-            findings.append(
-                self.build_finding(
-                    (
-                        f"{module.path} dispatches on `{observation.axis_expression}` through cases {observation.literal_cases}."
-                    ),
-                    (
-                        SourceLocation(
-                            observation.file_path, observation.line, observation.symbol
-                        ),
-                    ),
-                    relation_context=(
-                        f"same observed axis `{observation.axis_expression}` is split across literal string cases {observation.literal_cases}"
-                    ),
-                    scaffold=_literal_dispatch_authority_scaffold(observation),
-                    codemod_patch=_literal_dispatch_authority_patch(observation),
-                    metrics=DispatchCountMetrics.from_literal_family(
-                        observation.axis_expression,
-                        observation.literal_cases,
-                    ),
-                )
-            )
         dict_evidence = _dispatch_dict_locations(module, config.min_string_cases)
         if dict_evidence:
             findings.append(
@@ -1281,34 +1307,14 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
-        observations: tuple[LiteralDispatchObservation, ...] = (
-            _collect_typed_family_items(
-                module,
-                NumericLiteralDispatchObservationFamily,
-                LiteralDispatchObservation,
-            )
+        return _literal_dispatch_findings(
+            self,
+            module,
+            config,
+            NumericLiteralDispatchObservationFamily,
+            case_summary_label="numeric cases",
+            relation_case_label="numeric literal cases",
         )
-        for observation in observations:
-            if len(observation.literal_cases) < config.min_string_cases:
-                continue
-            findings.append(
-                self.build_finding(
-                    f"{module.path} dispatches on `{observation.axis_expression}` through numeric cases {observation.literal_cases}.",
-                    (
-                        SourceLocation(
-                            observation.file_path, observation.line, observation.symbol
-                        ),
-                    ),
-                    relation_context=f"same observed axis `{observation.axis_expression}` is split across numeric literal cases {observation.literal_cases}",
-                    scaffold=_literal_dispatch_authority_scaffold(observation),
-                    codemod_patch=_literal_dispatch_authority_patch(observation),
-                    metrics=DispatchCountMetrics.from_literal_family(
-                        observation.axis_expression, observation.literal_cases
-                    ),
-                )
-            )
-        return findings
 
 
 class RepeatedHardcodedStringDetector(CandidateFindingDetector):

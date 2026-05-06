@@ -362,6 +362,8 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
     finding = findings[0]
     assert finding.detector_id == "lean_repeated_structural_signature"
     assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert finding.confidence == "high"
+    assert finding.certification == "strong_heuristic"
     assert finding.evidence == (
         SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
         SourceLocation("<lean-env>", 0, "Leverage.Beta"),
@@ -4824,6 +4826,21 @@ def test_detects_autoregister_meta_misuse_for_metadata_only_family(
     assert "AlphaPolicy" in finding.summary or "ModulePolicy" in finding.summary
     assert "metadata-only containers" in finding.summary
     assert "authoritative typed declaration table" in (finding.codemod_patch or "")
+
+
+def test_ignores_autoregister_meta_behavioral_family_root(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass EffectStep(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = 'step_id'\n    __skip_if_no_key__ = True\n    step_id = None\n\n\nclass ProjectingStep(EffectStep):\n    def apply(self, value):\n        return self.project(value)\n\n    @abstractmethod\n    def project(self, value):\n        raise NotImplementedError\n\n\nclass AlphaStep(ProjectingStep):\n    step_id = 'alpha'\n\n    def project(self, value):\n        return value\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        (
+            finding.detector_id == "autoregister_meta_misuse"
+            for finding in findings
+        )
+    )
 
 
 def test_detects_self_naming_builder_catalog(tmp_path: Path) -> None:
