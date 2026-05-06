@@ -136,6 +136,25 @@ def _semantic_overlap_abc_family_patch(
     )
 
 
+def _semantic_overlap_abc_residue_axis_scaffold(
+    candidate: SemanticOverlapABCResidueAxisCatalogCandidate,
+) -> str:
+    rows = "\n".join(
+        (f"    ResidueAxisRow(kind={kind!r})," for kind in candidate.residue_kind_names)
+    )
+    return f"ResidueAxisCatalog(\n{rows}\n)"
+
+
+def _semantic_overlap_abc_residue_axis_patch(
+    candidate: SemanticOverlapABCResidueAxisCatalogCandidate,
+) -> str:
+    return (
+        f"# Replace per-method residue declarations for {candidate.method_names} over `{candidate.base_name}` "
+        f"with one residue-axis catalog keyed by {candidate.residue_kind_names}.\n"
+        "# Derive hook/classvar names from the residue axis rows instead of declaring each method's residue surface independently."
+    )
+
+
 from ._substrate_support import *
 
 
@@ -912,6 +931,38 @@ declare_candidate_rule_detector(
     detector_name="SemanticOverlapAbcFamilyOptimizationDetector",
     detector_base=CrossModuleCollectorCandidateDetector,
     candidate_collector=_semantic_overlap_abc_family_optimization_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    SemanticOverlapABCResidueAxisCatalogCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "ABC residue axes should derive from one catalog",
+        "A semantic-overlap ABC family has several methods whose varying coordinates share the same residue kind signature. Naming classvars and hooks independently per method keeps a second manual axis beside the template hierarchy.",
+        "one residue-axis catalog derives classvar and hook declarations for the ABC family",
+        "multiple ABC family methods share the same residue coordinate kinds",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.base_name}` family methods {candidate.method_names} share residue kinds "
+        f"{candidate.residue_kind_names} across {candidate.residue_site_count} residue site(s); "
+        "derive the hook/classvar surface from one residue-axis catalog."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=_semantic_overlap_abc_residue_axis_scaffold,
+    codemod_patch=_semantic_overlap_abc_residue_axis_patch,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=candidate.residue_site_count,
+        mapping_name=candidate.base_name,
+        field_names=candidate.residue_kind_names,
+    ),
+    detector_priority=-12,
+    detector_name="SemanticOverlapAbcResidueAxisCatalogDetector",
+    detector_base=CrossModuleCollectorCandidateDetector,
+    candidate_collector=_semantic_overlap_abc_residue_axis_catalog_candidates,
 )
 
 

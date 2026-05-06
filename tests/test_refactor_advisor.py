@@ -5032,6 +5032,25 @@ def test_abc_optimizer_detects_whole_family_template(tmp_path: Path) -> None:
     assert len(finding.evidence) == 6
 
 
+def test_abc_optimizer_detects_residue_axis_catalog(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_csv(cleaned)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_json(cleaned)\n        self.write(checked, suffix=".json")\n        return checked\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_xml(cleaned)\n        self.write(checked, suffix=".xml")\n        return checked\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "semantic_overlap_abc_residue_axis_catalog"
+    ]
+    finding = next(finding for finding in findings if "Exporter" in finding.summary)
+    assert "emit" in finding.summary
+    assert "validate" in finding.summary
+    assert "('call', 'constant')" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
 def test_ignores_semantic_overlap_without_shared_base(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

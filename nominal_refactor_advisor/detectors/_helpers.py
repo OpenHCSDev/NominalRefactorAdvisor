@@ -20,7 +20,7 @@ from ..semantic_description_length import (
 import io
 import re
 import tokenize
-from typing import TypeAlias
+from typing import Callable, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
@@ -5115,6 +5115,16 @@ materialize_product_records((
 # fmt: on
 
 
+_ABCOptimizerFamilyCandidateT = TypeVar("_ABCOptimizerFamilyCandidateT")
+_ABCOptimizerFamilyCandidateBuilder: TypeAlias = Callable[
+    [tuple[_ABCOptimizerMethodPlan, ...], _ABCOptimizerFamilyPlan],
+    _ABCOptimizerFamilyCandidateT | None,
+]
+_ABCOptimizerFamilyCandidateSortKey: TypeAlias = Callable[
+    [_ABCOptimizerFamilyCandidateT], tuple[object, ...]
+]
+
+
 class _ABCSemanticSkeletonNormalizer(ast.NodeTransformer):
     def visit_arg(self, node: ast.arg) -> ast.arg:
         return ast.arg(arg="ARG", annotation=None, type_comment=None)
@@ -5409,6 +5419,22 @@ def _abc_optimizer_family_certificate(
     return certificate if certificate.pays_rent else None
 
 
+def _abc_optimizer_residue_axis_catalog_certificate(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    residue_kind_names: tuple[str, ...],
+) -> CompressionCertificate | None:
+    residue_site_count = len(method_plans) * len(residue_kind_names)
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=residue_site_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("residue_axis_catalog",),
+            per_axis_objects=("residue_axis_row",),
+        ),
+        semantic_axes=residue_kind_names,
+    )
+    return certificate if certificate.pays_rent else None
+
+
 def _abc_optimizer_method_group_profile(
     method_name: str,
     class_methods: _ABCOptimizerClassMethods,
@@ -5590,6 +5616,68 @@ def _abc_optimizer_family_candidate(
         abc_layer_count=family_plan.abc_layer_count,
         lattice_node_count=family_plan.lattice_node_count,
         lattice_edge_count=family_plan.lattice_edge_count,
+        line_count=sum((method_plan.line_count for method_plan in method_plans)),
+        compression_certificate=certificate,
+    )
+
+
+def _abc_optimizer_residue_kind_names(
+    method_plan: _ABCOptimizerMethodPlan,
+) -> tuple[str, ...]:
+    return tuple((kind for _, kind, _ in method_plan.profile.varying_coordinates))
+
+
+def _abc_optimizer_residue_axis_catalog_candidate(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plan: _ABCOptimizerFamilyPlan,
+) -> SemanticOverlapABCResidueAxisCatalogCandidate | None:
+    if len(method_plans) < 2:
+        return None
+    residue_kind_signatures = {
+        _abc_optimizer_residue_kind_names(method_plan) for method_plan in method_plans
+    }
+    if len(residue_kind_signatures) != 1:
+        return None
+    residue_kind_names = next(iter(residue_kind_signatures))
+    if not residue_kind_names:
+        return None
+    certificate = _abc_optimizer_residue_axis_catalog_certificate(
+        method_plans, residue_kind_names
+    )
+    if certificate is None:
+        return None
+    file_paths = tuple(
+        (
+            file_path
+            for method_plan in method_plans
+            for file_path in method_plan.file_paths
+        )
+    )
+    line_numbers = tuple(
+        (
+            line_number
+            for method_plan in method_plans
+            for line_number in method_plan.line_numbers
+        )
+    )
+    method_symbols = tuple(
+        (
+            f"{class_name}.{method_plan.method_name}"
+            for method_plan in method_plans
+            for class_name in method_plan.class_names
+        )
+    )
+    return SemanticOverlapABCResidueAxisCatalogCandidate(
+        file_path=file_paths[0],
+        line=min(line_numbers),
+        base_name=family_plan.base_name,
+        class_names=family_plan.class_names,
+        method_names=family_plan.method_names,
+        residue_kind_names=residue_kind_names,
+        file_paths=file_paths,
+        line_numbers=line_numbers,
+        method_symbols=method_symbols,
+        residue_site_count=len(method_plans) * len(residue_kind_names),
         line_count=sum((method_plan.line_count for method_plan in method_plans)),
         compression_certificate=certificate,
     )
@@ -5851,31 +5939,68 @@ def _semantic_overlap_abc_optimization_candidates_from_modules(
     )
 
 
+def _abc_optimizer_family_method_plans(
+    specific_method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_key: _ABCOptimizerFamilyKey,
+) -> tuple[_ABCOptimizerMethodPlan, ...]:
+    return tuple(
+        (
+            method_plan
+            for method_plan in specific_method_plans
+            if (method_plan.base_symbol, method_plan.class_names) == family_key
+        )
+    )
+
+
+def _abc_optimizer_candidates_from_family_plans(
+    modules: Sequence[ParsedModule],
+    builder: _ABCOptimizerFamilyCandidateBuilder[_ABCOptimizerFamilyCandidateT],
+    sort_key: _ABCOptimizerFamilyCandidateSortKey[_ABCOptimizerFamilyCandidateT],
+) -> tuple[_ABCOptimizerFamilyCandidateT, ...]:
+    specific_method_plans = _abc_optimizer_specific_method_plans(modules)
+    family_plans = _abc_optimizer_family_plans(specific_method_plans)
+    candidates: list[_ABCOptimizerFamilyCandidateT] = []
+    for family_key, family_plan in family_plans.items():
+        method_plans = _abc_optimizer_family_method_plans(
+            specific_method_plans, family_key
+        )
+        candidate = builder(method_plans, family_plan)
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted_tuple(candidates, key=sort_key)
+
+
+def _abc_optimizer_family_candidate_sort_key(
+    candidate: (
+        SemanticOverlapABCFamilyOptimizationCandidate
+        | SemanticOverlapABCResidueAxisCatalogCandidate
+    ),
+) -> tuple[object, ...]:
+    return (
+        candidate.file_path,
+        candidate.line,
+        candidate.base_name,
+        candidate.method_names,
+    )
+
+
 def _semantic_overlap_abc_family_optimization_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[SemanticOverlapABCFamilyOptimizationCandidate, ...]:
-    specific_method_plans = _abc_optimizer_specific_method_plans(modules)
-    family_plans = _abc_optimizer_family_plans(specific_method_plans)
-    candidates: list[SemanticOverlapABCFamilyOptimizationCandidate] = []
-    for family_key, family_plan in family_plans.items():
-        method_plans = tuple(
-            (
-                method_plan
-                for method_plan in specific_method_plans
-                if (method_plan.base_symbol, method_plan.class_names) == family_key
-            )
-        )
-        candidate = _abc_optimizer_family_candidate(method_plans, family_plan)
-        if candidate is not None:
-            candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-            candidate.method_names,
-        ),
+    return _abc_optimizer_candidates_from_family_plans(
+        modules,
+        _abc_optimizer_family_candidate,
+        _abc_optimizer_family_candidate_sort_key,
+    )
+
+
+def _semantic_overlap_abc_residue_axis_catalog_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[SemanticOverlapABCResidueAxisCatalogCandidate, ...]:
+    return _abc_optimizer_candidates_from_family_plans(
+        modules,
+        _abc_optimizer_residue_axis_catalog_candidate,
+        _abc_optimizer_family_candidate_sort_key,
     )
 
 
