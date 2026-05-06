@@ -33,6 +33,7 @@ class ClassFamilyIndex:
     symbols_by_simple_name: dict[str, tuple[str, ...]]
     symbols_by_file_and_qualname: dict[tuple[str, str], str]
     children_by_symbol: dict[str, tuple[str, ...]]
+    ancestors_by_symbol: dict[str, tuple[str, ...]]
     descendants_by_symbol: dict[str, tuple[str, ...]]
 
     def class_for(self, symbol: str) -> IndexedClass | None:
@@ -43,6 +44,9 @@ class ClassFamilyIndex:
 
     def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
         return self.descendants_by_symbol.get(base_symbol, ())
+
+    def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
+        return self.ancestors_by_symbol.get(class_symbol, ())
 
 
 def _iter_class_defs(
@@ -223,6 +227,21 @@ def _build_class_family_index_cached(
         symbol: sorted_tuple(children)
         for symbol, children in children_by_symbol_lists.items()
     }
+    ancestors_by_symbol: dict[str, tuple[str, ...]] = {}
+    for symbol in sorted(classes_by_symbol):
+        ancestors: list[str] = []
+        queue = list(classes_by_symbol[symbol].resolved_base_symbols)
+        seen: set[str] = set()
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            ancestors.append(current)
+            if indexed_class := classes_by_symbol.get(current):
+                queue.extend(indexed_class.resolved_base_symbols)
+        if ancestors:
+            ancestors_by_symbol[symbol] = tuple(ancestors)
     descendants_by_symbol: dict[str, tuple[str, ...]] = {}
     for symbol in sorted(classes_by_symbol):
         descendants: list[str] = []
@@ -242,5 +261,6 @@ def _build_class_family_index_cached(
         symbols_by_simple_name=symbols_by_simple_name,
         symbols_by_file_and_qualname=symbols_by_file_and_qualname,
         children_by_symbol=children_by_symbol,
+        ancestors_by_symbol=ancestors_by_symbol,
         descendants_by_symbol=descendants_by_symbol,
     )

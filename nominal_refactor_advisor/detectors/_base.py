@@ -594,9 +594,7 @@ CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
 CandidateEvidenceRenderer: TypeAlias = Callable[
     [CandidateItemT], tuple[SourceLocation, ...]
 ]
-OptionalCandidateTextRenderer: TypeAlias = (
-    Callable[[CandidateItemT], str | None] | None
-)
+OptionalCandidateTextRenderer: TypeAlias = Callable[[CandidateItemT], str | None] | None
 OptionalCandidateCompressionRenderer: TypeAlias = (
     Callable[[CandidateItemT], CompressionCertificate | None] | None
 )
@@ -608,9 +606,9 @@ OptionalCandidateValueRenderer: TypeAlias = (
 )
 InlineEnumSubsetGuardKey: TypeAlias = tuple[str, int, str, tuple[str, ...]]
 InlineEnumSubsetGuardSeen: TypeAlias = set[InlineEnumSubsetGuardKey]
-ManualRecordConstructorFieldPartition: TypeAlias = (
-    tuple[tuple[str, ...], tuple[str, ...]]
-)
+ManualRecordConstructorFieldPartition: TypeAlias = tuple[
+    tuple[str, ...], tuple[str, ...]
+]
 ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 ProductAxisPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
@@ -729,29 +727,52 @@ class SourceLocationEvidenceProperty:
 
 
 @dataclass(frozen=True)
-class ZippedSourceLocationEvidenceProperty:
+class SourceLocationZipEvidenceProperty(ABC):
     line_numbers_attribute_name: str
     symbol_names_attribute_name: str
-    file_attribute_name: str = _DEFAULT_FILE_PATH_ATTRIBUTE
 
     def __get__(
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> tuple[SourceLocation, ...] | ZippedSourceLocationEvidenceProperty:
+    ) -> tuple[SourceLocation, ...] | SourceLocationZipEvidenceProperty:
         del owner
         if instance is None:
             return self
-        return tuple(
-            (
-                SourceLocation(
-                    getattr(instance, self.file_attribute_name), line, symbol
-                )
-                for line, symbol in zip(
-                    getattr(instance, self.line_numbers_attribute_name),
-                    getattr(instance, self.symbol_names_attribute_name),
-                    strict=True,
-                )
+        return tuple(self._source_locations(instance))
+
+    @abstractmethod
+    def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ZippedSourceLocationEvidenceProperty(SourceLocationZipEvidenceProperty):
+    file_attribute_name: str = _DEFAULT_FILE_PATH_ATTRIBUTE
+
+    def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
+        return (
+            SourceLocation(getattr(instance, self.file_attribute_name), line, symbol)
+            for line, symbol in zip(
+                getattr(instance, self.line_numbers_attribute_name),
+                getattr(instance, self.symbol_names_attribute_name),
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidenceProperty):
+    file_paths_attribute_name: str
+
+    def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
+        return (
+            SourceLocation(file_path, line, symbol)
+            for file_path, line, symbol in zip(
+                getattr(instance, self.file_paths_attribute_name),
+                getattr(instance, self.line_numbers_attribute_name),
+                getattr(instance, self.symbol_names_attribute_name),
+                strict=True,
             )
         )
 
@@ -1265,6 +1286,8 @@ def _collect_typed_family_items(
     item_type: type[CollectedItemT],
 ) -> tuple[CollectedItemT, ...]:
     items = tuple(collect_family_items(module, family))
+    if family.item_type is item_type:
+        return cast(tuple[CollectedItemT, ...], items)
     if not all((isinstance(item, item_type) for item in items)):
         raise TypeError(
             f"Collected items for {family.__name__} did not match {item_type.__name__}"
@@ -2344,6 +2367,17 @@ AstNodeT = TypeVar("AstNodeT", bound=ast.AST)
 AstTraversal = Callable[[ast.AST], Iterable[ast.AST]]
 
 
+@lru_cache(maxsize=None)
+def _typed_ast_nodes(root: ast.AST, node_type: type[AstNodeT]) -> tuple[AstNodeT, ...]:
+    return tuple(
+        (
+            cast(AstNodeT, node)
+            for node in _walk_nodes(root)
+            if isinstance(node, node_type)
+        )
+    )
+
+
 def _collect_ast_node_candidates(
     module: ParsedModule,
     root: ast.AST,
@@ -2357,10 +2391,20 @@ def _collect_ast_node_candidates(
     sort_key: Callable[[AstNodeCandidateT], Any] | None = None,
     **projector_kwargs: AstNodeProjectorP.kwargs,
 ) -> tuple[AstNodeCandidateT, ...]:
+    nodes = (
+        _typed_ast_nodes(root, node_type)
+        if traversal is _walk_nodes
+        else tuple(
+            (
+                cast(AstNodeT, node)
+                for node in traversal(root)
+                if isinstance(node, node_type)
+            )
+        )
+    )
     projected = (
         candidate
-        for node in traversal(root)
-        if isinstance(node, node_type)
+        for node in nodes
         for candidate in projector(module, node, *projector_args, **projector_kwargs)
     )
     return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
@@ -9021,6 +9065,12 @@ _materialize_product_records((
     _product_record_spec('EnumMetadataTableCandidate', 'table_name: str; property_names: tuple[str, ...]; case_count: int', 'ClassLineWitnessCandidate'),
     _product_record_spec('ReadabilityCompressedLineCandidate', 'char_count: int; reason: str; statement_count: int', 'LineWitnessCandidate'),
     _product_record_spec('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', 'ClassLineWitnessCandidate'),
+    _product_record_spec('ClosedAxisConversionMatrixCandidate', 'function_names: tuple[str, ...]; source_axis_values: tuple[str, ...]; target_axis_values: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
+    _product_record_spec('OptionRecordQuotientCandidate', 'class_names: tuple[str, ...]; line_numbers: tuple[int, ...]; field_names: tuple[str, ...]; default_names: tuple[str, ...]; common_base_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "class_names")}),
+    _product_record_spec('IdentityKeywordForwardingShellCandidate', 'callee_name: str; forwarded_keyword_names: tuple[str, ...]; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('OptionalParameterBranchCandidate', 'parameter_name: str; annotation_text: str; observed_attribute_names: tuple[str, ...]; none_check_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('SemanticOverlapABCOptimizationCandidate', 'base_name: str; method_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; shared_statement_count: int; varying_coordinate_count: int; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; family_method_names: tuple[str, ...]; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name="file_paths", line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="class_names")}),
+    _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name="file_paths", line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="method_symbols")}),
 ))
 # fmt: on
 

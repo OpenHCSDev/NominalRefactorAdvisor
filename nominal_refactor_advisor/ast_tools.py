@@ -733,6 +733,8 @@ def _collect_all_scoped_observations(
 
     class Visitor(ClassFunctionStackNodeVisitor):
         def _record(self, node: ast.AST) -> None:
+            if getattr(node, "lineno", None) is None:
+                return
             observations.append(
                 ScopedAstObservation(
                     node=node,
@@ -2105,6 +2107,12 @@ def _root_names(node: ast.AST) -> set[str]:
     roots: set[str] = set()
 
     class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            for argument in node.args:
+                self.visit(argument)
+            for keyword in node.keywords:
+                self.visit(keyword.value)
+
         def visit_Attribute(self, node: ast.Attribute) -> None:
             current: ast.AST = node
             while isinstance(current, ast.Attribute):

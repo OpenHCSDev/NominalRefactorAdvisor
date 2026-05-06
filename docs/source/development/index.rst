@@ -41,6 +41,12 @@ Conceptual Background
    nominal_architecture_playbook
    agent_refactoring_crash_course
    nominal_identity_case_studies
+   openhcs_merged_pr_case_studies
+   openhcs_high_significance_pr_deep_dives
+   openhcs_focused_pr_notes
+   openhcs_diff_evolution_case_studies
+   openhcs_detour_case_studies
+   dna_case_study
    systematic_refactoring_framework
    refactoring_principles
    respecting_codebase_architecture

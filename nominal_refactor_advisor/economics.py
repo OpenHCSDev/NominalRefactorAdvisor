@@ -22,6 +22,12 @@ from .models import ImpactDelta, RefactorFinding, RefactorPlan, SemanticRecord
 from .planner import build_refactor_plans
 
 _DEFAULT_SCAN_BUDGET_SECONDS = 20.0
+_READABILITY_DETECTOR_IDS = frozenset(
+    {
+        "excessive_blank_line_run",
+        "readability_compressed_line",
+    }
+)
 
 
 def _has_positive_impact(delta: ImpactDelta) -> bool:
@@ -225,6 +231,8 @@ class ScanEconomicsProof(SemanticRecord):
     finding_count: int
     production_finding_count: int
     test_only_finding_count: int
+    semantic_production_finding_count: int
+    readability_finding_count: int
     plan_count: int
     detector_ids: tuple[str, ...] = field(default_factory=tuple)
     production_detector_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -249,6 +257,20 @@ class ScanEconomicsProof(SemanticRecord):
         test_only_findings = tuple(
             (finding for finding in finding_tuple if _is_test_only_finding(finding))
         )
+        readability_findings = tuple(
+            (
+                finding
+                for finding in production_findings
+                if finding.detector_id in _READABILITY_DETECTOR_IDS
+            )
+        )
+        semantic_production_findings = tuple(
+            (
+                finding
+                for finding in production_findings
+                if finding.detector_id not in _READABILITY_DETECTOR_IDS
+            )
+        )
         return cls(
             label=label,
             path=str(path),
@@ -257,6 +279,8 @@ class ScanEconomicsProof(SemanticRecord):
             finding_count=len(finding_tuple),
             production_finding_count=len(production_findings),
             test_only_finding_count=len(test_only_findings),
+            semantic_production_finding_count=len(semantic_production_findings),
+            readability_finding_count=len(readability_findings),
             plan_count=len(plan_tuple),
             detector_ids=sorted_tuple(
                 {finding.detector_id for finding in finding_tuple}
@@ -306,6 +330,8 @@ class ScanEconomicsProof(SemanticRecord):
             "finding_count": self.finding_count,
             "production_finding_count": self.production_finding_count,
             "test_only_finding_count": self.test_only_finding_count,
+            "semantic_production_finding_count": self.semantic_production_finding_count,
+            "readability_finding_count": self.readability_finding_count,
             "plan_count": self.plan_count,
             "detector_ids": self.detector_ids,
             "production_detector_ids": self.production_detector_ids,
@@ -486,14 +512,14 @@ class RepositoryChangeBudget(SemanticRecord):
         }
 
 
-def _scan_path_for_proof(
+def _scan_modules_for_proof(
     label: str,
     path: Path,
+    modules: list,
     config: DetectorConfig,
     scan_budget_seconds: float,
 ) -> ScanEconomicsProof:
     started = perf_counter()
-    modules = parse_python_modules(path)
     findings = analyze_modules(modules, config)
     plans = build_refactor_plans(findings, path)
     elapsed = perf_counter() - started
@@ -521,15 +547,26 @@ def build_economics_proof_report(
     package_path = repo_root / "nominal_refactor_advisor"
     if not package_path.exists():
         package_path = root
-    package_scan = _scan_path_for_proof(
+        parsed_modules = parse_python_modules(root)
+    else:
+        parsed_modules = parse_python_modules(repo_root)
+    package_root = package_path.resolve()
+    package_modules = [
+        module
+        for module in parsed_modules
+        if module.path.resolve().is_relative_to(package_root)
+    ]
+    package_scan = _scan_modules_for_proof(
         "package",
         package_path,
+        package_modules,
         config,
         scan_budget_seconds,
     )
-    repository_scan = _scan_path_for_proof(
+    repository_scan = _scan_modules_for_proof(
         "repository",
         repo_root,
+        parsed_modules,
         config,
         scan_budget_seconds,
     )

@@ -15,6 +15,7 @@ from .record_algebra import (
 
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+import hashlib
 from typing import Any, ClassVar, cast
 
 from .class_composition import CompositeClassSpec
@@ -47,6 +48,16 @@ class SemanticRecord(ABC):
 # fmt: off
 materialize_product_record(product_record_spec('SourceLocation', 'file_path: str; line: int; symbol: str', 'SemanticRecord', doc='One evidence site in source code.'))
 # fmt: on
+
+
+def stable_source_location_id(source_location: SourceLocation) -> str:
+    """Return a compact, repeatable id for one source evidence coordinate."""
+
+    payload = (
+        f"{source_location.file_path}:{source_location.line}:"
+        f"{source_location.symbol}"
+    )
+    return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -573,6 +584,31 @@ class RefactorFinding(FindingSemantics):
     codemod_patch: str | None = None
     compression_certificate: CompressionCertificate | None = None
     metrics: FindingMetrics = field(default_factory=EmptyFindingMetrics)
+
+    @property
+    def stable_id(self) -> str:
+        """Source-derived finding id for compact, repeatable agent targeting."""
+
+        evidence_key = "|".join(
+            stable_source_location_id(item) for item in self.evidence
+        )
+        payload = "|".join(
+            (
+                self.detector_id,
+                str(self.pattern_id.value),
+                self.summary,
+                evidence_key,
+            )
+        )
+        return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
+
+    def to_dict(self) -> dict[str, object]:
+        payload = super().to_dict()
+        payload["stable_id"] = self.stable_id
+        payload["evidence_ids"] = tuple(
+            stable_source_location_id(item) for item in self.evidence
+        )
+        return payload
 
     @classmethod
     def from_spec(

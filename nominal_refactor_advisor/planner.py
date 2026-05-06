@@ -481,6 +481,8 @@ def build_refactor_plans(
     findings: list[RefactorFinding], root: Path
 ) -> list[RefactorPlan]:
     """Group findings by subsystem and synthesize refactor plans."""
+    if not findings:
+        return []
     clusters = _cluster_findings(findings, root)
     plans = [_plan_for_cluster(cluster) for cluster in clusters]
     return sorted(

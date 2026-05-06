@@ -12,7 +12,10 @@ from ..record_algebra import (
     product_record_spec,
 )
 from ..semantic_algebra import ObjectFamilyShape
-from ..semantic_description_length import CompressionCertificate
+from ..semantic_description_length import (
+    ClassFamilyCompressionProfile,
+    CompressionCertificate,
+)
 
 import io
 import re
@@ -23,15 +26,11 @@ from ._base import *
 from ._substrate_support import *
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
-ExternalCallsitesByTarget: TypeAlias = dict[
-    str, tuple[ResolvedExternalCallsite, ...]
-]
+ExternalCallsitesByTarget: TypeAlias = dict[str, tuple[ResolvedExternalCallsite, ...]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
 NamedStringSequenceSpecs: TypeAlias = tuple[NamedStringSequenceSpec, ...]
 MutableNamedStringSequenceSpecs: TypeAlias = list[NamedStringSequenceSpec]
-NamedStringSequenceSpecsByName: TypeAlias = dict[
-    str, MutableNamedStringSequenceSpecs
-]
+NamedStringSequenceSpecsByName: TypeAlias = dict[str, MutableNamedStringSequenceSpecs]
 DerivedQuerySignature: TypeAlias = tuple[str, str, str]
 DerivedQuerySpecsBySignature: TypeAlias = dict[
     DerivedQuerySignature, MutableNamedStringSequenceSpecs
@@ -39,9 +38,7 @@ DerivedQuerySpecsBySignature: TypeAlias = dict[
 ProductRecordFieldSpec: TypeAlias = tuple[str, str, str | None]
 ProductRecordFieldSpecs: TypeAlias = tuple[ProductRecordFieldSpec, ...]
 MutableProductRecordFieldSpecs: TypeAlias = list[ProductRecordFieldSpec]
-ProductRecordAnnotatedClass: TypeAlias = tuple[
-    ast.ClassDef, ProductRecordFieldSpecs
-]
+ProductRecordAnnotatedClass: TypeAlias = tuple[ast.ClassDef, ProductRecordFieldSpecs]
 ProductRecordDataclassShape: TypeAlias = tuple[
     tuple[str, ...],
     tuple[tuple[str, str], ...],
@@ -72,6 +69,22 @@ _RETURN_COLLECTION_KIND_NAMES = frozenset(
         _BuiltinCollectionName.TUPLE,
         _BuiltinCollectionName.LIST,
         _BuiltinCollectionName.DICT,
+    }
+)
+_OPTIONAL_VARIANT_TYPE_SUFFIXES = frozenset(
+    {
+        "Adapter",
+        "Backend",
+        "Builder",
+        "Formatter",
+        "Handler",
+        "Policy",
+        "Provider",
+        "Renderer",
+        "Resolver",
+        "Service",
+        "Spec",
+        "Strategy",
     }
 )
 
@@ -3745,8 +3758,9 @@ def _self_naming_builder_catalog_candidates(
     )
 
 
+_ABC_BASE_NAME = "ABC"
 _COMPOSABLE_BASE_NAME_SUFFIXES = (
-    "ABC",
+    _ABC_BASE_NAME,
     "Base",
     "Carrier",
     "Contract",
@@ -3756,7 +3770,9 @@ _COMPOSABLE_BASE_NAME_SUFFIXES = (
 
 
 def _is_composable_base_name(base_name: str) -> bool:
-    return base_name == "ABC" or base_name.endswith(_COMPOSABLE_BASE_NAME_SUFFIXES)
+    return base_name == _ABC_BASE_NAME or base_name.endswith(
+        _COMPOSABLE_BASE_NAME_SUFFIXES
+    )
 
 
 def _declared_base_name_sequence(node: ast.ClassDef) -> tuple[str, ...]:
@@ -5069,6 +5085,800 @@ def _group_repeated_methods(
     ]
 
 
+_ABC_OPTIMIZER_IGNORED_BASE_NAMES = frozenset({"ABC", "Generic", "Protocol", "object"})
+_ABCOptimizerMethodNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
+_ABCOptimizerClassMethod: TypeAlias = tuple[IndexedClass, _ABCOptimizerMethodNode]
+_ABCOptimizerClassMethods: TypeAlias = tuple[_ABCOptimizerClassMethod, ...]
+_ABCOptimizerMethods: TypeAlias = tuple[_ABCOptimizerMethodNode, ...]
+_SemanticCoordinate: TypeAlias = tuple[tuple[str, ...], str, str]
+_ABCOptimizerCandidateKey: TypeAlias = tuple[str, str, tuple[str, ...]]
+_ABCOptimizerFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
+_ABCOptimizerMethodNamesByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
+_ABCOptimizerAxisSpecsByFamily: TypeAlias = dict[_ABCOptimizerFamilyKey, set[str]]
+_ABCOptimizerAxisRow: TypeAlias = tuple[str, tuple[str, ...]]
+_ABCOptimizerAxisRowsByFamily: TypeAlias = dict[
+    _ABCOptimizerFamilyKey, set[_ABCOptimizerAxisRow]
+]
+_ABCOptimizerLatticeEdgesByFamily: TypeAlias = dict[
+    _ABCOptimizerFamilyKey, set[tuple[tuple[str, ...], tuple[str, ...]]]
+]
+_ABCOptimizerClassItemsByBase: TypeAlias = dict[tuple[str, str], list[IndexedClass]]
+_ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
+
+
+# fmt: off
+materialize_product_records((
+    product_record_spec('_ABCOptimizerMethodGroupProfile', 'methods: _ABCOptimizerMethods; shared_statement_count: int; varying_coordinates: tuple[_SemanticCoordinate, ...]; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; compression_certificate: CompressionCertificate'),
+    product_record_spec('_ABCOptimizerMethodPlan', 'base_symbol: str; base_name: str; method_name: str; class_methods: _ABCOptimizerClassMethods; profile: _ABCOptimizerMethodGroupProfile; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int'),
+    product_record_spec('_ABCOptimizerFamilyPlan', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int'),
+))
+# fmt: on
+
+
+class _ABCSemanticSkeletonNormalizer(ast.NodeTransformer):
+    def visit_arg(self, node: ast.arg) -> ast.arg:
+        return ast.arg(arg="ARG", annotation=None, type_comment=None)
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        return ast.copy_location(ast.Name(id="VAR", ctx=node.ctx), node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+        return ast.copy_location(
+            ast.Attribute(
+                value=cast(ast.expr, self.visit(node.value)),
+                attr="ATTR",
+                ctx=node.ctx,
+            ),
+            node,
+        )
+
+    def visit_Constant(self, node: ast.Constant) -> ast.AST:
+        return ast.copy_location(ast.Constant(value="CONST"), node)
+
+
+def _abc_optimizer_statement_skeleton(statement: ast.stmt) -> str:
+    normalized = _ABCSemanticSkeletonNormalizer().visit(
+        ast.parse(ast.unparse(statement)).body[0]
+    )
+    ast.fix_missing_locations(normalized)
+    return ast.dump(normalized, include_attributes=False)
+
+
+def _abc_optimizer_method_skeleton(
+    method: _ABCOptimizerMethodNode,
+) -> tuple[str, ...]:
+    return tuple(
+        _abc_optimizer_statement_skeleton(statement)
+        for statement in _trim_docstring_body(list(method.body))
+    )
+
+
+def _coordinate_path(path: tuple[object, ...]) -> tuple[str, ...]:
+    return tuple(str(item) for item in path)
+
+
+def _semantic_overlap_coordinates(
+    node: ast.AST, path: tuple[object, ...] = ()
+) -> tuple[_SemanticCoordinate, ...]:
+    coordinates: list[_SemanticCoordinate] = []
+    if isinstance(node, ast.Constant):
+        coordinates.append((_coordinate_path(path), "constant", repr(node.value)))
+    elif isinstance(node, ast.Name):
+        coordinates.append((_coordinate_path(path), "name", node.id))
+    elif isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id == "self":
+            coordinates.append((_coordinate_path(path), "self_attr", node.attr))
+        else:
+            coordinates.append((_coordinate_path(path), "attribute", ast.unparse(node)))
+    elif isinstance(node, ast.Call):
+        coordinates.append(
+            (_coordinate_path((*path, "func")), "call", ast.unparse(node.func))
+        )
+    skipped_fields = {"func"} if isinstance(node, ast.Call) else set()
+    for field_name, value in ast.iter_fields(node):
+        if field_name in skipped_fields:
+            continue
+        if isinstance(value, ast.AST):
+            coordinates.extend(
+                _semantic_overlap_coordinates(value, (*path, field_name))
+            )
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                if isinstance(item, ast.AST):
+                    coordinates.extend(
+                        _semantic_overlap_coordinates(item, (*path, field_name, index))
+                    )
+    return tuple(coordinates)
+
+
+def _abc_optimizer_varying_coordinates(
+    methods: _ABCOptimizerMethods,
+) -> tuple[_SemanticCoordinate, ...]:
+    grouped: dict[tuple[tuple[str, ...], str], set[str]] = defaultdict(set)
+    representatives: dict[tuple[tuple[str, ...], str], _SemanticCoordinate] = {}
+    for method in methods:
+        body = _trim_docstring_body(list(method.body))
+        for statement_index, statement in enumerate(body):
+            for path, kind, value in _semantic_overlap_coordinates(
+                statement, ("body", statement_index)
+            ):
+                key = (path, kind)
+                grouped[key].add(value)
+                representatives.setdefault(key, (path, kind, value))
+    return tuple(
+        representatives[key]
+        for key, values in sorted(grouped.items(), key=lambda item: item[0])
+        if len(values) >= 2
+    )
+
+
+def _abc_optimizer_residue_names(
+    method_name: str, varying_coordinates: tuple[_SemanticCoordinate, ...]
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    classvar_names: list[str] = []
+    property_hook_names: list[str] = []
+    behavior_hook_names: list[str] = []
+    for index, (_, kind, _) in enumerate(varying_coordinates, start=1):
+        if kind == "constant":
+            classvar_names.append(f"{method_name}_constant_{index}".upper())
+        elif kind == "self_attr":
+            property_hook_names.append(f"{method_name}_property_{index}")
+        elif kind == "call":
+            behavior_hook_names.append(f"_{method_name}_operation_{index}")
+        elif kind in {"attribute", "name"}:
+            property_hook_names.append(f"{method_name}_value_{index}")
+        else:
+            behavior_hook_names.append(f"_{method_name}_hook_{index}")
+    return (
+        tuple(dict.fromkeys(classvar_names)),
+        tuple(dict.fromkeys(property_hook_names)),
+        tuple(dict.fromkeys(behavior_hook_names)),
+    )
+
+
+def _class_methods_by_name(
+    class_node: ast.ClassDef,
+) -> dict[str, _ABCOptimizerMethodNode]:
+    return {
+        statement.name: statement
+        for statement in class_node.body
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _abc_optimizer_display_base_name(
+    class_index: ClassFamilyIndex, base_symbol: str
+) -> str:
+    indexed_class = class_index.class_for(base_symbol)
+    return indexed_class.simple_name if indexed_class is not None else base_symbol
+
+
+def _abc_optimizer_resolved_classes_by_transitive_base(
+    class_index: ClassFamilyIndex,
+) -> _ABCOptimizerClassItemsByBase:
+    return {
+        (base_symbol, _abc_optimizer_display_base_name(class_index, base_symbol)): [
+            indexed_class
+            for descendant_symbol in descendant_symbols
+            if (indexed_class := class_index.class_for(descendant_symbol)) is not None
+        ]
+        for base_symbol, descendant_symbols in class_index.descendants_by_symbol.items()
+        if _abc_optimizer_display_base_name(class_index, base_symbol)
+        not in _ABC_OPTIMIZER_IGNORED_BASE_NAMES
+    }
+
+
+def _abc_optimizer_unresolved_direct_base_names(
+    class_index: ClassFamilyIndex, indexed_class: IndexedClass
+) -> tuple[str, ...]:
+    resolved_simple_names = {
+        resolved_class.simple_name
+        for base_symbol in indexed_class.resolved_base_symbols
+        if (resolved_class := class_index.class_for(base_symbol)) is not None
+    }
+    return tuple(
+        (
+            base_name
+            for base_name in indexed_class.declared_base_names
+            if base_name not in _ABC_OPTIMIZER_IGNORED_BASE_NAMES
+            and base_name.rsplit(".", 1)[-1] not in resolved_simple_names
+        )
+    )
+
+
+def _abc_optimizer_classes_by_unresolved_direct_base(
+    class_index: ClassFamilyIndex,
+) -> _ABCOptimizerClassItemsByBase:
+    classes_by_base: _ABCOptimizerClassItemsByBase = defaultdict(list)
+    for indexed_class in class_index.classes_by_symbol.values():
+        for base_name in _abc_optimizer_unresolved_direct_base_names(
+            class_index, indexed_class
+        ):
+            classes_by_base[(base_name, base_name.rsplit(".", 1)[-1])].append(
+                indexed_class
+            )
+    return dict(classes_by_base)
+
+
+def _abc_optimizer_classes_by_base(
+    class_index: ClassFamilyIndex,
+) -> _ABCOptimizerClassItemsByBase:
+    classes_by_base = _abc_optimizer_resolved_classes_by_transitive_base(class_index)
+    for base_key, indexed_classes in _abc_optimizer_classes_by_unresolved_direct_base(
+        class_index
+    ).items():
+        classes_by_base.setdefault(base_key, []).extend(indexed_classes)
+    return classes_by_base
+
+
+def _abc_optimizer_shared_statement_count(
+    methods: _ABCOptimizerMethods,
+) -> int | None:
+    body_lengths = {len(_trim_docstring_body(list(method.body))) for method in methods}
+    if len(body_lengths) != 1:
+        return None
+    shared_statement_count = next(iter(body_lengths))
+    return shared_statement_count if shared_statement_count >= 3 else None
+
+
+def _abc_optimizer_has_one_method_skeleton(
+    methods: _ABCOptimizerMethods,
+) -> bool:
+    skeletons = {_abc_optimizer_method_skeleton(method) for method in methods}
+    return len(skeletons) == 1
+
+
+def _abc_optimizer_residue_profile(
+    method_name: str,
+    methods: _ABCOptimizerMethods,
+    shared_statement_count: int,
+) -> (
+    tuple[
+        tuple[_SemanticCoordinate, ...],
+        tuple[str, ...],
+        tuple[str, ...],
+        tuple[str, ...],
+    ]
+    | None
+):
+    varying_coordinates = _abc_optimizer_varying_coordinates(methods)
+    if not varying_coordinates:
+        return None
+    if len(varying_coordinates) > max(4, shared_statement_count * 2):
+        return None
+    classvar_names, property_hook_names, behavior_hook_names = (
+        _abc_optimizer_residue_names(method_name, varying_coordinates)
+    )
+    return (
+        varying_coordinates,
+        classvar_names,
+        property_hook_names,
+        behavior_hook_names,
+    )
+
+
+def _abc_optimizer_paid_certificate(
+    *,
+    class_count: int,
+    shared_statement_count: int,
+    classvar_count: int,
+    hook_count: int,
+) -> CompressionCertificate | None:
+    compression_profile = ClassFamilyCompressionProfile.from_repeated_method_family(
+        class_count=class_count,
+        shared_statement_count=shared_statement_count,
+        hook_count=hook_count,
+        classvar_count=classvar_count,
+    )
+    certificate = compression_profile.compression_certificate
+    return certificate if certificate.pays_rent else None
+
+
+def _abc_optimizer_family_certificate(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+) -> CompressionCertificate | None:
+    class_names = method_plans[0].class_names
+    manual_object_count = sum(
+        (
+            len(class_names) * method_plan.profile.shared_statement_count
+            for method_plan in method_plans
+        )
+    )
+    residue_names = sorted_tuple(
+        {
+            residue_name
+            for method_plan in method_plans
+            for residue_name in (
+                *method_plan.profile.classvar_names,
+                *method_plan.profile.property_hook_names,
+                *method_plan.profile.behavior_hook_names,
+            )
+        }
+    )
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=manual_object_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("abc_base", "family_template"),
+            per_axis_objects=("residue_declaration",),
+        ),
+        semantic_axes=(*method_plans[0].class_names, *residue_names),
+        residual_object_count=len(class_names) * len(residue_names),
+        provenance_object_count=1,
+        independent_source_count=len(set(method_plans[0].file_paths)),
+    )
+    return certificate if certificate.pays_rent else None
+
+
+def _abc_optimizer_method_group_profile(
+    method_name: str,
+    class_methods: _ABCOptimizerClassMethods,
+) -> _ABCOptimizerMethodGroupProfile | None:
+    methods = tuple(method for _, method in class_methods)
+    shared_statement_count = _abc_optimizer_shared_statement_count(methods)
+    if shared_statement_count is None or not _abc_optimizer_has_one_method_skeleton(
+        methods
+    ):
+        return None
+    residue_profile = _abc_optimizer_residue_profile(
+        method_name, methods, shared_statement_count
+    )
+    if residue_profile is None:
+        return None
+    varying_coordinates, classvar_names, property_hook_names, behavior_hook_names = (
+        residue_profile
+    )
+    hook_count = len(property_hook_names) + len(behavior_hook_names)
+    certificate = _abc_optimizer_paid_certificate(
+        class_count=len({indexed_class.symbol for indexed_class, _ in class_methods}),
+        shared_statement_count=shared_statement_count,
+        hook_count=hook_count,
+        classvar_count=len(classvar_names),
+    )
+    if certificate is None:
+        return None
+    return _ABCOptimizerMethodGroupProfile(
+        methods=methods,
+        shared_statement_count=shared_statement_count,
+        varying_coordinates=varying_coordinates,
+        classvar_names=classvar_names,
+        property_hook_names=property_hook_names,
+        behavior_hook_names=behavior_hook_names,
+        compression_certificate=certificate,
+    )
+
+
+def _abc_optimizer_method_plan(
+    base_symbol: str,
+    base_name: str,
+    method_name: str,
+    class_methods: _ABCOptimizerClassMethods,
+) -> _ABCOptimizerMethodPlan | None:
+    if len(class_methods) < 2:
+        return None
+    profile = _abc_optimizer_method_group_profile(method_name, class_methods)
+    if profile is None:
+        return None
+    class_names = tuple(indexed_class.simple_name for indexed_class, _ in class_methods)
+    file_paths = tuple(indexed_class.file_path for indexed_class, _ in class_methods)
+    line_numbers = tuple(method.lineno for method in profile.methods)
+    line_count = sum(
+        max(1, (method.end_lineno or method.lineno) - method.lineno + 1)
+        for method in profile.methods
+    )
+    return _ABCOptimizerMethodPlan(
+        base_symbol=base_symbol,
+        base_name=base_name,
+        method_name=method_name,
+        class_methods=class_methods,
+        profile=profile,
+        class_names=class_names,
+        file_paths=file_paths,
+        line_numbers=line_numbers,
+        line_count=line_count,
+    )
+
+
+def _abc_optimizer_base_is_more_specific(
+    candidate_base_name: str,
+    incumbent_base_name: str,
+    class_index: ClassFamilyIndex,
+) -> bool:
+    return incumbent_base_name in class_index.ancestor_symbols(candidate_base_name)
+
+
+def _abc_optimizer_more_specific_method_plans(
+    method_plans: Iterable[_ABCOptimizerMethodPlan],
+    class_index: ClassFamilyIndex,
+) -> tuple[_ABCOptimizerMethodPlan, ...]:
+    plans_by_key: dict[_ABCOptimizerMethodPlanKey, _ABCOptimizerMethodPlan] = {}
+    for method_plan in method_plans:
+        key = (method_plan.method_name, method_plan.class_names)
+        incumbent = plans_by_key.get(key)
+        if incumbent is None or _abc_optimizer_base_is_more_specific(
+            method_plan.base_symbol, incumbent.base_symbol, class_index
+        ):
+            plans_by_key[key] = method_plan
+    return tuple(plans_by_key.values())
+
+
+def _abc_optimizer_candidate_from_method_plan(
+    module: ParsedModule,
+    method_plan: _ABCOptimizerMethodPlan,
+    family_plan: _ABCOptimizerFamilyPlan,
+) -> SemanticOverlapABCOptimizationCandidate:
+    return SemanticOverlapABCOptimizationCandidate(
+        file_path=str(module.path),
+        line=min(method_plan.line_numbers),
+        base_name=method_plan.base_name,
+        method_name=method_plan.method_name,
+        class_names=method_plan.class_names,
+        file_paths=method_plan.file_paths,
+        line_numbers=method_plan.line_numbers,
+        shared_statement_count=method_plan.profile.shared_statement_count,
+        varying_coordinate_count=len(method_plan.profile.varying_coordinates),
+        classvar_names=method_plan.profile.classvar_names,
+        property_hook_names=method_plan.profile.property_hook_names,
+        behavior_hook_names=method_plan.profile.behavior_hook_names,
+        family_method_names=family_plan.method_names,
+        mixin_axis_names=family_plan.mixin_axis_names,
+        overlap_axis_names=family_plan.overlap_axis_names,
+        mixin_axis_specs=family_plan.mixin_axis_specs,
+        overlap_axis_specs=family_plan.overlap_axis_specs,
+        hierarchy_normal_form=family_plan.hierarchy_normal_form,
+        optimizer_score=family_plan.optimizer_score,
+        abc_layer_count=family_plan.abc_layer_count,
+        lattice_node_count=family_plan.lattice_node_count,
+        lattice_edge_count=family_plan.lattice_edge_count,
+        line_count=method_plan.line_count,
+        compression_certificate=method_plan.profile.compression_certificate,
+    )
+
+
+def _abc_optimizer_family_candidate(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plan: _ABCOptimizerFamilyPlan,
+) -> SemanticOverlapABCFamilyOptimizationCandidate | None:
+    if len(method_plans) < 2:
+        return None
+    certificate = _abc_optimizer_family_certificate(method_plans)
+    if certificate is None:
+        return None
+    file_paths = tuple(
+        (
+            file_path
+            for method_plan in method_plans
+            for file_path in method_plan.file_paths
+        )
+    )
+    line_numbers = tuple(
+        (
+            line_number
+            for method_plan in method_plans
+            for line_number in method_plan.line_numbers
+        )
+    )
+    method_symbols = tuple(
+        (
+            f"{class_name}.{method_plan.method_name}"
+            for method_plan in method_plans
+            for class_name in method_plan.class_names
+        )
+    )
+    residue_count = sum(
+        (
+            len(method_plan.profile.classvar_names)
+            + len(method_plan.profile.property_hook_names)
+            + len(method_plan.profile.behavior_hook_names)
+            for method_plan in method_plans
+        )
+    )
+    return SemanticOverlapABCFamilyOptimizationCandidate(
+        file_path=file_paths[0],
+        line=min(line_numbers),
+        base_name=family_plan.base_name,
+        class_names=family_plan.class_names,
+        method_names=family_plan.method_names,
+        file_paths=file_paths,
+        line_numbers=line_numbers,
+        method_symbols=method_symbols,
+        shared_statement_count=sum(
+            (method_plan.profile.shared_statement_count for method_plan in method_plans)
+        ),
+        residue_count=residue_count,
+        hierarchy_normal_form=family_plan.hierarchy_normal_form,
+        optimizer_score=family_plan.optimizer_score,
+        abc_layer_count=family_plan.abc_layer_count,
+        lattice_node_count=family_plan.lattice_node_count,
+        lattice_edge_count=family_plan.lattice_edge_count,
+        line_count=sum((method_plan.line_count for method_plan in method_plans)),
+        compression_certificate=certificate,
+    )
+
+
+def _abc_optimizer_axis_spec(method_name: str, class_names: tuple[str, ...]) -> str:
+    return f"{method_name}[{','.join(class_names)}]"
+
+
+def _abc_optimizer_hierarchy_normal_form(
+    *,
+    base_name: str,
+    class_names: tuple[str, ...],
+    method_names: tuple[str, ...],
+    mixin_axis_specs: tuple[str, ...],
+    overlap_axis_specs: tuple[str, ...],
+) -> str:
+    root = f"ABC({base_name}:{','.join(class_names)})" f"{{{','.join(method_names)}}}"
+    mixins = f" + MIXIN({';'.join(mixin_axis_specs)})" if mixin_axis_specs else ""
+    overlaps = (
+        f" + OVERLAP({';'.join(overlap_axis_specs)})" if overlap_axis_specs else ""
+    )
+    return f"{root}{mixins}{overlaps}"
+
+
+def _abc_optimizer_family_plan(
+    family_key: _ABCOptimizerFamilyKey,
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    subset_method_names: tuple[str, ...],
+    overlap_method_names: tuple[str, ...],
+    subset_axis_specs: tuple[str, ...],
+    overlap_axis_specs: tuple[str, ...],
+    lattice_node_count: int,
+    lattice_edge_count: int,
+) -> _ABCOptimizerFamilyPlan:
+    _, class_names = family_key
+    base_name = method_plans[0].base_name
+    method_names = sorted_tuple(
+        (method_plan.method_name for method_plan in method_plans)
+    )
+    shared_statement_score = sum(
+        (method_plan.profile.shared_statement_count for method_plan in method_plans)
+    )
+    residue_cost = sum(
+        (
+            len(method_plan.profile.classvar_names)
+            + len(method_plan.profile.property_hook_names)
+            + len(method_plan.profile.behavior_hook_names)
+            for method_plan in method_plans
+        )
+    )
+    optimizer_score = (
+        len(class_names) * shared_statement_score
+        + (len(method_names) * len(class_names))
+        - residue_cost
+        - len(subset_method_names)
+        - (2 * len(overlap_method_names))
+    )
+    return _ABCOptimizerFamilyPlan(
+        base_name=base_name,
+        class_names=class_names,
+        method_names=method_names,
+        mixin_axis_names=subset_method_names,
+        overlap_axis_names=overlap_method_names,
+        mixin_axis_specs=subset_axis_specs,
+        overlap_axis_specs=overlap_axis_specs,
+        hierarchy_normal_form=_abc_optimizer_hierarchy_normal_form(
+            base_name=base_name,
+            class_names=class_names,
+            method_names=method_names,
+            mixin_axis_specs=subset_axis_specs,
+            overlap_axis_specs=overlap_axis_specs,
+        ),
+        optimizer_score=optimizer_score,
+        abc_layer_count=(1 if method_names else 0) + len(overlap_method_names),
+        lattice_node_count=lattice_node_count,
+        lattice_edge_count=lattice_edge_count,
+    )
+
+
+def _abc_optimizer_partitioned_axis_coordinates(
+    subset_rows: set[_ABCOptimizerAxisRow],
+    overlap_method_names: set[str],
+    overlap_axis_specs: set[str],
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    nonorthogonal_subset_rows: set[_ABCOptimizerAxisRow] = set()
+    subset_row_tuple = tuple(subset_rows)
+    for left_index, left_row in enumerate(subset_row_tuple):
+        left_classes = set(left_row[1])
+        for right_row in subset_row_tuple[left_index + 1 :]:
+            right_classes = set(right_row[1])
+            if not (left_classes & right_classes):
+                continue
+            if left_classes < right_classes or right_classes < left_classes:
+                continue
+            nonorthogonal_subset_rows.update((left_row, right_row))
+
+    clean_subset_rows = subset_rows - nonorthogonal_subset_rows
+    clean_subset_methods = {method_name for method_name, _ in clean_subset_rows}
+    nonorthogonal_methods = {
+        method_name for method_name, _ in nonorthogonal_subset_rows
+    }
+    clean_subset_specs = {
+        _abc_optimizer_axis_spec(method_name, class_names)
+        for method_name, class_names in clean_subset_rows
+    }
+    nonorthogonal_specs = {
+        _abc_optimizer_axis_spec(method_name, class_names)
+        for method_name, class_names in nonorthogonal_subset_rows
+    }
+    return (
+        sorted_tuple(clean_subset_methods),
+        sorted_tuple(overlap_method_names | nonorthogonal_methods),
+        sorted_tuple(clean_subset_specs),
+        sorted_tuple(overlap_axis_specs | nonorthogonal_specs),
+    )
+
+
+def _abc_optimizer_family_plans(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+) -> dict[_ABCOptimizerFamilyKey, _ABCOptimizerFamilyPlan]:
+    exact_groups: dict[_ABCOptimizerFamilyKey, list[_ABCOptimizerMethodPlan]] = (
+        defaultdict(list)
+    )
+    overlap_methods_by_family: _ABCOptimizerMethodNamesByFamily = defaultdict(set)
+    subset_rows_by_family: _ABCOptimizerAxisRowsByFamily = defaultdict(set)
+    overlap_specs_by_family: _ABCOptimizerAxisSpecsByFamily = defaultdict(set)
+    lattice_nodes_by_family: dict[_ABCOptimizerFamilyKey, set[tuple[str, ...]]] = (
+        defaultdict(set)
+    )
+    lattice_edges_by_family: _ABCOptimizerLatticeEdgesByFamily = defaultdict(set)
+    for method_plan in method_plans:
+        family_key = (method_plan.base_symbol, method_plan.class_names)
+        family_classes = set(method_plan.class_names)
+        family_class_names = sorted_tuple(family_classes)
+        lattice_nodes_by_family[family_key].add(family_class_names)
+        exact_groups[family_key].append(method_plan)
+        for other_plan in method_plans:
+            if other_plan.base_symbol != method_plan.base_symbol:
+                continue
+            other_classes = set(other_plan.class_names)
+            if other_classes == family_classes:
+                continue
+            class_intersection = family_classes & other_classes
+            if not class_intersection:
+                continue
+            other_class_names = sorted_tuple(other_classes)
+            intersection_class_names = sorted_tuple(class_intersection)
+            lattice_nodes_by_family[family_key].add(other_class_names)
+            lattice_nodes_by_family[family_key].add(intersection_class_names)
+            if intersection_class_names != family_class_names:
+                lattice_edges_by_family[family_key].add(
+                    (intersection_class_names, family_class_names)
+                )
+            if intersection_class_names != other_class_names:
+                lattice_edges_by_family[family_key].add(
+                    (intersection_class_names, other_class_names)
+                )
+            if other_classes < family_classes:
+                subset_rows_by_family[family_key].add(
+                    (other_plan.method_name, other_class_names)
+                )
+            elif (
+                other_classes != family_classes
+                and (not other_classes < family_classes)
+                and (not family_classes < other_classes)
+            ):
+                overlap_methods_by_family[family_key].add(other_plan.method_name)
+                overlap_specs_by_family[family_key].add(
+                    _abc_optimizer_axis_spec(other_plan.method_name, other_class_names)
+                )
+    return {
+        family_key: _abc_optimizer_family_plan(
+            family_key,
+            tuple(group),
+            *_abc_optimizer_partitioned_axis_coordinates(
+                subset_rows_by_family[family_key],
+                overlap_methods_by_family[family_key],
+                overlap_specs_by_family[family_key],
+            ),
+            len(lattice_nodes_by_family[family_key]),
+            len(lattice_edges_by_family[family_key]),
+        )
+        for family_key, group in exact_groups.items()
+    }
+
+
+def _semantic_overlap_abc_optimization_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticOverlapABCOptimizationCandidate, ...]:
+    return _semantic_overlap_abc_optimization_candidates_from_modules((module,))
+
+
+def _abc_optimizer_specific_method_plans(
+    modules: Sequence[ParsedModule],
+) -> tuple[_ABCOptimizerMethodPlan, ...]:
+    module_tuple = tuple(modules)
+    class_index = build_class_family_index(list(module_tuple))
+    classes_by_base = _abc_optimizer_classes_by_base(class_index)
+    method_plans: list[_ABCOptimizerMethodPlan] = []
+    for (base_symbol, base_name), indexed_classes in classes_by_base.items():
+        if len(indexed_classes) < 2:
+            continue
+        methods_by_class = {
+            indexed_class.symbol: _class_methods_by_name(indexed_class.node)
+            for indexed_class in indexed_classes
+        }
+        method_names = sorted_tuple(
+            {
+                method_name
+                for methods in methods_by_class.values()
+                for method_name in methods
+            }
+        )
+        for method_name in method_names:
+            class_methods = tuple(
+                (indexed_class, methods_by_class[indexed_class.symbol][method_name])
+                for indexed_class in indexed_classes
+                if method_name in methods_by_class[indexed_class.symbol]
+            )
+            method_plan = _abc_optimizer_method_plan(
+                base_symbol, base_name, method_name, class_methods
+            )
+            if method_plan is None:
+                continue
+            method_plans.append(method_plan)
+    return _abc_optimizer_more_specific_method_plans(method_plans, class_index)
+
+
+def _semantic_overlap_abc_optimization_candidates_from_modules(
+    modules: Sequence[ParsedModule],
+) -> tuple[SemanticOverlapABCOptimizationCandidate, ...]:
+    module_tuple = tuple(modules)
+    module_by_path = {str(module.path): module for module in module_tuple}
+    specific_method_plans = _abc_optimizer_specific_method_plans(module_tuple)
+    family_plans = _abc_optimizer_family_plans(specific_method_plans)
+    candidates: list[SemanticOverlapABCOptimizationCandidate] = []
+    seen: set[_ABCOptimizerCandidateKey] = set()
+    for method_plan in specific_method_plans:
+        family_key = (method_plan.base_symbol, method_plan.class_names)
+        family_plan = family_plans[family_key]
+        module = module_by_path[method_plan.file_paths[0]]
+        candidate = _abc_optimizer_candidate_from_method_plan(
+            module, method_plan, family_plan
+        )
+        key = (candidate.base_name, candidate.method_name, candidate.class_names)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+            candidate.method_name,
+        ),
+    )
+
+
+def _semantic_overlap_abc_family_optimization_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[SemanticOverlapABCFamilyOptimizationCandidate, ...]:
+    specific_method_plans = _abc_optimizer_specific_method_plans(modules)
+    family_plans = _abc_optimizer_family_plans(specific_method_plans)
+    candidates: list[SemanticOverlapABCFamilyOptimizationCandidate] = []
+    for family_key, family_plan in family_plans.items():
+        method_plans = tuple(
+            (
+                method_plan
+                for method_plan in specific_method_plans
+                if (method_plan.base_symbol, method_plan.class_names) == family_key
+            )
+        )
+        candidate = _abc_optimizer_family_candidate(method_plans, family_plan)
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+            candidate.method_names,
+        ),
+    )
+
+
 def _abc_patch_for_methods(methods: tuple[MethodShape, ...]) -> str:
     target_file = methods[0].file_path
     base_name = (
@@ -5422,13 +6232,62 @@ def _expression_root_names(node: ast.AST) -> set[str]:
 def _function_param_names(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> set[str]:
-    names = {arg.arg for arg in function.args.args}
+    names = {arg.arg for arg in function.args.posonlyargs}
+    names.update(arg.arg for arg in function.args.args)
     names.update(arg.arg for arg in function.args.kwonlyargs)
     if function.args.vararg is not None:
         names.add(function.args.vararg.arg)
     if function.args.kwarg is not None:
         names.add(function.args.kwarg.arg)
     return names
+
+
+def _function_has_parameter_defaults(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return bool(function.args.defaults) or any(
+        (default is not None for default in function.args.kw_defaults)
+    )
+
+
+def _function_arguments(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[ast.arg, ...]:
+    return (
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+    )
+
+
+def _annotation_contains_none(node: ast.AST | None) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Constant) and node.value is None:
+        return True
+    if isinstance(node, ast.Name):
+        return node.id == "None"
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _annotation_contains_none(node.left) or _annotation_contains_none(
+            node.right
+        )
+    if isinstance(node, ast.Subscript) and _call_name(node.value) in {
+        "Optional",
+        "Union",
+    }:
+        return _annotation_contains_none(node.slice)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return any((_annotation_contains_none(element) for element in node.elts))
+    return False
+
+
+def _annotation_has_nominal_variant_role(node: ast.AST | None) -> bool:
+    return any(
+        (
+            name.endswith(tuple(_OPTIONAL_VARIANT_TYPE_SUFFIXES))
+            for name in _annotation_type_names(node)
+        )
+    )
 
 
 def _is_transport_expression(node: ast.AST, *, allowed_roots: set[str]) -> bool:
@@ -6672,10 +7531,12 @@ def _effect_step_payoff_profile(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _EffectStepPayoffProfile:
     body = _trim_docstring_body(function.body)
+    body_module = ast.Module(body=body, type_ignores=[])
+    body_nodes = tuple(_walk_nodes(body_module))
     none_return_count = sum(
         (
             1
-            for item in _walk_nodes(ast.Module(body=body, type_ignores=[]))
+            for item in body_nodes
             if isinstance(item, ast.Return)
             and isinstance(item.value, ast.Constant)
             and (item.value.value is None)
@@ -6684,19 +7545,18 @@ def _effect_step_payoff_profile(
     ast_type_names = sorted_tuple(
         {
             ast_type_name
-            for item in _walk_nodes(ast.Module(body=body, type_ignores=[]))
+            for item in body_nodes
             for ast_type_name in _isinstance_ast_type_names(item)
         }
     )
-    body_module = ast.Module(body=body, type_ignores=[])
     semantic_helper_names = _semantic_match_helper_names(body_module)
     ast_type_guard_count = sum(
-        (1 for item in _walk_nodes(body_module) if _isinstance_ast_type_names(item))
+        (1 for item in body_nodes if _isinstance_ast_type_names(item))
     )
     semantic_helper_count = sum(
         (
             1
-            for item in _walk_nodes(body_module)
+            for item in body_nodes
             if isinstance(item, ast.Call)
             and _call_name(item.func) in _SEMANTIC_MATCH_HELPER_NAMES
         )
@@ -6718,7 +7578,7 @@ def _effect_step_payoff_profile(
                         and item.value.value is None
                     )
                 )
-                for item in _walk_nodes(body_module)
+                for item in body_nodes
             )
         ),
         already_uses_effect_step_pipeline=_uses_effect_step_pipeline(body_module),
@@ -6792,11 +7652,52 @@ def _public_top_level_declarations(
     }
 
 
-def _declares_effect_infrastructure(
-    declarations: TopLevelDeclarationMap,
-) -> bool:
+_INFRASTRUCTURE_DECLARATION_SUFFIXES = (
+    _ABC_BASE_NAME,
+    "Adapter",
+    "Base",
+    "Carrier",
+    "EffectCarrier",
+    "EffectStep",
+    "Factory",
+    "Manager",
+    "Mixin",
+    "Registry",
+    "Service",
+    "Strategy",
+)
+_NON_INFRASTRUCTURE_DECLARATION_SUFFIXES = (
+    "Candidate",
+    "Id",
+    "Metrics",
+    "Observation",
+)
+_INFRASTRUCTURE_DECLARATION_TERMS = frozenset(
+    {
+        "adapter",
+        "builder",
+        "factory",
+        "matcher",
+        "registry",
+        "resolver",
+        "service",
+        "strategy",
+    }
+)
+
+
+def _looks_like_infrastructure_declaration_name(name: str) -> bool:
+    if name.endswith(_NON_INFRASTRUCTURE_DECLARATION_SUFFIXES):
+        return False
+    lowered = name.lower()
+    return name.endswith(_INFRASTRUCTURE_DECLARATION_SUFFIXES) or any(
+        (term in lowered for term in _INFRASTRUCTURE_DECLARATION_TERMS)
+    )
+
+
+def _declares_effect_infrastructure(declarations: TopLevelDeclarationMap) -> bool:
     return any(
-        (name.endswith(("EffectStep", "EffectCarrier")) for name in declarations)
+        (_looks_like_infrastructure_declaration_name(name) for name in declarations)
     )
 
 
@@ -6889,6 +7790,7 @@ def _under_amortized_infrastructure_candidates(
                 name
                 for name in public_names
                 if len(external_consumers[name]) == 1
+                and _looks_like_infrastructure_declaration_name(name)
                 and name not in amortized_support_names
             )
         )
@@ -7025,12 +7927,12 @@ def _typed_observation_collection_call(
     if any(
         (
             isinstance(child, _STATIC_OBSERVATION_CONTROL_FLOW_NODES)
-            for child in ast.walk(method)
+            for child in _walk_nodes(method)
         )
     ):
         return None
     collection_calls: list[tuple[str, str]] = []
-    for child in ast.walk(method):
+    for child in _walk_nodes(method):
         if not isinstance(child, ast.Call):
             continue
         if name_id(child.func) != "_collect_typed_family_items":
@@ -7066,7 +7968,7 @@ def _static_minimum_evidence_count(node: ast.ClassDef) -> int | None:
     if minimum_method is None:
         return 1
     returns = tuple(
-        child for child in ast.walk(minimum_method) if isinstance(child, ast.Return)
+        child for child in _walk_nodes(minimum_method) if isinstance(child, ast.Return)
     )
     returned = single_item(returns)
     if returned is None:
@@ -7080,7 +7982,7 @@ def _static_summary_expression(module: ParsedModule, node: ast.ClassDef) -> str 
     if summary_method is None:
         return None
     returns = tuple(
-        child for child in ast.walk(summary_method) if isinstance(child, ast.Return)
+        child for child in _walk_nodes(summary_method) if isinstance(child, ast.Return)
     )
     returned = single_item(returns)
     if returned is None or returned.value is None:
@@ -7107,7 +8009,7 @@ def _static_typed_observation_detector_candidates(
             continue
         if not any(
             _source_location_from_line_symbol_call(child)
-            for child in ast.walk(evidence_method)
+            for child in _walk_nodes(evidence_method)
         ):
             continue
         minimum_evidence = _static_minimum_evidence_count(node)
@@ -7198,7 +8100,7 @@ def _all_string_literals(node: ast.AST) -> tuple[str, ...]:
     return tuple(
         (
             literal.value
-            for literal in ast.walk(node)
+            for literal in _walk_nodes(node)
             if isinstance(literal, ast.Constant) and isinstance(literal.value, str)
         )
     )
@@ -7296,7 +8198,7 @@ def _build_finding_action_text(node: ast.ClassDef) -> str:
         (
             _keyword_value_text(call, _DETECTOR_ACTION_KEYWORD_NAMES)
             for call in (
-                child for child in ast.walk(node) if isinstance(child, ast.Call)
+                child for child in _walk_nodes(node) if isinstance(child, ast.Call)
             )
             if _call_name(call.func) == "self.build_finding"
         )
@@ -7308,7 +8210,7 @@ def _build_finding_guard_text(module: ParsedModule, node: ast.ClassDef) -> str:
         (
             _source_segment(module, keyword.value)
             for call in (
-                child for child in ast.walk(node) if isinstance(child, ast.Call)
+                child for child in _walk_nodes(node) if isinstance(child, ast.Call)
             )
             if _call_name(call.func) == "self.build_finding"
             for keyword in call.keywords
@@ -7349,73 +8251,90 @@ def _detector_payoff_missing_guard_names(
     return tuple(missing)
 
 
+def _detector_backend_payoff_guard_call_candidate(
+    module: ParsedModule, node: ast.Call
+) -> tuple[DetectorBackendPayoffGuardCandidate, ...]:
+    if _call_name(node.func) not in _DETECTOR_DECLARATION_CALL_NAMES:
+        return ()
+    action_text = _keyword_value_text(node, _DETECTOR_ACTION_KEYWORD_NAMES)
+    abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
+    if not abstraction_terms:
+        return ()
+    guard_text = "\n".join(
+        (
+            _keyword_value_text(node, _DETECTOR_GUARD_KEYWORD_NAMES),
+            _keyword_source_text(module, node, _DETECTOR_GUARD_KEYWORD_NAMES),
+        )
+    )
+    missing_guard_names = _detector_payoff_missing_guard_names(action_text, guard_text)
+    if not missing_guard_names:
+        return ()
+    qualname = _detector_declaration_qualname(node)
+    candidate_type_name = _detector_declaration_candidate_type_name(node)
+    if qualname is None or candidate_type_name is None:
+        return ()
+    declaration_line_count = (node.end_lineno or node.lineno) - node.lineno + 1
+    return (
+        DetectorBackendPayoffGuardCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            qualname=qualname,
+            candidate_type_name=candidate_type_name,
+            abstraction_terms=abstraction_terms,
+            missing_guard_names=missing_guard_names,
+            declaration_line_count=declaration_line_count,
+        ),
+    )
+
+
+def _detector_backend_payoff_guard_class_candidate(
+    module: ParsedModule, node: ast.ClassDef
+) -> tuple[DetectorBackendPayoffGuardCandidate, ...]:
+    if not _is_payoff_guarded_detector_class(node):
+        return ()
+    action_text = _build_finding_action_text(node)
+    abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
+    if not abstraction_terms:
+        return ()
+    missing_guard_names = _detector_payoff_missing_guard_names(
+        action_text, _build_finding_guard_text(module, node)
+    )
+    if not missing_guard_names:
+        return ()
+    declaration_line_count = (node.end_lineno or node.lineno) - node.lineno + 1
+    return (
+        DetectorBackendPayoffGuardCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            qualname=node.name,
+            candidate_type_name=_detector_class_candidate_type_name(node),
+            abstraction_terms=abstraction_terms,
+            missing_guard_names=missing_guard_names,
+            declaration_line_count=declaration_line_count,
+        ),
+    )
+
+
 def _detector_backend_payoff_guard_candidates(
     module: ParsedModule,
 ) -> tuple[DetectorBackendPayoffGuardCandidate, ...]:
-    candidates: list[DetectorBackendPayoffGuardCandidate] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        if _call_name(node.func) not in _DETECTOR_DECLARATION_CALL_NAMES:
-            continue
-        action_text = _keyword_value_text(node, _DETECTOR_ACTION_KEYWORD_NAMES)
-        abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
-        if not abstraction_terms:
-            continue
-        guard_text = "\n".join(
-            (
-                _keyword_value_text(node, _DETECTOR_GUARD_KEYWORD_NAMES),
-                _keyword_source_text(module, node, _DETECTOR_GUARD_KEYWORD_NAMES),
-            )
-        )
-        missing_guard_names = _detector_payoff_missing_guard_names(
-            action_text, guard_text
-        )
-        if not missing_guard_names:
-            continue
-        qualname = _detector_declaration_qualname(node)
-        candidate_type_name = _detector_declaration_candidate_type_name(node)
-        if qualname is None or candidate_type_name is None:
-            continue
-        declaration_line_count = (node.end_lineno or node.lineno) - node.lineno + 1
-        candidates.append(
-            DetectorBackendPayoffGuardCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                qualname=qualname,
-                candidate_type_name=candidate_type_name,
-                abstraction_terms=abstraction_terms,
-                missing_guard_names=missing_guard_names,
-                declaration_line_count=declaration_line_count,
-            )
-        )
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or not _is_payoff_guarded_detector_class(
-            node
-        ):
-            continue
-        action_text = _build_finding_action_text(node)
-        abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
-        if not abstraction_terms:
-            continue
-        missing_guard_names = _detector_payoff_missing_guard_names(
-            action_text, _build_finding_guard_text(module, node)
-        )
-        if not missing_guard_names:
-            continue
-        declaration_line_count = (node.end_lineno or node.lineno) - node.lineno + 1
-        candidates.append(
-            DetectorBackendPayoffGuardCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                qualname=node.name,
-                candidate_type_name=_detector_class_candidate_type_name(node),
-                abstraction_terms=abstraction_terms,
-                missing_guard_names=missing_guard_names,
-                declaration_line_count=declaration_line_count,
-            )
-        )
-    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
+    return sorted_tuple(
+        (
+            *_collect_ast_node_candidates(
+                module,
+                module.module,
+                ast.Call,
+                _detector_backend_payoff_guard_call_candidate,
+            ),
+            *_collect_ast_node_candidates(
+                module,
+                module.module,
+                ast.ClassDef,
+                _detector_backend_payoff_guard_class_candidate,
+            ),
+        ),
+        key=lambda item: (item.file_path, item.line),
+    )
 
 
 def _renderer_keyword_names(call: ast.Call) -> tuple[str, ...]:
@@ -7443,48 +8362,50 @@ def _is_single_candidate_evidence_lambda(node: ast.AST) -> bool:
     )
 
 
+def _inline_candidate_renderer_declaration_candidate(
+    module: ParsedModule, node: ast.Call
+) -> tuple[InlineCandidateRendererDeclarationCandidate, ...]:
+    if _call_name(node.func) != _DECLARE_MODULE_DETECTOR_NAME or len(node.args) < 3:
+        return ()
+    renderer = node.args[2]
+    if not _is_candidate_finding_renderer_call(renderer):
+        return ()
+    renderer_call = cast(ast.Call, renderer)
+    renderer_keywords = {
+        keyword.arg: keyword.value
+        for keyword in renderer_call.keywords
+        if keyword.arg is not None
+    }
+    if "summary" not in renderer_keywords or "evidence" not in renderer_keywords:
+        return ()
+    candidate_type_name = _source_segment(module, node.args[0])
+    return (
+        InlineCandidateRendererDeclarationCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            qualname=f"{_DECLARE_MODULE_DETECTOR_NAME}[{candidate_type_name}]",
+            candidate_type_name=candidate_type_name,
+            renderer_keyword_names=_renderer_keyword_names(renderer_call),
+            detector_keyword_names=tuple(
+                (keyword.arg for keyword in node.keywords if keyword.arg is not None)
+            ),
+            has_single_candidate_evidence=_is_single_candidate_evidence_lambda(
+                renderer_keywords["evidence"]
+            ),
+            line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+        ),
+    )
+
+
 def _inline_candidate_renderer_declaration_candidates(
     module: ParsedModule,
 ) -> tuple[InlineCandidateRendererDeclarationCandidate, ...]:
-    candidates: list[InlineCandidateRendererDeclarationCandidate] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        if _call_name(node.func) != _DECLARE_MODULE_DETECTOR_NAME or len(node.args) < 3:
-            continue
-        renderer = node.args[2]
-        if not _is_candidate_finding_renderer_call(renderer):
-            continue
-        renderer_call = cast(ast.Call, renderer)
-        renderer_keywords = {
-            keyword.arg: keyword.value
-            for keyword in renderer_call.keywords
-            if keyword.arg is not None
-        }
-        if "summary" not in renderer_keywords or "evidence" not in renderer_keywords:
-            continue
-        candidate_type_name = _source_segment(module, node.args[0])
-        candidates.append(
-            InlineCandidateRendererDeclarationCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                qualname=f"{_DECLARE_MODULE_DETECTOR_NAME}[{candidate_type_name}]",
-                candidate_type_name=candidate_type_name,
-                renderer_keyword_names=_renderer_keyword_names(renderer_call),
-                detector_keyword_names=tuple(
-                    (
-                        keyword.arg
-                        for keyword in node.keywords
-                        if keyword.arg is not None
-                    )
-                ),
-                has_single_candidate_evidence=_is_single_candidate_evidence_lambda(
-                    renderer_keywords["evidence"]
-                ),
-                line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-            )
-        )
-    return tuple(candidates)
+    return _collect_ast_node_candidates(
+        module,
+        module.module,
+        ast.Call,
+        _inline_candidate_renderer_declaration_candidate,
+    )
 
 
 _NAMED_FUNCTION_ITERATOR_NAME = "_iter_named_functions"
@@ -7570,7 +8491,7 @@ def _candidate_append_constructor_names(node: ast.AST) -> tuple[str, ...]:
     return tuple(
         (
             candidate_name
-            for child in ast.walk(node)
+            for child in _walk_nodes(node)
             if (candidate_name := _candidate_append_constructor_name(child)) is not None
         )
     )
@@ -7603,14 +8524,16 @@ def _named_function_collector_boilerplate_candidates(
             continue
         if not node.name.endswith("_candidates"):
             continue
-        if not any(_assigns_candidate_accumulator(child) for child in ast.walk(node)):
+        if not any(
+            _assigns_candidate_accumulator(child) for child in _walk_nodes(node)
+        ):
             continue
         if not _returns_candidate_accumulator(node):
             continue
         append_type_names = tuple(
             (
                 candidate_name
-                for child in ast.walk(node)
+                for child in _walk_nodes(node)
                 if isinstance(child, ast.For) and _is_named_function_iteration(child)
                 for candidate_name in _candidate_append_constructor_names(child)
             )
@@ -7786,7 +8709,7 @@ def _ast_stream_collector_boilerplate_candidates(
             continue
         stream_calls: list[str] = []
         appended_pairs: list[tuple[str, str]] = []
-        for node in ast.walk(function):
+        for node in _walk_nodes(function):
             if not isinstance(node, ast.For):
                 continue
             stream_call_name = _ast_stream_call_name(node.iter)
@@ -7794,7 +8717,7 @@ def _ast_stream_collector_boilerplate_candidates(
                 continue
             loop_pairs = tuple(
                 pair
-                for child in ast.walk(node)
+                for child in _walk_nodes(node)
                 if (
                     pair := _append_candidate_constructor_name(child, accumulator_names)
                 )
@@ -7960,7 +8883,7 @@ def _parameter_name_is_reused(
         (
             isinstance(node, ast.Name) and node.id == parameter_name
             for statement in statements
-            for node in ast.walk(statement)
+            for node in _walk_nodes(statement)
         )
     )
 
@@ -8062,53 +8985,57 @@ def _recommended_finding_spec_constructor(
     return _FINDING_SPEC_CONSTRUCTOR_BY_DEFAULTS.get(target_defaults, constructor_name)
 
 
+def _finding_spec_default_field_candidate(
+    module: ParsedModule, node: ast.Call
+) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
+    constructor_name = _call_name(node.func)
+    if constructor_name not in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR:
+        return ()
+    semantic_keywords = {
+        keyword.arg: keyword
+        for keyword in node.keywords
+        if keyword.arg in _FINDING_SPEC_SEMANTIC_KEYWORD_INDEX
+    }
+    if not semantic_keywords:
+        return ()
+    recommended_constructor_name = _recommended_finding_spec_constructor(
+        constructor_name, semantic_keywords
+    )
+    recommended_defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[
+        recommended_constructor_name
+    ]
+    redundant_keywords = tuple(
+        (
+            (name, value_name)
+            for name, keyword in semantic_keywords.items()
+            for value_name in (_keyword_value_name(keyword),)
+            if value_name
+            == recommended_defaults[_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX[name]]
+        )
+    )
+    if not redundant_keywords:
+        return ()
+    return (
+        FindingSpecDefaultFieldCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            constructor_name=constructor_name,
+            recommended_constructor_name=recommended_constructor_name,
+            redundant_keyword_names=tuple((name for name, _ in redundant_keywords)),
+            redundant_keyword_values=tuple((value for _, value in redundant_keywords)),
+        ),
+    )
+
+
 def _finding_spec_default_field_candidates(
     module: ParsedModule,
 ) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
-    candidates: list[FindingSpecDefaultFieldCandidate] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        constructor_name = _call_name(node.func)
-        if constructor_name not in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR:
-            continue
-        semantic_keywords = {
-            keyword.arg: keyword
-            for keyword in node.keywords
-            if keyword.arg in _FINDING_SPEC_SEMANTIC_KEYWORD_INDEX
-        }
-        if not semantic_keywords:
-            continue
-        recommended_constructor_name = _recommended_finding_spec_constructor(
-            constructor_name, semantic_keywords
-        )
-        recommended_defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[
-            recommended_constructor_name
-        ]
-        redundant_keywords = tuple(
-            (
-                (name, value_name)
-                for name, keyword in semantic_keywords.items()
-                for value_name in (_keyword_value_name(keyword),)
-                if value_name
-                == recommended_defaults[_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX[name]]
-            )
-        )
-        if not redundant_keywords:
-            continue
-        candidates.append(
-            FindingSpecDefaultFieldCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                constructor_name=constructor_name,
-                recommended_constructor_name=recommended_constructor_name,
-                redundant_keyword_names=tuple((name for name, _ in redundant_keywords)),
-                redundant_keyword_values=tuple(
-                    (value for _, value in redundant_keywords)
-                ),
-            )
-        )
-    return tuple(candidates)
+    return _collect_ast_node_candidates(
+        module,
+        module.module,
+        ast.Call,
+        _finding_spec_default_field_candidate,
+    )
 
 
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
@@ -8143,38 +9070,46 @@ def _is_self_detector_id_attribute(node: ast.AST) -> bool:
     )
 
 
+def _class_declares_detector_id(node: ast.ClassDef) -> bool:
+    return any(
+        (
+            isinstance(statement, ast.Assign)
+            and any((name_id(target) == "detector_id" for target in statement.targets))
+            for statement in node.body
+        )
+    )
+
+
+def _finding_spec_build_boilerplate_class_candidates(
+    module: ParsedModule, node: ast.ClassDef
+) -> tuple[ClassMethodLineWitnessCandidate, ...]:
+    if not _class_declares_detector_id(node):
+        return ()
+    return tuple(
+        (
+            ClassMethodLineWitnessCandidate(
+                file_path=str(module.path),
+                line=child.lineno,
+                class_name=node.name,
+                method_name=statement.name,
+            )
+            for statement in node.body
+            if isinstance(statement, ast.FunctionDef)
+            for child in _walk_nodes(statement)
+            if _self_finding_spec_build_call(child) is not None
+        )
+    )
+
+
 def _finding_spec_build_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[ClassMethodLineWitnessCandidate, ...]:
-    candidates: list[ClassMethodLineWitnessCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if not any(
-            (
-                isinstance(statement, ast.Assign)
-                and any(
-                    (name_id(target) == "detector_id" for target in statement.targets)
-                )
-                for statement in node.body
-            )
-        ):
-            continue
-        for statement in node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            for child in ast.walk(statement):
-                if _self_finding_spec_build_call(child) is None:
-                    continue
-                candidates.append(
-                    ClassMethodLineWitnessCandidate(
-                        file_path=str(module.path),
-                        line=child.lineno,
-                        class_name=node.name,
-                        method_name=statement.name,
-                    )
-                )
-    return tuple(candidates)
+    return _collect_ast_node_candidates(
+        module,
+        module.module,
+        ast.ClassDef,
+        _finding_spec_build_boilerplate_class_candidates,
+    )
 
 
 def _self_build_finding_call(node: ast.AST) -> ast.Call | None:
@@ -9288,6 +10223,120 @@ def _field_only_frozen_dataclass_candidates(
     )
 
 
+_CONVERSION_FUNCTION_NAME_SEPARATORS = ("_to_", "_from_")
+
+
+def _conversion_axis_pair(function_name: str) -> tuple[str, str] | None:
+    for separator in _CONVERSION_FUNCTION_NAME_SEPARATORS:
+        if separator not in function_name:
+            continue
+        left, right = function_name.split(separator, maxsplit=1)
+        if not left or not right:
+            continue
+        return (left, right) if separator == "_to_" else (right, left)
+    return None
+
+
+def _closed_axis_conversion_matrix_candidates(
+    module: ParsedModule,
+) -> tuple[ClosedAxisConversionMatrixCandidate, ...]:
+    module_stem = module.path.stem.lower()
+    module_declares_conversion_domain = any(
+        (term in module_stem for term in ("conversion", "converter", "convert"))
+    )
+    conversion_functions: list[tuple[str, int, int, str, str]] = []
+    for node in module.module.body:
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not (
+            module_declares_conversion_domain
+            or node.name.startswith(("convert_", "converter_"))
+        ):
+            continue
+        axis_pair = _conversion_axis_pair(node.name)
+        if axis_pair is None:
+            continue
+        source_axis_value, target_axis_value = axis_pair
+        conversion_functions.append(
+            (
+                node.name,
+                node.lineno,
+                (node.end_lineno or node.lineno) - node.lineno + 1,
+                source_axis_value,
+                target_axis_value,
+            )
+        )
+    if len(conversion_functions) < 4:
+        return ()
+    source_values = sorted_tuple({item[3] for item in conversion_functions})
+    target_values = sorted_tuple({item[4] for item in conversion_functions})
+    if len(source_values) < 2 or len(target_values) < 2:
+        return ()
+    matrix_capacity = len(source_values) * len(target_values)
+    if len(conversion_functions) < min(4, matrix_capacity):
+        return ()
+    function_names = tuple((item[0] for item in conversion_functions))
+    line_numbers = tuple((item[1] for item in conversion_functions))
+    return (
+        ClosedAxisConversionMatrixCandidate(
+            file_path=str(module.path),
+            line=min(line_numbers),
+            function_names=function_names,
+            source_axis_values=source_values,
+            target_axis_values=target_values,
+            line_numbers=line_numbers,
+            line_count=sum((item[2] for item in conversion_functions)),
+        ),
+    )
+
+
+def _option_record_quotient_candidates(
+    module: ParsedModule,
+) -> tuple[OptionRecordQuotientCandidate, ...]:
+    records = tuple(_field_only_frozen_dataclass_candidates(module))
+    option_records = tuple(
+        (
+            record
+            for record in records
+            if record.class_name.endswith(("Option", "Options", "Config", "Settings"))
+        )
+    )
+    if len(option_records) < 3:
+        return ()
+    field_names = sorted_tuple(
+        {
+            field_name
+            for record in option_records
+            for field_name, _ in record.field_specs
+        }
+    )
+    default_names = sorted_tuple(
+        {
+            field_name
+            for record in option_records
+            for field_name, _ in record.default_specs
+        }
+    )
+    common_base_names = sorted_tuple(
+        set.intersection(*(set(record.base_names) for record in option_records))
+        if option_records
+        else set()
+    )
+    line_numbers = tuple((record.line for record in option_records))
+    return (
+        OptionRecordQuotientCandidate(
+            file_path=str(module.path),
+            line=min(line_numbers),
+            class_names=tuple((record.class_name for record in option_records)),
+            line_numbers=line_numbers,
+            field_names=field_names,
+            default_names=default_names,
+            common_base_names=common_base_names,
+            line_count=sum((record.line_count for record in option_records)),
+        ),
+    )
+
+
 _STRUCTURAL_ALIAS_ROOTS = frozenset(
     {
         "Callable",
@@ -9401,9 +10450,7 @@ def _semantic_type_alias_candidates(
             ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
         )
 
-        def _owner_symbol(
-            self, fallback: str, function_name: str | None = None
-        ) -> str:
+        def _owner_symbol(self, fallback: str, function_name: str | None = None) -> str:
             function_suffix = () if function_name is None else (function_name,)
             parts = (*self.class_stack, *self.function_stack, *function_suffix)
             return ".".join(parts) if parts else fallback
@@ -9818,10 +10865,13 @@ def _readability_line_is_comment_or_blank(line: str) -> bool:
 
 
 def _readability_line_has_string_token(line: str) -> bool:
-    return any(
-        token.type in _READABILITY_STRING_TOKEN_TYPES
-        for token in tokenize.generate_tokens(io.StringIO(f"{line}\n").readline)
-    )
+    try:
+        return any(
+            token.type in _READABILITY_STRING_TOKEN_TYPES
+            for token in tokenize.generate_tokens(io.StringIO(f"{line}\n").readline)
+        )
+    except tokenize.TokenError:
+        return True
 
 
 def _readability_compressed_line_candidates(
@@ -9850,7 +10900,7 @@ def _readability_compressed_line_candidates(
             semicolon_count + 1,
         )
 
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, _READABILITY_INLINE_SUITE_TYPES):
             continue
         body = node.body
@@ -9904,7 +10954,7 @@ def _from_namespace_keyword_names(
             or statement.name != "from_namespace"
         ):
             continue
-        for call in ast.walk(statement):
+        for call in _walk_nodes(statement):
             if isinstance(call, ast.Call) and name_id(call.func) == "cls":
                 keyword_names = tuple(
                     (
@@ -10050,7 +11100,7 @@ def _semantic_tag_tuple_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[SemanticTagTupleBoilerplateCandidate, ...]:
     candidates: list[SemanticTagTupleBoilerplateCandidate] = []
-    for node in ast.walk(module.module):
+    for node in _walk_nodes(module.module):
         if not isinstance(node, ast.keyword) or node.arg not in _SEMANTIC_TAG_KEYWORDS:
             continue
         tuple_value = _semantic_tag_tuple_value(node)
@@ -10195,32 +11245,38 @@ def _derived_metric_count_pairs(
     return tuple(derived_pairs)
 
 
+def _derived_metric_count_boilerplate_candidate(
+    module: ParsedModule, node: ast.Call
+) -> tuple[DerivedMetricCountBoilerplateCandidate, ...]:
+    metric_class_name = _call_name(node.func)
+    metric_shape = _DERIVED_COUNT_METRIC_SHAPES.get(metric_class_name or "")
+    if metric_shape is None:
+        return ()
+    constructor_name, pair_shapes = metric_shape
+    derived_pairs = _derived_metric_count_pairs(node, pair_shapes)
+    if not derived_pairs:
+        return ()
+    return (
+        DerivedMetricCountBoilerplateCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            metric_class_name=cast(str, metric_class_name),
+            recommended_constructor_name=constructor_name,
+            count_keyword_names=tuple((pair[0] for pair in derived_pairs)),
+            collection_keyword_names=tuple((pair[1] for pair in derived_pairs)),
+        ),
+    )
+
+
 def _derived_metric_count_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedMetricCountBoilerplateCandidate, ...]:
-    candidates: list[DerivedMetricCountBoilerplateCandidate] = []
-    for node in ast.walk(module.module):
-        if not isinstance(node, ast.Call):
-            continue
-        metric_class_name = _call_name(node.func)
-        metric_shape = _DERIVED_COUNT_METRIC_SHAPES.get(metric_class_name or "")
-        if metric_shape is None:
-            continue
-        constructor_name, pair_shapes = metric_shape
-        derived_pairs = _derived_metric_count_pairs(node, pair_shapes)
-        if not derived_pairs:
-            continue
-        candidates.append(
-            DerivedMetricCountBoilerplateCandidate(
-                file_path=str(module.path),
-                line=node.lineno,
-                metric_class_name=cast(str, metric_class_name),
-                recommended_constructor_name=constructor_name,
-                count_keyword_names=tuple((pair[0] for pair in derived_pairs)),
-                collection_keyword_names=tuple((pair[1] for pair in derived_pairs)),
-            )
-        )
-    return tuple(candidates)
+    return _collect_ast_node_candidates(
+        module,
+        module.module,
+        ast.Call,
+        _derived_metric_count_boilerplate_candidate,
+    )
 
 
 _EFFECT_STEP_BASE_NAMES = frozenset(
@@ -10692,6 +11748,154 @@ def _nested_builder_shell_candidates(
         config,
         _nested_builder_shell_candidates_for_function,
         sort_key=lambda item: (item.file_path, item.lineno),
+    )
+
+
+def _identity_keyword_forwarding_shell_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+) -> Iterable[IdentityKeywordForwardingShellCandidate]:
+    if function.name.startswith("__") and function.name.endswith("__"):
+        return
+    if _function_has_parameter_defaults(function):
+        return
+    body = _trim_docstring_body(list(function.body))
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return
+    returned = body[0].value
+    if not isinstance(returned, ast.Call) or returned.args:
+        return
+    parameter_names = _function_param_names(function) - {"self", "cls"}
+    if not parameter_names or any(
+        (keyword.arg is None for keyword in returned.keywords)
+    ):
+        return
+    forwarded_keyword_names = tuple(
+        keyword.arg
+        for keyword in returned.keywords
+        if (
+            keyword.arg is not None
+            and isinstance(keyword.value, ast.Name)
+            and keyword.arg == keyword.value.id
+        )
+    )
+    if set(forwarded_keyword_names) != parameter_names:
+        return
+    if len(forwarded_keyword_names) != len(returned.keywords):
+        return
+    yield IdentityKeywordForwardingShellCandidate(
+        file_path=str(module.path),
+        line=function.lineno,
+        function_name=qualname,
+        callee_name=_qualified_call_display_name(returned),
+        forwarded_keyword_names=forwarded_keyword_names,
+        line_count=max(
+            1, (function.end_lineno or function.lineno) - function.lineno + 1
+        ),
+    )
+
+
+def _identity_keyword_forwarding_shell_candidates(
+    module: ParsedModule,
+) -> tuple[IdentityKeywordForwardingShellCandidate, ...]:
+    return _collect_named_function_candidates(
+        module,
+        _identity_keyword_forwarding_shell_candidate,
+        sort_key=lambda item: (item.file_path, item.line, item.function_name),
+    )
+
+
+def _none_check_matches_name(node: ast.Compare, parameter_name: str) -> bool:
+    pairs = zip((node.left, *node.comparators), (*node.comparators,))
+    return any(
+        (
+            isinstance(operator, (ast.Is, ast.IsNot))
+            and (
+                (
+                    isinstance(left, ast.Name)
+                    and left.id == parameter_name
+                    and isinstance(right, ast.Constant)
+                    and right.value is None
+                )
+                or (
+                    isinstance(right, ast.Name)
+                    and right.id == parameter_name
+                    and isinstance(left, ast.Constant)
+                    and left.value is None
+                )
+            )
+        )
+        for operator, (left, right) in zip(node.ops, pairs)
+    )
+
+
+def _direct_none_check_count(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, parameter_name: str
+) -> int:
+    return sum(
+        (
+            1
+            for item in _walk_nodes(function)
+            if isinstance(item, ast.Compare)
+            and _none_check_matches_name(item, parameter_name)
+        )
+    )
+
+
+def _parameter_receiver_attribute_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, parameter_name: str
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            item.attr
+            for item in _walk_nodes(function)
+            if isinstance(item, ast.Attribute)
+            and isinstance(item.value, ast.Name)
+            and item.value.id == parameter_name
+        }
+    )
+
+
+def _optional_parameter_branch_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+) -> Iterable[OptionalParameterBranchCandidate]:
+    for argument in _function_arguments(function):
+        if not _annotation_contains_none(argument.annotation):
+            continue
+        if not _annotation_has_nominal_variant_role(argument.annotation):
+            continue
+        none_check_count = _direct_none_check_count(function, argument.arg)
+        if none_check_count == 0:
+            continue
+        observed_attribute_names = _parameter_receiver_attribute_names(
+            function, argument.arg
+        )
+        if not observed_attribute_names:
+            continue
+        yield OptionalParameterBranchCandidate(
+            file_path=str(module.path),
+            line=function.lineno,
+            function_name=qualname,
+            parameter_name=argument.arg,
+            annotation_text=ast.unparse(argument.annotation),
+            observed_attribute_names=observed_attribute_names,
+            none_check_count=none_check_count,
+            line_count=max(
+                1, (function.end_lineno or function.lineno) - function.lineno + 1
+            ),
+        )
+
+
+def _optional_parameter_branch_candidates(
+    module: ParsedModule,
+) -> tuple[OptionalParameterBranchCandidate, ...]:
+    return _collect_named_function_candidates(
+        module,
+        _optional_parameter_branch_candidates_for_function,
+        sort_key=lambda item: (item.file_path, item.line, item.parameter_name),
     )
 
 

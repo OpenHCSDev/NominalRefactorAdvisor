@@ -6,6 +6,8 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 
 from __future__ import annotations
 
+import copy
+
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 
@@ -138,7 +140,7 @@ def _literal_dispatch_authority_scaffold(
         "from typing import ClassVar\n"
         "from metaclass_registry import AutoRegisterMeta\n\n"
         "class DispatchCase(ABC, metaclass=AutoRegisterMeta):\n"
-        "    __registry_key__ = \"case\"\n"
+        '    __registry_key__ = "case"\n'
         "    __skip_if_no_key__ = True\n"
         "    case: ClassVar[object] = None\n\n"
         "    @classmethod\n"
@@ -168,11 +170,7 @@ def _literal_dispatch_finding(
 ) -> RefactorFinding:
     return detector.build_finding(
         f"{module.path} dispatches on `{observation.axis_expression}` through {case_summary_label} {observation.literal_cases}.",
-        (
-            SourceLocation(
-                observation.file_path, observation.line, observation.symbol
-            ),
-        ),
+        (SourceLocation(observation.file_path, observation.line, observation.symbol),),
         relation_context=(
             f"same observed axis `{observation.axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
         ),
@@ -265,13 +263,15 @@ class RepeatedBuilderCallDetector(IssueDetector):
             )
             if len(ordered) < 2 or len({builder.symbol for builder in ordered}) < 2:
                 continue
+            same_source = all(builder.source_arity == 1 for builder in ordered)
+            if len(ordered) < 3 and not same_source:
+                continue
             evidence = tuple(
                 (
                     SourceLocation(builder.file_path, builder.lineno, builder.symbol)
                     for builder in ordered[:6]
                 )
             )
-            same_source = all(builder.source_arity == 1 for builder in ordered)
             findings.append(
                 self.build_finding(
                     f"Call `{ordered[0].callee_name}` repeats the same keyword-mapping shape across {len(ordered)} sites.",
@@ -1023,7 +1023,7 @@ def _table_context_has_type_identity_signal(symbol: str, node: ast.AST) -> bool:
     names.extend(
         (
             call_name
-            for subnode in ast.walk(node)
+            for subnode in _walk_nodes(node)
             if isinstance(subnode, ast.Call)
             and (call_name := _call_name(subnode.func)) is not None
         )
@@ -1043,7 +1043,7 @@ def _external_type_identity_rows(
     row_pairs: list[tuple[str, str, int]] = []
     seen_pairs: set[tuple[str, str, int]] = set()
 
-    for table_node in ast.walk(node):
+    for table_node in _walk_nodes(node):
         row_nodes: Sequence[ast.AST]
         if isinstance(table_node, (ast.Tuple, ast.List, ast.Set)):
             row_nodes = table_node.elts
@@ -1073,7 +1073,7 @@ def _external_type_identity_rows(
 def _external_type_identity_pair(
     row_node: ast.AST,
 ) -> tuple[str, str, int] | None:
-    for subnode in ast.walk(row_node):
+    for subnode in _walk_nodes(row_node):
         if not isinstance(subnode, ast.Call):
             continue
         if len(subnode.args) < 2:
@@ -1396,27 +1396,18 @@ def _iter_surface_functions(
     return tuple(functions)
 
 
+@lru_cache(maxsize=None)
 def _walk_function_body_nodes(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[ast.AST, ...]:
     nodes: list[ast.AST] = []
-
-    class Visitor(ast.NodeVisitor):
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            if node is function:
-                for statement in _trim_docstring_body(node.body):
-                    self.visit(statement)
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            del node
-
-        def generic_visit(self, node: ast.AST) -> None:
-            nodes.append(node)
-            super().generic_visit(node)
-
-    Visitor().visit(function)
+    stack = list(reversed(_trim_docstring_body(function.body)))
+    while stack:
+        node = stack.pop()
+        nodes.append(node)
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
     return tuple(nodes)
 
 
@@ -1521,25 +1512,13 @@ def _static_payload_sink_kinds(
     return sorted_tuple(sink_kinds)
 
 
-def _node_within_function(
-    node: ast.AST, function: ast.FunctionDef | ast.AsyncFunctionDef
-) -> bool:
-    lineno = getattr(node, "lineno", None)
-    if lineno is None:
-        return False
-    end_lineno = (
-        function.end_lineno if function.end_lineno is not None else function.lineno
-    )
-    return function.lineno <= lineno <= end_lineno
-
-
 def _reference_symbol_counts(
     root: ast.AST,
     *,
     include_node: Callable[[ast.AST], bool] | None = None,
 ) -> Counter[str]:
     counts: Counter[str] = Counter()
-    for node in ast.walk(root):
+    for node in _walk_nodes(root):
         if include_node is not None and (not include_node(node)):
             continue
         if isinstance(node, ast.Name):
@@ -1554,24 +1533,28 @@ def _reference_symbol_counts(
 @dataclass(frozen=True)
 class ReferenceCountIndex:
     total_counts: Counter[str]
+    function_counts_by_id: dict[int, Counter[str]]
 
     @classmethod
     def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
         total_counts: Counter[str] = Counter()
         for module in modules:
             total_counts.update(_reference_symbol_counts(module.module))
-        return cls(total_counts=total_counts)
+        return cls(
+            total_counts=total_counts,
+            function_counts_by_id={},
+        )
 
     def reference_count_outside_function(
         self, function: ast.FunctionDef | ast.AsyncFunctionDef, symbol_name: str
     ) -> int:
-        return (
-            self.total_counts[symbol_name]
-            - _reference_symbol_counts(
-                function,
-                include_node=lambda node: _node_within_function(node, function),
-            )[symbol_name]
-        )
+        function_key = id(function)
+        if function_key not in self.function_counts_by_id:
+            self.function_counts_by_id[function_key] = _reference_symbol_counts(
+                function
+            )
+        function_counts = self.function_counts_by_id[function_key]
+        return self.total_counts[symbol_name] - function_counts[symbol_name]
 
 
 def _embedded_static_payload_candidates(
@@ -1695,16 +1678,15 @@ def _has_external_protocol_shape(
     return function.name.endswith("_")
 
 
-def _has_derived_candidate_collector_contract(
-    modules: Sequence[ParsedModule], function_name: str
-) -> bool:
-    return any(
+def _derived_candidate_collector_contract_names(
+    modules: Sequence[ParsedModule],
+) -> frozenset[str]:
+    return frozenset(
         (
-            isinstance(node, ast.ClassDef)
-            and _candidate_collector_name_from_class_name(node.name) == function_name
-            and _class_declares_finding_spec(node)
+            _candidate_collector_name_from_class_name(node.name)
             for module in modules
             for node in module.module.body
+            if isinstance(node, ast.ClassDef) and _class_declares_finding_spec(node)
         )
     )
 
@@ -1714,18 +1696,23 @@ def _unreferenced_private_function_candidates(
     config: DetectorConfig,
     reference_modules: Sequence[ParsedModule] | None = None,
     reference_index: ReferenceCountIndex | None = None,
+    derived_candidate_collector_contract_names: frozenset[str] | None = None,
 ) -> tuple[UnreferencedPrivateFunctionCandidate, ...]:
     candidates: list[UnreferencedPrivateFunctionCandidate] = []
     contract_modules = reference_modules or (module,)
     reference_index = reference_index or ReferenceCountIndex.from_modules(
         contract_modules
     )
+    derived_candidate_collector_contract_names = (
+        derived_candidate_collector_contract_names
+        or _derived_candidate_collector_contract_names(contract_modules)
+    )
     for qualname, function in _iter_surface_functions(module.module):
         if not _is_private_symbol_name(function.name):
             continue
         if _has_external_protocol_shape(function):
             continue
-        if _has_derived_candidate_collector_contract(contract_modules, function.name):
+        if function.name in derived_candidate_collector_contract_names:
             continue
         line_count = _function_line_count(function)
         if line_count < config.min_unreferenced_private_function_lines:
@@ -1772,6 +1759,9 @@ class UnreferencedPrivateFunctionDetector(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         reference_index = ReferenceCountIndex.from_modules(modules)
+        derived_candidate_collector_contract_names = (
+            _derived_candidate_collector_contract_names(modules)
+        )
         return [
             self._finding_for_candidate(candidate)
             for module in modules
@@ -1780,6 +1770,9 @@ class UnreferencedPrivateFunctionDetector(
                 config,
                 reference_modules=modules,
                 reference_index=reference_index,
+                derived_candidate_collector_contract_names=(
+                    derived_candidate_collector_contract_names
+                ),
             )
         ]
 
@@ -1861,7 +1854,9 @@ def _normalized_small_method_template(
     return tuple(
         (
             ast.dump(
-                ast.fix_missing_locations(cast(ast.stmt, normalizer.visit(statement))),
+                ast.fix_missing_locations(
+                    cast(ast.stmt, normalizer.visit(copy.deepcopy(statement)))
+                ),
                 include_attributes=False,
             )
             for statement in body
@@ -2693,7 +2688,7 @@ def _algebraic_normal_form_size(normal_form: object) -> int:
 
 
 def _has_nested_compound_statement(node: ast.AST) -> bool:
-    for child in ast.walk(node):
+    for child in _walk_nodes(node):
         if child is node:
             continue
         if isinstance(child, (ast.For, ast.While, ast.If, ast.Try, ast.With)):

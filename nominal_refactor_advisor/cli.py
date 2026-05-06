@@ -11,6 +11,7 @@ import argparse
 import json
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
+from time import perf_counter
 
 from .analysis import analyze_lean_export, analyze_modules, analyze_path, plan_path
 from .ast_tools import parse_python_modules
@@ -32,6 +33,12 @@ from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
 from .planner import build_refactor_plans
+from .scan_prediction import (
+    ScanPredictionReport,
+    ScanTiming,
+    build_scan_prediction_report,
+)
+from .source_index import build_source_index
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -126,6 +133,11 @@ _CLI_ARGUMENT_SPECS = (
             help="Run the standard long-term economics proof report.",
         ),
         CliArgumentSpec(
+            flags=("--predict-scan",),
+            action="store_true",
+            help="Predict scan impact from Python files changed relative to --compare-ref.",
+        ),
+        CliArgumentSpec(
             flags=("--fail-on-proof-regression",),
             action="store_true",
             help="Return exit code 1 when --prove-economics fails its gate.",
@@ -177,12 +189,25 @@ def _json_payload(
     modules: list,
     economics: RecommendationEconomics | None = None,
     change_budget: RepositoryChangeBudget | None = None,
+    timing: ScanTiming | None = None,
 ) -> dict[str, object]:
     report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
     graph = build_observation_graph(modules)
     payload = report.to_dict()
+    payload["findings"] = [finding.to_dict() for finding in findings]
+    started = perf_counter()
+    payload["source_index"] = build_source_index(modules, findings).to_dict()
+    if timing is not None:
+        timing = ScanTiming(
+            parse_seconds=timing.parse_seconds,
+            analysis_seconds=timing.analysis_seconds,
+            planning_seconds=timing.planning_seconds,
+            source_index_seconds=round(perf_counter() - started, 3),
+        )
     payload["observations"] = [asdict(item) for item in graph.observations]
     payload["fibers"] = [asdict(item) for item in graph.fibers]
+    if timing is not None:
+        payload["timing"] = timing.to_dict()
     if economics is not None:
         payload["economics"] = economics.to_dict()
     if change_budget is not None:
@@ -195,6 +220,7 @@ def _format_markdown(
     plans: list[RefactorPlan] | None = None,
     economics: RecommendationEconomics | None = None,
     change_budget: RepositoryChangeBudget | None = None,
+    timing: ScanTiming | None = None,
 ) -> str:
     sections: list[str] = []
     if findings:
@@ -205,6 +231,8 @@ def _format_markdown(
         sections.append(_format_plans_markdown(plans))
     if economics is not None:
         sections.append(_format_economics_markdown(economics, change_budget))
+    if timing is not None:
+        sections.append(_format_timing_markdown(timing))
     return "\n\n".join(section for section in sections if section)
 
 
@@ -215,6 +243,7 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
     for index, finding in enumerate(findings, start=1):
         pattern = PATTERN_SPECS[finding.pattern_id]
         lines.append(f"{index}. {finding.title}")
+        lines.append(f"   - Stable id: {finding.stable_id}")
         lines.append(f"   - Pattern {pattern.pattern_id.value}: {pattern.name}")
         lines.append(f"   - Summary: {finding.summary}")
         lines.append(f"   - Capability gap: {finding.capability_gap}")
@@ -311,6 +340,37 @@ def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
     return f"{name} +{budget.added}/-{budget.deleted} " f"(net {budget.net_added:+d})"
 
 
+def _format_timing_markdown(timing: ScanTiming) -> str:
+    return "\n".join(
+        (
+            "Timing:",
+            f"   - Parse: {timing.parse_seconds:.3f}s",
+            f"   - Analysis: {timing.analysis_seconds:.3f}s",
+            f"   - Planning: {timing.planning_seconds:.3f}s",
+            f"   - Source index: {timing.source_index_seconds:.3f}s",
+            f"   - Total: {timing.total_seconds:.3f}s",
+        )
+    )
+
+
+def _format_scan_prediction_markdown(report: ScanPredictionReport) -> str:
+    lines = [
+        "Scan prediction:",
+        f"   - Compare ref: {report.compare_ref}",
+        f"   - Changed Python paths: {len(report.changed_python_paths)}",
+        f"   - Total modules: {report.total_module_count}",
+    ]
+    for branch in report.branches:
+        lines.append(
+            f"   - {branch.label}: {branch.module_count} module(s), "
+            f"{branch.finding_count} finding(s), "
+            f"{branch.elapsed_seconds:.3f}s observed/projected, "
+            f"{branch.estimated_repository_seconds:.3f}s repository estimate, "
+            f"{branch.ast_target_count} AST target(s)"
+        )
+    return "\n".join(lines)
+
+
 def _format_economics_markdown(
     economics: RecommendationEconomics,
     change_budget: RepositoryChangeBudget | None = None,
@@ -371,6 +431,8 @@ def _format_scan_proof_markdown(scan: ScanEconomicsProof) -> list[str]:
     lines = [
         f"   - {scan.label}: {scan.finding_count} finding(s), "
         f"{scan.production_finding_count} production, "
+        f"{scan.semantic_production_finding_count} semantic production, "
+        f"{scan.readability_finding_count} readability, "
         f"{scan.test_only_finding_count} test-only; "
         f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
         f"     proof: {'pass' if scan.proof_passes else 'fail'}; "
@@ -460,6 +522,18 @@ def main() -> int:
         )
 
     root = Path(args.path)
+    if args.predict_scan:
+        prediction_report = build_scan_prediction_report(
+            root,
+            config=config,
+            compare_ref=args.compare_ref,
+        )
+        if args.json:
+            print(json.dumps(prediction_report.to_dict(), indent=2))
+        else:
+            print(_format_scan_prediction_markdown(prediction_report))
+        return 0
+
     if args.prove_economics:
         proof_report = build_economics_proof_report(
             root,
@@ -477,14 +551,28 @@ def main() -> int:
         )
 
     if args.import_lean_export is None:
+        started = perf_counter()
         modules = parse_python_modules(root)
+        parse_seconds = round(perf_counter() - started, 3)
+        started = perf_counter()
         findings = analyze_modules(modules, config)
+        analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
         findings = analyze_lean_export(args.import_lean_export)
+        parse_seconds = 0.0
+        analysis_seconds = 0.0
     plans = None
+    planning_seconds = 0.0
     if args.include_plans or args.plans_only:
+        started = perf_counter()
         plans = build_refactor_plans(findings, root)
+        planning_seconds = round(perf_counter() - started, 3)
+    timing = ScanTiming(
+        parse_seconds=parse_seconds,
+        analysis_seconds=analysis_seconds,
+        planning_seconds=planning_seconds,
+    )
     include_economics = args.include_economics or args.include_change_budget
     economics = (
         RecommendationEconomics.from_findings_and_plans(findings, plans or [])
@@ -506,6 +594,7 @@ def main() -> int:
                     modules,
                     economics=economics,
                     change_budget=change_budget,
+                    timing=timing,
                 ),
                 indent=2,
             )
@@ -515,6 +604,7 @@ def main() -> int:
             sections = [_format_plans_markdown(plans or [])]
             if economics is not None:
                 sections.append(_format_economics_markdown(economics, change_budget))
+            sections.append(_format_timing_markdown(timing))
             print("\n\n".join(sections))
         else:
             print(
@@ -523,6 +613,7 @@ def main() -> int:
                     plans,
                     economics=economics,
                     change_budget=change_budget,
+                    timing=timing,
                 )
             )
     return 0

@@ -48,6 +48,94 @@ def _reflective_self_attribute_compression_certificate(
     )
 
 
+def _semantic_overlap_abc_scaffold(
+    candidate: SemanticOverlapABCOptimizationCandidate,
+) -> str:
+    base_name = f"{candidate.base_name}{_camel_case(candidate.method_name)}Template"
+    classvar_block = "\n".join(
+        (f"    {name}: ClassVar[object]" for name in candidate.classvar_names)
+    )
+    property_block = "\n".join(
+        (
+            f"    @property\n    @abstractmethod\n    def {name}(self): ..."
+            for name in candidate.property_hook_names
+        )
+    )
+    behavior_block = "\n".join(
+        (
+            f"    @abstractmethod\n    def {name}(self, *args, **kwargs): ..."
+            for name in candidate.behavior_hook_names
+        )
+    )
+    residue_block = "\n\n".join(
+        block for block in (classvar_block, property_block, behavior_block) if block
+    )
+    if residue_block:
+        residue_block = f"\n{residue_block}\n"
+    return (
+        f"class {base_name}({candidate.base_name}, ABC):\n"
+        f"    def {candidate.method_name}(self, *args, **kwargs):\n"
+        "        # Move the shared statement skeleton here.\n"
+        "        # Route only irreducible differences through the declarations/hooks below.\n"
+        "        ...\n"
+        f"{residue_block}"
+    )
+
+
+def _semantic_overlap_abc_patch(
+    candidate: SemanticOverlapABCOptimizationCandidate,
+) -> str:
+    residue = (
+        *candidate.classvar_names,
+        *candidate.property_hook_names,
+        *candidate.behavior_hook_names,
+    )
+    residue_summary = ", ".join(residue) if residue else "no hooks"
+    family_summary = ", ".join(candidate.family_method_names)
+    mixin_summary = (
+        ", ".join(candidate.mixin_axis_specs)
+        if candidate.mixin_axis_specs
+        else "no subset mixins"
+    )
+    overlap_summary = (
+        ", ".join(candidate.overlap_axis_specs)
+        if candidate.overlap_axis_specs
+        else "no partial overlaps"
+    )
+    return (
+        f"# Extract `{candidate.method_name}` from {candidate.class_names} into an intermediate ABC over `{candidate.base_name}`.\n"
+        f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
+        f"# Candidate hierarchy layer owns methods: {family_summary}; subset mixin axes: {mixin_summary}.\n"
+        f"# Partial-overlap axes needing explicit precedence/layering: {overlap_summary}.\n"
+        f"# Keep only residue declarations/hooks on leaves: {residue_summary}."
+    )
+
+
+def _semantic_overlap_abc_family_scaffold(
+    candidate: SemanticOverlapABCFamilyOptimizationCandidate,
+) -> str:
+    base_name = f"{candidate.base_name}TemplateFamily"
+    method_block = "\n\n".join(
+        (
+            f"    def {method_name}(self, *args, **kwargs):\n"
+            "        # Move the shared method skeleton here.\n"
+            "        ..."
+            for method_name in candidate.method_names
+        )
+    )
+    return f"class {base_name}({candidate.base_name}, ABC):\n{method_block}"
+
+
+def _semantic_overlap_abc_family_patch(
+    candidate: SemanticOverlapABCFamilyOptimizationCandidate,
+) -> str:
+    return (
+        f"# Extract methods {candidate.method_names} from {candidate.class_names} into one ABC family over `{candidate.base_name}`.\n"
+        f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
+        f"# The family removes {candidate.shared_statement_count} shared statement objects with {candidate.residue_count} residue declarations."
+    )
+
+
 from ._substrate_support import *
 
 
@@ -752,6 +840,82 @@ class ConstantPropertyHookDetector(
 
 
 declare_candidate_rule_detector(
+    SemanticOverlapABCOptimizationCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Sibling implementations should anti-unify into an ABC template",
+        "Sibling classes that share a base and implement the same method with the same statement skeleton are paying for one algorithm multiple times. When the differences are a small set of expression coordinates, the base should own the concrete algorithm and leaves should expose only classvars, properties, or abstract hooks for the irreducible residue.",
+        "one intermediate ABC owns the shared method skeleton and leaves keep only minimal hooks/declarations",
+        "same method across sibling classes has an anti-unifiable statement skeleton with small residue",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.method_name}` in siblings {candidate.class_names} over `{candidate.base_name}` shares "
+        f"{candidate.shared_statement_count} statements with {candidate.varying_coordinate_count} residue coordinate(s): "
+        f"classvars {candidate.classvar_names}, properties {candidate.property_hook_names}, hooks {candidate.behavior_hook_names}. "
+        f"The derived hierarchy plan scores {candidate.optimizer_score} with {candidate.abc_layer_count} ABC layer(s), "
+        f"{candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} lattice edge(s), "
+        f"family methods {candidate.family_method_names}, mixin axes {candidate.mixin_axis_specs}, "
+        f"overlap axes {candidate.overlap_axis_specs}, and normal form `{candidate.hierarchy_normal_form}`."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=_semantic_overlap_abc_scaffold,
+    codemod_patch=_semantic_overlap_abc_patch,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(candidate.class_names),
+        statement_count=candidate.shared_statement_count,
+        class_count=len(candidate.class_names),
+        method_symbols=tuple(
+            (
+                f"{class_name}.{candidate.method_name}"
+                for class_name in candidate.class_names
+            )
+        ),
+    ),
+    detector_priority=-10,
+    detector_name="SemanticOverlapAbcOptimizationDetector",
+    detector_base=CrossModuleCollectorCandidateDetector,
+    candidate_collector=_semantic_overlap_abc_optimization_candidates_from_modules,
+)
+
+
+declare_candidate_rule_detector(
+    SemanticOverlapABCFamilyOptimizationCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Class-family algorithms should collapse as one ABC hierarchy",
+        "A class family has several methods with compatible anti-unifiable bodies over the same base and subclass set. Treating each method independently misses the larger normal form: the base hierarchy should own the full algorithm family while leaves expose only the combined residue.",
+        "one ABC family owns all shared method skeletons and leaf classes keep only residue declarations",
+        "multiple semantic-overlap ABC method candidates share the same base and subclass family",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.base_name}` subclasses {candidate.class_names} repeat family methods {candidate.method_names} "
+        f"with {candidate.shared_statement_count} shared statements, {candidate.residue_count} residue declaration(s), "
+        f"{candidate.abc_layer_count} ABC layer(s), {candidate.lattice_node_count} lattice node(s), "
+        f"{candidate.lattice_edge_count} lattice edge(s), and normal form `{candidate.hierarchy_normal_form}`."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=_semantic_overlap_abc_family_scaffold,
+    codemod_patch=_semantic_overlap_abc_family_patch,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(candidate.method_symbols),
+        statement_count=candidate.shared_statement_count,
+        class_count=len(candidate.class_names),
+        method_symbols=candidate.method_symbols,
+    ),
+    detector_priority=-11,
+    detector_name="SemanticOverlapAbcFamilyOptimizationDetector",
+    detector_base=CrossModuleCollectorCandidateDetector,
+    candidate_collector=_semantic_overlap_abc_family_optimization_candidates,
+)
+
+
+declare_candidate_rule_detector(
     ConstantPropertyDefaultBundleCandidate,
     high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -963,9 +1127,15 @@ def _uses_autoregister_meta(node: ast.ClassDef) -> bool:
     """Return True if a class definition directly specifies AutoRegisterMeta as metaclass."""
     for keyword in node.keywords:
         if keyword.arg == "metaclass":
-            if isinstance(keyword.value, ast.Name) and keyword.value.id == "AutoRegisterMeta":
+            if (
+                isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "AutoRegisterMeta"
+            ):
                 return True
-            if isinstance(keyword.value, ast.Attribute) and keyword.value.attr == "AutoRegisterMeta":
+            if (
+                isinstance(keyword.value, ast.Attribute)
+                and keyword.value.attr == "AutoRegisterMeta"
+            ):
                 return True
     return False
 
@@ -1036,9 +1206,7 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 continue
             if not _autoregister_family_is_metadata_only(module, node):
                 continue
-            evidence.append(
-                SourceLocation(str(module.path), node.lineno, node.name)
-            )
+            evidence.append(SourceLocation(str(module.path), node.lineno, node.name))
         return tuple(evidence)
 
     def _build_finding(
@@ -1066,7 +1234,6 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 "# Reserve AutoRegisterMeta for families where subclasses provide genuinely different behavior."
             ),
         )
-
 
 
 declare_candidate_rule_detector(

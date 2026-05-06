@@ -374,16 +374,6 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         ]
 
 
-def _keyword_mapping_metrics(
-    mapping_site_count: int, field_names: tuple[str, ...], mapping_name: str
-) -> MappingMetrics:
-    return MappingMetrics.from_field_names(
-        mapping_site_count=mapping_site_count,
-        mapping_name=mapping_name,
-        field_names=field_names,
-    )
-
-
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -422,8 +412,10 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                         f"# Move `{callee_name}` projection logic into one authoritative builder/classmethod.\n"
                         "# Leave call sites responsible only for naming the source authorities, not reassigning every field."
                     ),
-                    metrics=_keyword_mapping_metrics(
-                        len(builders), keyword_names, callee_name
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=len(builders),
+                        mapping_name=callee_name,
+                        field_names=keyword_names,
                     ),
                 )
             )
@@ -544,8 +536,10 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
                 f"# Introduce one projection template for `{property_name}` over roles {keyword_names}.\n"
                 "# Leave only the role-specific hooks on the concrete carriers."
             ),
-            metrics=_keyword_mapping_metrics(
-                len(grouped_candidates), keyword_names, constructor_name
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=len(grouped_candidates),
+                mapping_name=constructor_name,
+                field_names=keyword_names,
             ),
         )
 

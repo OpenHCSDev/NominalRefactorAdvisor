@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import cast
 
+from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
     AttributeProbeObservationFamily,
@@ -73,6 +74,10 @@ from nominal_refactor_advisor.observation_graph import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import build_refactor_plans
 from nominal_refactor_advisor.record_algebra import product_record
+from nominal_refactor_advisor.scan_prediction import (
+    ScanTiming,
+    build_scan_prediction_report,
+)
 from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
 from nominal_refactor_advisor.semantic_algebra import (
     AlgebraicRentProfile,
@@ -88,9 +93,9 @@ from nominal_refactor_advisor.semantic_description_length import (
     SemanticCostVector,
 )
 
-
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
+_SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID = "semantic_overlap_abc_optimization"
 
 
 def _finding_spec(
@@ -100,13 +105,14 @@ def _finding_spec(
     capability_gap: str,
     relation_context: str,
 ) -> FindingSpec:
-    return FindingSpec(
-        pattern_id=pattern_id,
-        title=title,
-        why=why,
-        capability_gap=capability_gap,
-        relation_context=relation_context,
-    )
+    fields = {
+        "pattern_id": pattern_id,
+        "title": title,
+        "why": why,
+        "capability_gap": capability_gap,
+        "relation_context": relation_context,
+    }
+    return FindingSpec(**fields)
 
 
 def _object_family_certificate(
@@ -125,7 +131,7 @@ def _object_family_certificate(
     )
 
 
-def _scan_economics_proof(
+def _test_scan_economics_proof(
     label: str,
     path: Path,
     elapsed_seconds: float,
@@ -142,14 +148,19 @@ def _scan_economics_proof(
         plans=plans,
     )
 
+
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
+IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
+OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
+UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
+REPEATED_BUILDER_CALLS_DETECTOR_ID = "repeated_builder_calls"
 REPEATED_EXPORT_DICTS_DETECTOR_ID = "repeated_export_dicts"
 REPEATED_VALIDATE_SHAPE_GUARD_FAMILY_DETECTOR_ID = (
     "repeated_validate_shape_guard_family"
@@ -376,6 +387,43 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
     assert finding.compression_certificate == certificate
     assert "Semantic description length: 8 -> 3" in markdown
     assert "certified savings 5" in markdown
+
+
+def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
+    spec = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    )
+    finding = spec.build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+    )
+    moved = spec.build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation("pkg/mod.py", 13, "Alpha.run"),),
+    )
+
+    assert len(finding.stable_id) == 10
+    assert (
+        finding.stable_id
+        == spec.build(
+            "orbit_detector",
+            "manual family compresses through one ABC",
+            (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        ).stable_id
+    )
+    assert finding.stable_id != moved.stable_id
+    assert f"Stable id: {finding.stable_id}" in _format_markdown([finding])
+    assert finding.to_dict()["stable_id"] == finding.stable_id
+    assert (
+        _json_payload([finding], [], [])["findings"][0]["stable_id"]
+        == finding.stable_id
+    )
 
 
 def test_lean_export_payload_converts_to_standard_findings() -> None:
@@ -606,7 +654,7 @@ def test_scan_economics_proof_splits_production_from_test_findings(
         metrics=DispatchCountMetrics(dispatch_site_count=2),
     )
 
-    proof = _scan_economics_proof(
+    proof = _test_scan_economics_proof(
         _REPOSITORY_SCAN_LABEL,
         tmp_path,
         0.25,
@@ -624,12 +672,12 @@ def test_scan_economics_proof_splits_production_from_test_findings(
 
 
 def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> None:
-    clean_scan = _scan_economics_proof(
+    clean_scan = _test_scan_economics_proof(
         _PACKAGE_SCAN_LABEL,
         tmp_path / "nominal_refactor_advisor",
         1.0,
     )
-    repository_scan = _scan_economics_proof(
+    repository_scan = _test_scan_economics_proof(
         _REPOSITORY_SCAN_LABEL,
         tmp_path,
         2.0,
@@ -651,7 +699,10 @@ def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> No
     assert payload["change_budget"]["advisor_backend"]["net_added"] == 5
     assert "Economics proof:" in markdown
     assert "Overall: pass" in markdown
-    assert "repository: 0 finding(s), 0 production, 0 test-only" in markdown
+    assert (
+        "repository: 0 finding(s), 0 production, 0 semantic production, "
+        "0 readability, 0 test-only"
+    ) in markdown
 
 
 def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> None:
@@ -667,14 +718,14 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
         (SourceLocation("pkg/mod.py", 12, "helper"),),
         scaffold="def helper(): ...",
     )
-    package_scan = _scan_economics_proof(
+    package_scan = _test_scan_economics_proof(
         _PACKAGE_SCAN_LABEL,
         tmp_path / "nominal_refactor_advisor",
         21.0,
         (finding,),
         (),
     )
-    repository_scan = _scan_economics_proof(
+    repository_scan = _test_scan_economics_proof(
         _REPOSITORY_SCAN_LABEL,
         tmp_path,
         22.0,
@@ -706,12 +757,12 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
 def test_strict_economics_proof_exit_code_is_ci_enforceable(
     tmp_path: Path,
 ) -> None:
-    passing_scan = _scan_economics_proof(
+    passing_scan = _test_scan_economics_proof(
         _PACKAGE_SCAN_LABEL,
         tmp_path / "nominal_refactor_advisor",
         1.0,
     )
-    failing_scan = _scan_economics_proof(
+    failing_scan = _test_scan_economics_proof(
         _REPOSITORY_SCAN_LABEL,
         tmp_path,
         21.0,
@@ -1800,7 +1851,7 @@ def test_detects_under_amortized_effect_infrastructure(tmp_path: Path) -> None:
         (
             item
             for item in analyze_path(tmp_path)
-            if item.detector_id == "under_amortized_infrastructure"
+            if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
         )
     )
     assert "single_use_matcher" in finding.summary
@@ -2399,6 +2450,85 @@ def test_detects_nested_builder_shell(tmp_path: Path) -> None:
     assert "key, ligand_com, strategy, n_poses, n_poses_override" in finding.summary
 
 
+def test_detects_identity_keyword_forwarding_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_scan(\n    *,\n    label,\n    path,\n    elapsed_seconds,\n    scan_budget_seconds,\n    findings,\n    plans,\n):\n    return ScanEconomicsProof.from_findings_and_plans(\n        label=label,\n        path=path,\n        elapsed_seconds=elapsed_seconds,\n        scan_budget_seconds=scan_budget_seconds,\n        findings=findings,\n        plans=plans,\n    )\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
+        )
+    )
+    assert "build_scan" in finding.summary
+    assert "ScanEconomicsProof.from_findings_and_plans" in finding.summary
+    assert "label" in finding.summary
+    assert "typed request record" in (finding.scaffold or "")
+
+
+def test_ignores_non_shell_same_name_keyword_call(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_scan(*, label, path, elapsed_seconds):\n    started_at = clock()\n    return ScanEconomicsProof(\n        label=label,\n        path=path,\n        elapsed_seconds=elapsed_seconds,\n        started_at=started_at,\n    )\n",
+    )
+    assert not any(
+        (
+            finding.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
+def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef render(policy: RenderPolicy | None, message):\n    if policy is None:\n        return DefaultRenderPolicy().render(message)\n    return policy.render(message)\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
+        )
+    )
+    assert "policy: RenderPolicy | None" in finding.summary
+    assert "branches on `policy is None`" in finding.summary
+    assert "ABC" in (finding.scaffold or "")
+
+
+def test_ignores_untyped_none_branch_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef render(policy, message):\n    if policy is None:\n        return DefaultRenderPolicy().render(message)\n    return policy.render(message)\n",
+    )
+    assert not any(
+        (
+            finding.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
+def test_ignores_ast_sentinel_optional_branch_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef node_name(node: ast.AST | None):\n    if node is None:\n        return None\n    return node.__class__.__name__\n",
+    )
+    assert not any(
+        (
+            finding.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_detects_manual_fiber_tag_with_abc_fix(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2928,6 +3058,20 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     )
 
 
+def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef left(count, name, fields):\n    return MappingMetrics.from_field_names(\n        mapping_site_count=count,\n        mapping_name=name,\n        field_names=fields,\n    )\n\n\ndef right(total, label, names):\n    return MappingMetrics.from_field_names(\n        mapping_site_count=total,\n        mapping_name=label,\n        field_names=names,\n    )\n",
+    )
+    assert not any(
+        (
+            finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2939,7 +3083,7 @@ def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
         (
             finding
             for finding in findings
-            if finding.detector_id == "repeated_builder_calls"
+            if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
             and "main" in finding.summary
             and ("register" in finding.summary)
         )
@@ -2958,7 +3102,7 @@ def test_ignores_argparse_add_argument_builder_family(tmp_path: Path) -> None:
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.detector_id == "repeated_builder_calls"
+        finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
         and "add_argument" in finding.summary
         for finding in findings
     )
@@ -3572,6 +3716,71 @@ def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:
     assert "fibers" in payload
     assert any((item["observation_kind"] == "field" for item in observations))
     assert any((item["observation_kind"] == "literal_dispatch" for item in fibers))
+
+
+def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+
+    payload = _json_payload([finding], [], modules)
+    source_index = cast(dict[str, object], payload["source_index"])
+    files = cast(tuple[dict[str, object], ...], source_index["files"])
+    ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
+    evidence = cast(tuple[dict[str, object], ...], source_index["evidence"])
+
+    assert payload["findings"][0]["evidence_ids"] == (evidence[0]["evidence_id"],)
+    assert files[0]["file_path"] == module_path.as_posix()
+    assert any((target["qualname"] == "Alpha.run" for target in ast_targets))
+    assert evidence[0]["finding_ids"] == (finding.stable_id,)
+    assert evidence[0]["target_ids"]
+
+
+def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    payload = _json_payload(
+        [],
+        [],
+        modules,
+        timing=ScanTiming(parse_seconds=0.1, analysis_seconds=0.2),
+    )
+    timing = cast(dict[str, object], payload["timing"])
+    assert timing["parse_seconds"] == 0.1
+    assert timing["analysis_seconds"] == 0.2
+    assert timing["source_index_seconds"] >= 0.0
+    assert timing["total_seconds"] >= 0.3
+
+
+def test_scan_prediction_branches_from_changed_python_slice(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    report = build_scan_prediction_report(tmp_path, changed_paths=("pkg/a.py",))
+    changed_branch = report.branches[0]
+    projection_branch = report.branches[1]
+    assert report.changed_python_paths == ("pkg/a.py",)
+    assert report.total_module_count == 2
+    assert changed_branch.label == "changed_only"
+    assert changed_branch.module_count == 1
+    assert changed_branch.source_file_count == 1
+    assert changed_branch.ast_target_count == 1
+    assert projection_branch.label == "repository_projection"
+    assert projection_branch.module_count == 2
 
 
 def test_observation_graph_auto_includes_registered_observation_families(
@@ -4641,6 +4850,202 @@ def test_detects_constant_property_hooks_across_subclasses(tmp_path: Path) -> No
     assert "ObservationKind.METHOD" in finding.summary
 
 
+def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = analyze_modules(modules)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+        )
+    )
+    assert "CsvExporter" in finding.summary
+    assert "JsonExporter" in finding.summary
+    assert "XmlExporter" in finding.summary
+    assert "Exporter" in finding.summary
+    assert "classvars" in finding.summary
+    assert "hooks" in finding.summary
+    assert "derived hierarchy plan scores" in finding.summary
+    assert "normal form" in finding.summary
+    assert "0 lattice edge(s)" in finding.summary
+    assert "class ExporterEmitTemplate" in (finding.scaffold or "")
+    assert "Hierarchy normal form:" in (finding.codemod_patch or "")
+    assert "Candidate hierarchy layer owns methods" in (finding.codemod_patch or "")
+    assert "Partial-overlap axes" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+    source_index = cast(
+        dict[str, object], _json_payload(findings, [], modules)["source_index"]
+    )
+    ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
+    evidence = cast(tuple[dict[str, object], ...], source_index["evidence"])
+    assert any(
+        (
+            target["qualname"] == "CsvExporter"
+            and target["base_names"] == ("Exporter",)
+            for target in ast_targets
+        )
+    )
+    assert any((row["target_ids"] for row in evidence))
+
+
+def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def validate(self, rows):\n        clean = self.normalize(rows)\n        checked = validate_tabular(clean)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def validate(self, rows):\n        clean = self.normalize(rows)\n        checked = validate_tabular(clean)\n        self.write(checked, suffix=".json")\n        return checked\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    ]
+    emit_finding = next(finding for finding in findings if "`emit`" in finding.summary)
+    assert "validate" in emit_finding.summary
+    assert "validate[CsvExporter,JsonExporter]" in emit_finding.summary
+
+
+def test_abc_optimizer_derives_partial_overlap_axes(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Worker(ABC):\n    pass\n\n\nclass CsvWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".json")\n        return checked\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".json")\n        return stored\n\n\nclass XmlWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".xml")\n        return stored\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    ]
+    audit_finding = next(
+        finding for finding in findings if "`audit`" in finding.summary
+    )
+    emit_finding = next(finding for finding in findings if "`emit`" in finding.summary)
+    assert "mixin axes ()" in emit_finding.summary
+    assert "audit[CsvWorker,JsonWorker]" in emit_finding.summary
+    assert "cache[JsonWorker,XmlWorker]" in emit_finding.summary
+    assert "cache[JsonWorker,XmlWorker]" in audit_finding.summary
+    assert (
+        "Partial-overlap axes needing explicit precedence/layering: "
+        "cache[JsonWorker,XmlWorker]"
+    ) in (audit_finding.codemod_patch or "")
+
+
+def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    pass\n\n\nclass JsonExporter(Exporter):\n    pass\n\n\nclass XmlExporter(Exporter):\n    pass\n\n\nclass CsvAuditExporter(CsvExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonAuditExporter(JsonExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n\nclass XmlAuditExporter(XmlExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+    summaries = [
+        finding.summary
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    ]
+    assert any(
+        (
+            "over `Exporter`" in summary
+            and "CsvAuditExporter" in summary
+            and "JsonAuditExporter" in summary
+            and "XmlAuditExporter" in summary
+        )
+        for summary in summaries
+    )
+
+
+def test_abc_optimizer_prefers_specific_base_for_duplicate_closure(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass ReportExporter(Exporter):\n    pass\n\n\nclass CsvExporter(ReportExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonExporter(ReportExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n\nclass XmlExporter(ReportExporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+    summaries = [
+        finding.summary
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    ]
+    assert any("over `ReportExporter`" in summary for summary in summaries)
+    assert not any("over `Exporter`" in summary for summary in summaries)
+
+
+def test_abc_optimizer_uses_cross_module_inheritance_closure(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        "\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/csv_exporter.py",
+        '\nfrom .base import Exporter\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/json_exporter.py",
+        '\nfrom .base import Exporter\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/xml_exporter.py",
+        '\nfrom .base import Exporter\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    ]
+    finding = next(
+        finding for finding in findings if "over `Exporter`" in finding.summary
+    )
+    assert "CsvExporter" in finding.summary
+    assert "JsonExporter" in finding.summary
+    assert "XmlExporter" in finding.summary
+    assert len({source_location.file_path for source_location in finding.evidence}) == 3
+
+
+def test_abc_optimizer_detects_whole_family_template(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_csv(cleaned)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_json(cleaned)\n        self.write(checked, suffix=".json")\n        return checked\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def validate(self, rows):\n        cleaned = self.normalize(rows)\n        checked = validate_xml(cleaned)\n        self.write(checked, suffix=".xml")\n        return checked\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "semantic_overlap_abc_family_optimization"
+    ]
+    finding = next(finding for finding in findings if "Exporter" in finding.summary)
+    assert "emit" in finding.summary
+    assert "validate" in finding.summary
+    assert "ABC(Exporter:CsvExporter,JsonExporter,XmlExporter){emit,validate}" in (
+        finding.summary
+    )
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+    assert len(finding.evidence) == 6
+
+
+def test_ignores_semantic_overlap_without_shared_base(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass CsvExporter:\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n\nclass JsonExporter:\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n',
+    )
+    assert not any(
+        (
+            finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_detects_constant_property_default_bundle(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -4871,10 +5276,7 @@ def test_ignores_autoregister_meta_behavioral_family_root(tmp_path: Path) -> Non
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        (
-            finding.detector_id == "autoregister_meta_misuse"
-            for finding in findings
-        )
+        (finding.detector_id == "autoregister_meta_misuse" for finding in findings)
     )
 
 
@@ -5284,6 +5686,30 @@ def test_detects_readability_compressed_source_lines(tmp_path: Path) -> None:
     )
 
 
+def test_readability_compressed_source_lines_skip_multiline_string_fragments(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\n".join(
+            [
+                "def alpha():",
+                '    prompt = f"""This is a deliberately long multiline string header whose single physical line is not independently tokenizable as a complete Python source line.',
+                "    {value}",
+                '    """',
+                "    return prompt",
+            ]
+        ),
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "readability_compressed_line"
+    ]
+    assert not findings
+
+
 def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -5389,3 +5815,96 @@ def test_ignores_small_module_constructor_policy_family(tmp_path: Path) -> None:
         finding.detector_id == "module_constructor_policy_family"
         for finding in findings
     )
+
+
+def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/conversions.py",
+        "\n\ndef cpu_to_gpu(value):\n    return to_gpu(value)\n\n\ndef gpu_to_cpu(value):\n    return to_cpu(value)\n\n\ndef cpu_to_numpy(value):\n    return to_numpy(value)\n\n\ndef numpy_to_cpu(value):\n    return from_numpy(value)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "closed_axis_conversion_matrix"
+        )
+    )
+    assert "cpu_to_gpu" in finding.summary
+    assert "sources" in finding.summary
+    assert "targets" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_option_record_quotient_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/options.py",
+        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass CsvOptions:\n    delimiter: str = ","\n    header: bool = True\n\n\n@dataclass(frozen=True)\nclass JsonOptions:\n    indent: int | None = None\n    sort_keys: bool = False\n\n\n@dataclass(frozen=True)\nclass TiffOptions:\n    compression: str | None = None\n    photometric: str = "minisblack"\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "option_record_quotient"
+        )
+    )
+    assert "CsvOptions" in finding.summary
+    assert "JsonOptions" in finding.summary
+    assert "TiffOptions" in finding.summary
+    assert "schema catalog" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_under_amortized_service_infrastructure(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/services.py",
+        "\nclass SingleUseService:\n    pass\n\n\ndef single_use_service(value):\n    return SingleUseService()\n\n\ndef shared_service(value):\n    return value\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer_a.py",
+        "\nfrom pkg.services import shared_service, single_use_service\n\n\ndef consume_one(value):\n    return single_use_service(value)\n\n\ndef consume_shared(value):\n    return shared_service(value)\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer_b.py",
+        "\nfrom pkg.services import shared_service\n\n\ndef consume_again(value):\n    return shared_service(value)\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
+        )
+    )
+    assert "single_use_service" in finding.summary
+    assert "SingleUseService" in finding.summary
+    assert "shared_service" not in finding.summary
+
+
+def test_under_amortized_infrastructure_ignores_data_carriers_and_ids(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/models.py",
+        "\nfrom enum import Enum\n\n\nclass ActionBuilderId(Enum):\n    ALPHA = 'alpha'\n\n\nclass AlphaStrategyCandidate:\n    pass\n\n\nclass SharedService:\n    pass\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "\nfrom pkg.models import ActionBuilderId, AlphaStrategyCandidate, SharedService\n\n\ndef consume():\n    return ActionBuilderId.ALPHA, AlphaStrategyCandidate(), SharedService()\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID
+    ]
+    assert len(findings) == 1
+    assert "SharedService" in findings[0].summary
+    assert "ActionBuilderId" not in findings[0].summary
+    assert "AlphaStrategyCandidate" not in findings[0].summary

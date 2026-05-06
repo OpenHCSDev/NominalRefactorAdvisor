@@ -78,6 +78,44 @@ def _field_only_frozen_dataclass_compression_certificate(
     )
 
 
+def _closed_axis_conversion_matrix_compression_certificate(
+    candidate: ClosedAxisConversionMatrixCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(
+            candidate.line_count + len(candidate.function_names),
+            len(candidate.function_names) * 2,
+        ),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("conversion_dispatcher", "conversion_table"),
+            per_axis_objects=("conversion_axis_case",),
+        ),
+        semantic_axes=(
+            *(f"source:{item}" for item in candidate.source_axis_values),
+            *(f"target:{item}" for item in candidate.target_axis_values),
+        ),
+    )
+
+
+def _option_record_quotient_compression_certificate(
+    candidate: OptionRecordQuotientCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(
+            candidate.line_count,
+            len(candidate.class_names) * max(len(candidate.field_names), 1),
+        ),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("option_schema_catalog",),
+            per_axis_objects=("option_case",),
+        ),
+        semantic_axes=(*(f"record:{item}" for item in candidate.class_names),),
+        residual_object_count=len(candidate.field_names)
+        + len(candidate.default_names)
+        + len(candidate.common_base_names),
+    )
+
+
 def _imported_name_aliases(
     module: ast.Module,
     *,
@@ -158,7 +196,7 @@ class TypingProtocolContractDetector(IssueDetector):
             typing_aliases = _module_aliases(module.module, typing_modules)
             evidence: list[SourceLocation] = []
             protocol_class_names: list[str] = []
-            for node in ast.walk(module.module):
+            for node in _walk_nodes(module.module):
                 if not isinstance(node, ast.ClassDef):
                     continue
                 inherits_protocol = any(
@@ -439,7 +477,7 @@ def _class_role_quotient_candidates(
 ) -> tuple[ClassRoleQuotientCandidate, ...]:
     candidates: list[ClassRoleQuotientCandidate] = []
     for class_node in (
-        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         methods = tuple(
             (
@@ -491,7 +529,7 @@ def _class_role_quotient_candidates(
         method_names = {method.name for method in methods}
         for method in methods:
             caller_role = method_role.get(method.name, "")
-            for child in ast.walk(method):
+            for child in _walk_nodes(method):
                 if (
                     isinstance(child, ast.Call)
                     and isinstance(child.func, ast.Attribute)
@@ -621,7 +659,7 @@ def _pass_through_composition_facade_candidates(
 ) -> tuple[PassThroughCompositionFacadeCandidate, ...]:
     candidates: list[PassThroughCompositionFacadeCandidate] = []
     for class_node in (
-        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         if len(class_node.bases) < 2:
             continue
@@ -727,7 +765,7 @@ def _projection_property_family_candidates(
 ) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
     candidates: list[ProjectionPropertyFamilyCandidate] = []
     for class_node in (
-        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
         for statement in class_node.body:
@@ -825,7 +863,7 @@ def _live_template_payload_family_candidates(
 ) -> tuple[LiveTemplatePayloadFamilyCandidate, ...]:
     candidates: list[LiveTemplatePayloadFamilyCandidate] = []
     for class_node in (
-        node for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         template_methods = tuple(
             (
@@ -2586,6 +2624,86 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    IdentityKeywordForwardingShellCandidate,
+    high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Identity keyword forwarding shell should collapse into the semantic authority",
+        "A function whose complete body is `return Authority(field=field, ...)` and whose forwarded keyword names exactly match its own parameters has no independent invariant, policy, or provenance boundary. The stable object is the callee authority or a typed request record, not the transport shell.",
+        "direct authority call or typed request object instead of a same-name keyword relay",
+        "single-return wrapper forwards every parameter as an identically named keyword",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda shell: f"`{shell.function_name}` only forwards {shell.forwarded_keyword_names} to `{shell.callee_name}` with identical keyword names.",
+    scaffold=lambda shell: (
+        f"# Delete `{shell.function_name}` and call `{shell.callee_name}` directly.\n"
+        "# If the parameter family is semantically real, replace the parameter list with one typed request record."
+    ),
+    codemod_patch=lambda shell: (
+        f"# Inline `{shell.function_name}` at call sites and remove the wrapper.\n"
+        "# Preserve only invariants that are not already owned by the callee authority."
+    ),
+    compression_certificate=lambda shell: CompressionCertificate.from_object_family(
+        manual_object_count=max(
+            shell.line_count, len(shell.forwarded_keyword_names) + 1
+        ),
+        replacement_shape=ObjectFamilyShape(shared_objects=("callee_authority",)),
+        semantic_axes=shell.forwarded_keyword_names,
+    ),
+    metrics=lambda shell: ParameterThreadMetrics(
+        function_count=1,
+        shared_parameter_count=len(shell.forwarded_keyword_names),
+        shared_parameter_names=shell.forwarded_keyword_names,
+    ),
+    detector_priority=-13,
+    candidate_collector=_identity_keyword_forwarding_shell_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    OptionalParameterBranchCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Optional parameter branch should become a nominal variant hook",
+        "A parameter annotated as optional, tested with `is None`, and also observed through methods/properties is encoding a behavior axis through absence. If the branch changes behavior, the semantic-compressor normal form is an ABC or nominal strategy family whose concrete variants own the absent/present behavior instead of a nullable signature plus local branch.",
+        "ABC or nominal strategy variants for the absent/present case",
+        "function signature admits `None`, branches on that parameter, and calls/reads through the same parameter as an object",
+        _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda branch: f"`{branch.function_name}` accepts `{branch.parameter_name}: {branch.annotation_text}`, branches on `{branch.parameter_name} is None` {branch.none_check_count} time(s), and observes attributes {branch.observed_attribute_names}.",
+    scaffold=lambda branch: (
+        f"class {branch.parameter_name.title().replace('_', '')}Policy(ABC):\n"
+        "    @abstractmethod\n"
+        "    def apply(self, context): ...\n\n"
+        "# Replace the nullable parameter with a concrete policy/variant object."
+    ),
+    codemod_patch=lambda branch: (
+        f"# Split `{branch.parameter_name}` absence/presence into named variants.\n"
+        "# Move the None branch into a default/null-object implementation and delete the local optional check."
+    ),
+    compression_certificate=lambda branch: CompressionCertificate.from_object_family(
+        manual_object_count=max(branch.line_count, branch.none_check_count + 2),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("optional_axis_abc",),
+            per_axis_objects=("variant_hook",),
+        ),
+        semantic_axes=(branch.parameter_name,),
+        residual_object_count=2,
+    ),
+    metrics=lambda branch: OrchestrationMetrics(
+        function_line_count=branch.line_count,
+        branch_site_count=branch.none_check_count,
+        call_site_count=0,
+        parameter_count=1,
+        callee_family_count=2,
+    ),
+    detector_priority=-12,
+    candidate_collector=_optional_parameter_branch_candidates,
+)
+
+
+declare_candidate_rule_detector(
     AstStreamCollectorBoilerplateCandidate,
     high_confidence_certified_spec(
         PatternId.STAGED_ORCHESTRATION,
@@ -3027,6 +3145,57 @@ declare_candidate_rule_detector(
     ),
     compression_certificate=_field_only_frozen_dataclass_compression_certificate,
     candidate_collector=_field_only_frozen_dataclass_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    OptionRecordQuotientCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Option record family should derive from one schema catalog",
+        "Several small frozen option/config records in the same module are often projections of one closed format axis. Keeping every record as a hand-written class preserves type names, but repeats product mechanics and default surfaces that can be generated from a typed option schema catalog.",
+        "typed option schema catalog that derives concrete option records",
+        "field-only option/config record family repeats product-record mechanics across a closed format axis",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: f"{candidate.file_path} declares option record family {candidate.class_names} over fields {candidate.field_names}; derive the records from one typed option schema catalog.",
+    scaffold=lambda candidate: "OPTION_SCHEMAS = (\n    OptionSchema('csv', CsvOptions, fields=(...)),\n    OptionSchema('json', JsonOptions, fields=(...)),\n)\n\n# Derive concrete frozen records and defaults from the schema catalog.",
+    codemod_patch=lambda candidate: "# Keep the public option record names, but derive their field/default declarations from one schema catalog.\n# The only per-option residue should be semantic field/default differences.",
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.class_names),
+        mapping_name="option_schema_catalog",
+        field_names=candidate.field_names,
+        identity_field_names=candidate.class_names,
+    ),
+    compression_certificate=_option_record_quotient_compression_certificate,
+    detector_priority=-8,
+    candidate_collector=_option_record_quotient_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    ClosedAxisConversionMatrixCandidate,
+    high_confidence_certified_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Conversion matrix should factor into source and target axes",
+        "Functions named as pairwise conversions encode a product of two closed axes: source representation and target representation. The advisor should collapse the matrix into one dispatcher/table whose cases are derived from the axes instead of hand-maintaining one function per pair.",
+        "closed source/target conversion axes with one derived dispatcher",
+        "module declares many pairwise conversion functions whose names form a source-by-target matrix",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: f"{candidate.file_path} declares conversion matrix {candidate.function_names} over sources {candidate.source_axis_values} and targets {candidate.target_axis_values}; factor it into closed axes.",
+    scaffold=lambda candidate: "class SourceMemory(Enum): ...\nclass TargetMemory(Enum): ...\n\nCONVERTERS = {\n    (SourceMemory.CPU, TargetMemory.GPU): convert_cpu_gpu,\n}\n\ndef convert(value, source, target):\n    return CONVERTERS[(source, target)](value)",
+    codemod_patch=lambda candidate: "# Replace pairwise conversion function selection with one source/target axis table.\n# Keep specialized conversion bodies only as private table entries when they carry real backend semantics.",
+    metrics=lambda candidate: DispatchCountMetrics(
+        dispatch_site_count=len(candidate.function_names),
+        dispatch_axis="source,target",
+        literal_cases=(*candidate.source_axis_values, *candidate.target_axis_values),
+    ),
+    compression_certificate=_closed_axis_conversion_matrix_compression_certificate,
+    detector_priority=-9,
+    candidate_collector=_closed_axis_conversion_matrix_candidates,
 )
 
 
