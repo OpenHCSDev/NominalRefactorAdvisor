@@ -195,8 +195,8 @@ PATTERN_SPECS: dict[PatternId, PatternSpec] = {
     PatternId.AUTO_REGISTER_META: PatternSpec(
         PatternId.AUTO_REGISTER_META,
         "Auto-Registration Metaclass",
-        "Centralize repeated class-level registration logic in one authoritative metaclass algorithm, using `metaclass-registry`'s `AutoRegisterMeta` when the family really is a plugin-style registry.",
-        "`metaclass-registry` `AutoRegisterMeta` base that owns import-time registration, skipping, uniqueness, inheritance behavior, and derived-key extraction when class names already imply the key.",
+        "Centralize repeated class-level registration logic in one authoritative metaclass algorithm, using `metaclass-registry`'s `AutoRegisterMeta` when the family really is a plugin-style registry with behavioral subclasses. Do NOT use AutoRegisterMeta for metadata-only configuration tables: families whose classes contain only declarative class-level data and no behavioral methods should be collapsed into an authoritative typed declaration table or enum (PatternId.AUTHORITATIVE_SCHEMA) instead.",
+        "`metaclass-registry` `AutoRegisterMeta` base that owns import-time registration, skipping, uniqueness, inheritance behavior, and derived-key extraction when class names already imply the key. Reserved for behavioral plugin families; metadata-only families should use AUTHORITATIVE_SCHEMA.",
         (
             "Identify the repeated registration sites.",
             "Move registration into one `metaclass-registry` metaclass base.",

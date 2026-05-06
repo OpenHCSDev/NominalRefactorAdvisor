@@ -881,12 +881,12 @@ class ClassvarOnlySiblingLeafDetector(
 ):
     candidate_collector = _classvar_only_sibling_leaf_groups
     finding_spec = high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
+        PatternId.AUTHORITATIVE_SCHEMA,
         "Classvar-only sibling leaves should come from one metaprogrammed family table",
-        "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation or registration.",
-        "one authoritative declarative family-definition table with class-generation or metaclass support",
+        "Several sibling classes differ only by simple classvar declarations. That is class-level boilerplate and should collapse into one declarative family table plus metaprogrammed class generation.",
+        "one authoritative declarative family-definition table with class-generation",
         "same class-level family declaration boilerplate repeats across sibling family leaves",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
 
     def _finding_for_candidate(
@@ -925,12 +925,12 @@ class ClassvarOnlySiblingLeafDetector(
 declare_candidate_rule_detector(
     MetadataOnlyClassFamilyCandidate,
     high_confidence_spec(
-        PatternId.AUTO_REGISTER_META,
+        PatternId.AUTHORITATIVE_SCHEMA,
         "Metadata-only class families should be materialized from typed declarations",
         "A repeated nominal class family whose bodies contain only declarative class-level data is a relation table wearing class syntax. The class shells should be derived from typed rows, while behavior stays on shared bases, mixins, and metaclasses.",
         "one typed class-family declaration table plus a materializer for the nominal shells",
         "same semantic class family repeats class declarations whose bodies are only metadata",
-        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     ),
     summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat {candidate.line_count} lines of metadata-only class shells over classvars {candidate.assigned_names}.",
     evidence=lambda candidate: candidate.evidence,
@@ -941,11 +941,11 @@ declare_candidate_rule_detector(
         "    bases: tuple[type[object], ...]\n"
         "    namespace: Mapping[str, object]\n\n"
         "def materialize_class_family(declaration: ClassFamilyDeclaration) -> type[object]:\n"
-        "    return AutoRegisterMeta(declaration.name, declaration.bases, dict(declaration.namespace))"
+        "    return type(declaration.name, declaration.bases, dict(declaration.namespace))"
     ),
     codemod_patch=lambda candidate: (
         f"# Replace the repeated `{candidate.family_suffix}` metadata-only classes with one typed declaration table.\n"
-        "# Derive class names, bases, classvars, registration, and export surface from the rows; keep real behavior in shared bases or orthogonal mixins."
+        "# Derive class names, bases, and classvars from the rows; keep real behavior in shared bases or orthogonal mixins."
     ),
     metrics=lambda candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(candidate.class_names),
@@ -957,6 +957,80 @@ declare_candidate_rule_detector(
     detector_name="MetadataOnlyClassFamilyDetector",
     candidate_collector=_metadata_only_class_family_candidates,
 )
+
+
+def _uses_autoregister_meta(node: ast.ClassDef) -> bool:
+    """Return True if a class definition directly specifies AutoRegisterMeta as metaclass."""
+    for keyword in node.keywords:
+        if keyword.arg == "metaclass":
+            if isinstance(keyword.value, ast.Name) and keyword.value.id == "AutoRegisterMeta":
+                return True
+            if isinstance(keyword.value, ast.Attribute) and keyword.value.attr == "AutoRegisterMeta":
+                return True
+    return False
+
+
+class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
+    """Detector for AutoRegisterMeta being used on metadata-only class families."""
+
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "AutoRegisterMeta should not be used on metadata-only class families",
+        "AutoRegisterMeta is a metaclass for behavioral plugin families with lazy discovery and subclass registration. When applied to classes whose bodies contain only declarative class-level data, it turns a configuration table into an implicit registry. The metadata should live in an authoritative typed declaration table or enum, and AutoRegisterMeta should be reserved for families where subclasses implement genuinely different behavior or algorithmic variants.",
+        "one authoritative typed declaration table or enum for pure metadata families; AutoRegisterMeta reserved for behavioral plugin families",
+        "class uses AutoRegisterMeta but its body contains only metadata assignments with no behavioral methods or abstract contracts",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    )
+    detector_id = "autoregister_meta_misuse"
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        del config
+        return 1
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        del config
+        evidence: list[SourceLocation] = []
+        for node in _walk_nodes(module.module):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            if not _uses_autoregister_meta(node):
+                continue
+            assigned_names = _metadata_only_class_assignment_names(node)
+            if assigned_names is None:
+                continue
+            evidence.append(
+                SourceLocation(str(module.path), node.lineno, node.name)
+            )
+        return tuple(evidence)
+
+    def _build_finding(
+        self,
+        module: ParsedModule,
+        evidence: tuple[SourceLocation, ...],
+        config: DetectorConfig,
+    ) -> RefactorFinding:
+        del module, config
+        names = ", ".join(loc.symbol for loc in evidence[:5])
+        suffix = " ..." if len(evidence) > 5 else ""
+        return self.build_finding(
+            f"{len(evidence)} class(es) misuse AutoRegisterMeta as metadata-only containers: {names}{suffix}.",
+            evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class MetadataRow:\n"
+                "    name: str\n"
+                "    ...\n\n"
+                "# Use AutoRegisterMeta for behavioral plugin families with real method overrides.\n"
+                "# Use typed declaration tables or enums for pure configuration metadata."
+            ),
+            codemod_patch=(
+                "# Replace metadata-only AutoRegisterMeta classes with an authoritative typed declaration table.\n"
+                "# Reserve AutoRegisterMeta for families where subclasses provide genuinely different behavior."
+            ),
+        )
+
 
 
 declare_candidate_rule_detector(
@@ -1047,7 +1121,7 @@ class TypeIndexedDefinitionBoilerplateDetector(
             ),
             evidence,
             scaffold=(
-                "@dataclass(frozen=True)\nclass FamilyDeclaration(Generic[TItem]):\n    export_name: str\n    item_type: type[TItem]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n    literal_kind: object | None = None\n\ndef materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n    return AutoRegisterMeta(...)"
+                "@dataclass(frozen=True)\nclass FamilyDeclaration(Generic[TItem]):\n    export_name: str\n    item_type: type[TItem]\n    spec_root: type[object] | None = None\n    spec: object | None = None\n    literal_kind: object | None = None\n\ndef materialize_family(decl: FamilyDeclaration[object]) -> type[CollectedFamily]:\n    return type(...)"
             ),
             codemod_patch=(
                 f"# Replace repeated definition classes under {group.base_names} with one typed declaration table.\n"
