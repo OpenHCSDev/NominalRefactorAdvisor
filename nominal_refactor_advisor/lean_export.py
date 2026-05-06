@@ -15,12 +15,12 @@ from typing import Any, ClassVar, Mapping
 from metaclass_registry import AutoRegisterMeta
 
 from .detectors._base import high_confidence_spec
+from .detectors._systemic import (
+    _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+)
 from .models import FindingSpec, RefactorFinding, SourceLocation
 from .patterns import PatternId
-from .taxonomy import (
-    CapabilityTag,
-    ObservationTag,
-)
+from .taxonomy import ObservationTag
 
 LEAN_EXPORT_SCHEMA = "nominal_refactor_advisor.lean_export.v1"
 
@@ -93,11 +93,6 @@ def _fallback_pattern_id(row: JsonObject) -> PatternId:
         ) from error
 
 
-_NOMINAL_IDENTITY_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS = (
-    CapabilityTag.NOMINAL_IDENTITY,
-    CapabilityTag.PROVENANCE,
-    CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-)
 _NORMALIZED_AST_OBSERVATION_TAGS = (ObservationTag.NORMALIZED_AST,)
 _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
     PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -111,7 +106,7 @@ _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
         "that owns the repeated signature"
     ),
     "Lean environment declaration-signature orbit",
-    _NOMINAL_IDENTITY_PROVENANCE_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+    _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
     _NORMALIZED_AST_OBSERVATION_TAGS,
 )
 

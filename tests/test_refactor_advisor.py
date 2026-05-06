@@ -88,6 +88,60 @@ from nominal_refactor_advisor.semantic_description_length import (
     SemanticCostVector,
 )
 
+
+_PACKAGE_SCAN_LABEL = "package"
+_REPOSITORY_SCAN_LABEL = "repository"
+
+
+def _finding_spec(
+    pattern_id: PatternId,
+    title: str,
+    why: str,
+    capability_gap: str,
+    relation_context: str,
+) -> FindingSpec:
+    return FindingSpec(
+        pattern_id=pattern_id,
+        title=title,
+        why=why,
+        capability_gap=capability_gap,
+        relation_context=relation_context,
+    )
+
+
+def _object_family_certificate(
+    manual_object_count: int,
+    shared_objects: tuple[str, ...],
+    per_axis_objects: tuple[str, ...] = (),
+    semantic_axes: tuple[str, ...] = (),
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=manual_object_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=shared_objects,
+            per_axis_objects=per_axis_objects,
+        ),
+        semantic_axes=semantic_axes,
+    )
+
+
+def _scan_economics_proof(
+    label: str,
+    path: Path,
+    elapsed_seconds: float,
+    findings: tuple[object, ...] = (),
+    plans: tuple[object, ...] = (),
+    scan_budget_seconds: float = 20.0,
+) -> ScanEconomicsProof:
+    return ScanEconomicsProof.from_findings_and_plans(
+        label=label,
+        path=path,
+        elapsed_seconds=elapsed_seconds,
+        scan_budget_seconds=scan_budget_seconds,
+        findings=findings,
+        plans=plans,
+    )
+
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
 DEAD_EMBEDDED_STATIC_PAYLOAD_DETECTOR_ID = "dead_embedded_static_payload"
 DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
@@ -298,20 +352,18 @@ def test_compression_certificate_separates_grammar_from_margin_cost() -> None:
 
 
 def test_finding_carries_compression_certificate_into_markdown() -> None:
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=8,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("abc",),
-            per_axis_objects=("hook",),
-        ),
-        semantic_axes=("role", "format"),
+    certificate = _object_family_certificate(
+        8,
+        ("abc",),
+        ("hook",),
+        ("role", "format"),
     )
-    finding = FindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Collapse repeated class family",
-        why="Repeated behavior has one grammar.",
-        capability_gap="certified grammar compression",
-        relation_context="same orbit under renaming",
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
@@ -374,12 +426,12 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
 def test_planner_ranks_by_certified_description_length_savings(
     tmp_path: Path,
 ) -> None:
-    spec = FindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Compress family",
-        why="Manual declarations are derivable.",
-        capability_gap="description length reduction",
-        relation_context="same semantic grammar",
+    spec = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Compress family",
+        "Manual declarations are derivable.",
+        "description length reduction",
+        "same semantic grammar",
     )
     shape = ObjectFamilyShape(shared_objects=("abc",), per_axis_objects=("hook",))
     low_savings = CompressionCertificate.from_object_family(
@@ -430,20 +482,18 @@ def test_class_family_compression_profile_prices_abc_extraction() -> None:
 
 
 def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
-    spec = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Centralize dispatch",
-        why="Repeated dispatch has one authority.",
-        capability_gap="one authoritative dispatch table",
-        relation_context="same dispatch axis",
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Centralize dispatch",
+        "Repeated dispatch has one authority.",
+        "one authoritative dispatch table",
+        "same dispatch axis",
     )
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=9,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("schema",),
-            per_axis_objects=("field",),
-        ),
-        semantic_axes=("role", "format"),
+    certificate = _object_family_certificate(
+        9,
+        ("schema",),
+        ("field",),
+        ("role", "format"),
     )
     semantic_finding = spec.build(
         "semantic",
@@ -500,16 +550,16 @@ def test_repository_change_budget_separates_backend_detector_and_tests() -> None
 
 
 def test_economics_markdown_and_json_expose_payoff_proof() -> None:
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=8,
-        replacement_shape=ObjectFamilyShape(shared_objects=("abc",)),
+    certificate = _object_family_certificate(
+        8,
+        ("abc",),
     )
-    finding = FindingSpec(
-        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
-        title="Collapse repeated class family",
-        why="Repeated behavior has one grammar.",
-        capability_gap="certified grammar compression",
-        relation_context="same orbit under renaming",
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
@@ -536,12 +586,12 @@ def test_economics_markdown_and_json_expose_payoff_proof() -> None:
 def test_scan_economics_proof_splits_production_from_test_findings(
     tmp_path: Path,
 ) -> None:
-    spec = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Centralize dispatch",
-        why="Repeated dispatch has one authority.",
-        capability_gap="one authoritative dispatch table",
-        relation_context="same dispatch axis",
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Centralize dispatch",
+        "Repeated dispatch has one authority.",
+        "one authoritative dispatch table",
+        "same dispatch axis",
     )
     production_finding = spec.build(
         "prod_detector",
@@ -556,13 +606,12 @@ def test_scan_economics_proof_splits_production_from_test_findings(
         metrics=DispatchCountMetrics(dispatch_site_count=2),
     )
 
-    proof = ScanEconomicsProof.from_findings_and_plans(
-        label="repository",
-        path=tmp_path,
-        elapsed_seconds=0.25,
-        scan_budget_seconds=20.0,
-        findings=(production_finding, test_finding),
-        plans=(),
+    proof = _scan_economics_proof(
+        _REPOSITORY_SCAN_LABEL,
+        tmp_path,
+        0.25,
+        (production_finding, test_finding),
+        (),
     )
 
     assert proof.finding_count == 2
@@ -575,21 +624,15 @@ def test_scan_economics_proof_splits_production_from_test_findings(
 
 
 def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> None:
-    clean_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="package",
-        path=tmp_path / "nominal_refactor_advisor",
-        elapsed_seconds=1.0,
-        scan_budget_seconds=20.0,
-        findings=(),
-        plans=(),
+    clean_scan = _scan_economics_proof(
+        _PACKAGE_SCAN_LABEL,
+        tmp_path / "nominal_refactor_advisor",
+        1.0,
     )
-    repository_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="repository",
-        path=tmp_path,
-        elapsed_seconds=2.0,
-        scan_budget_seconds=20.0,
-        findings=(),
-        plans=(),
+    repository_scan = _scan_economics_proof(
+        _REPOSITORY_SCAN_LABEL,
+        tmp_path,
+        2.0,
     )
     report = EconomicsProofReport(
         package_scan=clean_scan,
@@ -612,33 +655,31 @@ def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> No
 
 
 def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> None:
-    finding = FindingSpec(
-        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
-        title="Move helper",
-        why="Infrastructure recommendations need payoff proof.",
-        capability_gap="payoff proof",
-        relation_context="manual helper proposal",
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Move helper",
+        "Infrastructure recommendations need payoff proof.",
+        "payoff proof",
+        "manual helper proposal",
     ).build(
         "unproven_detector",
         "production helper move has no payoff proof",
         (SourceLocation("pkg/mod.py", 12, "helper"),),
         scaffold="def helper(): ...",
     )
-    package_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="package",
-        path=tmp_path / "nominal_refactor_advisor",
-        elapsed_seconds=21.0,
-        scan_budget_seconds=20.0,
-        findings=(finding,),
-        plans=(),
+    package_scan = _scan_economics_proof(
+        _PACKAGE_SCAN_LABEL,
+        tmp_path / "nominal_refactor_advisor",
+        21.0,
+        (finding,),
+        (),
     )
-    repository_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="repository",
-        path=tmp_path,
-        elapsed_seconds=22.0,
-        scan_budget_seconds=20.0,
-        findings=(finding,),
-        plans=(),
+    repository_scan = _scan_economics_proof(
+        _REPOSITORY_SCAN_LABEL,
+        tmp_path,
+        22.0,
+        (finding,),
+        (),
     )
     report = EconomicsProofReport(
         package_scan=package_scan,
@@ -665,21 +706,15 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
 def test_strict_economics_proof_exit_code_is_ci_enforceable(
     tmp_path: Path,
 ) -> None:
-    passing_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="package",
-        path=tmp_path / "nominal_refactor_advisor",
-        elapsed_seconds=1.0,
-        scan_budget_seconds=20.0,
-        findings=(),
-        plans=(),
+    passing_scan = _scan_economics_proof(
+        _PACKAGE_SCAN_LABEL,
+        tmp_path / "nominal_refactor_advisor",
+        1.0,
     )
-    failing_scan = ScanEconomicsProof.from_findings_and_plans(
-        label="repository",
-        path=tmp_path,
-        elapsed_seconds=21.0,
-        scan_budget_seconds=20.0,
-        findings=(),
-        plans=(),
+    failing_scan = _scan_economics_proof(
+        _REPOSITORY_SCAN_LABEL,
+        tmp_path,
+        21.0,
     )
     passing_report = EconomicsProofReport(
         package_scan=passing_scan,
