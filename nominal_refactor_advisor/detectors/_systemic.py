@@ -2746,6 +2746,49 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    BareFunctionMethodFamilyCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Bare function family should move behind a nominal owner",
+        "A cohort of module-level functions sharing the same first semantic parameter and name axis is acting like methods without an owner. The shared parameter is the missing nominal authority; push common behavior into an ABC/template object and leave the top-level surface as thin orchestration only when it owns an actual boundary.",
+        "nominal method family authority instead of loose subject-parameter functions",
+        "module-level function cohort shares a subject parameter and semantic name axis",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda family: (
+        f"`{family.file_path}` has bare functions {family.function_names} sharing "
+        f"first parameter `{family.owner_parameter_name}` and "
+        f"{family.shared_axis_name} axis `{family.shared_axis_value}` while reading "
+        f"owner attributes {family.owner_attribute_names}."
+    ),
+    scaffold=lambda family: (
+        "class SubjectMethodFamily(ABC):\n"
+        f"    # Own `{family.owner_parameter_name}` here; keep each function's "
+        "irreducible behavior as a hook.\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n"
+    ),
+    codemod_patch=lambda family: (
+        "# Move the shared subject-parameter function family behind a nominal "
+        "ABC/template authority.\n"
+        "# Convert each bare function into a method, hook, or strategy case on "
+        f"the owner of `{family.owner_parameter_name}`."
+    ),
+    compression_certificate=lambda family: family.compression_certificate,
+    metrics=lambda family: OrchestrationMetrics(
+        function_line_count=family.line_count,
+        branch_site_count=0,
+        call_site_count=len(family.function_names),
+        parameter_count=1,
+        callee_family_count=len(family.function_names),
+    ),
+    detector_priority=-12,
+    candidate_collector=_bare_function_method_family_candidates,
+)
+
+
+declare_candidate_rule_detector(
     AstStreamCollectorBoilerplateCandidate,
     high_confidence_certified_spec(
         PatternId.STAGED_ORCHESTRATION,

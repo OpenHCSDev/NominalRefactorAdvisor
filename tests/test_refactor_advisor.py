@@ -56,6 +56,10 @@ from nominal_refactor_advisor.economics import (
     RepositoryChangeBudget,
     ScanEconomicsProof,
 )
+from nominal_refactor_advisor.factorization import (
+    FactorizationEngine,
+    FactorizationRow,
+)
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
     findings_from_lean_export_payload,
@@ -287,6 +291,85 @@ def test_coordinate_view_confusability_keeps_nonclique_failure_geometry() -> Non
         ("10", "11"),
     )
     assert not graph.is_transitive
+
+
+def test_factorization_engine_derives_shared_authority_and_residue_axes() -> None:
+    engine = FactorizationEngine.from_mappings(
+        (
+            (
+                "CsvExporter.emit",
+                {
+                    "family": "Exporter",
+                    "algorithm": "emit",
+                    "codec": "csv",
+                    "suffix": ".csv",
+                },
+            ),
+            (
+                "JsonExporter.emit",
+                {
+                    "family": "Exporter",
+                    "algorithm": "emit",
+                    "codec": "json",
+                    "suffix": ".json",
+                },
+            ),
+            (
+                "XmlExporter.emit",
+                {
+                    "family": "Exporter",
+                    "algorithm": "emit",
+                    "codec": "xml",
+                    "suffix": ".xml",
+                },
+            ),
+        )
+    )
+
+    plan = engine.best_plan("ExporterABC")
+
+    assert plan is not None
+    assert plan.pays_rent
+    assert plan.orbit.shared_axis_names == ("algorithm", "family")
+    assert plan.orbit.residue_axis_names == ("codec", "suffix")
+    assert plan.orbit.object_names == (
+        "CsvExporter.emit",
+        "JsonExporter.emit",
+        "XmlExporter.emit",
+    )
+    assert plan.normal_form == (
+        "FACT(ExporterABC:algorithm,family)"
+        " -> RESIDUE(codec,suffix)"
+        " [CsvExporter.emit,JsonExporter.emit,XmlExporter.emit]"
+    )
+
+
+def test_factorization_engine_rejects_unpaid_singletons() -> None:
+    rows = (
+        (
+            "CsvExporter.emit",
+            {
+                "family": "Exporter",
+                "algorithm": "emit",
+                "codec": "csv",
+                "suffix": ".csv",
+            },
+        ),
+    )
+
+    assert FactorizationEngine.from_mappings(rows).best_plan("ExporterABC") is None
+    assert FactorizationEngine.from_mappings(rows).candidate_plans("ExporterABC") == ()
+
+
+def test_factorization_row_requires_declared_axis_for_projection() -> None:
+    row = FactorizationRow.from_mapping("Only.emit", {"family": "Exporter"})
+
+    try:
+        row.project(("family", "codec"))
+    except KeyError as exc:
+        assert exc.args == ("codec",)
+    else:
+        raise AssertionError("factorization rows should reject undeclared axes")
 
 
 def test_abstraction_rent_budget_derives_from_semantic_object_family() -> None:
@@ -1027,6 +1110,39 @@ def test_detects_private_cohort_should_be_module(tmp_path: Path) -> None:
     assert "returned, pose" in finding.summary
     assert "_returned_pose_proof_plan" in finding.summary
     assert "pipeline_returned_pose" in (finding.codemod_patch or "")
+
+
+def test_detects_bare_function_method_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/widgets.py",
+        "\ndef render_widget(widget, context):\n    header = widget.header\n    body = widget.body\n    footer = context.footer\n    return header, body, footer\n\n\ndef validate_widget(widget, context):\n    errors = []\n    if not widget.header:\n        errors.append('header')\n    if context.strict and not widget.body:\n        errors.append('body')\n    return tuple(errors)\n\n\ndef export_widget(widget, context):\n    payload = {'header': widget.header}\n    payload['body'] = widget.body\n    payload['footer'] = context.footer\n    return payload\n",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (item for item in findings if item.detector_id == "bare_function_method_family")
+    )
+
+    assert "render_widget" in finding.summary
+    assert "validate_widget" in finding.summary
+    assert "export_widget" in finding.summary
+    assert "first parameter `widget`" in finding.summary
+    assert "ABC" in (finding.scaffold or "")
+
+
+def test_bare_function_method_family_ignores_pairs(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/widgets.py",
+        "\ndef render_widget(widget):\n    return widget.header\n\n\ndef export_widget(widget):\n    return {'header': widget.header}\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (item.detector_id == "bare_function_method_family" for item in findings)
+    )
 
 
 def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None:

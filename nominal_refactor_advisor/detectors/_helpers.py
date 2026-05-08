@@ -6,6 +6,7 @@ across the split implementation modules.
 
 from __future__ import annotations
 
+from ..factorization import FactorizationRow, factorization_axis_catalog_certificate
 from ..record_algebra import (
     materialize_product_record,
     materialize_product_records,
@@ -48,6 +49,20 @@ ProductRecordDataclassShape: TypeAlias = tuple[
 ]
 TopLevelDeclaration: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 TopLevelDeclarationMap: TypeAlias = dict[str, TopLevelDeclaration]
+_IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
+_WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES = frozenset(
+    {
+        "args",
+        "body",
+        "end_lineno",
+        "line",
+        "line_count",
+        "lineno",
+        "module",
+        "name",
+        "path",
+    }
+)
 
 
 class _BuiltinCollectionName(StrEnum):
@@ -5423,14 +5438,26 @@ def _abc_optimizer_residue_axis_catalog_certificate(
     method_plans: tuple[_ABCOptimizerMethodPlan, ...],
     residue_kind_names: tuple[str, ...],
 ) -> CompressionCertificate | None:
-    residue_site_count = len(method_plans) * len(residue_kind_names)
-    certificate = CompressionCertificate.from_object_family(
-        manual_object_count=residue_site_count,
-        replacement_shape=ObjectFamilyShape(
-            shared_objects=("residue_axis_catalog",),
-            per_axis_objects=("residue_axis_row",),
+    axis_names = tuple(
+        (
+            f"{index}:{residue_kind}"
+            for index, residue_kind in enumerate(residue_kind_names)
+        )
+    )
+    certificate = factorization_axis_catalog_certificate(
+        (
+            FactorizationRow.from_mapping(
+                method_plan.method_name,
+                {
+                    axis_name: residue_kind
+                    for axis_name, residue_kind in zip(axis_names, residue_kind_names)
+                },
+                source_name="|".join(sorted_tuple(frozenset(method_plan.file_paths))),
+            )
+            for method_plan in method_plans
         ),
-        semantic_axes=residue_kind_names,
+        shared_objects=("residue_axis_catalog",),
+        per_axis_objects=("residue_axis_row",),
     )
     return certificate if certificate.pays_rent else None
 
@@ -6354,35 +6381,41 @@ def _expression_root_names(node: ast.AST) -> set[str]:
     return roots
 
 
-def _function_param_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> set[str]:
-    names = {arg.arg for arg in function.args.posonlyargs}
-    names.update(arg.arg for arg in function.args.args)
-    names.update(arg.arg for arg in function.args.kwonlyargs)
-    if function.args.vararg is not None:
-        names.add(function.args.vararg.arg)
-    if function.args.kwarg is not None:
-        names.add(function.args.kwarg.arg)
-    return names
+@dataclass(frozen=True)
+class _FunctionSignatureView:
+    function: ast.FunctionDef | ast.AsyncFunctionDef
 
+    @property
+    def parameter_names(self) -> set[str]:
+        names = {arg.arg for arg in self.function.args.posonlyargs}
+        names.update(arg.arg for arg in self.function.args.args)
+        names.update(arg.arg for arg in self.function.args.kwonlyargs)
+        if self.function.args.vararg is not None:
+            names.add(self.function.args.vararg.arg)
+        if self.function.args.kwarg is not None:
+            names.add(self.function.args.kwarg.arg)
+        return names
 
-def _function_has_parameter_defaults(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return bool(function.args.defaults) or any(
-        (default is not None for default in function.args.kw_defaults)
-    )
+    @property
+    def explicit_parameter_names(self) -> set[str]:
+        return self.parameter_names - _IMPLICIT_METHOD_PARAMETER_NAMES
 
+    @property
+    def has_parameter_defaults(self) -> bool:
+        return bool(self.function.args.defaults) or any(
+            (default is not None for default in self.function.args.kw_defaults)
+        )
 
-def _function_arguments(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.arg, ...]:
-    return (
-        *function.args.posonlyargs,
-        *function.args.args,
-        *function.args.kwonlyargs,
-    )
+    @property
+    def arguments(self) -> tuple[ast.arg, ...]:
+        return (
+            *self.function.args.posonlyargs,
+            *self.function.args.args,
+            *self.function.args.kwonlyargs,
+        )
+
+    def has_parameter(self, parameter_name: str) -> bool:
+        return any((arg.arg == parameter_name for arg in self.function.args.args))
 
 
 def _annotation_contains_none(node: ast.AST | None) -> bool:
@@ -6648,7 +6681,10 @@ def _transport_call_chain_match(
         exact_depth is not None and len(chain) != exact_depth
     ):
         return None
-    allowed_roots = _function_param_names(function) | {"self", "cls"}
+    allowed_roots = (
+        _FunctionSignatureView(function).parameter_names
+        | _IMPLICIT_METHOD_PARAMETER_NAMES
+    )
     values = _call_chain_transport_values(chain)
     if not values or not all(
         (
@@ -6675,7 +6711,7 @@ def _trivial_forwarding_wrapper_candidate(
     chain, values = chain_match
     class_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
     transported_value_sources = sorted_tuple({ast.unparse(value) for value in values})
-    parameter_names = _function_param_names(function) - {"self", "cls"}
+    parameter_names = _FunctionSignatureView(function).explicit_parameter_names
     forwarded_parameter_names = sorted_tuple(
         {
             node.id
@@ -7063,7 +7099,10 @@ def _function_wrapper_context(
         function=function,
         body=body,
         class_name=qualname.rsplit(".", 1)[0] if "." in qualname else None,
-        allowed_roots=_function_param_names(function) | {"self", "cls"},
+        allowed_roots=(
+            _FunctionSignatureView(function).parameter_names
+            | _IMPLICIT_METHOD_PARAMETER_NAMES
+        ),
     )
 
 
@@ -11808,7 +11847,7 @@ def _nested_builder_shell_candidates_for_function(
     outer_callee_name = _call_name(returned.func)
     if outer_callee_name is None:
         return
-    parameter_names = _function_param_names(function) - {"self", "cls"}
+    parameter_names = _FunctionSignatureView(function).explicit_parameter_names
     if len(parameter_names) < config.min_nested_builder_forwarded_params:
         return
     nested_matches: list[tuple[str, str, tuple[str, ...]]] = []
@@ -11883,7 +11922,7 @@ def _identity_keyword_forwarding_shell_candidate(
 ) -> Iterable[IdentityKeywordForwardingShellCandidate]:
     if function.name.startswith("__") and function.name.endswith("__"):
         return
-    if _function_has_parameter_defaults(function):
+    if _FunctionSignatureView(function).has_parameter_defaults:
         return
     body = _trim_docstring_body(list(function.body))
     if len(body) != 1 or not isinstance(body[0], ast.Return):
@@ -11891,7 +11930,7 @@ def _identity_keyword_forwarding_shell_candidate(
     returned = body[0].value
     if not isinstance(returned, ast.Call) or returned.args:
         return
-    parameter_names = _function_param_names(function) - {"self", "cls"}
+    parameter_names = _FunctionSignatureView(function).explicit_parameter_names
     if not parameter_names or any(
         (keyword.arg is None for keyword in returned.keywords)
     ):
@@ -11987,7 +12026,7 @@ def _optional_parameter_branch_candidates_for_function(
     qualname: str,
     function: NamedFunctionNode,
 ) -> Iterable[OptionalParameterBranchCandidate]:
-    for argument in _function_arguments(function):
+    for argument in _FunctionSignatureView(function).arguments:
         if not _annotation_contains_none(argument.annotation):
             continue
         if not _annotation_has_nominal_variant_role(argument.annotation):
@@ -12021,6 +12060,141 @@ def _optional_parameter_branch_candidates(
         module,
         _optional_parameter_branch_candidates_for_function,
         sort_key=lambda item: (item.file_path, item.line, item.parameter_name),
+    )
+
+
+def _module_level_subject_parameter_name(
+    qualname: str, function: NamedFunctionNode
+) -> str | None:
+    if "." in qualname or function.name.startswith("__"):
+        return None
+    if function.decorator_list:
+        return None
+    arguments = _FunctionSignatureView(function).arguments
+    if not arguments:
+        return None
+    parameter_name = arguments[0].arg
+    return (
+        None if parameter_name in _IMPLICIT_METHOD_PARAMETER_NAMES else parameter_name
+    )
+
+
+def _bare_function_name_tokens(function_name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in function_name.strip("_").split("_")
+        if token and token not in {"get", "set", "make", "build", "collect"}
+    )
+
+
+def _bare_function_method_family_certificate(
+    *, function_count: int, line_count: int, semantic_axes: tuple[str, ...]
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(
+            line_count, function_count * max(len(semantic_axes), 1)
+        ),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("method_family_authority", "template_method_base"),
+            per_axis_objects=("method_hook",),
+        ),
+        semantic_axes=semantic_axes,
+        residual_object_count=function_count,
+    )
+
+
+def _bare_function_method_family_candidates(
+    module: ParsedModule,
+) -> tuple[BareFunctionMethodFamilyCandidate, ...]:
+    grouped: dict[tuple[str, str, str], list[NamedFunctionNode]] = defaultdict(list)
+    for qualname, function in _iter_named_functions(module):
+        owner_parameter_name = _module_level_subject_parameter_name(qualname, function)
+        if owner_parameter_name is None:
+            continue
+        tokens = _bare_function_name_tokens(function.name)
+        if len(tokens) < 2:
+            continue
+        for shared_axis_name, shared_axis_value in (
+            ("prefix", tokens[0]),
+            ("suffix", tokens[-1]),
+        ):
+            grouped[(owner_parameter_name, shared_axis_name, shared_axis_value)].append(
+                function
+            )
+
+    candidates: list[BareFunctionMethodFamilyCandidate] = []
+    seen_function_sets: set[tuple[str, ...]] = set()
+    for (
+        owner_parameter_name,
+        shared_axis_name,
+        shared_axis_value,
+    ), functions in grouped.items():
+        if len(functions) < 3:
+            continue
+        ordered = sorted_tuple(functions, key=lambda item: (item.lineno, item.name))
+        common_attribute_names = sorted_tuple(
+            set.intersection(
+                *(
+                    set(
+                        _parameter_receiver_attribute_names(
+                            function, owner_parameter_name
+                        )
+                    )
+                    for function in ordered
+                )
+            )
+            - _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES
+        )
+        if not common_attribute_names:
+            continue
+        function_names = tuple((function.name for function in ordered))
+        if function_names in seen_function_sets:
+            continue
+        seen_function_sets.add(function_names)
+        line_count = sum(
+            (
+                max(
+                    1,
+                    (function.end_lineno or function.lineno) - function.lineno + 1,
+                )
+                for function in ordered
+            )
+        )
+        semantic_axes = (
+            f"owner:{owner_parameter_name}",
+            f"{shared_axis_name}:{shared_axis_value}",
+            *(f"attribute:{name}" for name in common_attribute_names),
+        )
+        certificate = _bare_function_method_family_certificate(
+            function_count=len(ordered),
+            line_count=line_count,
+            semantic_axes=semantic_axes,
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            BareFunctionMethodFamilyCandidate(
+                file_path=str(module.path),
+                line=ordered[0].lineno,
+                owner_parameter_name=owner_parameter_name,
+                owner_attribute_names=common_attribute_names,
+                shared_axis_name=shared_axis_name,
+                shared_axis_value=shared_axis_value,
+                function_names=function_names,
+                line_numbers=tuple((function.lineno for function in ordered)),
+                line_count=line_count,
+                compression_certificate=certificate,
+            )
+        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.owner_parameter_name,
+            item.shared_axis_name,
+            item.shared_axis_value,
+            item.function_names,
+        ),
     )
 
 
@@ -12095,12 +12269,6 @@ def _is_instance_filter(filters: list[ast.expr], item_type_name: str) -> bool:
         if _call_name(condition.args[1]) == item_type_name:
             return True
     return False
-
-
-def _function_has_param(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, param_name: str
-) -> bool:
-    return any((arg.arg == param_name for arg in function.args.args))
 
 
 def _collect_class_sentinel_attrs(

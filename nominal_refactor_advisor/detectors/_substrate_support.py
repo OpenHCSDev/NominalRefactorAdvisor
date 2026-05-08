@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import re
+from abc import ABC, abstractmethod
 from collections import defaultdict
 
 from ..ast_tools import ParsedModule, _walk_nodes
@@ -15,6 +16,56 @@ from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
 
 _TYPE_NAME_LITERAL = "type"
+
+
+class _AstNameProjection(ABC):
+    @abstractmethod
+    def __call__(self, node: ast.AST) -> str | None:
+        raise NotImplementedError
+
+
+class _TerminalNameProjection(_AstNameProjection):
+    def __call__(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        if isinstance(node, ast.Subscript):
+            return self(node.value)
+        return None
+
+
+class _SelectorAttributeProjection(_AstNameProjection):
+    def __call__(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
+                return node.attr
+            if (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and (node.value.func.id == _TYPE_NAME_LITERAL)
+                and (len(node.value.args) == 1)
+                and isinstance(node.value.args[0], ast.Name)
+                and (node.value.args[0].id == "self")
+            ):
+                return node.attr
+        return None
+
+
+class _CallNameProjection(_AstNameProjection):
+    def __call__(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Subscript):
+            return self(node.value)
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+
+_ast_terminal_name = _TerminalNameProjection()
+_selector_attribute_name = _SelectorAttributeProjection()
+_call_name = _CallNameProjection()
 
 
 def _camel_case(value: str) -> str:
@@ -44,16 +95,6 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
     if body and _is_docstring_expr(body[0]):
         return body[1:]
     return body
-
-
-def _ast_terminal_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    if isinstance(node, ast.Subscript):
-        return _ast_terminal_name(node.value)
-    return None
 
 
 def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
@@ -147,22 +188,6 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
     return any(
         (_is_dataclass_decorator(decorator) for decorator in node.decorator_list)
     )
-
-
-def _selector_attribute_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Attribute):
-        if isinstance(node.value, ast.Name) and node.value.id in {"self", "cls"}:
-            return node.attr
-        if (
-            isinstance(node.value, ast.Call)
-            and isinstance(node.value.func, ast.Name)
-            and (node.value.func.id == _TYPE_NAME_LITERAL)
-            and (len(node.value.args) == 1)
-            and isinstance(node.value.args[0], ast.Name)
-            and (node.value.args[0].id == "self")
-        ):
-            return node.attr
-    return None
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
@@ -313,16 +338,6 @@ def _indexed_descendant_classes(
             if (indexed_class := class_index.class_for(descendant_symbol)) is not None
         )
     )
-
-
-def _call_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Subscript):
-        return _call_name(node.value)
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
 
 
 def _is_private_symbol_name(name: str) -> bool:
