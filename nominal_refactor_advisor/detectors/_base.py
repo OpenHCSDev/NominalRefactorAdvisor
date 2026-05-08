@@ -133,6 +133,7 @@ from ..ast_tools import (
     InlineStringLiteralDispatchObservationFamily,
     collect_family_items,
     _walk_nodes,
+    _builder_call_shape,
 )
 from ..class_index import (
     ClassFamilyIndex,
@@ -2390,6 +2391,37 @@ def _collect_configured_named_function_candidates(
         )
     )
     return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)
+
+
+@lru_cache(maxsize=None)
+def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+    shapes: list[BuilderCallShape] = []
+
+    class CallVisitor(ast.NodeVisitor):
+        def __init__(self, class_name: str | None, function_name: str | None) -> None:
+            self.class_name = class_name
+            self.function_name = function_name
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Call(self, node: ast.Call) -> None:
+            shape = _builder_call_shape(
+                module, node, self.class_name, self.function_name
+            )
+            if shape is not None:
+                shapes.append(shape)
+            self.generic_visit(node)
+
+    for qualname, function in _iter_named_functions(module):
+        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
+        visitor = CallVisitor(owner_name, function.name)
+        for statement in _trim_docstring_body(function.body):
+            visitor.visit(statement)
+    return tuple(shapes)
 
 
 AstNodeCandidateT = TypeVar("AstNodeCandidateT")
@@ -4716,6 +4748,9 @@ def _literal_bridge_axis_cases(
     return observation.axis_expression, sorted_tuple(observation.literal_cases)
 
 
+_BRIDGE_AXIS_SOURCE_TOKENS = frozenset({"backend", "kind", "type", "format", "mode"})
+
+
 def _bridge_operation_name(symbol: str) -> str:
     return symbol.rsplit(".", 1)[-1].removesuffix(":inline-literal-dispatch")
 
@@ -4738,6 +4773,8 @@ def _bridge_axis_family_compression_certificate(
 def _bridge_axis_dispatch_family_candidates(
     module: ParsedModule,
 ) -> tuple["BridgeAxisDispatchFamilyCandidate", ...]:
+    if not any((token in module.source for token in _BRIDGE_AXIS_SOURCE_TOKENS)):
+        return ()
     grouped: dict[tuple[str, tuple[str, ...]], list[LiteralDispatchObservation]] = (
         defaultdict(list)
     )
@@ -4806,6 +4843,26 @@ _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES = frozenset(
         "size",
     }
 )
+_ARRAY_PROTOCOL_PROBE_CALL_NAMES = frozenset({"getattr", "hasattr"})
+
+
+def _array_protocol_probe_calls(
+    module: ParsedModule,
+) -> tuple[tuple[int, str], ...]:
+    probes: list[tuple[int, str]] = []
+    for call in _typed_ast_nodes(module.module, ast.Call):
+        if _ast_terminal_name(call.func) not in _ARRAY_PROTOCOL_PROBE_CALL_NAMES:
+            continue
+        if len(call.args) < 2:
+            continue
+        attribute_arg = call.args[1]
+        if not isinstance(attribute_arg, ast.Constant) or not isinstance(
+            attribute_arg.value, str
+        ):
+            continue
+        if attribute_arg.value in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES:
+            probes.append((call.lineno, attribute_arg.value))
+    return tuple(probes)
 
 
 def _array_protocol_probe_bridge_certificate(
@@ -4825,7 +4882,16 @@ def _array_protocol_probe_bridge_certificate(
 def _array_protocol_probe_bridge_candidates(
     module: ParsedModule,
 ) -> tuple["ArrayProtocolProbeBridgeCandidate", ...]:
-    probes_by_symbol: dict[str, list[AttributeProbeObservation]] = defaultdict(list)
+    if not any(
+        (attribute_name in module.source)
+        for attribute_name in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES
+    ):
+        return ()
+    probe_calls = _array_protocol_probe_calls(module)
+    if not probe_calls:
+        return ()
+    probes_by_symbol: dict[str, list[str]] = defaultdict(list)
+    probe_lines_by_symbol: dict[str, list[int]] = defaultdict(list)
     function_ranges = tuple(
         (
             qualname,
@@ -4834,42 +4900,33 @@ def _array_protocol_probe_bridge_candidates(
         )
         for qualname, function in _iter_named_functions(module)
     )
-    for probe in collect_family_items(module, AttributeProbeObservationFamily):
-        if probe.observed_attribute not in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES:
-            continue
+    for line, observed_attribute in probe_calls:
         owner_symbol = next(
             (
                 qualname
                 for qualname, start_line, end_line in function_ranges
-                if start_line <= probe.line <= end_line
+                if start_line <= line <= end_line
             ),
-            probe.symbol,
+            f"<module>:{line}",
         )
-        probes_by_symbol[owner_symbol].append(probe)
+        probes_by_symbol[owner_symbol].append(observed_attribute)
+        probe_lines_by_symbol[owner_symbol].append(line)
     operation_symbols = tuple(
         symbol
-        for symbol, probes in sorted(probes_by_symbol.items())
-        if len({probe.observed_attribute for probe in probes}) >= 2
+        for symbol, attrs in sorted(probes_by_symbol.items())
+        if len(set(attrs)) >= 2
     )
     if len(operation_symbols) < 3:
         return ()
     shared_attributes = sorted_tuple(
         set.intersection(
-            *(
-                {
-                    probe.observed_attribute
-                    for probe in probes_by_symbol[symbol]
-                    if probe.observed_attribute is not None
-                }
-                for symbol in operation_symbols
-            )
+            *((set(probes_by_symbol[symbol])) for symbol in operation_symbols)
         )
     )
     if len(shared_attributes) < 2:
         return ()
     line_numbers = tuple(
-        min(probe.line for probe in probes_by_symbol[symbol])
-        for symbol in operation_symbols
+        min(probe_lines_by_symbol[symbol]) for symbol in operation_symbols
     )
     certificate = _array_protocol_probe_bridge_certificate(
         function_count=len(operation_symbols),

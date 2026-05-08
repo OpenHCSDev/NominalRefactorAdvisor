@@ -2052,9 +2052,7 @@ def _projection_builder_groups(
     grouped: dict[tuple[str, tuple[str, ...]], list[BuilderCallShape]] = defaultdict(
         list
     )
-    for builder in _collect_typed_family_items(
-        module, BuilderCallShapeFamily, BuilderCallShape
-    ):
+    for builder in _module_builder_call_shapes(module):
         if len(builder.keyword_names) < max(config.min_builder_keywords, 6):
             continue
         if not all(
@@ -4480,12 +4478,16 @@ def _registered_union_surface_candidates(
     class_defs_by_name = {
         node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
     }
-    return _collect_ast_node_candidates(
-        module,
-        module.module,
-        ast.AST,
-        _registered_union_surface_candidates_for_node,
-        class_defs_by_name,
+    source_nodes: tuple[ast.AST, ...] = (
+        *(function for _, function in _iter_named_functions(module)),
+        *_typed_ast_nodes(module.module, ast.Assign),
+    )
+    return tuple(
+        candidate
+        for node in source_nodes
+        for candidate in _registered_union_surface_candidates_for_node(
+            module, node, class_defs_by_name
+        )
     )
 
 

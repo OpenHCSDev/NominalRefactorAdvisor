@@ -229,9 +229,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
             (
                 builder
                 for module in modules
-                for builder in _collect_typed_family_items(
-                    module, BuilderCallShapeFamily, BuilderCallShape
-                )
+                for builder in _module_builder_call_shapes(module)
             ),
             key=lambda item: (item.file_path, item.lineno, item.symbol),
         )
