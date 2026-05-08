@@ -1845,6 +1845,48 @@ class RepeatedKeyedFamilyDetector(
         )
 
 
+def _registry_maturity_fanout_metrics(
+    candidate: PrematureRegistryInfrastructureCandidate,
+) -> RegistrationMetrics:
+    return RegistrationMetrics(
+        registration_site_count=len(candidate.registered_case_names),
+        registry_name=candidate.class_name,
+    )
+
+
+declare_candidate_rule_detector(
+    PrematureRegistryInfrastructureCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Registry infrastructure should prove key, lifecycle, and fanout maturity",
+        "The OpenHCS history showed that registries pay rent only when the key axis is stable, registration lifecycle is explicit, and more than one consumer uses the registry. A registry-shaped class without those signals is likely a premature abstraction boundary.",
+        "mature registry authority with stable key axis, class-time lifecycle, and consumer fanout",
+        "keyed registry infrastructure exists before registered cases and consumers prove the axis",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` is registry-shaped over `{candidate.key_type_name}` via "
+        f"`{candidate.registry_key_attr_name}`, but missing maturity signals "
+        f"{candidate.missing_maturity_signals}: cases {candidate.registered_case_names}, "
+        f"lookup methods {candidate.lookup_method_names}, consumers {candidate.consumer_symbols}."
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\nclass AxisRow:\n    key: object\n    value: object\n\n"
+        "# Keep rows in a small typed table until key cases, lifecycle, and consumer fanout are stable enough for a registry."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Do not promote `{candidate.class_name}` to registry infrastructure until it proves all three signals:\n"
+        "# stable key cases, explicit lookup/class-time lifecycle, and at least two independent consumers.\n"
+        "# Replace premature registry infrastructure with a typed table or local strategy map while any signal is missing."
+    ),
+    metrics=_registry_maturity_fanout_metrics,
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=_premature_registry_infrastructure_candidates,
+)
+
+
 class ManualKeyedRecordTableDetector(
     ConfiguredModuleCollectorCandidateDetector[ManualKeyedRecordTableGroupCandidate]
 ):

@@ -5643,6 +5643,146 @@ def _repeated_keyed_family_candidates(
     )
 
 
+def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        (
+            method.name
+            for method in _iter_class_methods(node)
+            if _is_classmethod(method)
+            and (
+                _registry_lookup_shape(method) is not None
+                or _method_references_cls_registry(method)
+            )
+        )
+    )
+
+
+def _method_references_cls_registry(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any((_is_cls_registry_attribute(node) for node in _walk_nodes(method)))
+
+
+def _registered_keyed_case_names(
+    class_index: ClassFamilyIndex,
+    indexed_class: IndexedClass,
+    registry_key_attr_name: str,
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            ast.unparse(assignment)
+            for descendant in _indexed_descendant_classes(
+                class_index, indexed_class.symbol
+            )
+            if (
+                assignment := _class_direct_assignments(descendant.node).get(
+                    registry_key_attr_name
+                )
+            )
+            is not None
+        }
+    )
+
+
+def _registry_consumer_symbols(
+    modules: Sequence[ParsedModule],
+    *,
+    family_name: str,
+    lookup_method_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    consumer_symbols: set[str] = set()
+    for module in modules:
+        file_path = str(module.path)
+        if file_path.startswith("tests/") or "/tests/" in file_path:
+            continue
+        for qualname, function in _iter_named_functions(module):
+            if qualname.startswith(f"{family_name}."):
+                continue
+            for node in _walk_nodes(function):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and node.attr in lookup_method_names
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == family_name
+                ):
+                    consumer_symbols.add(qualname)
+    return sorted_tuple(consumer_symbols)
+
+
+def _registry_maturity_missing_signals(
+    *,
+    registered_case_count: int,
+    lookup_method_names: tuple[str, ...],
+    consumer_count: int,
+    min_case_count: int,
+    min_consumer_count: int,
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if registered_case_count < min_case_count:
+        missing.append("registered_case_axis")
+    if not lookup_method_names:
+        missing.append("lookup_lifecycle")
+    if consumer_count < min_consumer_count:
+        missing.append("consumer_fanout")
+    return tuple(missing)
+
+
+def _premature_registry_infrastructure_candidates(
+    modules: Sequence[ParsedModule], config: DetectorConfig
+) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
+    class_index = build_class_family_index(list(modules))
+    min_case_count = max(2, config.min_registration_sites)
+    min_consumer_count = max(2, config.min_registration_sites)
+    candidates: list[PrematureRegistryInfrastructureCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
+            indexed_class.file_path
+        ):
+            continue
+        node = indexed_class.node
+        key_type_name = _keyed_family_key_type_name(node)
+        if key_type_name is None:
+            continue
+        registry_key_attr_name = _constant_string(
+            _class_direct_assignments(node).get("registry_key_attr")
+        )
+        if registry_key_attr_name is None:
+            continue
+        lookup_method_names = _keyed_registry_lookup_method_names(node)
+        family_name = _indexed_class_display_name(indexed_class, class_index)
+        consumer_symbols = _registry_consumer_symbols(
+            modules, family_name=family_name, lookup_method_names=lookup_method_names
+        )
+        registered_case_names = _registered_keyed_case_names(
+            class_index, indexed_class, registry_key_attr_name
+        )
+        missing_maturity_signals = _registry_maturity_missing_signals(
+            registered_case_count=len(registered_case_names),
+            lookup_method_names=lookup_method_names,
+            consumer_count=len(consumer_symbols),
+            min_case_count=min_case_count,
+            min_consumer_count=min_consumer_count,
+        )
+        if not missing_maturity_signals:
+            continue
+        candidates.append(
+            PrematureRegistryInfrastructureCandidate(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                class_name=family_name,
+                key_type_name=key_type_name,
+                registry_key_attr_name=registry_key_attr_name,
+                lookup_method_names=lookup_method_names,
+                registered_case_names=registered_case_names,
+                consumer_symbols=consumer_symbols,
+                missing_maturity_signals=missing_maturity_signals,
+            )
+        )
+    return tuple(candidates)
+
+
 def _manual_record_registration_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ManualRecordRegistrationShape | None:
@@ -8682,6 +8822,7 @@ _materialize_product_records((
     _product_record_spec('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]'),
     _product_record_spec('KeyedFamilyRootCandidate', 'family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
     _product_record_spec('RepeatedKeyedFamilyCandidate', 'family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]'),
+    _product_record_spec('PrematureRegistryInfrastructureCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_maturity_signals: tuple[str, ...]', 'ClassLineWitnessCandidate'),
     _product_record_spec('ManualRecordRegistrationShape', 'key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]'),
     _product_record_spec('ManualKeyedRecordTableClassCandidate', 'register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
     _product_record_spec('ManualKeyedRecordTableGroupCandidate', 'file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]'),
