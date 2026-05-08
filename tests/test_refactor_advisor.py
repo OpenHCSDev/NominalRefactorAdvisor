@@ -58,7 +58,13 @@ from nominal_refactor_advisor.economics import (
 )
 from nominal_refactor_advisor.factorization import (
     FactorizationEngine,
+    FactorizationLattice,
+    FactorizationOrbit,
+    FactorizationPlan,
     FactorizationRow,
+    MDLCompetition,
+    OwnershipClosure,
+    OwnershipProjection,
 )
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
@@ -370,6 +376,168 @@ def test_factorization_row_requires_declared_axis_for_projection() -> None:
         assert exc.args == ("codec",)
     else:
         raise AssertionError("factorization rows should reject undeclared axes")
+
+
+def _factorization_plan(
+    name: str,
+    *,
+    object_names: tuple[str, ...],
+    shared_axes: tuple[str, ...],
+    residue_axes: tuple[str, ...],
+    manual_object_count: int,
+    residual_object_count: int,
+) -> FactorizationPlan:
+    rows = tuple(
+        (
+            FactorizationRow.from_mapping(
+                object_name,
+                {
+                    **{axis_name: axis_name for axis_name in shared_axes},
+                    **{
+                        axis_name: f"{axis_name}:{object_name}"
+                        for axis_name in residue_axes
+                    },
+                },
+            )
+            for object_name in object_names
+        )
+    )
+    orbit = FactorizationOrbit(
+        shared_signature=tuple((axis_name, axis_name) for axis_name in shared_axes),
+        rows=rows,
+        residue_axis_names=residue_axes,
+    )
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=manual_object_count,
+        replacement_shape=ObjectFamilyShape(shared_objects=("authority",)),
+        semantic_axes=(*shared_axes, *residue_axes),
+        residual_object_count=residual_object_count,
+    )
+    return FactorizationPlan(name, orbit, certificate)
+
+
+def test_factorization_lattice_and_mdl_competition_choose_global_explanation() -> None:
+    broad = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec", "suffix"),
+        manual_object_count=12,
+        residual_object_count=3,
+    )
+    refined = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit"),
+        shared_axes=("family", "codec"),
+        residue_axes=("suffix",),
+        manual_object_count=8,
+        residual_object_count=2,
+    )
+
+    lattice = FactorizationLattice.from_plans((broad, refined))
+    broad_node = next(
+        node
+        for node in lattice.nodes
+        if node.object_names == frozenset(broad.orbit.object_names)
+    )
+    refined_node = next(
+        node
+        for node in lattice.nodes
+        if node.object_names == frozenset(refined.orbit.object_names)
+    )
+
+    assert lattice.cover_edges == ((refined_node, broad_node),)
+    assert refined_node.refines(broad_node)
+    assert refined_node.meet_key(broad_node) == (
+        frozenset({"Csv.emit", "Json.emit"}),
+        frozenset({"family", "codec"}),
+        frozenset({"suffix"}),
+    )
+    assert refined_node.join_key(broad_node) == (
+        frozenset({"Csv.emit", "Json.emit", "Xml.emit"}),
+        frozenset({"family"}),
+        frozenset({"codec", "suffix"}),
+    )
+    assert lattice.best_antichain() == (broad_node,)
+
+
+def test_mdl_competition_suppresses_overlapping_weaker_explanations() -> None:
+    broad = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec", "suffix"),
+        manual_object_count=12,
+        residual_object_count=3,
+    )
+    refined = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit"),
+        shared_axes=("family", "codec"),
+        residue_axes=("suffix",),
+        manual_object_count=8,
+        residual_object_count=2,
+    )
+    lattice = FactorizationLattice.from_plans((broad, refined))
+    broad_node = next(
+        node
+        for node in lattice.nodes
+        if node.object_names == frozenset(broad.orbit.object_names)
+    )
+    result = MDLCompetition(lattice.nodes).solve()
+
+    assert result.selected == (broad_node,)
+    assert len(result.suppressed) == 1
+    assert {item.reason for item in result.suppressed} == {
+        "overlaps a shorter selected explanation"
+    }
+
+
+def test_factorization_engine_returns_negative_compression_proofs() -> None:
+    engine = FactorizationEngine.from_mappings(
+        (
+            ("CsvExporter.emit", {"family": "Exporter", "codec": "csv"}),
+            ("JsonExporter.emit", {"family": "Exporter", "codec": "json"}),
+        )
+    )
+
+    assessments = engine.candidate_assessments("ExporterABC")
+
+    assert engine.candidate_plans("ExporterABC") == ()
+    assert any(
+        (
+            assessment.rejection is not None
+            and assessment.rejection.certified_savings <= 0
+            and "does not reduce" in assessment.rejection.reason
+        )
+        for assessment in assessments
+    )
+
+
+def test_ownership_closure_recovers_transitive_projection_owner() -> None:
+    closure = OwnershipClosure.from_rows(
+        (
+            FactorizationRow.from_mapping(
+                "parse", {"owner": "Module", "parser": "ParsedModule"}
+            ),
+            FactorizationRow.from_mapping(
+                "path", {"owner": "ParsedModule", "path": "PathSpec"}
+            ),
+            FactorizationRow.from_mapping(
+                "runtime", {"owner": "Runtime", "driver": "DriverSpec"}
+            ),
+        )
+    )
+
+    assert (
+        OwnershipProjection("Module", "parser", "ParsedModule") in closure.projections
+    )
+    assert closure.transitive_targets("Module") == frozenset(
+        {"ParsedModule", "PathSpec"}
+    )
+    assert closure.canonical_owner("PathSpec") == "Module"
+    assert closure.canonical_owner("DriverSpec") == "Runtime"
+    assert closure.canonical_owner("Missing") is None
 
 
 def test_abstraction_rent_budget_derives_from_semantic_object_family() -> None:
