@@ -18,8 +18,10 @@ from typing import Generic, Hashable, TypeAlias, TypeVar
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty
 from .record_algebra import materialize_product_records, product_record_spec
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
 from .semantic_description_length import CompressionCertificate, SemanticCostVector
+from metaclass_registry import AutoRegisterMeta
 
 AxisName: TypeAlias = str
 AxisValue: TypeAlias = Hashable
@@ -185,8 +187,12 @@ class FactorizationAssessment:
         raise RuntimeError("unreachable invalid factorization assessment")
 
 
-class CompressibleExplanation(ABC):
+class CompressibleExplanation(ABC, metaclass=AutoRegisterMeta):
     """ABC for explanations competing to describe the same semantic objects."""
+
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
 
     @property
     @abstractmethod
@@ -1350,6 +1356,34 @@ class InheritanceDesign(CompressibleExplanation):
                 )
             )
         )
+
+    @property
+    def leaf_residue_names(self) -> tuple[str, ...]:
+        return sorted_tuple((*self.classvar_names, *self.hook_names))
+
+    @property
+    def residue_declaration_count(self) -> int:
+        return sum(
+            (
+                len(method_spec.class_names)
+                * (
+                    len(method_spec.residue.classvar_names)
+                    + len(method_spec.residue.property_hook_names)
+                    + len(method_spec.residue.behavior_hook_names)
+                )
+                for method_spec in self.method_specs
+            )
+        )
+
+    @property
+    def shared_statement_count(self) -> int:
+        return sum(
+            (method_spec.shared_statement_count for method_spec in self.method_specs)
+        )
+
+    @property
+    def shared_to_residue_ratio(self) -> float:
+        return self.shared_statement_count / max(self.residue_declaration_count, 1)
 
 
 class InheritanceDesignSearch:

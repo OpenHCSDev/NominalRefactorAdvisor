@@ -16,9 +16,11 @@ import ast
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import ClassVar, Generic, TypeAlias, TypeVar
+from metaclass_registry import AutoRegisterMeta
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
+from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstTypedEffectStep,
     GuardedEffectStep,
@@ -37,6 +39,9 @@ _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
 RoleFieldObservationGroups: TypeAlias = dict[str, dict[str, FieldObservation]]
+_REGISTRY_PROTOCOL_FIELD_NAMES = frozenset(
+    {"__key_extractor__", "__registry_key__", "__skip_if_no_key__"}
+)
 
 
 def _reflective_self_attribute_compression_certificate(
@@ -83,7 +88,11 @@ def _semantic_overlap_abc_scaffold(
     )
 
 
-class _SemanticOverlapPatchRenderer(ABC):
+class _SemanticOverlapPatchRenderer(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     @abstractmethod
     def __call__(
         self,
@@ -118,9 +127,9 @@ class _SemanticOverlapABCPatchRenderer(_SemanticOverlapPatchRenderer):
         return (
             f"# Extract `{candidate.method_name}` from {candidate.class_names} into an intermediate ABC over `{candidate.base_name}`.\n"
             f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
-            f"# Candidate hierarchy layer owns methods: {family_summary}; subset mixin axes: {mixin_summary}.\n"
+            f"# Candidate hierarchy layer owns methods: {family_summary}; concrete ABC methods: {candidate.abc_concrete_method_names}; subset mixin axes: {mixin_summary}.\n"
             f"# Partial-overlap axes needing explicit precedence/layering: {overlap_summary}.\n"
-            f"# Keep only residue declarations/hooks on leaves: {residue_summary}."
+            f"# Keep only residue declarations/hooks on leaves: {residue_summary}; leaf residue basis: {candidate.leaf_residue_names}."
         )
 
 
@@ -129,8 +138,31 @@ class _SemanticOverlapABCFamilyPatchRenderer(_SemanticOverlapPatchRenderer):
         return (
             f"# Extract methods {candidate.method_names} from {candidate.class_names} into one ABC family over `{candidate.base_name}`.\n"
             f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
+            f"# Move concrete template methods {candidate.abc_concrete_method_names} to the ABC.\n"
+            f"# Keep classvars {candidate.classvar_hook_names}, properties {candidate.property_hook_names}, and behavior hooks {candidate.behavior_hook_names} as leaf residue.\n"
             f"# The family removes {candidate.shared_statement_count} shared statement objects with {candidate.residue_count} residue declarations."
         )
+
+
+def _global_inheritance_optimization_patch(
+    candidate: GlobalInheritanceOptimizationCandidate,
+) -> str:
+    mixins = (
+        ", ".join(candidate.mixin_axis_specs)
+        if candidate.mixin_axis_specs
+        else "no clean subset mixins"
+    )
+    overlaps = (
+        ", ".join(candidate.overlap_axis_specs)
+        if candidate.overlap_axis_specs
+        else "no partial-overlap layers"
+    )
+    return (
+        f"# Treat `{candidate.base_name}` as one inheritance lattice across families {candidate.family_specs}.\n"
+        f"# Move shared method skeletons {candidate.method_names} into the highest valid ABC/layer in the lattice.\n"
+        f"# Use subset mixins for {mixins}; introduce explicit precedence layers for {overlaps}.\n"
+        f"# Leaves keep only residue declarations/hooks {candidate.leaf_residue_names}."
+    )
 
 
 class _SemanticOverlapABCResidueAxisPatchRenderer(_SemanticOverlapPatchRenderer):
@@ -322,7 +354,11 @@ def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate
             minimum_witnesses=2,
             minimum_fibers=2,
         ):
-            field_names = sorted_tuple(cohort.observed_names)
+            field_names = sorted_tuple(
+                set(cohort.observed_names) - _REGISTRY_PROTOCOL_FIELD_NAMES
+            )
+            if len(field_names) < 2:
+                continue
             supporting_classes = cohort.nominal_witnesses
             shared_field_set = set(field_names)
             if any(
@@ -889,6 +925,9 @@ declare_candidate_rule_detector(
         f"`{candidate.method_name}` in siblings {candidate.class_names} over `{candidate.base_name}` shares "
         f"{candidate.shared_statement_count} statements with {candidate.varying_coordinate_count} residue coordinate(s): "
         f"classvars {candidate.classvar_names}, properties {candidate.property_hook_names}, hooks {candidate.behavior_hook_names}. "
+        f"Move concrete methods {candidate.abc_concrete_method_names} to the ABC and leave leaf residue basis "
+        f"{candidate.leaf_residue_names} on leaves ({candidate.subclass_residue_count} residue declaration(s), "
+        f"shared/residue ratio {candidate.shared_to_residue_ratio:.2f}). "
         f"The derived hierarchy plan scores {candidate.optimizer_score} with {candidate.abc_layer_count} ABC layer(s), "
         f"{candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} lattice edge(s), "
         f"family methods {candidate.family_method_names}, mixin axes {candidate.mixin_axis_specs}, "
@@ -930,6 +969,8 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.base_name}` subclasses {candidate.class_names} repeat family methods {candidate.method_names} "
         f"with {candidate.shared_statement_count} shared statements, {candidate.residue_count} residue declaration(s), "
+        f"concrete ABC methods {candidate.abc_concrete_method_names}, leaf residue basis {candidate.leaf_residue_names}, "
+        f"shared/residue ratio {candidate.shared_to_residue_ratio:.2f}, "
         f"{candidate.abc_layer_count} ABC layer(s), {candidate.lattice_node_count} lattice node(s), "
         f"{candidate.lattice_edge_count} lattice edge(s), and normal form `{candidate.hierarchy_normal_form}`."
     ),
@@ -947,6 +988,46 @@ declare_candidate_rule_detector(
     detector_name="SemanticOverlapAbcFamilyOptimizationDetector",
     detector_base=CrossModuleCollectorCandidateDetector,
     candidate_collector=_semantic_overlap_abc_family_optimization_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    GlobalInheritanceOptimizationCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Inheritance root should optimize the whole overlap lattice",
+        "A base class has several overlapping subclass method families. Optimizing each repeated override independently can trap the hierarchy in a local minimum; the base should solve the full class-set lattice and place shared algorithms, subset mixins, and partial-overlap layers globally.",
+        "one inheritance-lattice cover assigns shared methods to ABCs or mixins while leaves keep only residue declarations",
+        "multiple semantic-overlap ABC families under one root have intersecting but non-identical subclass sets",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.base_name}` has a global inheritance lattice over classes {candidate.class_names}: "
+        f"families {candidate.family_specs}, methods {candidate.method_names}, "
+        f"{candidate.lattice_node_count} lattice node(s), {candidate.lattice_edge_count} edge(s), "
+        f"subset mixins {candidate.mixin_axis_specs}, partial overlaps {candidate.overlap_axis_specs}, "
+        f"{candidate.shared_statement_count} shared statements, {candidate.residue_count} residue declarations, "
+        f"leaf residue basis {candidate.leaf_residue_names}, optimizer score {candidate.optimizer_score}."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=lambda candidate: (
+        f"class {candidate.base_name}GlobalTemplate({candidate.base_name}, ABC):\n"
+        "    # One lattice owner derives concrete ABC methods, subset mixins, and overlap layers.\n"
+        "    ..."
+    ),
+    codemod_patch=_global_inheritance_optimization_patch,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(candidate.method_symbols),
+        statement_count=candidate.shared_statement_count,
+        class_count=len(candidate.class_names),
+        method_symbols=candidate.method_symbols,
+    ),
+    detector_priority=-12,
+    detector_name="GlobalInheritanceOptimizationDetector",
+    detector_base=CrossModuleCollectorCandidateDetector,
+    candidate_collector=_semantic_overlap_global_inheritance_candidates,
 )
 
 
@@ -975,7 +1056,7 @@ declare_candidate_rule_detector(
         mapping_name=candidate.base_name,
         field_names=candidate.residue_kind_names,
     ),
-    detector_priority=-12,
+    detector_priority=-13,
     detector_name="SemanticOverlapAbcResidueAxisCatalogDetector",
     detector_base=CrossModuleCollectorCandidateDetector,
     candidate_collector=_semantic_overlap_abc_residue_axis_catalog_candidates,

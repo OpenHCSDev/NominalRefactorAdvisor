@@ -18,6 +18,7 @@ from typing import Any, Callable, ClassVar, cast
 
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .collection_algebra import sorted_tuple
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 
 from .observation_shapes import (
     AccessorWrapperCandidate,
@@ -888,7 +889,11 @@ _materialize_class_declarations(
 )
 
 
-class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC):
+class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         return self.collect_with_known_class_family(
             parsed_module, _known_class_family(parsed_module)
@@ -990,7 +995,11 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
 _materialize_class_declarations((_obs_root("Field", "ABC"),))
 
 
-class ClassObservationSpec(FieldObservationSpec, ABC):
+class ClassObservationSpec(FieldObservationSpec, ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         observations: list[object] = []
         for class_observation in _class_observations(parsed_module):

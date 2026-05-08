@@ -50,6 +50,7 @@ from ..constructor_algebra import (
 )
 from ..descriptor_algebra import AliasProperty
 from ..observation_shapes import LineSymbolObservationMixin
+from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
     AstTypedEffectStep,
     FirstSuccessfulEffectStep,
@@ -741,7 +742,11 @@ class SourceLocationEvidenceProperty:
 
 
 @dataclass(frozen=True)
-class SourceLocationZipEvidenceProperty(ABC):
+class SourceLocationZipEvidenceProperty(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     line_numbers_attribute_name: str
     symbol_names_attribute_name: str
 
@@ -8985,7 +8990,7 @@ def _derivable_registry_key_suffix(
 def _derived_registry_key_block(
     class_names: Sequence[str],
     *,
-    registry_key_attr_name: str = "registry_key",
+    registry_key_attr_name: str = DEFAULT_REGISTRY_KEY_ATTRIBUTE,
 ) -> str:
     stripped_suffix = _derivable_registry_key_suffix(class_names)
     source_name = _NAME_LITERAL
@@ -9359,7 +9364,11 @@ _materialize_product_records((
 
 
 @dataclass(frozen=True)
-class LineWitnessCandidate(ABC):
+class LineWitnessCandidate(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     file_path: str
     line: int
 
@@ -9370,7 +9379,10 @@ class LineWitnessCandidate(ABC):
     evidence = _LINE_WITNESS_NAME_EVIDENCE
 
 
-class WitnessNameAliasMixin(ABC):
+class WitnessNameAliasMixin(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = "witness_name"
+    __skip_if_no_key__ = True
+
     @property
     @abstractmethod
     def witness_name(self) -> str:
@@ -9466,6 +9478,7 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
 _materialize_product_records((
     _product_record_spec('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool'),
     _product_record_spec('ManualFamilyRosterCandidate', 'owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str', 'LineWitnessCandidate'),
+    _product_record_spec('SemanticInheritanceFamilySSOTCandidate', 'concrete_class_names: tuple[str, ...]; semantic_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; key_attr_names: tuple[str, ...]; suggested_key_attr_name: str; line_count: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
 ))
 # fmt: on
 
@@ -9570,7 +9583,11 @@ _materialize_product_records((
 
 
 @dataclass(frozen=True)
-class ClassNameLineNumbersGroup(ABC):
+class ClassNameLineNumbersGroup(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
@@ -9611,7 +9628,11 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class ClassMethodFamilyCandidate(ABC):
+class ClassMethodFamilyCandidate(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     file_path: str
     class_name: str
     method_names: tuple[str, ...]
@@ -10313,7 +10334,11 @@ _materialize_product_record(_product_record_spec('ResolvedExternalCallsite', 'mo
 
 
 @dataclass(frozen=True)
-class PublicApiPrivateDelegateSurface(ABC):
+class PublicApiPrivateDelegateSurface(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     module_name: str
     delegate_root_symbol: str
     delegate_root_line: int | None
@@ -10519,8 +10544,9 @@ _materialize_product_records((
     _product_record_spec('LifecycleStageSequenceCandidate', 'function_names: tuple[str, ...]; stage_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('LatentNominalFunctionFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_call_names: tuple[str, ...]; function_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('BareFunctionMethodFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_axis_name: str; shared_axis_value: str; function_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('SemanticOverlapABCOptimizationCandidate', 'base_name: str; method_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; shared_statement_count: int; varying_coordinate_count: int; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; family_method_names: tuple[str, ...]; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
-    _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
+    _product_record_spec('SemanticOverlapABCOptimizationCandidate', 'base_name: str; method_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; shared_statement_count: int; varying_coordinate_count: int; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; family_method_names: tuple[str, ...]; abc_concrete_method_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; subclass_residue_count: int; shared_to_residue_ratio: float; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
+    _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; shared_to_residue_ratio: float; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
+    _product_record_spec('GlobalInheritanceOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; family_specs: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; leaf_residue_names: tuple[str, ...]; optimizer_score: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
     _product_record_spec('SemanticOverlapABCResidueAxisCatalogCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; residue_kind_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; residue_site_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
 ))
 # fmt: on

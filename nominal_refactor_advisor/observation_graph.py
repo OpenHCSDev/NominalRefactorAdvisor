@@ -14,6 +14,8 @@ from typing import TYPE_CHECKING, cast
 
 from .collection_algebra import sorted_tuple
 from .export_tools import PublicExportPolicy, derive_public_exports
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from metaclass_registry import AutoRegisterMeta
 
 if TYPE_CHECKING:
     from .ast_tools import ParsedModule
@@ -72,8 +74,11 @@ class StructuralObservation:
         return (self.file_path, self.line, self.owner_symbol)
 
 
-class StructuralObservationCarrier(ABC):
+class StructuralObservationCarrier(ABC, metaclass=AutoRegisterMeta):
     """ABC for objects that can project to a structural observation."""
+
+    __registry_key__ = "OBSERVATION_KIND"
+    __skip_if_no_key__ = True
 
     @property
     @abstractmethod
@@ -99,8 +104,12 @@ class SortedObservationAttribute:
 
 
 @dataclass(frozen=True)
-class ObservationGroup:
+class ObservationGroup(metaclass=AutoRegisterMeta):
     """Common carrier for grouped observations under one structural axis."""
+
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
 
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel

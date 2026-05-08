@@ -4734,6 +4734,44 @@ def test_detects_predicate_selected_concrete_family(tmp_path: Path) -> None:
     assert "cls.__registry__.values()" in (finding.scaffold or "")
 
 
+def test_detects_semantic_inheritance_family_missing_membership_ssot(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format: ClassVar[str] = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format: ClassVar[str] = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "semantic_inheritance_family_ssot"
+    )
+    assert "Exporter" in finding.summary
+    assert "CsvExporter" in finding.summary
+    assert "JsonExporter" in finding.summary
+    assert "metaclass membership SSOT" in finding.summary
+    assert "format" in finding.summary
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "__registry__" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_ignores_semantic_inheritance_family_with_autoregister_meta(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "format"\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_manual_concrete_subclass_roster_across_modules(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -6398,12 +6436,17 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     assert "Exporter" in finding.summary
     assert "classvars" in finding.summary
     assert "hooks" in finding.summary
+    assert "Move concrete methods ('emit',)" in finding.summary
+    assert "leaf residue basis" in finding.summary
+    assert "shared/residue ratio" in finding.summary
     assert "derived hierarchy plan scores" in finding.summary
     assert "normal form" in finding.summary
     assert "0 lattice edge(s)" in finding.summary
     assert "class ExporterEmitTemplate" in (finding.scaffold or "")
     assert "Hierarchy normal form:" in (finding.codemod_patch or "")
     assert "Candidate hierarchy layer owns methods" in (finding.codemod_patch or "")
+    assert "concrete ABC methods: ('emit',)" in (finding.codemod_patch or "")
+    assert "leaf residue basis" in (finding.codemod_patch or "")
     assert "Partial-overlap axes" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
@@ -6428,9 +6471,10 @@ def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
         "pkg/mod.py",
         '\nfrom abc import ABC\n\n\nclass Exporter(ABC):\n    pass\n\n\nclass CsvExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def validate(self, rows):\n        clean = self.normalize(rows)\n        checked = validate_tabular(clean)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def validate(self, rows):\n        clean = self.normalize(rows)\n        checked = validate_tabular(clean)\n        self.write(checked, suffix=".json")\n        return checked\n\n\nclass XmlExporter(Exporter):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n',
     )
+    all_findings = analyze_path(tmp_path)
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in all_findings
         if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
     ]
     emit_finding = next(finding for finding in findings if "`emit`" in finding.summary)
@@ -6444,9 +6488,10 @@ def test_abc_optimizer_derives_partial_overlap_axes(tmp_path: Path) -> None:
         "pkg/mod.py",
         '\nfrom abc import ABC\n\n\nclass Worker(ABC):\n    pass\n\n\nclass CsvWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".json")\n        return checked\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".json")\n        return stored\n\n\nclass XmlWorker(Worker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".xml")\n        return stored\n',
     )
+    all_findings = analyze_path(tmp_path)
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in all_findings
         if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
     ]
     audit_finding = next(
@@ -6461,6 +6506,20 @@ def test_abc_optimizer_derives_partial_overlap_axes(tmp_path: Path) -> None:
         "Partial-overlap axes needing explicit precedence/layering: "
         "cache[JsonWorker,XmlWorker]"
     ) in (audit_finding.codemod_patch or "")
+    global_finding = next(
+        finding
+        for finding in all_findings
+        if finding.detector_id == "global_inheritance_optimization"
+    )
+    assert "global inheritance lattice" in global_finding.summary
+    assert "emit" in global_finding.summary
+    assert "audit" in global_finding.summary
+    assert "cache" in global_finding.summary
+    assert "partial overlaps" in global_finding.summary
+    assert "One lattice owner" in (global_finding.scaffold or "")
+    assert "highest valid ABC/layer" in (global_finding.codemod_patch or "")
+    assert global_finding.compression_certificate is not None
+    assert global_finding.compression_certificate.pays_rent
 
 
 def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> None:
@@ -6553,6 +6612,11 @@ def test_abc_optimizer_detects_whole_family_template(tmp_path: Path) -> None:
     assert "validate" in finding.summary
     assert "ABC(Exporter:CsvExporter,JsonExporter,XmlExporter){emit,validate}" in (
         finding.summary
+    )
+    assert "concrete ABC methods ('emit', 'validate')" in finding.summary
+    assert "leaf residue basis" in finding.summary
+    assert "Move concrete template methods ('emit', 'validate')" in (
+        finding.codemod_patch or ""
     )
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent

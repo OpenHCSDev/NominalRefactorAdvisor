@@ -22,6 +22,7 @@ from typing import Callable, Hashable, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -33,6 +34,7 @@ from .models import (
     RefactorTrajectorySummary,
     SourceLocation,
 )
+from metaclass_registry import AutoRegisterMeta
 from .patterns import PATTERN_SPECS, ActionBuilderId, PatternId, PlanStepBuilderId
 from .semantic_shape_algebra import ExhaustivePolicyCatalog
 from .semantic_description_length import CompressionCertificate, SemanticCostVector
@@ -188,7 +190,11 @@ _REGISTRY_NORMAL_FORM_POLICIES_BY_DETECTOR_ID = {
 }
 
 
-class PatternPlanStepBuilder(ABC):
+class PatternPlanStepBuilder(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     @abstractmethod
     def build(
         self,
@@ -301,7 +307,11 @@ def _evidence_symbols(findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
     return tuple(ordered)
 
 
-class PatternActionBuilder(ABC):
+class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     @abstractmethod
     def build(
         self,

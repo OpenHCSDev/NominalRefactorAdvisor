@@ -565,6 +565,80 @@ class ManualConcreteSubclassRosterDetector(
         )
 
 
+class SemanticInheritanceFamilySSOTDetector(
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        SemanticInheritanceFamilySSOTCandidate
+    ]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Semantic inheritance family should have a metaclass membership SSOT",
+        "When an inheritance root owns multiple concrete semantic leaves, family membership itself is architectural state. The root should derive membership from subclass declaration through `AutoRegisterMeta` instead of leaving membership implicit in scattered imports, subclass traversal, or downstream rosters.",
+        "AutoRegisterMeta-backed ABC as the single source of truth for semantic inheritance membership",
+        "behavioral or abstract inheritance family has multiple concrete leaves but no metaclass registration authority",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+    detector_id = "semantic_inheritance_family_ssot"
+    candidate_collector = _semantic_inheritance_family_ssot_candidates
+
+    def _finding_for_candidate(
+        self, family_candidate: SemanticInheritanceFamilySSOTCandidate
+    ) -> RefactorFinding:
+        key_block = _declared_registry_key_block(
+            family_candidate.suggested_key_attr_name
+        )
+        concrete_preview = ", ".join(family_candidate.concrete_class_names[:4])
+        key_summary = (
+            f"declared key attrs {family_candidate.key_attr_names}"
+            if family_candidate.key_attr_names
+            else "derive the key from class identity or add a canonical `registry_key`"
+        )
+        return self.build_finding(
+            (
+                f"`{family_candidate.class_name}` has {len(family_candidate.concrete_class_names)} concrete semantic leaves "
+                f"({concrete_preview}) with methods {family_candidate.semantic_method_names} and abstract hooks "
+                f"{family_candidate.abstract_method_names}, but no metaclass membership SSOT; {key_summary}."
+            ),
+            (
+                family_candidate.evidence,
+                *(
+                    SourceLocation(
+                        family_candidate.file_path,
+                        family_candidate.line,
+                        class_name,
+                    )
+                    for class_name in family_candidate.concrete_class_names[:3]
+                ),
+            ),
+            scaffold=(
+                "from abc import ABC\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                f"class Registered{family_candidate.class_name}(ABC, metaclass=AutoRegisterMeta):\n"
+                f"{key_block}\n\n"
+                "    @classmethod\n"
+                "    def registered_types(cls):\n"
+                "        return tuple(cls.__registry__.values())"
+            ),
+            codemod_patch=(
+                f"# Make `{family_candidate.class_name}` the class-time membership authority with `AutoRegisterMeta`.\n"
+                f"# Keep only canonical key `{family_candidate.suggested_key_attr_name}` and semantic hooks on leaves; derive rosters, selectors, and projections from `cls.__registry__`."
+            ),
+            compression_certificate=family_candidate.compression_certificate,
+            metrics=RegistrationMetrics.from_class_names(
+                registration_site_count=len(family_candidate.concrete_class_names),
+                registry_name=family_candidate.class_name,
+                class_names=family_candidate.concrete_class_names,
+                class_key_pairs=tuple(
+                    (
+                        f"{class_name}.{family_candidate.suggested_key_attr_name}"
+                        for class_name in family_candidate.concrete_class_names
+                    )
+                ),
+            ),
+        )
+
+
 class PredicateSelectedConcreteFamilyDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[
         PredicateSelectedConcreteFamilyCandidate

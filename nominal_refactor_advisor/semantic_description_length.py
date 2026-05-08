@@ -20,13 +20,19 @@ from .semantic_algebra import (
     ceil_log2_cardinality,
     structural_key,
 )
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from metaclass_registry import AutoRegisterMeta
 
 ObjectT = TypeVar("ObjectT")
 KeyT = TypeVar("KeyT", bound=Hashable)
 
 
-class SemanticDescription(ABC):
+class SemanticDescription(ABC, metaclass=AutoRegisterMeta):
     """ABC for objects with an explicit semantic description cost."""
+
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
 
     @property
     @abstractmethod

@@ -3070,6 +3070,232 @@ def _manual_concrete_subclass_roster_candidates(
     return tuple(candidates)
 
 
+_SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES = frozenset(
+    {"id", "key", "kind", "name", "token", "type"}
+)
+_SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES = frozenset(
+    {
+        "family",
+        "format",
+        "kind",
+        "mode",
+        "name",
+        "role",
+        "step_id",
+        "type",
+    }
+)
+
+
+def _declares_autoregister_meta(node: ast.ClassDef) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg != "metaclass":
+            continue
+        if (
+            isinstance(keyword.value, ast.Name)
+            and keyword.value.id == "AutoRegisterMeta"
+        ):
+            return True
+        if (
+            isinstance(keyword.value, ast.Attribute)
+            and keyword.value.attr == "AutoRegisterMeta"
+        ):
+            return True
+    return False
+
+
+def _family_has_autoregister_authority(
+    class_index: ClassFamilyIndex, indexed_class: IndexedClass
+) -> bool:
+    return any(
+        (
+            ancestor is not None and _declares_autoregister_meta(ancestor.node)
+            for ancestor in (
+                class_index.class_for(symbol)
+                for symbol in (
+                    indexed_class.symbol,
+                    *class_index.ancestor_symbols(indexed_class.symbol),
+                )
+            )
+        )
+    )
+
+
+def _descendant_has_intermediate_autoregister_authority(
+    class_index: ClassFamilyIndex,
+    *,
+    root_symbol: str,
+    descendant: IndexedClass,
+) -> bool:
+    for ancestor_symbol in class_index.ancestor_symbols(descendant.symbol):
+        if ancestor_symbol == root_symbol:
+            continue
+        ancestor = class_index.class_for(ancestor_symbol)
+        if ancestor is not None and _declares_autoregister_meta(ancestor.node):
+            return True
+    return False
+
+
+def _all_concrete_descendants_have_intermediate_autoregister_authority(
+    class_index: ClassFamilyIndex,
+    indexed_class: IndexedClass,
+    concrete_descendants: tuple[IndexedClass, ...],
+) -> bool:
+    return bool(concrete_descendants) and all(
+        (
+            _descendant_has_intermediate_autoregister_authority(
+                class_index,
+                root_symbol=indexed_class.symbol,
+                descendant=descendant,
+            )
+            for descendant in concrete_descendants
+        )
+    )
+
+
+def _semantic_inheritance_method_names(
+    indexed_class: IndexedClass, concrete_descendants: tuple[IndexedClass, ...]
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            method.name
+            for class_node in (
+                indexed_class.node,
+                *(item.node for item in concrete_descendants),
+            )
+            for method in _iter_class_methods(class_node)
+            if not method.name.startswith("__")
+        }
+    )
+
+
+def _looks_like_semantic_key_attr(name: str) -> bool:
+    normalized = name.lower()
+    return normalized in _SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES or any(
+        (
+            normalized.endswith(f"_{suffix}")
+            for suffix in _SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES
+        )
+    )
+
+
+def _common_semantic_key_attr_names(
+    concrete_descendants: tuple[IndexedClass, ...],
+) -> tuple[str, ...]:
+    if not concrete_descendants:
+        return ()
+    assignment_name_sets = tuple(
+        (
+            frozenset(
+                name
+                for name, value in _class_direct_assignments(descendant.node).items()
+                if value is not None and _looks_like_semantic_key_attr(name)
+            )
+            for descendant in concrete_descendants
+        )
+    )
+    common_names = set(assignment_name_sets[0])
+    for assignment_names in assignment_name_sets[1:]:
+        common_names &= assignment_names
+    return sorted_tuple(common_names)
+
+
+def _semantic_inheritance_ssot_certificate(
+    candidate_base_name: str,
+    concrete_class_names: tuple[str, ...],
+    semantic_method_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+    suggested_key_attr_name: str,
+) -> CompressionCertificate:
+    leaf_membership_objects = len(semantic_method_names) + 3
+    return CompressionCertificate.from_object_family(
+        manual_object_count=(
+            len(concrete_class_names) * leaf_membership_objects
+            + len(abstract_method_names)
+        ),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("autoregister_lineage_authority", "semantic_family_abc"),
+            per_axis_objects=("semantic_leaf_key",),
+        ),
+        semantic_axes=(
+            candidate_base_name,
+            suggested_key_attr_name,
+            *semantic_method_names,
+        ),
+        residual_object_count=len(concrete_class_names),
+        independent_source_count=len(concrete_class_names),
+    )
+
+
+def _semantic_inheritance_family_ssot_candidates(
+    modules: list[ParsedModule], config: DetectorConfig
+) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
+    class_index = build_class_family_index(modules)
+    minimum_leaf_count = max(2, config.min_registration_sites)
+    candidates: list[SemanticInheritanceFamilySSOTCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if indexed_class.simple_name.endswith("Mixin"):
+            continue
+        if _family_has_autoregister_authority(class_index, indexed_class):
+            continue
+        concrete_descendants = tuple(
+            (
+                descendant
+                for descendant in _indexed_descendant_classes(
+                    class_index, indexed_class.symbol
+                )
+                if not _is_abstract_class(descendant.node)
+            )
+        )
+        if len(concrete_descendants) < minimum_leaf_count:
+            continue
+        if _all_concrete_descendants_have_intermediate_autoregister_authority(
+            class_index, indexed_class, concrete_descendants
+        ):
+            continue
+        abstract_method_names = _abstract_method_names(indexed_class.node)
+        semantic_method_names = _semantic_inheritance_method_names(
+            indexed_class, concrete_descendants
+        )
+        key_attr_names = _common_semantic_key_attr_names(concrete_descendants)
+        if not abstract_method_names and len(semantic_method_names) < 1:
+            continue
+        suggested_key_attr_name = (
+            key_attr_names[0] if key_attr_names else "registry_key"
+        )
+        concrete_class_names = _indexed_class_display_names(
+            concrete_descendants, class_index
+        )
+        certificate = _semantic_inheritance_ssot_certificate(
+            _indexed_class_display_name(indexed_class, class_index),
+            concrete_class_names,
+            semantic_method_names,
+            abstract_method_names,
+            suggested_key_attr_name,
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            SemanticInheritanceFamilySSOTCandidate(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                class_name=_indexed_class_display_name(indexed_class, class_index),
+                concrete_class_names=concrete_class_names,
+                semantic_method_names=semantic_method_names,
+                abstract_method_names=abstract_method_names,
+                key_attr_names=key_attr_names,
+                suggested_key_attr_name=suggested_key_attr_name,
+                line_count=(indexed_class.node.end_lineno or indexed_class.node.lineno)
+                - indexed_class.node.lineno
+                + 1,
+                compression_certificate=certificate,
+            )
+        )
+    return tuple(candidates)
+
+
 def _registered_type_match_assignment_shape(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, str, str] | None:
@@ -5267,7 +5493,8 @@ _ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
 materialize_product_records((
     product_record_spec('_ABCOptimizerMethodGroupProfile', 'methods: _ABCOptimizerMethods; shared_statement_count: int; varying_coordinates: tuple[_SemanticCoordinate, ...]; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; compression_certificate: CompressionCertificate'),
     product_record_spec('_ABCOptimizerMethodPlan', 'base_symbol: str; base_name: str; method_name: str; class_methods: _ABCOptimizerClassMethods; profile: _ABCOptimizerMethodGroupProfile; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int'),
-    product_record_spec('_ABCOptimizerFamilyPlan', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int'),
+    product_record_spec('_ABCOptimizerResiduePlacement', 'abc_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; residue_count: int; shared_to_residue_ratio: float'),
+    product_record_spec('_ABCOptimizerFamilyPlan', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; subclass_residue_count: int; shared_to_residue_ratio: float; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int'),
 ))
 # fmt: on
 
@@ -5715,6 +5942,10 @@ def _abc_optimizer_candidate_from_method_plan(
         property_hook_names=method_plan.profile.property_hook_names,
         behavior_hook_names=method_plan.profile.behavior_hook_names,
         family_method_names=family_plan.method_names,
+        abc_concrete_method_names=family_plan.abc_concrete_method_names,
+        leaf_residue_names=family_plan.leaf_residue_names,
+        subclass_residue_count=family_plan.subclass_residue_count,
+        shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
         mixin_axis_names=family_plan.mixin_axis_names,
         overlap_axis_names=family_plan.overlap_axis_names,
         mixin_axis_specs=family_plan.mixin_axis_specs,
@@ -5780,6 +6011,12 @@ def _abc_optimizer_family_candidate(
             (method_plan.profile.shared_statement_count for method_plan in method_plans)
         ),
         residue_count=residue_count,
+        abc_concrete_method_names=family_plan.abc_concrete_method_names,
+        classvar_hook_names=family_plan.classvar_hook_names,
+        property_hook_names=family_plan.property_hook_names,
+        behavior_hook_names=family_plan.behavior_hook_names,
+        leaf_residue_names=family_plan.leaf_residue_names,
+        shared_to_residue_ratio=family_plan.shared_to_residue_ratio,
         hierarchy_normal_form=family_plan.hierarchy_normal_form,
         optimizer_score=family_plan.optimizer_score,
         abc_layer_count=family_plan.abc_layer_count,
@@ -5856,6 +6093,196 @@ def _abc_optimizer_axis_spec(method_name: str, class_names: tuple[str, ...]) -> 
     return f"{method_name}[{','.join(class_names)}]"
 
 
+def _abc_optimizer_family_axis_spec(
+    method_names: tuple[str, ...], class_names: tuple[str, ...]
+) -> str:
+    return f"{'+'.join(method_names)}[{','.join(class_names)}]"
+
+
+def _abc_optimizer_global_certificate(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=sum(
+            (
+                len(method_plan.class_names)
+                * method_plan.profile.shared_statement_count
+                for method_plan in method_plans
+            )
+        ),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("inheritance_lattice", "abc_base"),
+            per_axis_objects=("residue_declaration",),
+        ),
+        semantic_axes=(
+            *(method_plan.method_name for method_plan in method_plans),
+            *(
+                _abc_optimizer_family_axis_spec(
+                    family_plan.method_names, family_plan.class_names
+                )
+                for family_plan in family_plans
+            ),
+        ),
+        residual_object_count=sum(
+            (
+                len(method_plan.class_names)
+                * (
+                    len(method_plan.profile.classvar_names)
+                    + len(method_plan.profile.property_hook_names)
+                    + len(method_plan.profile.behavior_hook_names)
+                )
+                for method_plan in method_plans
+            )
+        ),
+        provenance_object_count=len(family_plans),
+        independent_source_count=len(
+            {
+                class_name
+                for method_plan in method_plans
+                for class_name in method_plan.class_names
+            }
+        ),
+    )
+
+
+def _abc_optimizer_family_sets_have_global_structure(
+    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+) -> bool:
+    class_sets = tuple(
+        (frozenset(family_plan.class_names) for family_plan in family_plans)
+    )
+    for left_index, left_classes in enumerate(class_sets):
+        for right_classes in class_sets[left_index + 1 :]:
+            if (left_classes & right_classes) and left_classes != right_classes:
+                return True
+    return False
+
+
+def _abc_optimizer_global_lattice_edge_count(
+    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+) -> int:
+    edges: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+    class_sets = tuple(
+        (frozenset(family_plan.class_names) for family_plan in family_plans)
+    )
+    for left_index, left_classes in enumerate(class_sets):
+        for right_classes in class_sets[left_index + 1 :]:
+            intersection = left_classes & right_classes
+            if not intersection:
+                continue
+            intersection_names = sorted_tuple(intersection)
+            for class_set in (left_classes, right_classes):
+                class_names = sorted_tuple(class_set)
+                if intersection_names != class_names:
+                    edges.add((intersection_names, class_names))
+    return len(edges)
+
+
+def _abc_optimizer_global_inheritance_candidate(
+    base_name: str,
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    family_plans: tuple[_ABCOptimizerFamilyPlan, ...],
+) -> GlobalInheritanceOptimizationCandidate | None:
+    if len(family_plans) < 2:
+        return None
+    if not _abc_optimizer_family_sets_have_global_structure(family_plans):
+        return None
+    certificate = _abc_optimizer_global_certificate(method_plans, family_plans)
+    if not certificate.pays_rent:
+        return None
+    file_paths = tuple(
+        (
+            file_path
+            for method_plan in method_plans
+            for file_path in method_plan.file_paths
+        )
+    )
+    line_numbers = tuple(
+        (
+            line_number
+            for method_plan in method_plans
+            for line_number in method_plan.line_numbers
+        )
+    )
+    method_symbols = tuple(
+        (
+            f"{class_name}.{method_plan.method_name}"
+            for method_plan in method_plans
+            for class_name in method_plan.class_names
+        )
+    )
+    class_names = sorted_tuple(
+        {
+            class_name
+            for method_plan in method_plans
+            for class_name in method_plan.class_names
+        }
+    )
+    return GlobalInheritanceOptimizationCandidate(
+        file_path=file_paths[0],
+        line=min(line_numbers),
+        base_name=base_name,
+        class_names=class_names,
+        method_names=sorted_tuple(
+            (method_plan.method_name for method_plan in method_plans)
+        ),
+        family_specs=tuple(
+            (
+                _abc_optimizer_family_axis_spec(
+                    family_plan.method_names, family_plan.class_names
+                )
+                for family_plan in family_plans
+            )
+        ),
+        mixin_axis_specs=sorted_tuple(
+            (
+                axis_spec
+                for family_plan in family_plans
+                for axis_spec in family_plan.mixin_axis_specs
+            )
+        ),
+        overlap_axis_specs=sorted_tuple(
+            (
+                axis_spec
+                for family_plan in family_plans
+                for axis_spec in family_plan.overlap_axis_specs
+            )
+        ),
+        file_paths=file_paths,
+        line_numbers=line_numbers,
+        method_symbols=method_symbols,
+        shared_statement_count=sum(
+            (method_plan.profile.shared_statement_count for method_plan in method_plans)
+        ),
+        residue_count=sum(
+            (family_plan.subclass_residue_count for family_plan in family_plans)
+        ),
+        leaf_residue_names=sorted_tuple(
+            (
+                residue_name
+                for family_plan in family_plans
+                for residue_name in family_plan.leaf_residue_names
+            )
+        ),
+        optimizer_score=sum(
+            (family_plan.optimizer_score for family_plan in family_plans)
+        ),
+        lattice_node_count=len(
+            {family_plan.class_names for family_plan in family_plans}
+            | {
+                sorted_tuple(set(left.class_names) & set(right.class_names))
+                for left in family_plans
+                for right in family_plans
+                if set(left.class_names) & set(right.class_names)
+            }
+        ),
+        lattice_edge_count=_abc_optimizer_global_lattice_edge_count(family_plans),
+        line_count=sum((method_plan.line_count for method_plan in method_plans)),
+        compression_certificate=certificate,
+    )
+
+
 def _abc_optimizer_hierarchy_normal_form(
     *,
     base_name: str,
@@ -5896,6 +6323,79 @@ def _abc_optimizer_best_inheritance_design(
         )
         .solve(base_name)
         .best_design
+    )
+
+
+def _abc_optimizer_residue_placement(
+    method_plans: tuple[_ABCOptimizerMethodPlan, ...],
+    *,
+    class_names: tuple[str, ...],
+    method_names: tuple[str, ...],
+    subset_method_names: tuple[str, ...],
+    overlap_method_names: tuple[str, ...],
+    shared_statement_score: int,
+    best_design: InheritanceDesign | None,
+) -> _ABCOptimizerResiduePlacement:
+    if best_design is not None:
+        return _ABCOptimizerResiduePlacement(
+            abc_method_names=best_design.abc_method_names,
+            classvar_hook_names=best_design.classvar_names,
+            property_hook_names=sorted_tuple(
+                (
+                    name
+                    for method_plan in method_plans
+                    for name in method_plan.profile.property_hook_names
+                )
+            ),
+            behavior_hook_names=sorted_tuple(
+                (
+                    name
+                    for method_plan in method_plans
+                    for name in method_plan.profile.behavior_hook_names
+                )
+            ),
+            leaf_residue_names=best_design.leaf_residue_names,
+            residue_count=best_design.residue_declaration_count,
+            shared_to_residue_ratio=best_design.shared_to_residue_ratio,
+        )
+    classvars = sorted_tuple(
+        (
+            name
+            for method_plan in method_plans
+            for name in method_plan.profile.classvar_names
+        )
+    )
+    properties = sorted_tuple(
+        (
+            name
+            for method_plan in method_plans
+            for name in method_plan.profile.property_hook_names
+        )
+    )
+    behaviors = sorted_tuple(
+        (
+            name
+            for method_plan in method_plans
+            for name in method_plan.profile.behavior_hook_names
+        )
+    )
+    residue_count = len(class_names) * (
+        len(classvars) + len(properties) + len(behaviors)
+    )
+    return _ABCOptimizerResiduePlacement(
+        abc_method_names=tuple(
+            (
+                method_name
+                for method_name in method_names
+                if method_name not in (*subset_method_names, *overlap_method_names)
+            )
+        ),
+        classvar_hook_names=classvars,
+        property_hook_names=properties,
+        behavior_hook_names=behaviors,
+        leaf_residue_names=sorted_tuple((*classvars, *properties, *behaviors)),
+        residue_count=residue_count,
+        shared_to_residue_ratio=shared_statement_score / max(residue_count, 1),
     )
 
 
@@ -5941,6 +6441,15 @@ def _abc_optimizer_family_plan(
         if best_design is not None
         else overlap_method_names
     )
+    placement = _abc_optimizer_residue_placement(
+        method_plans,
+        class_names=class_names,
+        method_names=method_names,
+        subset_method_names=subset_method_names,
+        overlap_method_names=overlap_method_names,
+        shared_statement_score=shared_statement_score,
+        best_design=best_design,
+    )
     design_normal_form = (
         best_design.normal_form
         if best_design is not None
@@ -5964,6 +6473,13 @@ def _abc_optimizer_family_plan(
         base_name=base_name,
         class_names=class_names,
         method_names=method_names,
+        abc_concrete_method_names=placement.abc_method_names,
+        classvar_hook_names=placement.classvar_hook_names,
+        property_hook_names=placement.property_hook_names,
+        behavior_hook_names=placement.behavior_hook_names,
+        leaf_residue_names=placement.leaf_residue_names,
+        subclass_residue_count=placement.residue_count,
+        shared_to_residue_ratio=placement.shared_to_residue_ratio,
         mixin_axis_names=design_mixin_axis_names,
         overlap_axis_names=design_overlap_axis_names,
         mixin_axis_specs=subset_axis_specs,
@@ -6186,6 +6702,41 @@ def _abc_optimizer_candidates_from_family_plans(
         if candidate is not None:
             candidates.append(candidate)
     return sorted_tuple(candidates, key=sort_key)
+
+
+def _semantic_overlap_global_inheritance_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[GlobalInheritanceOptimizationCandidate, ...]:
+    specific_method_plans = _abc_optimizer_specific_method_plans(modules)
+    family_plans_by_key = _abc_optimizer_family_plans(specific_method_plans)
+    method_plans_by_base: dict[str, list[_ABCOptimizerMethodPlan]] = defaultdict(list)
+    family_plans_by_base: dict[str, list[_ABCOptimizerFamilyPlan]] = defaultdict(list)
+    for method_plan in specific_method_plans:
+        method_plans_by_base[method_plan.base_name].append(method_plan)
+    for family_plan in family_plans_by_key.values():
+        family_plans_by_base[family_plan.base_name].append(family_plan)
+    candidates = tuple(
+        (
+            candidate
+            for base_name, method_plans in method_plans_by_base.items()
+            if (
+                candidate := _abc_optimizer_global_inheritance_candidate(
+                    base_name,
+                    tuple(method_plans),
+                    tuple(family_plans_by_base[base_name]),
+                )
+            )
+            is not None
+        )
+    )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+        ),
+    )
 
 
 def _abc_optimizer_family_candidate_sort_key(

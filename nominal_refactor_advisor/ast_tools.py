@@ -26,6 +26,7 @@ from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .collection_algebra import sorted_tuple
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import (
     AstTypedEffectStep,
     GuardedEffectStep,
@@ -390,7 +391,11 @@ class SingleSpecCollectedFamily(CollectedFamily, ABC):
         ]
 
 
-class ScopedShapeSpec(ModuleShapeSpec, ABC):
+class ScopedShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
     @property
     @abstractmethod
     def node_types(self) -> tuple[type[ast.AST], ...]:
