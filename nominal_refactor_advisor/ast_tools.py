@@ -1067,6 +1067,48 @@ def _literal_dispatch_observation_from_if(
     )
 
 
+def _literal_match_case(pattern: ast.pattern, literal_type: type[object]) -> str | None:
+    if not isinstance(pattern, ast.MatchValue):
+        return None
+    value = pattern.value
+    if not isinstance(value, ast.Constant) or not isinstance(value.value, literal_type):
+        return None
+    return repr(value.value)
+
+
+def _literal_dispatch_observation_from_match(
+    parsed_module: ParsedModule,
+    node: ast.Match,
+    literal_type: type[object],
+    literal_kind: LiteralKind,
+    parent_map: dict[ast.AST, ast.AST],
+) -> LiteralDispatchObservation | None:
+    literal_cases = tuple(
+        (
+            literal_case
+            for match_case in node.cases
+            if (literal_case := _literal_match_case(match_case.pattern, literal_type))
+            is not None
+        )
+    )
+    if len(literal_cases) < 2:
+        return None
+    function_name = _enclosing_function_name(node, parent_map)
+    axis_expression = ast.unparse(node.subject)
+    return LiteralDispatchObservation(
+        file_path=str(parsed_module.path),
+        line=node.lineno,
+        symbol=(function_name or "<module>") + ":literal-dispatch",
+        axis_fingerprint=ast.dump(node.subject, include_attributes=False),
+        axis_expression=axis_expression,
+        literal_cases=literal_cases,
+        literal_kind=literal_kind,
+        execution_level=_execution_level_for_scope(function_name),
+        branch_lines=tuple((match_case.pattern.lineno for match_case in node.cases)),
+        scope_owner=function_name,
+    )
+
+
 def _iter_statement_blocks(
     module: ast.Module,
 ) -> tuple[tuple[str | None, list[ast.stmt]], ...]:
@@ -1132,19 +1174,23 @@ def _literal_dispatch_observations(
     parent_map = _parent_map(parsed_module.module)
     observations: list[LiteralDispatchObservation] = []
     for node in _walk_nodes(parsed_module.module):
-        if not isinstance(node, ast.If):
-            continue
-        parent = parent_map.get(node)
-        if (
-            isinstance(parent, ast.If)
-            and len(parent.orelse) == 1
-            and (parent.orelse[0] is node)
-        ):
-            continue
         for literal_type, literal_kind in _LITERAL_DISPATCH_KINDS:
-            observation = _literal_dispatch_observation_from_if(
-                parsed_module, node, literal_type, literal_kind, parent_map
-            )
+            observation = None
+            if isinstance(node, ast.If):
+                parent = parent_map.get(node)
+                if (
+                    isinstance(parent, ast.If)
+                    and len(parent.orelse) == 1
+                    and (parent.orelse[0] is node)
+                ):
+                    continue
+                observation = _literal_dispatch_observation_from_if(
+                    parsed_module, node, literal_type, literal_kind, parent_map
+                )
+            elif isinstance(node, ast.Match):
+                observation = _literal_dispatch_observation_from_match(
+                    parsed_module, node, literal_type, literal_kind, parent_map
+                )
             if observation is not None:
                 observations.append(observation)
     return sorted_tuple(observations, key=lambda item: (item.line, item.literal_kind))

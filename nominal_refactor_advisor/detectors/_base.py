@@ -42,7 +42,12 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
-from ..constructor_algebra import ConstructorVariantCatalog, ConstructorVariantSpec
+from ..constructor_algebra import (
+    ConstructorConstant,
+    ConstructorDerivedField,
+    ConstructorVariantCatalog,
+    ConstructorVariantSpec,
+)
 from ..descriptor_algebra import AliasProperty
 from ..observation_shapes import LineSymbolObservationMixin
 from ..semantic_match import (
@@ -7998,61 +8003,6 @@ def _fiber_grouped_shapes(
     return groups
 
 
-def _semantic_dataclass_recommendation_fields(
-    class_name: str,
-    base_class_name: str,
-    matched_schema_name: str | None,
-    rationale: str,
-    scaffold: str,
-    certification: CertificationLevel,
-) -> dict[str, object]:
-    return {
-        "class_name": class_name,
-        "base_class_name": base_class_name,
-        "matched_schema_name": matched_schema_name,
-        "rationale": rationale,
-        "scaffold": scaffold,
-        "certification": certification,
-    }
-
-
-def _existing_semantic_dataclass_recommendation_fields(
-    class_name: str, base_class_name: str, rationale: str, scaffold: str
-) -> dict[str, object]:
-    return _semantic_dataclass_recommendation_fields(
-        class_name, base_class_name, class_name, rationale, scaffold, CERTIFIED
-    )
-
-
-def _proposed_semantic_dataclass_recommendation_fields(
-    class_name: str,
-    base_class_name: str,
-    matched_schema_name: str | None,
-    rationale: str,
-    scaffold: str,
-) -> dict[str, object]:
-    return _semantic_dataclass_recommendation_fields(
-        class_name,
-        base_class_name,
-        matched_schema_name,
-        rationale,
-        scaffold,
-        STRONG_HEURISTIC,
-    )
-
-
-_SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS = ConstructorVariantCatalog(
-    (
-        ConstructorVariantSpec(
-            "existing_schema", _existing_semantic_dataclass_recommendation_fields
-        ),
-        ConstructorVariantSpec(
-            "proposed_schema", _proposed_semantic_dataclass_recommendation_fields
-        ),
-    )
-)
-
-
 @dataclass(frozen=True)
 class SemanticDataclassRecommendation:
     class_name: str
@@ -8062,9 +8012,31 @@ class SemanticDataclassRecommendation:
     scaffold: str
     certification: CertificationLevel
 
-    existing_schema, proposed_schema = (
-        _SEMANTIC_DATACLASS_RECOMMENDATION_CONSTRUCTORS.derived_methods()
-    )
+    existing_schema, proposed_schema = ConstructorVariantCatalog(
+        (
+            ConstructorVariantSpec(
+                "existing_schema",
+                ("class_name", "base_class_name", "rationale", "scaffold"),
+                constants=(ConstructorConstant("certification", CERTIFIED),),
+                derived_fields=(
+                    ConstructorDerivedField(
+                        "matched_schema_name", lambda bound: bound["class_name"]
+                    ),
+                ),
+            ),
+            ConstructorVariantSpec(
+                "proposed_schema",
+                (
+                    "class_name",
+                    "base_class_name",
+                    "matched_schema_name",
+                    "rationale",
+                    "scaffold",
+                ),
+                constants=(ConstructorConstant("certification", STRONG_HEURISTIC),),
+            ),
+        )
+    ).derived_methods()
 
 
 # fmt: off

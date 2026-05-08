@@ -6,7 +6,14 @@ across the split implementation modules.
 
 from __future__ import annotations
 
-from ..factorization import FactorizationRow, factorization_axis_catalog_certificate
+from ..factorization import (
+    FactorizationRow,
+    InheritanceDesign,
+    InheritanceDesignSearch,
+    InheritanceMethodSpec,
+    InheritanceResidueProfile,
+    factorization_axis_catalog_certificate,
+)
 from ..record_algebra import (
     materialize_product_record,
     materialize_product_records,
@@ -102,6 +109,25 @@ _OPTIONAL_VARIANT_TYPE_SUFFIXES = frozenset(
         "Strategy",
     }
 )
+_OPTIONAL_VARIANT_PARAMETER_NAMES = frozenset(
+    {
+        "adapter",
+        "backend",
+        "builder",
+        "config",
+        "formatter",
+        "handler",
+        "mode",
+        "policy",
+        "provider",
+        "renderer",
+        "resolver",
+        "schema",
+        "service",
+        "spec",
+        "strategy",
+    }
+)
 
 
 def _semantic_dict_bag_candidates(
@@ -161,6 +187,7 @@ def _function_local_semantic_dict_bag_candidates(
     assignments: dict[str, tuple[int, dict[str, ast.AST]]] = {}
     accessed_keys: dict[str, set[str]] = defaultdict(set)
     serialization_boundary_names: set[str] = set()
+    candidates: list[SemanticDictBagCandidate] = []
 
     class Visitor(ast.NodeVisitor):
         def __init__(self) -> None:
@@ -218,11 +245,33 @@ def _function_local_semantic_dict_bag_candidates(
         def visit_Return(self, node: ast.Return) -> None:
             if self.target_node.name == "to_dict" and isinstance(node.value, ast.Name):
                 serialization_boundary_names.add(node.value.id)
+            items = _string_dict_items(node.value)
+            if (
+                items is not None
+                and _return_dict_looks_like_anonymous_record(function_node, items)
+                and not _function_name_marks_serialization_boundary(function_node.name)
+            ):
+                owner_symbol = _owner_symbol(
+                    class_stack, (function_node.name,), "return_record"
+                )
+                recommendation = _recommend_return_record_dataclass(
+                    sorted_tuple(items),
+                    owner_symbol=owner_symbol,
+                    value_nodes=items,
+                )
+                candidates.append(
+                    SemanticDictBagCandidate(
+                        line=node.lineno,
+                        symbol=owner_symbol,
+                        key_names=sorted_tuple(items),
+                        context_kind="return_dict_record",
+                        recommendation=recommendation,
+                    )
+                )
             self.generic_visit(node)
 
     Visitor().visit(function_node)
 
-    candidates: list[SemanticDictBagCandidate] = []
     owner_symbol = _owner_symbol(class_stack, (function_node.name,), "record")
     for name, (lineno, items) in assignments.items():
         if name in serialization_boundary_names:
@@ -248,6 +297,44 @@ def _function_local_semantic_dict_bag_candidates(
             )
         )
     return candidates
+
+
+def _function_name_marks_serialization_boundary(function_name: str) -> bool:
+    return function_name in {
+        "to_dict",
+        "as_dict",
+        "to_json",
+        "json",
+        "model_dump",
+        "dict",
+    }
+
+
+def _return_dict_looks_like_anonymous_record(
+    function_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    items: dict[str, ast.AST],
+) -> bool:
+    if len(items) < 2:
+        return False
+    parameter_names = _FunctionSignatureView(function_node).explicit_parameter_names
+    mirrored = sum(
+        (
+            1
+            for key_name, value in items.items()
+            if _dict_value_mirrors_key_or_parameter(key_name, value, parameter_names)
+        )
+    )
+    return mirrored >= max(2, len(items) - 1)
+
+
+def _dict_value_mirrors_key_or_parameter(
+    key_name: str, value: ast.AST, parameter_names: set[str]
+) -> bool:
+    if isinstance(value, ast.Name):
+        return value.id == key_name or value.id in parameter_names
+    if isinstance(value, ast.Attribute):
+        return value.attr == key_name
+    return False
 
 
 def _recommend_metrics_dataclass(
@@ -321,6 +408,26 @@ def _recommend_local_semantic_record(
         class_name,
         closest_schema.class_name,
         closest_schema.class_name,
+        rationale,
+        scaffold,
+    )
+
+
+def _recommend_return_record_dataclass(
+    key_names: tuple[str, ...],
+    owner_symbol: str,
+    value_nodes: dict[str, ast.AST],
+) -> SemanticDataclassRecommendation:
+    class_name = _suggest_dataclass_name(owner_symbol, "Result")
+    rationale = (
+        f"Create `{class_name}` because this return value is a fixed-key anonymous "
+        "record whose keys mirror local values or parameters."
+    )
+    scaffold = _declaration_scaffold(class_name, "object", key_names, value_nodes)
+    return SemanticDataclassRecommendation.proposed_schema(
+        class_name,
+        "object",
+        None,
         rationale,
         scaffold,
     )
@@ -5730,6 +5837,33 @@ def _abc_optimizer_hierarchy_normal_form(
     return f"{root}{mixins}{overlaps}"
 
 
+def _inheritance_method_spec(
+    method_plan: _ABCOptimizerMethodPlan,
+) -> InheritanceMethodSpec:
+    return InheritanceMethodSpec(
+        method_name=method_plan.method_name,
+        class_names=method_plan.class_names,
+        shared_statement_count=method_plan.profile.shared_statement_count,
+        residue=InheritanceResidueProfile(
+            classvar_names=method_plan.profile.classvar_names,
+            property_hook_names=method_plan.profile.property_hook_names,
+            behavior_hook_names=method_plan.profile.behavior_hook_names,
+        ),
+    )
+
+
+def _abc_optimizer_best_inheritance_design(
+    base_name: str, method_plans: tuple[_ABCOptimizerMethodPlan, ...]
+) -> InheritanceDesign | None:
+    return (
+        InheritanceDesignSearch(
+            (_inheritance_method_spec(method_plan) for method_plan in method_plans)
+        )
+        .solve(base_name)
+        .best_design
+    )
+
+
 def _abc_optimizer_family_plan(
     family_key: _ABCOptimizerFamilyKey,
     method_plans: tuple[_ABCOptimizerMethodPlan, ...],
@@ -5763,23 +5897,45 @@ def _abc_optimizer_family_plan(
         - len(subset_method_names)
         - (2 * len(overlap_method_names))
     )
-    return _ABCOptimizerFamilyPlan(
-        base_name=base_name,
-        class_names=class_names,
-        method_names=method_names,
-        mixin_axis_names=subset_method_names,
-        overlap_axis_names=overlap_method_names,
-        mixin_axis_specs=subset_axis_specs,
-        overlap_axis_specs=overlap_axis_specs,
-        hierarchy_normal_form=_abc_optimizer_hierarchy_normal_form(
+    best_design = _abc_optimizer_best_inheritance_design(base_name, method_plans)
+    design_mixin_axis_names = (
+        best_design.mixin_axis_names if best_design is not None else subset_method_names
+    )
+    design_overlap_axis_names = (
+        best_design.overlap_axis_names
+        if best_design is not None
+        else overlap_method_names
+    )
+    design_normal_form = (
+        best_design.normal_form
+        if best_design is not None
+        else _abc_optimizer_hierarchy_normal_form(
             base_name=base_name,
             class_names=class_names,
             method_names=method_names,
             mixin_axis_specs=subset_axis_specs,
             overlap_axis_specs=overlap_axis_specs,
-        ),
-        optimizer_score=optimizer_score,
-        abc_layer_count=(1 if method_names else 0) + len(overlap_method_names),
+        )
+    )
+    design_score = (
+        best_design.optimizer_score if best_design is not None else optimizer_score
+    )
+    design_abc_layer_count = (
+        best_design.abc_layer_count
+        if best_design is not None
+        else (1 if method_names else 0) + len(overlap_method_names)
+    )
+    return _ABCOptimizerFamilyPlan(
+        base_name=base_name,
+        class_names=class_names,
+        method_names=method_names,
+        mixin_axis_names=design_mixin_axis_names,
+        overlap_axis_names=design_overlap_axis_names,
+        mixin_axis_specs=subset_axis_specs,
+        overlap_axis_specs=overlap_axis_specs,
+        hierarchy_normal_form=design_normal_form,
+        optimizer_score=design_score,
+        abc_layer_count=design_abc_layer_count,
         lattice_node_count=lattice_node_count,
         lattice_edge_count=lattice_edge_count,
     )
@@ -6445,6 +6601,15 @@ def _annotation_has_nominal_variant_role(node: ast.AST | None) -> bool:
             name.endswith(tuple(_OPTIONAL_VARIANT_TYPE_SUFFIXES))
             for name in _annotation_type_names(node)
         )
+    )
+
+
+def _parameter_has_optional_variant_role(
+    parameter_name: str, annotation: ast.AST | None
+) -> bool:
+    parameter_tokens = frozenset(parameter_name.strip("_").split("_"))
+    return _annotation_has_nominal_variant_role(annotation) or bool(
+        parameter_tokens & _OPTIONAL_VARIANT_PARAMETER_NAMES
     )
 
 
@@ -12029,7 +12194,7 @@ def _optional_parameter_branch_candidates_for_function(
     for argument in _FunctionSignatureView(function).arguments:
         if not _annotation_contains_none(argument.annotation):
             continue
-        if not _annotation_has_nominal_variant_role(argument.annotation):
+        if not _parameter_has_optional_variant_role(argument.arg, argument.annotation):
             continue
         none_check_count = _direct_none_check_count(function, argument.arg)
         if none_check_count == 0:
@@ -12037,8 +12202,6 @@ def _optional_parameter_branch_candidates_for_function(
         observed_attribute_names = _parameter_receiver_attribute_names(
             function, argument.arg
         )
-        if not observed_attribute_names:
-            continue
         yield OptionalParameterBranchCandidate(
             file_path=str(module.path),
             line=function.lineno,

@@ -318,6 +318,27 @@ def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
                 f"{plan.outcome.description_length_after}; certified savings "
                 f"{plan.outcome.description_length_savings}"
             )
+        for trajectory in plan.trajectories:
+            lines.append(f"   - Local-minimum escape: {trajectory.escape_summary}")
+            if trajectory.debt_justifications:
+                lines.append(
+                    "   - Escape debt proof: "
+                    f"{'; '.join(trajectory.debt_justifications)}"
+                )
+            lines.append(
+                "   - Escape missing capabilities: "
+                f"{', '.join(trajectory.missing_capabilities)}"
+            )
+            lines.append("   - Escape trajectory: " f"{' -> '.join(trajectory.steps)}")
+            lines.append(
+                "   - Counterfactual findings removed: "
+                f"{', '.join(trajectory.expected_removed_findings)}"
+            )
+            if trajectory.expected_emergent_findings:
+                lines.append(
+                    "   - Counterfactual findings unlocked: "
+                    f"{', '.join(trajectory.expected_emergent_findings)}"
+                )
         for action in plan.actions:
             lines.append(f"   - Action: {action.kind} -> {action.description}")
             if action.statement_operation and action.statement_sites:

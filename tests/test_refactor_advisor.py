@@ -57,14 +57,26 @@ from nominal_refactor_advisor.economics import (
     ScanEconomicsProof,
 )
 from nominal_refactor_advisor.factorization import (
+    AxisIndependenceModel,
+    ExplanationConflictGraph,
     FactorizationEngine,
     FactorizationLattice,
     FactorizationOrbit,
     FactorizationPlan,
     FactorizationRow,
+    FormalConceptLattice,
+    InheritanceDesignSearch,
+    InheritanceMethodSpec,
+    InheritanceResidueProfile,
     MDLCompetition,
     OwnershipClosure,
     OwnershipProjection,
+    RefactorMove,
+    RefactorPhase,
+    RefactorState,
+    RefactorTrajectorySearch,
+    SemanticCompressionHypergraph,
+    SubmodularMDLCompetition,
 )
 from nominal_refactor_advisor.lean_export import (
     LEAN_EXPORT_SCHEMA,
@@ -489,8 +501,349 @@ def test_mdl_competition_suppresses_overlapping_weaker_explanations() -> None:
     assert result.selected == (broad_node,)
     assert len(result.suppressed) == 1
     assert {item.reason for item in result.suppressed} == {
-        "overlaps a shorter selected explanation"
+        "conflicts with the exact shorter MDL cover"
     }
+
+
+def test_mdl_competition_uses_exact_conflict_graph_not_greedy_order() -> None:
+    broad = _factorization_plan(
+        "BroadABC",
+        object_names=("Csv.emit", "Json.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec",),
+        manual_object_count=12,
+        residual_object_count=1,
+    )
+    left = _factorization_plan(
+        "LeftABC",
+        object_names=("Csv.emit",),
+        shared_axes=("family", "codec"),
+        residue_axes=(),
+        manual_object_count=8,
+        residual_object_count=0,
+    )
+    right = _factorization_plan(
+        "RightABC",
+        object_names=("Json.emit",),
+        shared_axes=("family", "codec"),
+        residue_axes=(),
+        manual_object_count=8,
+        residual_object_count=0,
+    )
+    lattice = FactorizationLattice.from_plans((broad, left, right))
+    graph = ExplanationConflictGraph(lattice.nodes)
+    result = MDLCompetition(lattice.nodes).solve()
+
+    assert len(graph.conflict_edges) == 2
+    assert graph.independent(
+        (
+            lattice.nodes.index(
+                next(
+                    node
+                    for node in lattice.nodes
+                    if node.plan.authority_name == "LeftABC"
+                )
+            ),
+            lattice.nodes.index(
+                next(
+                    node
+                    for node in lattice.nodes
+                    if node.plan.authority_name == "RightABC"
+                )
+            ),
+        )
+    )
+    assert {node.plan.authority_name for node in result.selected} == {
+        "LeftABC",
+        "RightABC",
+    }
+
+
+def test_submodular_mdl_competition_keeps_positive_partial_overlap() -> None:
+    broad = _factorization_plan(
+        "BroadABC",
+        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec",),
+        manual_object_count=12,
+        residual_object_count=1,
+    )
+    partial = _factorization_plan(
+        "PartialABC",
+        object_names=("Json.emit", "Xml.emit", "Yaml.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec",),
+        manual_object_count=12,
+        residual_object_count=1,
+    )
+    lattice = FactorizationLattice.from_plans((broad, partial))
+
+    exact = MDLCompetition(lattice.nodes).solve()
+    submodular = SubmodularMDLCompetition(lattice.nodes).solve()
+
+    assert len(exact.selected) == 1
+    assert len(submodular.selected) == 2
+    assert submodular.objective_value > exact.selected[0].certified_savings
+
+
+def _trajectory_move(
+    key: str,
+    *,
+    before: int,
+    after: int,
+    prerequisites: tuple[str, ...] = (),
+    unlocks: tuple[str, ...] = (),
+    phase: RefactorPhase = RefactorPhase.DERIVE_AUTHORITY,
+    debt_justification: str | None = None,
+    predicts_removed: tuple[str, ...] = (),
+    predicts_emergent: tuple[str, ...] = (),
+) -> RefactorMove:
+    return RefactorMove(
+        move_key=key,
+        move_description=key,
+        move_covered_objects=frozenset({key}),
+        move_compression_certificate=CompressionCertificate(
+            before_cost=SemanticCostVector(residual_objects=before),
+            after_cost=SemanticCostVector(residual_objects=after),
+            semantic_axes=(key,),
+        ),
+        prerequisites=frozenset(prerequisites),
+        unlocks=frozenset(unlocks),
+        phase=phase,
+        debt_justification=debt_justification,
+        predicts_removed=frozenset(predicts_removed),
+        predicts_emergent=frozenset(predicts_emergent),
+    )
+
+
+def test_refactor_trajectory_search_proves_local_minimum_escape() -> None:
+    normalize_records = _trajectory_move(
+        "normalize anonymous records",
+        before=2,
+        after=4,
+        unlocks=("nominal_record_axis",),
+        phase=RefactorPhase.NORMALIZE,
+        debt_justification="names the nominal record axis needed by later moves",
+        predicts_removed=("semantic_dict_bag",),
+        predicts_emergent=("constructor_variant",),
+    )
+    derive_constructor_algebra = _trajectory_move(
+        "derive constructor algebra",
+        before=10,
+        after=2,
+        prerequisites=("nominal_record_axis",),
+        unlocks=("constructor_axis",),
+        phase=RefactorPhase.ESTABLISH_OWNER,
+    )
+    push_hooks_to_abc = _trajectory_move(
+        "push hooks into abc",
+        before=8,
+        after=3,
+        prerequisites=("constructor_axis",),
+        phase=RefactorPhase.DERIVE_AUTHORITY,
+    )
+
+    proof = RefactorTrajectorySearch(
+        (normalize_records, derive_constructor_algebra, push_hooks_to_abc),
+        max_depth=3,
+    ).local_minimum_escape_proof()
+
+    assert proof is not None
+    assert proof.blocked_positive_moves == (
+        derive_constructor_algebra,
+        push_hooks_to_abc,
+    )
+    assert proof.best_trajectory.move_descriptions == (
+        "normalize anonymous records",
+        "derive constructor algebra",
+        "push hooks into abc",
+    )
+    assert proof.temporary_debt == 2
+    assert proof.certified_net_savings == 11
+    assert proof.best_trajectory.debt_justifications == (
+        "names the nominal record axis needed by later moves",
+    )
+    assert "semantic_dict_bag" in proof.best_trajectory.predicted_removed
+    assert "constructor_variant" in proof.best_trajectory.predicted_emergent
+    assert proof.best_trajectory.final_state is not None
+    assert (
+        "push hooks into abc" not in proof.best_trajectory.final_state.active_findings
+    )
+    assert "local one-step search is stuck" in proof.escape_summary
+
+
+def test_refactor_state_rejects_unjustified_debt_and_phase_regression() -> None:
+    unjustified = _trajectory_move(
+        "normalize without proof",
+        before=1,
+        after=2,
+        phase=RefactorPhase.NORMALIZE,
+    )
+    shadow_delete = _trajectory_move(
+        "delete shadow api",
+        before=3,
+        after=1,
+        phase=RefactorPhase.DELETE_SHADOW,
+    )
+    late_normalize = _trajectory_move(
+        "late normalize",
+        before=3,
+        after=1,
+        phase=RefactorPhase.NORMALIZE,
+    )
+    initial = RefactorState.initial((unjustified, shadow_delete, late_normalize))
+    after_shadow = initial.apply(shadow_delete)
+
+    assert not initial.can_apply(unjustified)
+    assert not after_shadow.can_apply(late_normalize)
+
+
+def test_refactor_trajectory_search_prunes_dominated_paths() -> None:
+    weak = _trajectory_move(
+        "weak normalize",
+        before=2,
+        after=3,
+        unlocks=("axis",),
+        phase=RefactorPhase.NORMALIZE,
+        debt_justification="unlocks axis",
+    )
+    strong = _trajectory_move(
+        "strong normalize",
+        before=2,
+        after=2,
+        unlocks=("axis", "owner"),
+        phase=RefactorPhase.NORMALIZE,
+    )
+    payoff = _trajectory_move(
+        "derive payoff",
+        before=8,
+        after=1,
+        prerequisites=("axis",),
+        phase=RefactorPhase.DERIVE_AUTHORITY,
+    )
+
+    trajectory = RefactorTrajectorySearch(
+        (weak, strong, payoff), max_depth=2
+    ).best_trajectory()
+
+    assert trajectory is not None
+    assert trajectory.move_descriptions == ("strong normalize", "derive payoff")
+
+
+def test_refactor_trajectory_search_does_not_hide_local_positive_moves() -> None:
+    local_win = _trajectory_move("extract local abc", before=5, after=1)
+    unlocker = _trajectory_move(
+        "normalize first",
+        before=1,
+        after=2,
+        unlocks=("normalized",),
+        phase=RefactorPhase.NORMALIZE,
+        debt_justification="unlocks normalized axis",
+    )
+    later_win = _trajectory_move(
+        "derive later", before=8, after=1, prerequisites=("normalized",)
+    )
+
+    search = RefactorTrajectorySearch((local_win, unlocker, later_win), max_depth=2)
+
+    assert search.local_minimum_escape_proof() is None
+    assert search.locally_positive_moves() == (local_win,)
+
+
+def test_semantic_compression_hypergraph_projects_explanation_edges() -> None:
+    broad = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit", "Xml.emit"),
+        shared_axes=("family",),
+        residue_axes=("codec", "suffix"),
+        manual_object_count=12,
+        residual_object_count=3,
+    )
+    refined = _factorization_plan(
+        "ExporterABC",
+        object_names=("Csv.emit", "Json.emit"),
+        shared_axes=("family", "codec"),
+        residue_axes=("suffix",),
+        manual_object_count=8,
+        residual_object_count=2,
+    )
+    hypergraph = SemanticCompressionHypergraph.from_explanations(
+        FactorizationLattice.from_plans((broad, refined)).nodes
+    )
+
+    assert hypergraph.object_vertices == frozenset(
+        {"Csv.emit", "Json.emit", "Xml.emit"}
+    )
+    assert hypergraph.axis_vertices == frozenset({"family", "codec", "suffix"})
+    assert len(hypergraph.overlap_edges) == 1
+
+
+def test_formal_concept_lattice_derives_shared_intents() -> None:
+    rows = (
+        FactorizationRow.from_mapping(
+            "Csv.emit", {"family": "Exporter", "algorithm": "emit", "codec": "csv"}
+        ),
+        FactorizationRow.from_mapping(
+            "Json.emit", {"family": "Exporter", "algorithm": "emit", "codec": "json"}
+        ),
+        FactorizationRow.from_mapping(
+            "Csv.parse", {"family": "Exporter", "algorithm": "parse", "codec": "csv"}
+        ),
+    )
+
+    lattice = FormalConceptLattice.from_rows(rows)
+
+    assert any(
+        concept.extent == frozenset({"Csv.emit", "Json.emit"})
+        and ("algorithm", "emit") in concept.intent
+        and ("family", "Exporter") in concept.intent
+        for concept in lattice.compression_concepts
+    )
+    assert lattice.cover_edges
+
+
+def test_formal_concept_lattice_exposes_galois_closure_and_decomposition() -> None:
+    rows = (
+        FactorizationRow.from_mapping(
+            "Csv.emit",
+            {"family": "Exporter", "phase": "emit", "codec": "csv", "suffix": ".csv"},
+        ),
+        FactorizationRow.from_mapping(
+            "Json.emit",
+            {
+                "family": "Exporter",
+                "phase": "emit",
+                "codec": "json",
+                "suffix": ".json",
+            },
+        ),
+        FactorizationRow.from_mapping(
+            "Csv.parse",
+            {"family": "Exporter", "phase": "parse", "codec": "csv", "suffix": ".csv"},
+        ),
+        FactorizationRow.from_mapping(
+            "Json.parse",
+            {
+                "family": "Exporter",
+                "phase": "parse",
+                "codec": "json",
+                "suffix": ".json",
+            },
+        ),
+    )
+    engine = FactorizationEngine(rows)
+    lattice = engine.concept_lattice()
+    closure = lattice.galois_closure(("Csv.emit", "Json.emit"))
+    candidates = lattice.decomposition_candidates(engine.axis_independence_model())
+
+    assert closure.extent == frozenset({"Csv.emit", "Json.emit"})
+    assert ("phase", "emit") in closure.intent
+    assert any(
+        candidate.support == 2
+        and "phase" in candidate.shared_axis_names
+        and {"family", "phase"} <= set(candidate.dependent_axis_names)
+        for candidate in candidates
+    )
 
 
 def test_factorization_engine_returns_negative_compression_proofs() -> None:
@@ -535,9 +888,143 @@ def test_ownership_closure_recovers_transitive_projection_owner() -> None:
     assert closure.transitive_targets("Module") == frozenset(
         {"ParsedModule", "PathSpec"}
     )
-    assert closure.canonical_owner("PathSpec") == "Module"
+    assert closure.paths_to("PathSpec") == (("Module", "ParsedModule", "PathSpec"),)
+    assert closure.dominators("PathSpec") == frozenset(
+        {"Module", "ParsedModule", "PathSpec"}
+    )
+    assert closure.nearest_dominator("PathSpec") == "ParsedModule"
+    assert closure.canonical_owner("PathSpec") == "ParsedModule"
     assert closure.canonical_owner("DriverSpec") == "Runtime"
     assert closure.canonical_owner("Missing") is None
+
+
+def test_ownership_closure_derives_postdominators_boundaries_and_diagrams() -> None:
+    closure = OwnershipClosure(
+        (
+            OwnershipProjection("Root", "left", "Prepare"),
+            OwnershipProjection("Root", "right", "Validate"),
+            OwnershipProjection("Prepare", "finish", "Commit"),
+            OwnershipProjection("Validate", "finish", "Commit"),
+            OwnershipProjection("Commit", "emit", "Artifact"),
+            OwnershipProjection("Commit", "log", "Audit"),
+        )
+    )
+
+    assert closure.postdominators("Root") == frozenset({"Root", "Commit"})
+    assert closure.nearest_postdominator("Root") == "Commit"
+    assert closure.projection_diagram("Root", "Commit").paths == (
+        ("Root", "Prepare", "Commit"),
+        ("Root", "Validate", "Commit"),
+    )
+    assert closure.boundary_edges("Root", ("Commit",)) == (
+        OwnershipProjection("Commit", "emit", "Artifact"),
+        OwnershipProjection("Commit", "log", "Audit"),
+    )
+
+
+def test_axis_independence_model_separates_dependent_and_orthogonal_axes() -> None:
+    rows = (
+        FactorizationRow.from_mapping(
+            "Csv.emit",
+            {
+                "codec": "csv",
+                "suffix": ".csv",
+                "phase": "emit",
+            },
+        ),
+        FactorizationRow.from_mapping(
+            "Json.emit",
+            {
+                "codec": "json",
+                "suffix": ".json",
+                "phase": "emit",
+            },
+        ),
+        FactorizationRow.from_mapping(
+            "Csv.parse",
+            {
+                "codec": "csv",
+                "suffix": ".csv",
+                "phase": "parse",
+            },
+        ),
+        FactorizationRow.from_mapping(
+            "Json.parse",
+            {
+                "codec": "json",
+                "suffix": ".json",
+                "phase": "parse",
+            },
+        ),
+    )
+    model = AxisIndependenceModel.from_rows(rows)
+
+    assert ("codec", "suffix") in model.dependent_axis_pairs
+    assert ("codec", "phase") in model.independent_axis_pairs
+    assert model.orthogonal("suffix", "phase")
+    assert model.rank_defect(("codec", "suffix")) == 1
+    assert model.decomposition_role(("codec", "suffix")) == "abc_axis"
+    assert model.decomposition_role(("codec", "phase")) == "mixin_axis"
+
+
+def test_inheritance_design_search_prefers_mixin_for_orthogonal_subset_method() -> None:
+    common_residue = InheritanceResidueProfile(
+        classvar_names=("FORMAT",),
+        property_hook_names=(),
+        behavior_hook_names=(),
+    )
+    hook_residue = InheritanceResidueProfile(
+        classvar_names=(),
+        property_hook_names=("_payload",),
+        behavior_hook_names=("_emit_operation",),
+    )
+    search = InheritanceDesignSearch(
+        (
+            InheritanceMethodSpec(
+                "emit",
+                ("CsvExporter", "JsonExporter", "XmlExporter"),
+                5,
+                hook_residue,
+            ),
+            InheritanceMethodSpec(
+                "serialize_options",
+                ("CsvExporter", "JsonExporter"),
+                4,
+                common_residue,
+            ),
+        )
+    )
+
+    result = search.solve("ExporterBase")
+
+    assert result.best_design is not None
+    assert result.best_design.pays_rent
+    assert result.best_design.mixin_axis_names == ("serialize_options",)
+    assert result.best_design.abc_method_names == ("emit",)
+    assert "MIXIN(serialize_options)" in result.best_design.normal_form
+    assert "_emit_operation" in result.best_design.hook_names
+    assert "FORMAT" in result.best_design.classvar_names
+
+
+def test_inheritance_design_search_uses_unified_abc_without_orthogonal_mixins() -> None:
+    residue = InheritanceResidueProfile(
+        classvar_names=(),
+        property_hook_names=("payload",),
+        behavior_hook_names=("operate",),
+    )
+    search = InheritanceDesignSearch(
+        (
+            InheritanceMethodSpec("run", ("Alpha", "Beta", "Gamma"), 6, residue),
+            InheritanceMethodSpec("build", ("Alpha", "Beta", "Gamma"), 5, residue),
+        )
+    )
+
+    result = search.solve("RunnerBase")
+
+    assert result.best_design is not None
+    assert result.best_design.mixin_axis_names == ()
+    assert result.best_design.abc_method_names == ("build", "run")
+    assert result.best_design.abc_layer_count == 1
 
 
 def test_abstraction_rent_budget_derives_from_semantic_object_family() -> None:
@@ -763,6 +1250,79 @@ def test_planner_ranks_by_certified_description_length_savings(
     )
 
     assert [plan.outcome.description_length_savings for plan in plans] == [8, 3]
+
+
+def test_planner_derives_local_minimum_escape_from_findings(
+    tmp_path: Path,
+) -> None:
+    boundary_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Normalize records",
+        "A nominal axis is required before the shared algorithm can move.",
+        "nominal record axis",
+        "temporary normalization unlocks a larger compression",
+    )
+    abc_spec = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Extract ABC",
+        "The algorithm belongs in a base class once identity is nominal.",
+        "shared algorithm authority",
+        "ABC compression depends on a nominal family",
+    )
+    boundary_certificate = CompressionCertificate(
+        before_cost=SemanticCostVector(residual_objects=2),
+        after_cost=SemanticCostVector(residual_objects=4),
+        semantic_axes=("record",),
+    )
+    abc_certificate = CompressionCertificate(
+        before_cost=SemanticCostVector(residual_objects=12),
+        after_cost=SemanticCostVector(residual_objects=2),
+        semantic_axes=("abc",),
+    )
+
+    findings = [
+        boundary_spec.build(
+            "boundary",
+            "record normalization is locally negative",
+            (SourceLocation(str(tmp_path / "pkg/mod.py"), 1, "Result"),),
+            compression_certificate=boundary_certificate,
+        ),
+        abc_spec.build(
+            "abc",
+            "ABC extraction is blocked until identity is nominal",
+            (SourceLocation(str(tmp_path / "pkg/mod.py"), 2, "Runner.run"),),
+            compression_certificate=abc_certificate,
+        ),
+    ]
+
+    plan = build_refactor_plans(findings, tmp_path)[0]
+
+    assert len(plan.trajectories) == 1
+    trajectory = plan.trajectories[0]
+    assert trajectory.temporary_debt == 2
+    assert trajectory.certified_net_savings == 8
+    assert trajectory.steps == (
+        "Pattern 1: Normalize records",
+        "Pattern 5: Extract ABC",
+    )
+    assert trajectory.blocked_moves == ("Pattern 5: Extract ABC",)
+    assert trajectory.missing_capabilities == (
+        "Pattern 1: Nominal Boundary Over Sentinel Simulation",
+    )
+    assert trajectory.debt_justifications == (
+        "temporary debt is allowed because this move names or stabilizes "
+        "capabilities that unlock later compression",
+    )
+    assert "unlocked:5" in trajectory.expected_emergent_findings
+    assert any(
+        finding.stable_id in trajectory.expected_removed_findings
+        for finding in findings
+    )
+
+    markdown = _format_markdown(findings, [plan])
+    assert "Local-minimum escape" in markdown
+    assert "Pattern 1: Normalize records -> Pattern 5: Extract ABC" in markdown
+    assert "Counterfactual findings removed" in markdown
 
 
 def test_class_family_compression_profile_prices_abc_extraction() -> None:
@@ -1420,6 +1980,32 @@ def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> Non
     )
     assert strategy_finding.codemod_patch is not None
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
+
+
+def test_detects_literal_match_dispatch_with_autoregistermeta_guidance(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef run_backend(kind, request):\n    match kind:\n        case "csv":\n            return run_csv(request)\n        case "json":\n            return run_json(request)\n        case "xml":\n            return run_xml(request)\n        case _:\n            raise ValueError(kind)\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
+        )
+    )
+
+    assert "match" in (finding.codemod_patch or "") or "case family" in (
+        finding.scaffold or ""
+    )
+    assert "kind" in finding.summary
+    assert "'csv'" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
+    assert "DispatchCase.for_case" in (finding.scaffold or "")
 
 
 def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
@@ -2818,6 +3404,26 @@ def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
     assert "policy: RenderPolicy | None" in finding.summary
     assert "branches on `policy is None`" in finding.summary
     assert "ABC" in (finding.scaffold or "")
+
+
+def test_detects_semantic_none_union_branch_without_attribute_access(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef resolve_mode(mode: Mode | None, request):\n    if mode is None:\n        return auto_mode(request)\n    return direct_mode(mode, request)\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID
+        )
+    )
+    assert "mode: Mode | None" in finding.summary
+    assert "branches on `mode is None`" in finding.summary
+    assert "nominal strategy variants" in finding.capability_gap
 
 
 def test_ignores_untyped_none_branch_axis(tmp_path: Path) -> None:
@@ -4812,6 +5418,39 @@ def test_detects_local_impact_dict_bag_and_recommends_impact_delta(
         (finding for finding in findings if finding.detector_id == "semantic_dict_bag")
     )
     assert "ImpactDelta" in (finding.scaffold or "")
+
+
+def test_detects_return_dict_record_that_mirrors_arguments(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef build_result(name, score, reason):\n    return {\n        "name": name,\n        "score": score,\n        "reason": reason,\n    }\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "semantic_dict_bag"
+        )
+    )
+    assert "fixed-key anonymous record" in (finding.scaffold or "")
+    assert "name" in finding.summary
+    assert "score" in finding.summary
+    assert "Result" in (finding.scaffold or "")
+
+
+def test_ignores_to_dict_return_dict_serialization_boundary(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass Result:\n    def __init__(self, name, score):\n        self.name = name\n        self.score = score\n\n    def to_dict(self):\n        return {"name": self.name, "score": self.score}\n',
+    )
+    assert not any(
+        (
+            finding.detector_id == "semantic_dict_bag"
+            for finding in analyze_path(tmp_path)
+        )
+    )
 
 
 def test_builds_composed_subsystem_plan(tmp_path: Path) -> None:

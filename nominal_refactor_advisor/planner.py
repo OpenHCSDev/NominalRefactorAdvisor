@@ -18,9 +18,10 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Callable, Sequence, TypeVar
+from typing import Callable, Hashable, Mapping, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
+from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -29,9 +30,11 @@ from .models import (
     RefactorAction,
     RefactorFinding,
     RefactorPlan,
+    RefactorTrajectorySummary,
     SourceLocation,
 )
 from .patterns import PATTERN_SPECS, ActionBuilderId, PatternId, PlanStepBuilderId
+from .semantic_description_length import CompressionCertificate, SemanticCostVector
 from .taxonomy import (
     CapabilityTag,
     CertificationLevel,
@@ -43,7 +46,77 @@ from .taxonomy import (
 
 # fmt: off
 materialize_product_record(product_record_spec('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]'))
+materialize_product_record(product_record_spec('_PatternTrajectoryPolicy', 'pattern_id: PatternId; phase: RefactorPhase'))
 # fmt: on
+
+
+_PATTERN_TRAJECTORY_POLICY_ROWS = (
+    _PatternTrajectoryPolicy(PatternId.NOMINAL_BOUNDARY, RefactorPhase.NORMALIZE),
+    _PatternTrajectoryPolicy(PatternId.DISCRIMINATED_UNION, RefactorPhase.NORMALIZE),
+    _PatternTrajectoryPolicy(
+        PatternId.CLOSED_FAMILY_DISPATCH, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(PatternId.CONFIG_CONTRACTS, RefactorPhase.NORMALIZE),
+    _PatternTrajectoryPolicy(
+        PatternId.ABC_TEMPLATE_METHOD, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.AUTO_REGISTER_META, RefactorPhase.ESTABLISH_OWNER
+    ),
+    _PatternTrajectoryPolicy(PatternId.TYPE_LINEAGE, RefactorPhase.NORMALIZE),
+    _PatternTrajectoryPolicy(PatternId.DUAL_AXIS_RESOLUTION, RefactorPhase.NAME_AXIS),
+    _PatternTrajectoryPolicy(
+        PatternId.VIRTUAL_MEMBERSHIP, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.DYNAMIC_INTERFACE, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.SENTINEL_TYPE_MARKER, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.TYPE_NAMESPACE_INJECTION, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.BIDIRECTIONAL_LOOKUP, RefactorPhase.ESTABLISH_OWNER
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.AUTHORITATIVE_SCHEMA, RefactorPhase.ESTABLISH_OWNER
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.STAGED_ORCHESTRATION, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(PatternId.AUTHORITATIVE_CONTEXT, RefactorPhase.NAME_AXIS),
+    _PatternTrajectoryPolicy(
+        PatternId.NOMINAL_STRATEGY_FAMILY, RefactorPhase.NAME_AXIS
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.DESCRIPTOR_DERIVED_VIEW, RefactorPhase.DELETE_SHADOW
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.NOMINAL_INTERFACE_WITNESS, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.NOMINAL_WITNESS_CARRIER, RefactorPhase.DERIVE_AUTHORITY
+    ),
+    _PatternTrajectoryPolicy(
+        PatternId.LOCAL_VALUE_AUTHORITY, RefactorPhase.DELETE_SHADOW
+    ),
+)
+
+
+def _exhaustive_pattern_trajectory_policy(
+    rows: tuple[_PatternTrajectoryPolicy, ...],
+) -> Mapping[PatternId, _PatternTrajectoryPolicy]:
+    by_pattern = {row.pattern_id: row for row in rows}
+    if frozenset(by_pattern) != frozenset(PatternId):
+        raise ValueError("trajectory phase policy must cover every PatternId")
+    return by_pattern
+
+
+_PATTERN_TRAJECTORY_POLICY_BY_ID = _exhaustive_pattern_trajectory_policy(
+    _PATTERN_TRAJECTORY_POLICY_ROWS
+)
 
 
 class PatternPlanStepBuilder(ABC):
@@ -633,6 +706,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
         cluster.subsystem, ordered_patterns, cluster.findings
     )
     actions = _build_plan_actions(cluster.subsystem, ordered_patterns, cluster.findings)
+    trajectories = _build_escape_trajectories(cluster.findings)
     return RefactorPlan(
         subsystem=cluster.subsystem,
         summary=summary,
@@ -649,6 +723,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
         evidence=cluster.evidence,
         outcome=outcome,
         actions=actions,
+        trajectories=trajectories,
     )
 
 
@@ -894,6 +969,159 @@ def _build_plan_actions(
         builder = _pattern_action_builder(pattern_id) or _GENERIC_PATTERN_ACTION_BUILDER
         actions.extend(builder.build(subsystem, pattern_id, supporting))
     return tuple(actions)
+
+
+def _build_escape_trajectories(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[RefactorTrajectorySummary, ...]:
+    moves = _trajectory_moves_from_findings(findings)
+    proof = RefactorTrajectorySearch(moves).local_minimum_escape_proof()
+    if proof is None:
+        return ()
+    return (
+        RefactorTrajectorySummary(
+            steps=proof.best_trajectory.move_descriptions,
+            blocked_moves=tuple(
+                (move.move_description for move in proof.blocked_positive_moves)
+            ),
+            missing_capabilities=_missing_capabilities_for_blocked_moves(
+                proof.blocked_positive_moves,
+                proof.local_state_capabilities,
+            ),
+            temporary_debt=proof.temporary_debt,
+            certified_net_savings=proof.certified_net_savings,
+            escape_summary=proof.escape_summary,
+            debt_justifications=proof.best_trajectory.debt_justifications,
+            expected_removed_findings=tuple(
+                (str(item) for item in proof.best_trajectory.predicted_removed)
+            ),
+            expected_emergent_findings=tuple(
+                (str(item) for item in proof.best_trajectory.predicted_emergent)
+            ),
+        ),
+    )
+
+
+def _trajectory_moves_from_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[RefactorMove, ...]:
+    return tuple(
+        (_TrajectoryMoveFactory(finding, findings).build() for finding in findings)
+    )
+
+
+@dataclass(frozen=True)
+class _TrajectoryMoveFactory:
+    finding: RefactorFinding
+    cluster_findings: tuple[RefactorFinding, ...]
+
+    def build(self) -> RefactorMove:
+        return RefactorMove(
+            move_key=self.finding.stable_id,
+            move_description=self.description,
+            move_covered_objects=self.covered_objects,
+            move_compression_certificate=self.certificate,
+            prerequisites=self.prerequisites,
+            unlocks=self.unlocks,
+            phase=self.phase,
+            debt_justification=self.debt_justification,
+            predicts_removed=frozenset({self.finding.stable_id}),
+            predicts_emergent=self.predicted_emergent,
+        )
+
+    @property
+    def description(self) -> str:
+        return f"Pattern {self.finding.pattern_id.value}: {self.finding.title}"
+
+    @property
+    def covered_objects(self) -> frozenset[Hashable]:
+        return frozenset(
+            (
+                f"{item.file_path}:{item.line}:{item.symbol}"
+                for item in self.finding.evidence
+            )
+        ) or frozenset({self.finding.stable_id})
+
+    @property
+    def certificate(self) -> CompressionCertificate:
+        if self.finding.compression_certificate is not None:
+            return self.finding.compression_certificate
+        delta = self.finding.metrics.impact_delta
+        before = max(
+            delta.description_length_before,
+            delta.loci_of_change_before,
+            len(self.finding.evidence),
+            1,
+        )
+        after = max(delta.description_length_after, delta.loci_of_change_after, 1)
+        return CompressionCertificate(
+            before_cost=SemanticCostVector(residual_objects=before),
+            after_cost=SemanticCostVector(residual_objects=after),
+            semantic_axes=(self.finding.pattern_id,),
+        )
+
+    @property
+    def prerequisites(self) -> frozenset[Hashable]:
+        return _trajectory_prerequisites(self.finding.pattern_id, self.cluster_findings)
+
+    @property
+    def unlocks(self) -> frozenset[Hashable]:
+        return _trajectory_unlocks(self.finding.pattern_id)
+
+    @property
+    def phase(self) -> RefactorPhase:
+        return _PATTERN_TRAJECTORY_POLICY_BY_ID[self.finding.pattern_id].phase
+
+    @property
+    def debt_justification(self) -> str | None:
+        if self.certificate.pays_rent:
+            return None
+        if self.unlocks:
+            return (
+                "temporary debt is allowed because this move names or stabilizes "
+                "capabilities that unlock later compression"
+            )
+        return None
+
+    @property
+    def predicted_emergent(self) -> frozenset[Hashable]:
+        return frozenset((f"unlocked:{item.value}" for item in self.unlocks))
+
+
+def _trajectory_prerequisites(
+    pattern_id: PatternId, findings: tuple[RefactorFinding, ...]
+) -> frozenset[Hashable]:
+    present_patterns = frozenset((finding.pattern_id for finding in findings))
+    return frozenset(
+        (
+            dependency
+            for dependency in _pattern_dependencies(pattern_id)
+            if dependency in present_patterns
+        )
+    )
+
+
+def _trajectory_unlocks(pattern_id: PatternId) -> frozenset[Hashable]:
+    return frozenset((pattern_id, *_pattern_synergy_with(pattern_id)))
+
+
+def _missing_capabilities_for_blocked_moves(
+    blocked_moves: tuple[RefactorMove, ...],
+    local_state_capabilities: frozenset[Hashable],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        (
+            _capability_name(capability)
+            for move in blocked_moves
+            for capability in move.prerequisites - local_state_capabilities
+        )
+    )
+
+
+def _capability_name(capability: Hashable) -> str:
+    if isinstance(capability, PatternId):
+        return f"Pattern {capability.value}: {PATTERN_SPECS[capability].name}"
+    return str(capability)
 
 
 def _class_names_from_findings(
