@@ -185,6 +185,7 @@ def _function_local_semantic_dict_bag_candidates(
     class_stack: tuple[str, ...],
 ) -> list[SemanticDictBagCandidate]:
     assignments: dict[str, tuple[int, dict[str, ast.AST]]] = {}
+    local_annotations: dict[str, str] = {}
     accessed_keys: dict[str, set[str]] = defaultdict(set)
     serialization_boundary_names: set[str] = set()
     candidates: list[SemanticDictBagCandidate] = []
@@ -211,6 +212,8 @@ def _function_local_semantic_dict_bag_candidates(
             self.generic_visit(node)
 
         def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name):
+                local_annotations[node.target.id] = ast.unparse(node.annotation)
             if (
                 isinstance(node.target, ast.Name)
                 and node.value is not None
@@ -258,6 +261,7 @@ def _function_local_semantic_dict_bag_candidates(
                     sorted_tuple(items),
                     owner_symbol=owner_symbol,
                     value_nodes=items,
+                    local_annotations=local_annotations,
                 )
                 candidates.append(
                     SemanticDictBagCandidate(
@@ -417,13 +421,22 @@ def _recommend_return_record_dataclass(
     key_names: tuple[str, ...],
     owner_symbol: str,
     value_nodes: dict[str, ast.AST],
+    local_annotations: Mapping[str, str] | None = None,
 ) -> SemanticDataclassRecommendation:
     class_name = _suggest_dataclass_name(owner_symbol, "Result")
     rationale = (
         f"Create `{class_name}` because this return value is a fixed-key anonymous "
         "record whose keys mirror local values or parameters."
     )
-    scaffold = _declaration_scaffold(class_name, "object", key_names, value_nodes)
+    scaffold = _declaration_scaffold(
+        class_name,
+        "object",
+        key_names,
+        value_nodes,
+        field_type_overrides=_field_type_overrides_from_local_annotations(
+            key_names, value_nodes, local_annotations or {}
+        ),
+    )
     return SemanticDataclassRecommendation.proposed_schema(
         class_name,
         "object",
@@ -472,14 +485,30 @@ def _declaration_scaffold(
     key_names: tuple[str, ...],
     value_nodes: dict[str, ast.AST],
     instantiation_prefix: str = "",
+    field_type_overrides: Mapping[str, str] | None = None,
 ) -> str:
+    field_type_overrides = field_type_overrides or {}
     field_lines = "\n".join(
         (
-            f"    {key}: {_infer_field_type_name(key, value_nodes.get(key))}"
+            f"    {key}: {field_type_overrides.get(key, _infer_field_type_name(key, value_nodes.get(key)))}"
             for key in key_names
         )
     )
     return f"@dataclass(frozen=True)\nclass {class_name}({base_class_name}):\n{field_lines}\n\n{_instantiation_scaffold(class_name, key_names, value_nodes, prefix=instantiation_prefix)}"
+
+
+def _field_type_overrides_from_local_annotations(
+    key_names: tuple[str, ...],
+    value_nodes: dict[str, ast.AST],
+    local_annotations: Mapping[str, str],
+) -> dict[str, str]:
+    return {
+        key_name: local_annotations[value.id]
+        for key_name, value in value_nodes.items()
+        if key_name in key_names
+        if isinstance(value, ast.Name)
+        if value.id in local_annotations
+    }
 
 
 def _instantiation_scaffold(
@@ -538,12 +567,16 @@ def _render_value_expression(key_name: str, node: ast.AST | None) -> str:
 
 
 def _suggest_dataclass_name(owner_symbol: str, suffix: str) -> str:
+    semantic_owner = owner_symbol.split(":", maxsplit=1)[0]
     parts = [
         _camel_case(part)
-        for part in re.split(r"[^A-Za-z0-9]+", owner_symbol)
-        if part and part not in {"module", "record", "metrics"}
+        for part in re.split(r"[^A-Za-z0-9]+", semantic_owner)
+        if part and part not in {"module", "record", "metrics", "return"}
     ]
-    prefix = parts[-1] if parts else "Semantic"
+    if suffix == "Result" and len(parts) >= 2 and parts[-1] != suffix:
+        prefix = "".join(parts[-2:])
+    else:
+        prefix = parts[-1] if parts else "Semantic"
     if prefix.endswith(suffix):
         return prefix
     return f"{prefix}{suffix}"

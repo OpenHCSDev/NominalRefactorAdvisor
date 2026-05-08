@@ -5987,6 +5987,27 @@ def test_detects_return_dict_record_that_mirrors_arguments(tmp_path: Path) -> No
     assert "Result" in (finding.scaffold or "")
 
 
+def test_return_dict_record_scaffold_uses_local_annotations(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom pathlib import Path\nfrom typing import List\n\n\ndef scaffold_paper():\n    created_dirs: List[Path] = []\n    created_files: List[Path] = []\n    skipped_files: List[Path] = []\n    return {\n        'created_dirs': created_dirs,\n        'created_files': created_files,\n        'skipped_files': skipped_files,\n    }\n",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "semantic_dict_bag"
+        )
+    )
+
+    assert "ScaffoldPaperResult" in (finding.scaffold or "")
+    assert "created_dirs: List[Path]" in (finding.scaffold or "")
+    assert "created_files: List[Path]" in (finding.scaffold or "")
+    assert "skipped_files: List[Path]" in (finding.scaffold or "")
+
+
 def test_ignores_to_dict_return_dict_serialization_boundary(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
