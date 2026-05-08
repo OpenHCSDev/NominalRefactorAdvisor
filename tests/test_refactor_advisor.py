@@ -3682,6 +3682,24 @@ def test_detects_repeated_structural_type_annotation_alias_need(
     )
 
 
+def test_semantic_type_alias_derives_domain_alias_names(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom collections.abc import Callable\n\n\nclass ConstructorArg: ...\n\n\nclass Document:\n    def lines(self, sort_key: Callable[[str], tuple[str, int, str]]) -> list[str]: ...\n    def mobile(self, sort_key: Callable[[str], tuple[str, int, str]]) -> None: ...\n\n\nclass ConstructorVariantSpec:\n    kwargs: tuple[tuple[str, ConstructorArg], ...]\n    defaults: tuple[tuple[str, ConstructorArg], ...]\n",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "semantic_type_alias"
+    ]
+
+    scaffolds = "\n".join((finding.scaffold or "" for finding in findings))
+    assert "SortKey = Callable[[str], tuple[str, int, str]]" in scaffolds
+    assert "_ConstructorArgShape = tuple[tuple[str, ConstructorArg], ...]" in scaffolds
+
+
 def test_detects_semantic_tag_tuple_boilerplate(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

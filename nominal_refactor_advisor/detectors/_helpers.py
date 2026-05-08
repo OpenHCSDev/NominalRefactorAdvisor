@@ -10696,10 +10696,15 @@ _STRUCTURAL_ALIAS_LEAF_NAMES = frozenset(
         "TypeAlias",
         "TypeVar",
         "Union",
+        "bool",
+        "bytes",
         "dict",
+        "float",
         "frozenset",
+        "int",
         "list",
         "set",
+        "str",
         "tuple",
     }
 )
@@ -10738,17 +10743,51 @@ def _structural_annotation_complexity(node: ast.AST) -> int:
 
 
 def _domain_annotation_names(node: ast.AST) -> tuple[str, ...]:
-    return tuple(
-        name
-        for name in _annotation_type_names(node)
-        if name not in _STRUCTURAL_ALIAS_LEAF_NAMES
+    names: list[str] = []
+
+    def visit(current: ast.AST) -> None:
+        if isinstance(current, ast.Name):
+            if current.id not in _STRUCTURAL_ALIAS_LEAF_NAMES:
+                names.append(current.id)
+            return
+        if isinstance(current, ast.Attribute):
+            if current.attr not in _STRUCTURAL_ALIAS_LEAF_NAMES:
+                names.append(current.attr)
+            return
+        for child in ast.iter_child_nodes(current):
+            visit(child)
+
+    visit(node)
+    return tuple(dict.fromkeys(names))
+
+
+def _semantic_alias_name_from_owner_symbols(
+    owner_symbols: Sequence[str],
+) -> str | None:
+    owner_leaf_names = tuple(
+        (
+            symbol.rsplit(".", 1)[-1]
+            .removeprefix("*")
+            .removeprefix("*")
+            .replace(" return", "")
+        )
+        for symbol in owner_symbols
     )
+    if len(frozenset(owner_leaf_names)) != 1:
+        return None
+    leaf_name = owner_leaf_names[0]
+    if not leaf_name.replace("_", "").isalnum():
+        return None
+    return "".join(part.title() for part in leaf_name.split("_") if part)
 
 
-def _semantic_alias_name(annotation: ast.AST) -> str:
+def _semantic_alias_name(annotation: ast.AST, owner_symbols: Sequence[str]) -> str:
+    owner_alias_name = _semantic_alias_name_from_owner_symbols(owner_symbols)
+    if owner_alias_name is not None:
+        return owner_alias_name
     domain_names = _domain_annotation_names(annotation)
     if len(domain_names) >= 2:
-        return "_" + "".join(domain_names[:2])
+        return "_" + "".join(domain_names[:2]) + "Shape"
     if len(domain_names) == 1:
         return f"_{domain_names[0]}Shape"
     root_name = _annotation_root_name(annotation) or "Semantic"
@@ -10861,7 +10900,10 @@ def _semantic_type_alias_candidates(
                 annotation_text=annotation_text,
                 occurrence_count=len(occurrences),
                 owner_symbols=tuple(symbol for _, symbol, _, _ in occurrences[:8]),
-                suggested_alias_name=_semantic_alias_name(annotation),
+                suggested_alias_name=_semantic_alias_name(
+                    annotation,
+                    tuple(symbol for _, symbol, _, _ in occurrences[:8]),
+                ),
             )
         )
     return tuple(candidates)
