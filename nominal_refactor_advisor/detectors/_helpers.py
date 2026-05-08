@@ -12096,6 +12096,8 @@ def _identity_keyword_forwarding_shell_candidate(
     returned = body[0].value
     if not isinstance(returned, ast.Call) or returned.args:
         return
+    if _call_targets_nominal_owner(returned.func):
+        return
     parameter_names = _FunctionSignatureView(function).explicit_parameter_names
     if not parameter_names or any(
         (keyword.arg is None for keyword in returned.keywords)
@@ -12134,6 +12136,15 @@ def _identity_keyword_forwarding_shell_candidates(
         _identity_keyword_forwarding_shell_candidate,
         sort_key=lambda item: (item.file_path, item.line, item.function_name),
     )
+
+
+def _call_targets_nominal_owner(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name) and node.id == "cls":
+        return True
+    if isinstance(node, ast.Attribute):
+        parts = _ast_attribute_chain(node)
+        return parts is not None and parts[0] in {"self", "cls"}
+    return False
 
 
 def _none_check_matches_name(node: ast.Compare, parameter_name: str) -> bool:

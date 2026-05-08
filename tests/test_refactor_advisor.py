@@ -3901,6 +3901,23 @@ def test_ignores_non_shell_same_name_keyword_call(tmp_path: Path) -> None:
     )
 
 
+def test_identity_keyword_forwarding_ignores_owned_semantic_surfaces(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Stats:\n    @classmethod\n    def from_counts(cls, *, line_count, theorem_count):\n        return cls(line_count=line_count, theorem_count=theorem_count)\n\n\nclass ActionSpec:\n    def error_message(self, *, paper_id, error):\n        return self.error_template.format(paper_id=paper_id, error=error)\n",
+    )
+
+    assert not any(
+        (
+            finding.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
