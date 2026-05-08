@@ -83,6 +83,10 @@ from ..semantic_match import (
     single_return_value,
 )
 from ..semantic_description_length import CompressionCertificate
+from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_shape_algebra import (
+    InjectiveTypeRegistryProof,
+)
 from ..ast_tools import (
     AccessorWrapperCandidate,
     AccessorWrapperObservationFamily,
@@ -1567,17 +1571,21 @@ def _build_private_cohort_candidate(
     config: DetectorConfig,
 ) -> PrivateCohortShouldBeModuleCandidate | None:
     min_symbol_count = max(4, config.min_registration_sites + 2)
-    if len(members) < min_symbol_count:
-        return None
     member_names = {member.symbol for member in members}
     total_cohort_lines = sum(member.line_count for member in members)
-    if total_cohort_lines < max(60, config.min_orchestration_function_lines * 3):
-        return None
     component_reference_edges = sum(
         (
             1
             for left, right in reference_edges
             if left in member_names and right in member_names
+        )
+    )
+    external_reference_edges = sum(
+        (
+            1
+            for member in members
+            for referenced_symbol in member.referenced_private_symbols
+            if referenced_symbol not in member_names
         )
     )
     component_lexical_edges = sum(
@@ -1587,8 +1595,7 @@ def _build_private_cohort_candidate(
             if left in member_names and right in member_names
         )
     )
-    if component_reference_edges + component_lexical_edges < len(member_names) - 1:
-        return None
+    internal_edge_count = component_reference_edges + component_lexical_edges
     token_counts = Counter(token for member in members for token in member.name_tokens)
     discovered_tokens = tuple(
         (
@@ -1603,20 +1610,35 @@ def _build_private_cohort_candidate(
     ordered_shared_tokens = tuple(
         dict.fromkeys((*(shared_tokens or ()), *discovered_tokens))
     )
-    if len(ordered_shared_tokens) < 2 and component_reference_edges < max(
-        2, len(member_names) // 2
-    ):
-        return None
-    return PrivateCohortShouldBeModuleCandidate(
-        file_path=str(module.path),
-        module_name=module.module_name,
-        module_line_count=module_line_count,
-        total_cohort_lines=total_cohort_lines,
-        shared_tokens=ordered_shared_tokens[:4],
-        reference_edge_count=component_reference_edges,
-        lexical_edge_count=component_lexical_edges,
-        symbols=members,
+    has_enough_symbols = len(members) >= min_symbol_count
+    has_enough_lines = total_cohort_lines >= max(
+        60, config.min_orchestration_function_lines * 3
     )
+    has_internal_cohesion = internal_edge_count >= len(member_names) - 1
+    has_portable_boundary = external_reference_edges <= internal_edge_count
+    has_semantic_axis = len(ordered_shared_tokens) >= 2 or (
+        component_reference_edges >= max(2, len(member_names) // 2)
+    )
+    if all(
+        (
+            has_enough_symbols,
+            has_enough_lines,
+            has_internal_cohesion,
+            has_portable_boundary,
+            has_semantic_axis,
+        )
+    ):
+        return PrivateCohortShouldBeModuleCandidate(
+            file_path=str(module.path),
+            module_name=module.module_name,
+            module_line_count=module_line_count,
+            total_cohort_lines=total_cohort_lines,
+            shared_tokens=ordered_shared_tokens[:4],
+            reference_edge_count=component_reference_edges,
+            lexical_edge_count=component_lexical_edges,
+            symbols=members,
+        )
+    return None
 
 
 def _dedupe_private_cohort_candidates(
@@ -4474,6 +4496,521 @@ def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     return _class_annassign_target_names(node)
 
 
+def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
+    signatures: dict[str, str] = {}
+    for statement in node.body:
+        if not isinstance(statement, ast.AnnAssign) or not isinstance(
+            statement.target, ast.Name
+        ):
+            continue
+        annotation_text = ast.unparse(statement.annotation)
+        if annotation_text.startswith("ClassVar") or annotation_text.startswith(
+            "typing.ClassVar"
+        ):
+            continue
+        value_fingerprint = (
+            ast.dump(statement.value, include_attributes=False)
+            if statement.value is not None
+            else ""
+        )
+        signatures[statement.target.id] = f"{annotation_text}={value_fingerprint}"
+    return signatures
+
+
+def _dataclass_companion_surface_role(
+    authority_name: str, companion_name: str
+) -> str | None:
+    authority_tokens = frozenset(_ordered_class_name_tokens(authority_name))
+    companion_tokens = frozenset(_ordered_class_name_tokens(companion_name))
+    if not authority_tokens or not companion_tokens:
+        return None
+    if not authority_tokens < companion_tokens:
+        return None
+    role_tokens = sorted_tuple(companion_tokens - authority_tokens)
+    if not role_tokens:
+        return None
+    return "_".join(role_tokens)
+
+
+def _manual_companion_dataclass_surface_certificate(
+    *,
+    authority_fields: dict[str, str],
+    companion_fields: dict[str, str],
+    shared_field_names: tuple[str, ...],
+) -> CompressionCertificate:
+    companion_residue = frozenset(companion_fields) - frozenset(shared_field_names)
+    authority_residue = frozenset(authority_fields) - frozenset(shared_field_names)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=len(authority_fields) + len(companion_fields),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("schema_authority", "companion_surface_generator")
+        ),
+        semantic_axes=(
+            (field_name, authority_fields[field_name])
+            for field_name in shared_field_names
+        ),
+        residual_object_count=len(companion_residue | authority_residue),
+        independent_source_count=2,
+    )
+
+
+def _object_family_compression_certificate(
+    *,
+    manual_object_count: int,
+    shared_objects: tuple[str, ...],
+    semantic_axes: tuple[object, ...],
+    per_axis_objects: tuple[str, ...] = (),
+    per_source_objects: tuple[str, ...] = (),
+    residual_object_count: int = 0,
+    independent_source_count: int = 1,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=manual_object_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=shared_objects,
+            per_axis_objects=per_axis_objects,
+            per_source_objects=per_source_objects,
+        ),
+        semantic_axes=semantic_axes,
+        residual_object_count=residual_object_count,
+        independent_source_count=independent_source_count,
+    )
+
+
+CompanionDataclassSurfaceProjection: TypeAlias = tuple[
+    str,
+    dict[str, str],
+    dict[str, str],
+    tuple[str, ...],
+]
+
+
+def _companion_surface_role_unless_inherited(
+    authority_node: ast.ClassDef, companion_node: ast.ClassDef
+) -> str | None:
+    surface_role_name = _dataclass_companion_surface_role(
+        authority_node.name, companion_node.name
+    )
+    if surface_role_name is None:
+        return None
+    if authority_node.name in _declared_base_names(companion_node):
+        return None
+    return surface_role_name
+
+
+def _companion_dataclass_field_projection(
+    authority_node: ast.ClassDef, companion_node: ast.ClassDef
+) -> tuple[dict[str, str], dict[str, str], tuple[str, ...]] | None:
+    authority_fields = _dataclass_field_signature_map(authority_node)
+    companion_fields = _dataclass_field_signature_map(companion_node)
+    if not authority_fields or not companion_fields:
+        return None
+    shared_field_names = tuple(
+        (
+            field_name
+            for field_name, annotation_text in authority_fields.items()
+            if companion_fields.get(field_name) == annotation_text
+        )
+    )
+    if frozenset(shared_field_names) != frozenset(authority_fields):
+        return None
+    return authority_fields, companion_fields, shared_field_names
+
+
+def _companion_dataclass_surface_projection(
+    authority_node: ast.ClassDef, companion_node: ast.ClassDef
+) -> CompanionDataclassSurfaceProjection | None:
+    surface_role_name = _companion_surface_role_unless_inherited(
+        authority_node, companion_node
+    )
+    field_projection = _companion_dataclass_field_projection(
+        authority_node, companion_node
+    )
+    if surface_role_name is None or field_projection is None:
+        return None
+    authority_fields, companion_fields, shared_field_names = field_projection
+    return surface_role_name, authority_fields, companion_fields, shared_field_names
+
+
+def _manual_companion_dataclass_surface_candidate_for_pair(
+    module: ParsedModule, authority_node: ast.ClassDef, companion_node: ast.ClassDef
+) -> "ManualCompanionDataclassSurfaceCandidate | None":
+    projection = _companion_dataclass_surface_projection(authority_node, companion_node)
+    if projection is None:
+        return None
+    surface_role_name, authority_fields, companion_fields, shared_field_names = (
+        projection
+    )
+    certificate = _manual_companion_dataclass_surface_certificate(
+        authority_fields=authority_fields,
+        companion_fields=companion_fields,
+        shared_field_names=shared_field_names,
+    )
+    if not certificate.pays_rent:
+        return None
+    return ManualCompanionDataclassSurfaceCandidate(
+        file_path=str(module.path),
+        line=companion_node.lineno,
+        authority_class_name=authority_node.name,
+        companion_class_name=companion_node.name,
+        surface_role_name=surface_role_name,
+        shared_field_names=shared_field_names,
+        companion_only_field_names=sorted_tuple(
+            frozenset(companion_fields) - frozenset(shared_field_names)
+        ),
+        authority_only_field_names=sorted_tuple(
+            frozenset(authority_fields) - frozenset(shared_field_names)
+        ),
+        compression_certificate=certificate,
+        evidence_locations=(
+            SourceLocation(
+                str(module.path), authority_node.lineno, authority_node.name
+            ),
+            SourceLocation(
+                str(module.path), companion_node.lineno, companion_node.name
+            ),
+        ),
+    )
+
+
+def _manual_companion_dataclass_surface_candidates(
+    module: ParsedModule,
+) -> tuple["ManualCompanionDataclassSurfaceCandidate", ...]:
+    dataclass_nodes = tuple(
+        (
+            node
+            for node in module.module.body
+            if isinstance(node, ast.ClassDef) and _is_dataclass_class(node)
+        )
+    )
+    candidates: list[ManualCompanionDataclassSurfaceCandidate] = []
+    for left_node, right_node in combinations(dataclass_nodes, 2):
+        for authority_node, companion_node in (
+            (left_node, right_node),
+            (right_node, left_node),
+        ):
+            candidate = _manual_companion_dataclass_surface_candidate_for_pair(
+                module, authority_node, companion_node
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+                break
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.line, item.companion_class_name),
+    )
+
+
+def _literal_bridge_axis_cases(
+    observation: LiteralDispatchObservation,
+) -> tuple[str, tuple[str, ...]] | None:
+    if len(observation.literal_cases) < 2:
+        return None
+    if not any(
+        (
+            token in _ordered_class_name_tokens(observation.axis_expression)
+            for token in ("backend", "kind", "type", "format", "mode")
+        )
+    ):
+        return None
+    return observation.axis_expression, sorted_tuple(observation.literal_cases)
+
+
+def _bridge_operation_name(symbol: str) -> str:
+    return symbol.rsplit(".", 1)[-1].removesuffix(":inline-literal-dispatch")
+
+
+def _bridge_axis_family_compression_certificate(
+    *,
+    function_count: int,
+    case_count: int,
+    semantic_axes: tuple[object, ...],
+) -> CompressionCertificate:
+    return _object_family_compression_certificate(
+        manual_object_count=function_count * case_count,
+        shared_objects=("bridge_abc",),
+        per_axis_objects=("bridge_case",),
+        per_source_objects=("operation_hook",),
+        semantic_axes=semantic_axes,
+    )
+
+
+def _bridge_axis_dispatch_family_candidates(
+    module: ParsedModule,
+) -> tuple["BridgeAxisDispatchFamilyCandidate", ...]:
+    grouped: dict[tuple[str, tuple[str, ...]], list[LiteralDispatchObservation]] = (
+        defaultdict(list)
+    )
+    for family in (
+        StringLiteralDispatchObservationFamily,
+        InlineStringLiteralDispatchObservationFamily,
+    ):
+        for observation in collect_family_items(module, family):
+            axis_cases = _literal_bridge_axis_cases(observation)
+            if axis_cases is not None:
+                grouped[axis_cases].append(observation)
+    candidates: list[BridgeAxisDispatchFamilyCandidate] = []
+    for (axis_expression, literal_cases), observations in grouped.items():
+        symbols = tuple(
+            dict.fromkeys(
+                (_bridge_operation_name(item.symbol) for item in observations)
+            )
+        )
+        if len(symbols) < 3:
+            continue
+        ordered_observations = sorted_tuple(
+            observations, key=lambda item: (item.line, item.symbol)
+        )
+        line_numbers = tuple((item.line for item in ordered_observations))
+        operation_names = sorted_tuple(
+            {_bridge_operation_name(symbol) for symbol in symbols}
+        )
+        certificate = _bridge_axis_family_compression_certificate(
+            function_count=len(symbols),
+            case_count=len(literal_cases),
+            semantic_axes=(
+                ("axis", axis_expression),
+                ("cases", literal_cases),
+                ("operations", operation_names),
+            ),
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            BridgeAxisDispatchFamilyCandidate(
+                file_path=str(module.path),
+                line=line_numbers[0],
+                axis_expression=axis_expression,
+                literal_cases=literal_cases,
+                function_names=symbols,
+                operation_names=operation_names,
+                line_numbers=line_numbers,
+                line_count=sum((len(item.branch_lines) for item in observations)),
+                compression_certificate=certificate,
+            )
+        )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.axis_expression)
+    )
+
+
+_ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES = frozenset(
+    {
+        "__array_interface__",
+        "__array_namespace__",
+        "__cuda_array_interface__",
+        "device",
+        "dtype",
+        "ndim",
+        "shape",
+        "size",
+    }
+)
+
+
+def _array_protocol_probe_bridge_certificate(
+    *,
+    function_count: int,
+    attribute_names: tuple[str, ...],
+) -> CompressionCertificate:
+    return _object_family_compression_certificate(
+        manual_object_count=function_count * len(attribute_names),
+        shared_objects=("array_bridge_abc",),
+        per_axis_objects=("capability_property",),
+        per_source_objects=("operation_hook",),
+        semantic_axes=(("array_protocol_attrs", attribute_names),),
+    )
+
+
+def _array_protocol_probe_bridge_candidates(
+    module: ParsedModule,
+) -> tuple["ArrayProtocolProbeBridgeCandidate", ...]:
+    probes_by_symbol: dict[str, list[AttributeProbeObservation]] = defaultdict(list)
+    function_ranges = tuple(
+        (
+            qualname,
+            function.lineno,
+            function.end_lineno or function.lineno,
+        )
+        for qualname, function in _iter_named_functions(module)
+    )
+    for probe in collect_family_items(module, AttributeProbeObservationFamily):
+        if probe.observed_attribute not in _ARRAY_PROTOCOL_BRIDGE_ATTRIBUTES:
+            continue
+        owner_symbol = next(
+            (
+                qualname
+                for qualname, start_line, end_line in function_ranges
+                if start_line <= probe.line <= end_line
+            ),
+            probe.symbol,
+        )
+        probes_by_symbol[owner_symbol].append(probe)
+    operation_symbols = tuple(
+        symbol
+        for symbol, probes in sorted(probes_by_symbol.items())
+        if len({probe.observed_attribute for probe in probes}) >= 2
+    )
+    if len(operation_symbols) < 3:
+        return ()
+    shared_attributes = sorted_tuple(
+        set.intersection(
+            *(
+                {
+                    probe.observed_attribute
+                    for probe in probes_by_symbol[symbol]
+                    if probe.observed_attribute is not None
+                }
+                for symbol in operation_symbols
+            )
+        )
+    )
+    if len(shared_attributes) < 2:
+        return ()
+    line_numbers = tuple(
+        min(probe.line for probe in probes_by_symbol[symbol])
+        for symbol in operation_symbols
+    )
+    certificate = _array_protocol_probe_bridge_certificate(
+        function_count=len(operation_symbols),
+        attribute_names=shared_attributes,
+    )
+    if not certificate.pays_rent:
+        return ()
+    return (
+        ArrayProtocolProbeBridgeCandidate(
+            file_path=str(module.path),
+            line=line_numbers[0],
+            function_names=operation_symbols,
+            attribute_names=shared_attributes,
+            line_numbers=line_numbers,
+            probe_count=sum(
+                (len(probes_by_symbol[symbol]) for symbol in operation_symbols)
+            ),
+            compression_certificate=certificate,
+        ),
+    )
+
+
+_NON_LIFECYCLE_STAGE_CALL_NAMES = frozenset(
+    {
+        "Any",
+        "TypeError",
+        "Visitor",
+        "_walk_nodes",
+        "any",
+        "bind_all",
+        "cast",
+        "dict",
+        "frozenset",
+        "isinstance",
+        "iter",
+        "len",
+        "list",
+        "next",
+        "of",
+        "registered_effect_steps",
+        "set",
+        "tuple",
+        "type",
+        "unwrap_or_none",
+        "visit",
+    }
+)
+
+
+def _is_domain_lifecycle_stage_sequence(stage_sequence: tuple[str, ...]) -> bool:
+    return bool(
+        len(stage_sequence) >= 3
+        and all(
+            (
+                stage_name not in _NON_LIFECYCLE_STAGE_CALL_NAMES
+                for stage_name in stage_sequence
+            )
+        )
+        and any(
+            ("_" in stage_name or len(stage_name) >= 6 for stage_name in stage_sequence)
+        )
+    )
+
+
+def _function_call_stage_sequence(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    call_names: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if node is function:
+                self.generic_visit(node)
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node: ast.Call) -> None:
+            call_name = _call_name(node.func)
+            if call_name is not None:
+                call_names.append(call_name)
+            self.generic_visit(node)
+
+    Visitor().visit(function)
+    return tuple(call_names)
+
+
+def _lifecycle_stage_sequence_certificate(
+    *, function_count: int, stage_names: tuple[str, ...]
+) -> CompressionCertificate:
+    return _object_family_compression_certificate(
+        manual_object_count=function_count * len(stage_names),
+        shared_objects=("lifecycle_abc",),
+        per_axis_objects=("stage_hook",),
+        per_source_objects=("implementation_residue",),
+        semantic_axes=(("stage_sequence", stage_names),),
+    )
+
+
+def _lifecycle_stage_sequence_candidates(
+    module: ParsedModule,
+) -> tuple["LifecycleStageSequenceCandidate", ...]:
+    grouped: dict[
+        tuple[str, ...], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]
+    ] = defaultdict(list)
+    for qualname, function in _iter_named_functions(module):
+        if "." in qualname:
+            continue
+        stage_sequence = _function_call_stage_sequence(function)
+        if _is_domain_lifecycle_stage_sequence(stage_sequence):
+            grouped[stage_sequence].append((qualname, function))
+    candidates: list[LifecycleStageSequenceCandidate] = []
+    for stage_sequence, functions in grouped.items():
+        if len(functions) < 3:
+            continue
+        ordered = sorted_tuple(functions, key=lambda item: (item[1].lineno, item[0]))
+        function_names = tuple((name for name, _ in ordered))
+        line_numbers = tuple((function.lineno for _, function in ordered))
+        certificate = _lifecycle_stage_sequence_certificate(
+            function_count=len(function_names), stage_names=stage_sequence
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            LifecycleStageSequenceCandidate(
+                file_path=str(module.path),
+                line=line_numbers[0],
+                function_names=function_names,
+                stage_names=stage_sequence,
+                line_numbers=line_numbers,
+                line_count=sum(
+                    (
+                        len(_trim_docstring_body(function.body))
+                        for _, function in ordered
+                    )
+                ),
+                compression_certificate=certificate,
+            )
+        )
+    return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
+
+
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
@@ -5689,6 +6226,82 @@ def _registered_keyed_case_names(
     )
 
 
+def _concrete_indexed_descendant_classes(
+    class_index: ClassFamilyIndex, indexed_class: IndexedClass
+) -> tuple[IndexedClass, ...]:
+    return tuple(
+        (
+            descendant
+            for descendant in _indexed_descendant_classes(
+                class_index, indexed_class.symbol
+            )
+            if not _is_abstract_class(descendant.node)
+        )
+    )
+
+
+def _registered_keyed_type_names_by_key(
+    class_index: ClassFamilyIndex,
+    indexed_class: IndexedClass,
+    registry_key_attr_name: str,
+) -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = defaultdict(list)
+    for descendant in _concrete_indexed_descendant_classes(class_index, indexed_class):
+        assignment = _class_direct_assignments(descendant.node).get(
+            registry_key_attr_name
+        )
+        if assignment is None:
+            continue
+        grouped[ast.unparse(assignment)].append(
+            _indexed_class_display_name(descendant, class_index)
+        )
+    return {
+        key_name: sorted_tuple(type_names)
+        for key_name, type_names in sorted(grouped.items())
+    }
+
+
+def _registry_reverse_lookup_method_names(
+    node: ast.ClassDef,
+) -> tuple[str, ...]:
+    return tuple(
+        (
+            method.name
+            for method in _iter_class_methods(node)
+            if _is_classmethod(method)
+            and _method_references_cls_registry(method)
+            and any((token in method.name for token in ("class", "type", "reverse")))
+        )
+    )
+
+
+def _keyed_type_registry_injectivity_proof(
+    class_index: ClassFamilyIndex,
+    indexed_class: IndexedClass,
+    registry_key_attr_name: str,
+    *,
+    key_type_name: str,
+    consumer_symbols: tuple[str, ...],
+) -> InjectiveTypeRegistryProof:
+    registered_type_names = tuple(
+        (
+            _indexed_class_display_name(descendant, class_index)
+            for descendant in _concrete_indexed_descendant_classes(
+                class_index, indexed_class
+            )
+        )
+    )
+    return InjectiveTypeRegistryProof.from_type_map(
+        key_axis_name=key_type_name,
+        type_names_by_key=_registered_keyed_type_names_by_key(
+            class_index, indexed_class, registry_key_attr_name
+        ),
+        registered_type_names=registered_type_names,
+        reverse_lookup_names=_registry_reverse_lookup_method_names(indexed_class.node),
+        consumer_symbols=consumer_symbols,
+    )
+
+
 def _registry_consumer_symbols(
     modules: Sequence[ParsedModule],
     *,
@@ -5732,13 +6345,14 @@ def _registry_maturity_missing_signals(
     return tuple(missing)
 
 
-def _premature_registry_infrastructure_candidates(
-    modules: Sequence[ParsedModule], config: DetectorConfig
-) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
+def _keyed_registry_axis_fact_records(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[KeyedRegistryAxisFact, ...]:
     class_index = build_class_family_index(list(modules))
     min_case_count = max(2, config.min_registration_sites)
     min_consumer_count = max(2, config.min_registration_sites)
-    candidates: list[PrematureRegistryInfrastructureCandidate] = []
+    facts: list[KeyedRegistryAxisFact] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
@@ -5763,17 +6377,8 @@ def _premature_registry_infrastructure_candidates(
         registered_case_names = _registered_keyed_case_names(
             class_index, indexed_class, registry_key_attr_name
         )
-        missing_maturity_signals = _registry_maturity_missing_signals(
-            registered_case_count=len(registered_case_names),
-            lookup_method_names=lookup_method_names,
-            consumer_count=len(consumer_symbols),
-            min_case_count=min_case_count,
-            min_consumer_count=min_consumer_count,
-        )
-        if not missing_maturity_signals:
-            continue
-        candidates.append(
-            PrematureRegistryInfrastructureCandidate(
+        facts.append(
+            KeyedRegistryAxisFact(
                 file_path=indexed_class.file_path,
                 line=indexed_class.line,
                 class_name=family_name,
@@ -5782,10 +6387,659 @@ def _premature_registry_infrastructure_candidates(
                 lookup_method_names=lookup_method_names,
                 registered_case_names=registered_case_names,
                 consumer_symbols=consumer_symbols,
-                missing_maturity_signals=missing_maturity_signals,
+                missing_maturity_signals=_registry_maturity_missing_signals(
+                    registered_case_count=len(registered_case_names),
+                    lookup_method_names=lookup_method_names,
+                    consumer_count=len(consumer_symbols),
+                    min_case_count=min_case_count,
+                    min_consumer_count=min_consumer_count,
+                ),
+                injectivity_proof=_keyed_type_registry_injectivity_proof(
+                    class_index,
+                    indexed_class,
+                    registry_key_attr_name,
+                    key_type_name=key_type_name,
+                    consumer_symbols=consumer_symbols,
+                ),
+            )
+        )
+    return tuple(facts)
+
+
+def _premature_registry_infrastructure_candidates(
+    modules: Sequence[ParsedModule], config: DetectorConfig
+) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
+    candidates: list[PrematureRegistryInfrastructureCandidate] = []
+    for fact in _keyed_registry_axis_fact_records(modules, config):
+        if not fact.missing_maturity_signals:
+            continue
+        candidates.append(
+            PrematureRegistryInfrastructureCandidate(
+                file_path=fact.file_path,
+                line=fact.line,
+                class_name=fact.class_name,
+                key_type_name=fact.key_type_name,
+                registry_key_attr_name=fact.registry_key_attr_name,
+                lookup_method_names=fact.lookup_method_names,
+                registered_case_names=fact.registered_case_names,
+                consumer_symbols=fact.consumer_symbols,
+                missing_maturity_signals=fact.missing_maturity_signals,
             )
         )
     return tuple(candidates)
+
+
+def _non_injective_type_registry_candidates(
+    modules: Sequence[ParsedModule], config: DetectorConfig
+) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
+    candidates: list[NonInjectiveTypeRegistryCandidate] = []
+    for fact in _keyed_registry_axis_fact_records(modules, config):
+        proof = fact.injectivity_proof
+        if not (
+            proof.duplicate_key_names
+            or proof.duplicate_type_names
+            or proof.missing_type_names
+        ):
+            continue
+        candidates.append(
+            NonInjectiveTypeRegistryCandidate(
+                file_path=fact.file_path,
+                line=fact.line,
+                class_name=fact.class_name,
+                key_type_name=fact.key_type_name,
+                registry_key_attr_name=fact.registry_key_attr_name,
+                lookup_method_names=fact.lookup_method_names,
+                registered_case_names=fact.registered_case_names,
+                consumer_symbols=fact.consumer_symbols,
+                duplicate_key_names=proof.duplicate_key_names,
+                duplicate_type_names=proof.duplicate_type_names,
+                missing_type_names=proof.missing_type_names,
+                injectivity_proof=proof,
+            )
+        )
+    return tuple(candidates)
+
+
+def _injective_type_registry_candidates(
+    modules: Sequence[ParsedModule], config: DetectorConfig
+) -> tuple[InjectiveTypeRegistryCandidate, ...]:
+    candidates: list[InjectiveTypeRegistryCandidate] = []
+    for fact in _keyed_registry_axis_fact_records(modules, config):
+        proof = fact.injectivity_proof
+        if fact.missing_maturity_signals:
+            continue
+        if (
+            proof.duplicate_key_names
+            or proof.duplicate_type_names
+            or proof.missing_type_names
+        ):
+            continue
+        candidates.append(
+            InjectiveTypeRegistryCandidate(
+                file_path=fact.file_path,
+                line=fact.line,
+                class_name=fact.class_name,
+                key_type_name=fact.key_type_name,
+                registry_key_attr_name=fact.registry_key_attr_name,
+                lookup_method_names=fact.lookup_method_names,
+                registered_case_names=fact.registered_case_names,
+                consumer_symbols=fact.consumer_symbols,
+                injectivity_proof=proof,
+            )
+        )
+    return tuple(candidates)
+
+
+def _mature_injective_registry_facts(
+    modules: Sequence[ParsedModule], config: DetectorConfig
+) -> tuple[KeyedRegistryAxisFact, ...]:
+    return tuple(
+        (
+            fact
+            for fact in _keyed_registry_axis_fact_records(modules, config)
+            if not fact.missing_maturity_signals
+            and not fact.injectivity_proof.duplicate_key_names
+            and not fact.injectivity_proof.duplicate_type_names
+            and not fact.injectivity_proof.missing_type_names
+        )
+    )
+
+
+_REGISTRY_PROJECTION_EXPORT_ROSTER = "export_roster"
+_REGISTRY_PROJECTION_KEY_ROSTER = "key_roster"
+_REGISTRY_PROJECTION_TYPE_ROSTER = "type_roster"
+_REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX = "key_to_type_index"
+_REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX = "type_to_key_index"
+_REGISTRY_PROJECTION_MAPPING_KINDS = frozenset(
+    {
+        _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
+        _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX,
+    }
+)
+_REGISTRY_PROJECTION_TYPE_SURFACE_KINDS = frozenset(
+    {
+        _REGISTRY_PROJECTION_TYPE_ROSTER,
+        _REGISTRY_PROJECTION_EXPORT_ROSTER,
+        _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX,
+    }
+)
+
+
+_REGISTRY_PROJECTION_POLICY_HINT_TERMS = frozenset(
+    {
+        "allow",
+        "allowed",
+        "deploy",
+        "enabled",
+        "experimental",
+        "persisted",
+        "public",
+        "smoke",
+        "stable",
+        "supported",
+    }
+)
+
+
+class _RegistryProjectionSurfaceAnalyzer:
+    role_terms: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
+        ("serializer_map", ("serial", "deserial", "codec", "encode", "decode")),
+        ("config_choices", ("config", "setting", "schema", "validation")),
+        ("cli_choices", ("cli", "arg", "option", "choice", "command")),
+        ("docs_catalog", ("docs", "doc", "catalog", "index")),
+        ("ui_options", ("ui", "view", "menu", "dropdown")),
+    )
+
+    def import_aliases(
+        self,
+        module: ParsedModule,
+        *,
+        registry_module: ParsedModule,
+        fact: KeyedRegistryAxisFact,
+    ) -> dict[str, str]:
+        registry_module_name = registry_module.module_name
+        canonical_names = frozenset(
+            (
+                fact.class_name,
+                fact.key_type_name,
+                *fact.injectivity_proof.registered_type_names,
+            )
+        )
+        aliases: dict[str, str] = {}
+        for local_name, qualified_name in _module_import_aliases(module).items():
+            for canonical_name in canonical_names:
+                if qualified_name == f"{registry_module_name}.{canonical_name}":
+                    aliases[local_name] = canonical_name
+        return aliases
+
+    def imports_axis(
+        self,
+        module: ParsedModule,
+        *,
+        registry_module: ParsedModule,
+        fact: KeyedRegistryAxisFact,
+    ) -> bool:
+        aliases = self.import_aliases(
+            module, registry_module=registry_module, fact=fact
+        )
+        return bool(
+            fact.key_type_name in aliases.values()
+            or fact.class_name in aliases.values()
+            or frozenset(aliases.values())
+            & frozenset(fact.injectivity_proof.registered_type_names)
+        )
+
+    def reference_name(
+        self, node: ast.AST, import_aliases: Mapping[str, str] | None = None
+    ) -> str | None:
+        import_aliases = import_aliases or {}
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return import_aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            parts = _ast_attribute_chain(node)
+            if parts is None:
+                return ast.unparse(node)
+            head, *tail = parts
+            canonical_head = import_aliases.get(head, head)
+            return ".".join((canonical_head, *tail))
+        return None
+
+    def surface_kind(
+        self,
+        *,
+        surface_name: str,
+        shared_key_names: tuple[str, ...],
+        shared_type_names: tuple[str, ...],
+        has_key_to_type_pairs: bool,
+        has_type_to_key_pairs: bool,
+    ) -> str | None:
+        if surface_name == "__all__":
+            return _REGISTRY_PROJECTION_EXPORT_ROSTER if shared_type_names else None
+        if has_key_to_type_pairs:
+            return _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX
+        if has_type_to_key_pairs:
+            return _REGISTRY_PROJECTION_TYPE_TO_KEY_INDEX
+        if shared_key_names and not shared_type_names:
+            return _REGISTRY_PROJECTION_KEY_ROSTER
+        if shared_type_names:
+            return _REGISTRY_PROJECTION_TYPE_ROSTER
+        return None
+
+    def surface_role(
+        self,
+        *,
+        file_path: str,
+        surface_name: str,
+        surface_kind: str,
+    ) -> str:
+        path = Path(file_path)
+        path_parts = tuple(part.lower() for part in path.parts)
+        stem = path.stem.lower()
+        lowered_name = surface_name.lower()
+        if "tests" in path_parts or stem.startswith("test_") or stem.endswith("_test"):
+            return "test_params"
+        text = f"{stem} {lowered_name}"
+        for role_name, terms in self.role_terms:
+            if any((term in text for term in terms)):
+                return role_name
+        if surface_kind in {
+            _REGISTRY_PROJECTION_KEY_ROSTER,
+            _REGISTRY_PROJECTION_TYPE_ROSTER,
+        }:
+            return "option_roster"
+        if surface_kind in _REGISTRY_PROJECTION_MAPPING_KINDS:
+            return "lookup_projection"
+        return "registry_projection"
+
+    def subset_policy_hint(self, surface_name: str) -> str | None:
+        lowered_name = surface_name.lower()
+        return next(
+            (
+                term
+                for term in sorted(_REGISTRY_PROJECTION_POLICY_HINT_TERMS)
+                if term in lowered_name
+            ),
+            None,
+        )
+
+    def materialization_rule(
+        self, *, surface_name: str, surface_kind: str, projection_role: str
+    ) -> str:
+        if (
+            surface_name == "__all__"
+            or surface_kind == _REGISTRY_PROJECTION_EXPORT_ROSTER
+        ):
+            return "module_all_tuple"
+        if surface_kind in _REGISTRY_PROJECTION_MAPPING_KINDS:
+            return "mapping_literal"
+        if projection_role == "test_params":
+            return "pytest_param_tuple"
+        if projection_role in {"cli_choices", "config_choices", "ui_options"}:
+            return "choices_tuple"
+        return "sorted_tuple"
+
+    def coverage_coordinates(
+        self,
+        *,
+        proof: InjectiveTypeRegistryProof,
+        surface_kind: str,
+        shared_key_names: tuple[str, ...],
+        shared_type_names: tuple[str, ...],
+    ) -> tuple[int, int, float, tuple[str, ...], tuple[str, ...]]:
+        key_count = len(proof.key_names)
+        type_count = len(proof.registered_type_names)
+        missing_key_names = sorted_tuple(
+            frozenset(proof.key_names) - frozenset(shared_key_names)
+        )
+        missing_type_names = sorted_tuple(
+            frozenset(proof.registered_type_names) - frozenset(shared_type_names)
+        )
+        if surface_kind in {
+            _REGISTRY_PROJECTION_KEY_ROSTER,
+            _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
+        }:
+            denominator = max(key_count, 1)
+            numerator = len(shared_key_names)
+        elif surface_kind in _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS:
+            denominator = max(type_count, 1)
+            numerator = len(shared_type_names)
+        else:
+            denominator = max(key_count + type_count, 1)
+            numerator = len(shared_key_names) + len(shared_type_names)
+        return (
+            key_count,
+            type_count,
+            numerator / denominator,
+            missing_key_names,
+            missing_type_names,
+        )
+
+    def projection_policy_name(self, subset_policy_hint: str | None) -> str:
+        return subset_policy_hint or "full"
+
+    def projection_target_name(self, *, surface_kind: str, projection_role: str) -> str:
+        return f"{projection_role}:{surface_kind}"
+
+    def decompression_key(
+        self,
+        *,
+        registry_class_name: str,
+        key_type_name: str,
+        projection_policy_name: str,
+        projection_target_name: str,
+        materialization_rule: str,
+    ) -> str:
+        return "|".join(
+            (
+                registry_class_name,
+                key_type_name,
+                projection_policy_name,
+                projection_target_name,
+                materialization_rule,
+            )
+        )
+
+    def candidate(
+        self,
+        *,
+        module: ParsedModule,
+        fact: KeyedRegistryAxisFact,
+        surface_name: str,
+        line: int,
+        surface_kind: str,
+        projected_names: tuple[str, ...],
+        shared_key_names: tuple[str, ...],
+        shared_type_names: tuple[str, ...],
+    ) -> RegistryProjectionSurfaceCandidate:
+        proof = fact.injectivity_proof
+        (
+            registry_key_count,
+            registry_type_count,
+            projection_coverage_ratio,
+            missing_key_names,
+            missing_type_names,
+        ) = self.coverage_coordinates(
+            proof=proof,
+            surface_kind=surface_kind,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+        )
+        projection_role = self.surface_role(
+            file_path=str(module.path),
+            surface_name=surface_name,
+            surface_kind=surface_kind,
+        )
+        projection_policy_name = self.projection_policy_name(
+            self.subset_policy_hint(surface_name)
+        )
+        projection_target_name = self.projection_target_name(
+            surface_kind=surface_kind,
+            projection_role=projection_role,
+        )
+        materialization_rule = self.materialization_rule(
+            surface_name=surface_name,
+            surface_kind=surface_kind,
+            projection_role=projection_role,
+        )
+        return RegistryProjectionSurfaceCandidate(
+            file_path=str(module.path),
+            line=line,
+            registry_class_name=fact.class_name,
+            key_type_name=fact.key_type_name,
+            surface_name=surface_name,
+            surface_kind=surface_kind,
+            projection_role=projection_role,
+            projection_policy_name=projection_policy_name,
+            projection_target_name=projection_target_name,
+            materialization_rule=materialization_rule,
+            decompression_key=self.decompression_key(
+                registry_class_name=fact.class_name,
+                key_type_name=fact.key_type_name,
+                projection_policy_name=projection_policy_name,
+                projection_target_name=projection_target_name,
+                materialization_rule=materialization_rule,
+            ),
+            projected_names=projected_names,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+            registry_key_count=registry_key_count,
+            registry_type_count=registry_type_count,
+            projection_coverage_ratio=projection_coverage_ratio,
+            missing_key_names=missing_key_names,
+            missing_type_names=missing_type_names,
+            subset_policy_hint=self.subset_policy_hint(surface_name),
+            injectivity_proof=proof,
+        )
+
+    def sequence_candidate(
+        self,
+        *,
+        module: ParsedModule,
+        fact: KeyedRegistryAxisFact,
+        surface_name: str,
+        line: int,
+        elements: tuple[ast.AST, ...],
+        import_aliases: Mapping[str, str] | None = None,
+    ) -> RegistryProjectionSurfaceCandidate | None:
+        reference_names = tuple(
+            name
+            for element in elements
+            if (name := self.reference_name(element, import_aliases)) is not None
+        )
+        proof = fact.injectivity_proof
+        shared_key_names = sorted_tuple(
+            frozenset(reference_names) & frozenset(proof.key_names)
+        )
+        shared_type_names = sorted_tuple(
+            frozenset(reference_names) & frozenset(proof.registered_type_names)
+        )
+        surface_kind = self.surface_kind(
+            surface_name=surface_name,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+            has_key_to_type_pairs=False,
+            has_type_to_key_pairs=False,
+        )
+        if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 2):
+            return None
+        return self.candidate(
+            module=module,
+            fact=fact,
+            surface_name=surface_name,
+            line=line,
+            surface_kind=surface_kind,
+            projected_names=reference_names,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+        )
+
+    def dict_candidate(
+        self,
+        *,
+        module: ParsedModule,
+        fact: KeyedRegistryAxisFact,
+        surface_name: str,
+        line: int,
+        mapping: ast.Dict,
+        import_aliases: Mapping[str, str] | None = None,
+    ) -> RegistryProjectionSurfaceCandidate | None:
+        proof = fact.injectivity_proof
+        key_names = tuple(
+            name
+            for key in mapping.keys
+            if key is not None
+            if (name := self.reference_name(key, import_aliases)) is not None
+        )
+        value_names = tuple(
+            name
+            for value in mapping.values
+            if (name := self.reference_name(value, import_aliases)) is not None
+        )
+        proof_key_names = frozenset(proof.key_names)
+        proof_type_names = frozenset(proof.registered_type_names)
+        shared_key_names = sorted_tuple(
+            (frozenset(key_names) | frozenset(value_names)) & proof_key_names
+        )
+        shared_type_names = sorted_tuple(
+            (frozenset(key_names) | frozenset(value_names)) & proof_type_names
+        )
+        has_key_to_type_pairs = bool(
+            len(frozenset(key_names) & proof_key_names) >= 2
+            and len(frozenset(value_names) & proof_type_names) >= 2
+        )
+        has_type_to_key_pairs = bool(
+            len(frozenset(key_names) & proof_type_names) >= 2
+            and len(frozenset(value_names) & proof_key_names) >= 2
+        )
+        surface_kind = self.surface_kind(
+            surface_name=surface_name,
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+            has_key_to_type_pairs=has_key_to_type_pairs,
+            has_type_to_key_pairs=has_type_to_key_pairs,
+        )
+        if surface_kind is None or (len(shared_key_names) + len(shared_type_names) < 3):
+            return None
+        return self.candidate(
+            module=module,
+            fact=fact,
+            surface_name=surface_name,
+            line=line,
+            surface_kind=surface_kind,
+            projected_names=(*key_names, *value_names),
+            shared_key_names=shared_key_names,
+            shared_type_names=shared_type_names,
+        )
+
+    def surface_candidates(
+        self, modules: Sequence[ParsedModule], config: DetectorConfig
+    ) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
+        modules_by_path = {str(module.path): module for module in modules}
+        candidates: list[RegistryProjectionSurfaceCandidate] = []
+        for fact in _mature_injective_registry_facts(modules, config):
+            registry_module = modules_by_path.get(fact.file_path)
+            if registry_module is None:
+                continue
+            for module in modules:
+                if str(module.path) == fact.file_path:
+                    import_aliases: Mapping[str, str] = {}
+                elif self.imports_axis(
+                    module, registry_module=registry_module, fact=fact
+                ):
+                    import_aliases = self.import_aliases(
+                        module, registry_module=registry_module, fact=fact
+                    )
+                else:
+                    continue
+                for surface_name, (line, elements) in _module_level_named_sequences(
+                    module
+                ).items():
+                    candidate = self.sequence_candidate(
+                        module=module,
+                        fact=fact,
+                        surface_name=surface_name,
+                        line=line,
+                        elements=elements,
+                        import_aliases=import_aliases,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
+                for surface_name, (line, mapping) in _module_level_named_dicts(
+                    module
+                ).items():
+                    candidate = self.dict_candidate(
+                        module=module,
+                        fact=fact,
+                        surface_name=surface_name,
+                        line=line,
+                        mapping=mapping,
+                        import_aliases=import_aliases,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.registry_class_name,
+                item.surface_name,
+            ),
+        )
+
+    def policy_authority_candidates(
+        self, modules: Sequence[ParsedModule], config: DetectorConfig
+    ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
+        grouped: dict[
+            tuple[str, str, str], list[RegistryProjectionSurfaceCandidate]
+        ] = defaultdict(list)
+        for candidate in self.surface_candidates(modules, config):
+            if (
+                candidate.projection_coverage_ratio >= 1.0
+                or candidate.subset_policy_hint is None
+            ):
+                continue
+            grouped[
+                candidate.registry_class_name,
+                candidate.key_type_name,
+                candidate.subset_policy_hint,
+            ].append(candidate)
+        candidates: list[RegistryProjectionPolicyAuthorityCandidate] = []
+        for (
+            registry_class_name,
+            key_type_name,
+            policy_hint,
+        ), surfaces in sorted(grouped.items()):
+            if len(surfaces) < 2:
+                continue
+            ordered = sorted_tuple(
+                surfaces,
+                key=lambda item: (item.file_path, item.line, item.surface_name),
+            )
+            candidates.append(
+                RegistryProjectionPolicyAuthorityCandidate(
+                    file_path=ordered[0].file_path,
+                    line=ordered[0].line,
+                    registry_class_name=registry_class_name,
+                    key_type_name=key_type_name,
+                    policy_hint=policy_hint,
+                    surface_names=tuple((surface.surface_name for surface in ordered)),
+                    surface_roles=sorted_tuple(
+                        {surface.projection_role for surface in ordered}
+                    ),
+                    projection_target_names=tuple(
+                        (surface.projection_target_name for surface in ordered)
+                    ),
+                    materialization_rules=tuple(
+                        (surface.materialization_rule for surface in ordered)
+                    ),
+                    decompression_keys=tuple(
+                        (surface.decompression_key for surface in ordered)
+                    ),
+                    file_paths=tuple((surface.file_path for surface in ordered)),
+                    line_numbers=tuple((surface.line for surface in ordered)),
+                    missing_key_names=sorted_tuple(
+                        {
+                            key_name
+                            for surface in ordered
+                            for key_name in surface.missing_key_names
+                        }
+                    ),
+                    missing_type_names=sorted_tuple(
+                        {
+                            type_name
+                            for surface in ordered
+                            for type_name in surface.missing_type_names
+                        }
+                    ),
+                )
+            )
+        return tuple(candidates)
+
+
+_REGISTRY_PROJECTION_SURFACE_ANALYZER = _RegistryProjectionSurfaceAnalyzer()
 
 
 def _manual_record_registration_shape(
@@ -8578,6 +9832,18 @@ class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
 
 
 @dataclass(frozen=True)
+class ManualCompanionDataclassSurfaceCandidate(EvidenceLocationsWitnessCandidate):
+    authority_class_name: str
+    companion_class_name: str
+    surface_role_name: str
+    shared_field_names: tuple[str, ...]
+    companion_only_field_names: tuple[str, ...]
+    authority_only_field_names: tuple[str, ...]
+    compression_certificate: CompressionCertificate
+    witness_name = AliasProperty[str]("companion_class_name")
+
+
+@dataclass(frozen=True)
 class ModuleKeyedSelectionHelperCandidate(EvidenceLocationsWitnessCandidate):
     rule_class_name: str
     selected_field_name: str
@@ -8794,7 +10060,12 @@ _materialize_product_records((
     _product_record_spec('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]'),
     _product_record_spec('KeyedFamilyRootCandidate', 'family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
     _product_record_spec('RepeatedKeyedFamilyCandidate', 'family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]'),
+    _product_record_spec('KeyedRegistryAxisFact', 'file_path: str; line: int; class_name: str; key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_maturity_signals: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof'),
     _product_record_spec('PrematureRegistryInfrastructureCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_maturity_signals: tuple[str, ...]', 'ClassLineWitnessCandidate'),
+    _product_record_spec('InjectiveTypeRegistryCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof', 'ClassLineWitnessCandidate'),
+    _product_record_spec('NonInjectiveTypeRegistryCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; duplicate_key_names: tuple[str, ...]; duplicate_type_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof', 'ClassLineWitnessCandidate'),
+    _product_record_spec('RegistryProjectionSurfaceCandidate', 'registry_class_name: str; key_type_name: str; surface_name: str; surface_kind: str; projection_role: str; projection_policy_name: str; projection_target_name: str; materialization_rule: str; decompression_key: str; projected_names: tuple[str, ...]; shared_key_names: tuple[str, ...]; shared_type_names: tuple[str, ...]; registry_key_count: int; registry_type_count: int; projection_coverage_ratio: float; missing_key_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; subset_policy_hint: str | None; injectivity_proof: InjectiveTypeRegistryProof', 'LineWitnessCandidate'),
+    _product_record_spec('RegistryProjectionPolicyAuthorityCandidate', 'registry_class_name: str; key_type_name: str; policy_hint: str; surface_names: tuple[str, ...]; surface_roles: tuple[str, ...]; projection_target_names: tuple[str, ...]; materialization_rules: tuple[str, ...]; decompression_keys: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; missing_key_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name="surface_names")}),
     _product_record_spec('ManualRecordRegistrationShape', 'key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]'),
     _product_record_spec('ManualKeyedRecordTableClassCandidate', 'register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
     _product_record_spec('ManualKeyedRecordTableGroupCandidate', 'file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]'),
@@ -9186,6 +10457,10 @@ _materialize_product_records((
     _product_record_spec('OptionRecordQuotientCandidate', 'class_names: tuple[str, ...]; line_numbers: tuple[int, ...]; field_names: tuple[str, ...]; default_names: tuple[str, ...]; common_base_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "class_names")}),
     _product_record_spec('IdentityKeywordForwardingShellCandidate', 'callee_name: str; forwarded_keyword_names: tuple[str, ...]; line_count: int', 'FunctionLineWitnessCandidate'),
     _product_record_spec('OptionalParameterBranchCandidate', 'parameter_name: str; annotation_text: str; observed_attribute_names: tuple[str, ...]; none_check_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('BridgeAxisDispatchFamilyCandidate', 'axis_expression: str; literal_cases: tuple[str, ...]; function_names: tuple[str, ...]; operation_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
+    _product_record_spec('ArrayProtocolProbeBridgeCandidate', 'function_names: tuple[str, ...]; attribute_names: tuple[str, ...]; line_numbers: tuple[int, ...]; probe_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
+    _product_record_spec('LifecycleStageSequenceCandidate', 'function_names: tuple[str, ...]; stage_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
+    _product_record_spec('LatentNominalFunctionFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_call_names: tuple[str, ...]; function_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('BareFunctionMethodFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_axis_name: str; shared_axis_value: str; function_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('SemanticOverlapABCOptimizationCandidate', 'base_name: str; method_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; shared_statement_count: int; varying_coordinate_count: int; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; family_method_names: tuple[str, ...]; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
     _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),

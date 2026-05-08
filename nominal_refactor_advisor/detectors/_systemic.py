@@ -1855,6 +1855,202 @@ def _registry_maturity_fanout_metrics(
 
 
 declare_candidate_rule_detector(
+    NonInjectiveTypeRegistryCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Type registry must be injective over its key axis",
+        "A nominal registry is only type-safe when each concrete implementation has one canonical key and each key resolves to one implementation. Duplicate keys, duplicate type identities, or concrete descendants without keys mean the registry cannot serve as an injective authority.",
+        "injective type registry with one stable key per concrete implementation",
+        "registry key axis aliases multiple implementation types or misses concrete descendants",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` registry axis `{candidate.key_type_name}` is not injective: "
+        f"duplicate keys {candidate.duplicate_key_names}, duplicate types "
+        f"{candidate.duplicate_type_names}, missing keyed types {candidate.missing_type_names}."
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\nclass InjectiveRegistryRow:\n    key: object\n    implementation_type: type[object]\n\n"
+        "# Build the registry from rows only after proving keys and implementation types are one-to-one."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Repair `{candidate.class_name}` before adding or keeping registry metaprogramming.\n"
+        "# Give every concrete implementation exactly one canonical key and delete aliases or duplicate key writes.\n"
+        "# If aliases are semantic, model them as an explicit alias projection instead of a second registry identity."
+    ),
+    metrics=lambda candidate: RegistrationMetrics(
+        registration_site_count=len(candidate.registered_case_names),
+        registry_name=candidate.class_name,
+    ),
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=_non_injective_type_registry_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    InjectiveTypeRegistryCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Mature injective type registry should use metaclass registration",
+        "A registry with a stable key axis, lookup lifecycle, consumer fanout, and an injective type-to-key proof has reached the point where handwritten registration mechanics are declaration noise. The metaclass should own population while implementation classes declare only their canonical key and behavior hooks.",
+        "AutoRegisterMeta-backed ABC with an injective type-key proof",
+        "registry axis proves one key per implementation type plus mature lookup and consumer fanout",
+        _CLASS_LEVEL_REGISTRATION_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` is a mature injective registry over `{candidate.key_type_name}`: "
+        f"keys {candidate.registered_case_names}, lookup {candidate.lookup_method_names}, "
+        f"consumers {candidate.consumer_symbols}; replace handwritten registry mechanics with AutoRegisterMeta."
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: _metaclass_registry_keyed_family_scaffold(
+        root_name="InjectiveRegistryFamily",
+        key_attr_name=candidate.registry_key_attr_name,
+        key_type_name=candidate.key_type_name,
+        method_defs=("run(self)",),
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace `{candidate.class_name}` handwritten `_registry` population with `AutoRegisterMeta`.\n"
+        f"# Keep `{candidate.registry_key_attr_name}` as the canonical class-level key and let the metaclass prove class-time population."
+    ),
+    metrics=lambda candidate: RegistrationMetrics(
+        registration_site_count=len(candidate.registered_case_names),
+        registry_name=candidate.class_name,
+    ),
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=_injective_type_registry_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    RegistryProjectionSurfaceCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Manual registry projection surfaces should derive from the injective registry",
+        "Once a registry proves one canonical key per implementation type, export rosters, key/type maps, and option lists are projections of that registry authority. Hand-maintaining those surfaces creates shadow authorities that can drift away from the type-safe registry.",
+        "generated projection surface derived from an injective registry proof",
+        "manual list or dict surface repeats keys/types already proven by an injective registry",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.surface_name}` is a manual `{candidate.projection_role}` "
+        f"`{candidate.surface_kind}` projection "
+        f"of injective registry `{candidate.registry_class_name}` over `{candidate.key_type_name}`: "
+        f"keys {candidate.shared_key_names}, types {candidate.shared_type_names}, "
+        f"coverage {candidate.projection_coverage_ratio:.2f}; "
+        f"target `{candidate.projection_target_name}`, "
+        f"materialization `{candidate.materialization_rule}`, "
+        f"decompression key `{candidate.decompression_key}`."
+        + (
+            f" Subset policy hint `{candidate.subset_policy_hint}` names the quotient; repeated use should be owned by a projection policy authority."
+            if candidate.subset_policy_hint is not None
+            and candidate.projection_coverage_ratio < 1.0
+            else (
+                f" Missing keys {candidate.missing_key_names} and types {candidate.missing_type_names} need a named projection policy."
+                if candidate.projection_coverage_ratio < 1.0
+                else ""
+            )
+        )
+    ),
+    evidence=lambda candidate: (
+        SourceLocation(candidate.file_path, candidate.line, candidate.surface_name),
+    ),
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\n"
+        "class RegistryProjectionSpec:\n"
+        "    registry_authority: type[object]\n"
+        "    projection_policy: str\n"
+        "    projection_target: str\n"
+        "    materialization_rule: str\n"
+        "    decompression_key: str\n\n"
+        "def derive_registry_projection(spec: RegistryProjectionSpec):\n"
+        "    return project_from_injective_registry(\n"
+        "        spec.registry_authority,\n"
+        "        policy=spec.projection_policy,\n"
+        "        target=spec.projection_target,\n"
+        "        materialization=spec.materialization_rule,\n"
+        "    )"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete `{candidate.surface_name}` as a handwritten `{candidate.projection_role}` `{candidate.surface_kind}`.\n"
+        f"# Replace it with RegistryProjectionSpec({candidate.registry_class_name}, policy={candidate.projection_policy_name!r}, target={candidate.projection_target_name!r}, materialization={candidate.materialization_rule!r}).\n"
+        + (
+            f"# Its decompression key is `{candidate.decompression_key}`; derive it from the injective key/type registry proof."
+            if candidate.projection_coverage_ratio >= 1.0
+            else (
+                f"# Its decompression key is `{candidate.decompression_key}`; derive it through an explicit `{candidate.subset_policy_hint}` projection policy."
+                if candidate.subset_policy_hint is not None
+                else f"# Either derive the full surface from `{candidate.registry_class_name}` or add a named projection policy explaining the missing keys/types."
+            )
+        )
+    ),
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.projected_names),
+        mapping_name=candidate.surface_name,
+        field_names=(
+            candidate.registry_class_name,
+            candidate.key_type_name,
+            candidate.projection_policy_name,
+            candidate.projection_target_name,
+            candidate.materialization_rule,
+        ),
+    ),
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=_REGISTRY_PROJECTION_SURFACE_ANALYZER.surface_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    RegistryProjectionPolicyAuthorityCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Repeated registry subset projections should share a nominal policy authority",
+        "A partial projection of an injective registry is a quotient of the registry axis. When several surfaces repeat the same quotient hint, the hint should become a first-class projection policy instead of living as independent allowlists.",
+        "nominal registry projection policy reused by generated subset surfaces",
+        "multiple registry projection surfaces repeat the same subset hint without one owner",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.registry_class_name}` has repeated `{candidate.policy_hint}` subset projections "
+        f"{candidate.surface_names} across roles {candidate.surface_roles}; move the quotient into one policy authority "
+        f"and materialize targets {candidate.projection_target_names} from specs."
+    ),
+    evidence=lambda candidate: candidate.evidence,
+    scaffold=lambda candidate: (
+        "class RegistryProjectionPolicy(ABC):\n"
+        "    @abstractmethod\n"
+        "    def includes_key(self, key): ...\n\n"
+        f"class {candidate.policy_hint.title()}ProjectionPolicy(RegistryProjectionPolicy):\n"
+        "    def includes_key(self, key): ...\n\n"
+        "REGISTRY_PROJECTION_SPECS = (...,)"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace repeated `{candidate.policy_hint}` subset surfaces {candidate.surface_names} with one nominal projection policy.\n"
+        f"# Generate specs for targets {candidate.projection_target_names} using decompression keys {candidate.decompression_keys}."
+    ),
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.surface_names),
+        mapping_name=f"{candidate.policy_hint}_projection_policy",
+        field_names=(
+            candidate.registry_class_name,
+            candidate.key_type_name,
+            *candidate.surface_roles,
+            *candidate.materialization_rules,
+        ),
+    ),
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=(
+        _REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates
+    ),
+)
+
+
+declare_candidate_rule_detector(
     PrematureRegistryInfrastructureCandidate,
     high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
@@ -2789,6 +2985,53 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    LatentNominalFunctionFamilyCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Scattered function cohort should become a nominal owner family",
+        "A cohort of module-level functions shares the same semantic first parameter and repeatedly reads the same owner attributes, but its naming does not expose a simple prefix/suffix axis. The code is still acting like a latent object: the shared parameter should become a nominal owner/ABC and the functions should become methods, hooks, or strategy operations.",
+        "nominal owner ABC with operation hooks derived from a scattered function cohort",
+        "module-level functions share an owner parameter and attribute surface without a named owner",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda family: (
+        f"`{family.file_path}` has scattered functions {family.function_names} "
+        f"sharing first parameter `{family.owner_parameter_name}` and owner "
+        f"attributes {family.owner_attribute_names}; recover the latent nominal owner"
+        + (
+            f" with consumer fanout {family.consumer_symbols}."
+            if family.consumer_symbols
+            else "."
+        )
+    ),
+    scaffold=lambda family: (
+        "class LatentOwnerFamily(ABC):\n"
+        f"    # Own `{family.owner_parameter_name}` and expose shared attributes "
+        f"{family.owner_attribute_names} through a nominal contract.\n"
+        "    @abstractmethod\n"
+        "    def run_operation(self): ..."
+    ),
+    codemod_patch=lambda family: (
+        f"# Move scattered functions {family.function_names} behind a nominal owner "
+        f"for `{family.owner_parameter_name}`.\n"
+        "# Convert each operation into a method/hook/strategy case; keep top-level "
+        "functions only as compatibility facades if they are public API."
+    ),
+    compression_certificate=lambda family: family.compression_certificate,
+    metrics=lambda family: OrchestrationMetrics(
+        function_line_count=family.line_count,
+        branch_site_count=0,
+        call_site_count=len(family.function_names) + len(family.consumer_symbols),
+        parameter_count=1,
+        callee_family_count=len(family.function_names),
+    ),
+    detector_priority=-12,
+    candidate_collector=_latent_nominal_function_family_candidates,
+)
+
+
+declare_candidate_rule_detector(
     AstStreamCollectorBoilerplateCandidate,
     high_confidence_certified_spec(
         PatternId.STAGED_ORCHESTRATION,
@@ -3281,6 +3524,146 @@ declare_candidate_rule_detector(
     compression_certificate=_closed_axis_conversion_matrix_compression_certificate,
     detector_priority=-9,
     candidate_collector=_closed_axis_conversion_matrix_candidates,
+)
+
+
+def _bridge_axis_identifier(axis_expression: str) -> str:
+    cleaned = "".join((ch if ch.isalnum() else "_" for ch in axis_expression))
+    return cleaned.strip("_") or "representation"
+
+
+def _bridge_axis_dispatch_scaffold(
+    candidate: BridgeAxisDispatchFamilyCandidate,
+) -> str:
+    axis_identifier = _bridge_axis_identifier(candidate.axis_expression)
+    return (
+        "from abc import ABC, abstractmethod\n"
+        "from metaclass_registry import AutoRegisterMeta\n\n"
+        "class RepresentationBridge(ABC, metaclass=AutoRegisterMeta):\n"
+        f'    __registry_key__ = "{axis_identifier}"\n'
+        f"    {axis_identifier} = None\n\n"
+        "    @classmethod\n"
+        f"    def for_{axis_identifier}(cls, value):\n"
+        "        return cls.__registry__[value]()\n\n"
+        + "\n".join(
+            (
+                f"    @abstractmethod\n    def {operation_name}(self, value): ..."
+                for operation_name in candidate.operation_names
+            )
+        )
+    )
+
+
+declare_candidate_rule_detector(
+    BridgeAxisDispatchFamilyCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Repeated backend-axis dispatch should become a bridge authority",
+        "Several operations redispatch the same closed representation axis. The ArrayBridge-style normal form is one ABC bridge family keyed by the representation, with shared lifecycle and operation hooks on the bridge implementations instead of every operation branching again.",
+        "ABC bridge authority with one registered implementation per representation and operation hooks for the repeated actions",
+        "multiple operations repeat the same backend/type/format dispatch axis",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"Operations {candidate.function_names} all dispatch `{candidate.axis_expression}` "
+        f"over cases {candidate.literal_cases}; factor the repeated axis into a bridge ABC "
+        f"with hooks for {candidate.operation_names}."
+    ),
+    scaffold=_bridge_axis_dispatch_scaffold,
+    codemod_patch=lambda candidate: (
+        f"# Replace repeated `{candidate.axis_expression}` branches in {candidate.function_names} "
+        "with one bridge lookup and operation hooks.\n"
+        "# Keep backend-specific conversion/capability details on the bridge implementations; "
+        "leave call sites responsible only for selecting the operation."
+    ),
+    metrics=lambda candidate: DispatchCountMetrics(
+        dispatch_site_count=len(candidate.function_names),
+        dispatch_axis=candidate.axis_expression,
+        literal_cases=candidate.literal_cases,
+    ),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    detector_priority=-9,
+    candidate_collector=_bridge_axis_dispatch_family_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    ArrayProtocolProbeBridgeCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Repeated array capability probes should become a bridge authority",
+        "Several operations probe the same array protocol attributes. The bridge normal form is one nominal array bridge that owns capability discovery and exposes typed operation hooks, rather than every operation rediscovering shape/device/dtype semantics.",
+        "array bridge ABC with capability properties and operation hooks",
+        "multiple operations repeat the same array protocol capability probes",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"Operations {candidate.function_names} repeat array capability probes "
+        f"{candidate.attribute_names}; move capability discovery into an array bridge."
+    ),
+    scaffold=lambda candidate: (
+        "class ArrayBridge(ABC):\n"
+        + "\n".join(
+            (
+                f"    @property\n    @abstractmethod\n    def {attribute_name.strip('_')}(self): ..."
+                for attribute_name in candidate.attribute_names
+            )
+        )
+        + "\n\n    @abstractmethod\n    def normalize(self, value): ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace repeated probes {candidate.attribute_names} in {candidate.function_names} "
+        "with one array bridge selected at the boundary.\n"
+        "# Keep protocol-specific dtype/device/shape logic behind bridge capability properties."
+    ),
+    metrics=lambda candidate: ProbeCountMetrics(probe_site_count=candidate.probe_count),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    detector_priority=-9,
+    candidate_collector=_array_protocol_probe_bridge_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    LifecycleStageSequenceCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Repeated lifecycle stage sequence should move into a template method",
+        "Several functions execute the same ordered stage calls. That is a lifecycle skeleton: an ABC should own sequencing, while implementations provide hooks for the irreducible stages or payload residue.",
+        "lifecycle ABC template method with stage hooks",
+        "multiple operations repeat the same lifecycle stage sequence",
+        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"Functions {candidate.function_names} repeat lifecycle stages "
+        f"{candidate.stage_names}; move sequencing into an ABC template method."
+    ),
+    scaffold=lambda candidate: (
+        "class LifecycleTemplate(ABC):\n"
+        "    def run(self, request):\n"
+        + "\n".join(
+            (
+                f"        request = self.{stage_name}(request)"
+                for stage_name in candidate.stage_names
+            )
+        )
+        + "\n        return request"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Move repeated stage order {candidate.stage_names} out of {candidate.function_names}.\n"
+        "# Put the sequence in one ABC template method and leave only stage hooks or payload residue in implementations."
+    ),
+    metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
+        duplicate_site_count=len(candidate.function_names),
+        statement_count=len(candidate.stage_names),
+        class_count=1,
+        method_symbols=candidate.function_names,
+    ),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    detector_priority=-9,
+    candidate_collector=_lifecycle_stage_sequence_candidates,
 )
 
 

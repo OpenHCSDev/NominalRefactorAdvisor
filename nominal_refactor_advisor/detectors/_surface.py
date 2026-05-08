@@ -135,6 +135,47 @@ declare_candidate_rule_detector(
 )
 
 
+declare_candidate_rule_detector(
+    ManualCompanionDataclassSurfaceCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Companion dataclass surface should be generated from the schema authority",
+        "A dataclass whose name is a role refinement of another dataclass and whose fields restate that authority's typed field surface is a manually maintained companion projection. The OpenHCS lazy-config pattern treats the eager schema as the authority and derives the companion surface by inspecting dataclass fields.",
+        "schema-owned companion generator/metaclass that derives fields, defaults, preservation, and materialization from the authoritative dataclass",
+        "companion dataclass manually repeats the authoritative dataclass field surface",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.companion_class_name}` is a `{candidate.surface_role_name}` companion of "
+        f"`{candidate.authority_class_name}` and repeats typed fields {candidate.shared_field_names}; "
+        "derive the companion surface from the schema authority instead of redeclaring it."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=lambda candidate: (
+        f"def make_{candidate.surface_role_name}_dataclass(schema_type: type[{candidate.authority_class_name}]):\n"
+        "    fields = dataclasses.fields(schema_type)\n"
+        "    return derive_companion_dataclass(schema_type, fields)\n\n"
+        f"{candidate.companion_class_name} = make_{candidate.surface_role_name}_dataclass({candidate.authority_class_name})"
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete the manually mirrored `{candidate.companion_class_name}` field declarations.\n"
+        f"# Generate the `{candidate.surface_role_name}` companion from `dataclasses.fields({candidate.authority_class_name})`, "
+        "and keep only irreducible companion residue as generator policy."
+    ),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=2,
+        mapping_name=candidate.companion_class_name,
+        field_names=candidate.shared_field_names,
+        source_name=candidate.authority_class_name,
+        identity_field_names=candidate.shared_field_names,
+    ),
+    detector_name="ManualCompanionDataclassSurfaceDetector",
+    candidate_collector=_manual_companion_dataclass_surface_candidates,
+)
+
+
 class RuntimeAdapterShellDetector(
     ModuleCollectorCandidateDetector[RuntimeAdapterShellCandidate]
 ):

@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Callable, Hashable, Mapping, Sequence, TypeVar
+from typing import Callable, Hashable, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
@@ -34,6 +34,7 @@ from .models import (
     SourceLocation,
 )
 from .patterns import PATTERN_SPECS, ActionBuilderId, PatternId, PlanStepBuilderId
+from .semantic_shape_algebra import ExhaustivePolicyCatalog
 from .semantic_description_length import CompressionCertificate, SemanticCostVector
 from .taxonomy import (
     CapabilityTag,
@@ -47,6 +48,7 @@ from .taxonomy import (
 # fmt: off
 materialize_product_record(product_record_spec('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]'))
 materialize_product_record(product_record_spec('_PatternTrajectoryPolicy', 'pattern_id: PatternId; phase: RefactorPhase'))
+materialize_product_record(product_record_spec('_RegistryNormalFormPolicy', 'detector_id: str; stage_order: int; normal_form: str; stage_label: str; step_template: str; blocks_metaclass: bool', defaults={'blocks_metaclass': False}))
 # fmt: on
 
 
@@ -105,18 +107,85 @@ _PATTERN_TRAJECTORY_POLICY_ROWS = (
 )
 
 
-def _exhaustive_pattern_trajectory_policy(
-    rows: tuple[_PatternTrajectoryPolicy, ...],
-) -> Mapping[PatternId, _PatternTrajectoryPolicy]:
-    by_pattern = {row.pattern_id: row for row in rows}
-    if frozenset(by_pattern) != frozenset(PatternId):
-        raise ValueError("trajectory phase policy must cover every PatternId")
-    return by_pattern
-
-
-_PATTERN_TRAJECTORY_POLICY_BY_ID = _exhaustive_pattern_trajectory_policy(
-    _PATTERN_TRAJECTORY_POLICY_ROWS
+_PATTERN_TRAJECTORY_POLICY_CATALOG = ExhaustivePolicyCatalog.for_enum(
+    PatternId,
+    _PATTERN_TRAJECTORY_POLICY_ROWS,
+    lambda row: row.pattern_id,
 )
+
+
+_REGISTRY_NORMAL_FORM_POLICIES = (
+    _RegistryNormalFormPolicy(
+        detector_id="non_injective_type_registry",
+        stage_order=10,
+        normal_form="typed_record_table",
+        stage_label="repair injectivity",
+        step_template=(
+            "Repair `{subsystem}` registry injectivity first: give each concrete "
+            "implementation one canonical key and move semantic aliases into an "
+            "explicit alias projection."
+        ),
+        blocks_metaclass=True,
+    ),
+    _RegistryNormalFormPolicy(
+        detector_id="premature_registry_infrastructure",
+        stage_order=20,
+        normal_form="typed_record_table",
+        stage_label="demote premature registry",
+        step_template=(
+            "Demote unstable registry infrastructure in `{subsystem}` to a typed "
+            "table or local strategy map until key cases, lookup lifecycle, and "
+            "consumer fanout are all proven."
+        ),
+        blocks_metaclass=True,
+    ),
+    _RegistryNormalFormPolicy(
+        detector_id="parallel_keyed_table_and_family",
+        stage_order=30,
+        normal_form="generated_projection_surface",
+        stage_label="choose authority and derive projection",
+        step_template=(
+            "Choose one injective registry authority in `{subsystem}` and derive "
+            "the parallel keyed table as a generated projection, or demote the "
+            "family if behavior is only metadata."
+        ),
+    ),
+    _RegistryNormalFormPolicy(
+        detector_id="parallel_keyed_table_axis",
+        stage_order=40,
+        normal_form="generated_projection_surface",
+        stage_label="merge keyed projections",
+        step_template=(
+            "Merge parallel keyed tables in `{subsystem}` into one finite axis "
+            "catalog and derive each table surface from that catalog."
+        ),
+    ),
+    _RegistryNormalFormPolicy(
+        detector_id="parallel_keyed_axis_family",
+        stage_order=50,
+        normal_form="auto_registered_abc",
+        stage_label="merge keyed families",
+        step_template=(
+            "Merge sibling keyed registry families in `{subsystem}` into one "
+            "shared ABC/mixin lattice over the common key axis."
+        ),
+    ),
+    _RegistryNormalFormPolicy(
+        detector_id="injective_type_registry",
+        stage_order=60,
+        normal_form="auto_registered_abc",
+        stage_label="promote mature injective registry",
+        step_template=(
+            "Promote the mature injective registry in `{subsystem}` to "
+            "`AutoRegisterMeta`; implementation classes should retain only "
+            "canonical key attributes and behavior hooks."
+        ),
+    ),
+)
+
+_REGISTRY_NORMAL_FORM_POLICIES_BY_DETECTOR_ID = {
+    policy.detector_id: policy for policy in _REGISTRY_NORMAL_FORM_POLICIES
+}
 
 
 class PatternPlanStepBuilder(ABC):
@@ -701,7 +770,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     supporting_findings = tuple(
         _dedupe_preserve_order((finding.title for finding in cluster.findings))
     )
-    canonical_normal_form = _canonical_normal_form(ordered_patterns)
+    canonical_normal_form = _canonical_normal_form(ordered_patterns, cluster.findings)
     plan_steps = _build_plan_steps(
         cluster.subsystem, ordered_patterns, cluster.findings
     )
@@ -922,14 +991,27 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
     )
 
 
-def _canonical_normal_form(pattern_ids: Sequence[PatternId]) -> str:
+def _canonical_normal_form(
+    pattern_ids: Sequence[PatternId], findings: tuple[RefactorFinding, ...]
+) -> str:
     primary = PATTERN_SPECS[pattern_ids[0]].canonical_shape
+    registry_clause = _registry_normal_form_clause(findings)
     if len(pattern_ids) == 1:
-        return primary
+        return f"{registry_clause}; then {primary}" if registry_clause else primary
     supporting = "; then ".join(
         (PATTERN_SPECS[pattern_id].canonical_shape for pattern_id in pattern_ids[1:])
     )
-    return f"{primary}; then {supporting}"
+    normal_form = f"{primary}; then {supporting}"
+    return f"{registry_clause}; then {normal_form}" if registry_clause else normal_form
+
+
+def _registry_normal_form_clause(findings: tuple[RefactorFinding, ...]) -> str:
+    policies = _registry_normal_form_policies_for_findings(findings)
+    if not policies:
+        return ""
+    stage_labels = " -> ".join((policy.stage_label for policy in policies))
+    final_form = policies[-1].normal_form
+    return f"registry normal-form path ({stage_labels}) ending in `{final_form}`"
 
 
 def _build_plan_steps(
@@ -937,13 +1019,47 @@ def _build_plan_steps(
     pattern_ids: Sequence[PatternId],
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
-    steps = [
-        _pattern_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids
-    ]
+    steps = list(_registry_normal_form_steps(subsystem, findings))
+    steps.extend(
+        (_pattern_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids)
+    )
     steps.append(
         f"Delete superseded partial views in `{subsystem}` and route call sites through the new authorities."
     )
     return tuple(steps)
+
+
+def _registry_normal_form_steps(
+    subsystem: str,
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[str, ...]:
+    policies = _registry_normal_form_policies_for_findings(findings)
+    if not policies:
+        return ()
+    steps = tuple(
+        (policy.step_template.format(subsystem=subsystem) for policy in policies)
+    )
+    if any((policy.blocks_metaclass for policy in policies)):
+        return steps + (
+            f"After the blocking registry stages are fixed in `{subsystem}`, rerun NRA before promoting any registry to metaclass registration.",
+        )
+    return steps
+
+
+def _registry_normal_form_policies_for_findings(
+    findings: tuple[RefactorFinding, ...],
+) -> tuple[_RegistryNormalFormPolicy, ...]:
+    policies = {
+        policy
+        for finding in findings
+        if (
+            policy := _REGISTRY_NORMAL_FORM_POLICIES_BY_DETECTOR_ID.get(
+                finding.detector_id
+            )
+        )
+        is not None
+    }
+    return sorted_tuple(policies, key=lambda policy: policy.stage_order)
 
 
 def _pattern_step(
@@ -1070,7 +1186,7 @@ class _TrajectoryMoveFactory:
 
     @property
     def phase(self) -> RefactorPhase:
-        return _PATTERN_TRAJECTORY_POLICY_BY_ID[self.finding.pattern_id].phase
+        return _PATTERN_TRAJECTORY_POLICY_CATALOG.lookup(self.finding.pattern_id).phase
 
     @property
     def debt_justification(self) -> str | None:

@@ -10,18 +10,24 @@ import ast
 import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from typing import Generic, TypeVar
 
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
 
 _TYPE_NAME_LITERAL = "type"
+ProjectionT = TypeVar("ProjectionT")
 
 
-class _AstNameProjection(ABC):
+class _AstNodeProjection(ABC, Generic[ProjectionT]):
     @abstractmethod
-    def __call__(self, node: ast.AST) -> str | None:
+    def __call__(self, node: ast.AST) -> ProjectionT:
         raise NotImplementedError
+
+
+class _AstNameProjection(_AstNodeProjection[str | None]):
+    pass
 
 
 class _TerminalNameProjection(_AstNameProjection):
@@ -63,9 +69,67 @@ class _CallNameProjection(_AstNameProjection):
         return None
 
 
+class _AstAttributeChainProjection(_AstNodeProjection[tuple[str, ...] | None]):
+    def __call__(self, node: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            parent = self(node.value)
+            if parent is None:
+                return None
+            return (*parent, node.attr)
+        return None
+
+
+class _DataclassDecoratorProjection(_AstNodeProjection[bool]):
+    def __call__(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id == "dataclass"
+        if isinstance(node, ast.Call):
+            return self(node.func)
+        if isinstance(node, ast.Attribute):
+            return node.attr == "dataclass"
+        return False
+
+
+class _AnnotationTypeNamesProjection(_AstNodeProjection[tuple[str, ...]]):
+    def __call__(self, node: ast.AST | None) -> tuple[str, ...]:
+        if node is None:
+            return ()
+        if isinstance(node, ast.Constant) and node.value is None:
+            return ()
+        if isinstance(node, ast.Name):
+            return () if node.id == "None" else (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (node.attr,)
+        if isinstance(node, ast.Tuple):
+            names = {name for element in node.elts for name in self(element)}
+            return sorted_tuple(names)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return sorted_tuple({*self(node.left), *self(node.right)})
+        if isinstance(node, ast.Subscript):
+            base_name = _ast_terminal_name(node.value)
+            if base_name in {
+                "Optional",
+                "Required",
+                "NotRequired",
+                "Type",
+                _TYPE_NAME_LITERAL,
+            }:
+                return self(node.slice)
+            if base_name == "Annotated":
+                if isinstance(node.slice, ast.Tuple) and node.slice.elts:
+                    return self(node.slice.elts[0])
+                return self(node.slice)
+        return ()
+
+
 _ast_terminal_name = _TerminalNameProjection()
 _selector_attribute_name = _SelectorAttributeProjection()
 _call_name = _CallNameProjection()
+_ast_attribute_chain_projection = _AstAttributeChainProjection()
+_dataclass_decorator_projection = _DataclassDecoratorProjection()
+_annotation_type_names_projection = _AnnotationTypeNamesProjection()
 
 
 def _camel_case(value: str) -> str:
@@ -98,14 +162,7 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
 
 
 def _ast_attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    if isinstance(node, ast.Attribute):
-        parent = _ast_attribute_chain(node.value)
-        if parent is None:
-            return None
-        return (*parent, node.attr)
-    return None
+    return _ast_attribute_chain_projection(node)
 
 
 def _declared_base_names(node: ast.ClassDef) -> tuple[str, ...]:
@@ -133,13 +190,7 @@ def _class_direct_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
 
 
 def _is_dataclass_decorator(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "dataclass"
-    if isinstance(node, ast.Call):
-        return _is_dataclass_decorator(node.func)
-    if isinstance(node, ast.Attribute):
-        return node.attr == "dataclass"
-    return False
+    return _dataclass_decorator_projection(node)
 
 
 def _iter_class_methods(
@@ -191,38 +242,7 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
 
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
-    if node is None:
-        return ()
-    if isinstance(node, ast.Constant) and node.value is None:
-        return ()
-    if isinstance(node, ast.Name):
-        return () if node.id == "None" else (node.id,)
-    if isinstance(node, ast.Attribute):
-        return (node.attr,)
-    if isinstance(node, ast.Tuple):
-        names = {
-            name for element in node.elts for name in _annotation_type_names(element)
-        }
-        return sorted_tuple(names)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return sorted_tuple(
-            {*_annotation_type_names(node.left), *_annotation_type_names(node.right)}
-        )
-    if isinstance(node, ast.Subscript):
-        base_name = _ast_terminal_name(node.value)
-        if base_name in {
-            "Optional",
-            "Required",
-            "NotRequired",
-            "Type",
-            _TYPE_NAME_LITERAL,
-        }:
-            return _annotation_type_names(node.slice)
-        if base_name == "Annotated":
-            if isinstance(node.slice, ast.Tuple) and node.slice.elts:
-                return _annotation_type_names(node.slice.elts[0])
-            return _annotation_type_names(node.slice)
-    return ()
+    return _annotation_type_names_projection(node)
 
 
 def _class_name_tokens(name: str) -> frozenset[str]:

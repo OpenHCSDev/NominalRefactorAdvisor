@@ -12361,6 +12361,163 @@ def _bare_function_method_family_candidates(
     )
 
 
+def _latent_function_shared_call_names(
+    functions: tuple[NamedFunctionNode, ...],
+) -> tuple[str, ...]:
+    call_sets = tuple(
+        (set(_function_call_stage_sequence(function)) - _NON_LIFECYCLE_STAGE_CALL_NAMES)
+        for function in functions
+    )
+    if not call_sets:
+        return ()
+    return sorted_tuple(set.intersection(*call_sets))
+
+
+def _function_name_call_consumers(
+    module: ParsedModule,
+    *,
+    target_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    targets = frozenset(target_names)
+    consumers: set[str] = set()
+    for qualname, function in _iter_named_functions(module):
+        if function.name in targets:
+            continue
+        for node in _walk_nodes(function):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in targets
+            ):
+                consumers.add(qualname)
+                break
+    return sorted_tuple(consumers)
+
+
+def _function_group_line_count(functions: tuple[NamedFunctionNode, ...]) -> int:
+    return sum(
+        (
+            max(
+                1,
+                (function.end_lineno or function.lineno) - function.lineno + 1,
+            )
+            for function in functions
+        )
+    )
+
+
+def _function_name_axis_is_already_explicit(
+    functions: tuple[NamedFunctionNode, ...],
+) -> bool:
+    token_lists = tuple(
+        (_bare_function_name_tokens(function.name) for function in functions)
+    )
+    if any((len(tokens) < 2 for tokens in token_lists)):
+        return False
+    prefixes = {tokens[0] for tokens in token_lists}
+    suffixes = {tokens[-1] for tokens in token_lists}
+    return len(prefixes) == 1 or len(suffixes) == 1
+
+
+def _latent_nominal_function_family_certificate(
+    *,
+    function_count: int,
+    line_count: int,
+    semantic_axes: tuple[object, ...],
+) -> CompressionCertificate:
+    return _object_family_compression_certificate(
+        manual_object_count=max(
+            line_count, function_count * max(len(semantic_axes), 1)
+        ),
+        shared_objects=("latent_owner_abc", "method_family_template"),
+        per_axis_objects=("owner_attribute",),
+        per_source_objects=("operation_hook",),
+        semantic_axes=semantic_axes,
+        residual_object_count=function_count,
+    )
+
+
+def _latent_nominal_function_family_candidates(
+    module: ParsedModule,
+) -> tuple[LatentNominalFunctionFamilyCandidate, ...]:
+    grouped: dict[str, list[NamedFunctionNode]] = defaultdict(list)
+    for qualname, function in _iter_named_functions(module):
+        owner_parameter_name = _module_level_subject_parameter_name(qualname, function)
+        if owner_parameter_name is None:
+            continue
+        owner_attribute_names = (
+            frozenset(
+                _parameter_receiver_attribute_names(function, owner_parameter_name)
+            )
+            - _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES
+        )
+        if len(owner_attribute_names) >= 2:
+            grouped[owner_parameter_name].append(function)
+    candidates: list[LatentNominalFunctionFamilyCandidate] = []
+    for owner_parameter_name, functions in grouped.items():
+        if len(functions) < 3:
+            continue
+        ordered = sorted_tuple(functions, key=lambda item: (item.lineno, item.name))
+        if _function_name_axis_is_already_explicit(ordered):
+            continue
+        common_attribute_names = sorted_tuple(
+            set.intersection(
+                *(
+                    set(
+                        _parameter_receiver_attribute_names(
+                            function, owner_parameter_name
+                        )
+                    )
+                    for function in ordered
+                )
+            )
+            - _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES
+        )
+        if len(common_attribute_names) < 2:
+            continue
+        function_names = tuple((function.name for function in ordered))
+        consumer_symbols = _function_name_call_consumers(
+            module, target_names=function_names
+        )
+        shared_call_names = _latent_function_shared_call_names(ordered)
+        line_count = _function_group_line_count(ordered)
+        semantic_axes = (
+            f"owner:{owner_parameter_name}",
+            *(f"attribute:{name}" for name in common_attribute_names),
+            *(f"call:{name}" for name in shared_call_names),
+            *(f"consumer:{name}" for name in consumer_symbols),
+        )
+        certificate = _latent_nominal_function_family_certificate(
+            function_count=len(ordered),
+            line_count=line_count,
+            semantic_axes=semantic_axes,
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            LatentNominalFunctionFamilyCandidate(
+                file_path=str(module.path),
+                line=ordered[0].lineno,
+                owner_parameter_name=owner_parameter_name,
+                owner_attribute_names=common_attribute_names,
+                shared_call_names=shared_call_names,
+                function_names=function_names,
+                consumer_symbols=consumer_symbols,
+                line_numbers=tuple((function.lineno for function in ordered)),
+                line_count=line_count,
+                compression_certificate=certificate,
+            )
+        )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.owner_parameter_name,
+            item.function_names,
+        ),
+    )
+
+
 def _indexed_family_wrapper_candidates_for_function(
     module: ParsedModule, node: ast.FunctionDef
 ) -> Iterable[IndexedFamilyWrapperCandidate]:

@@ -101,6 +101,11 @@ from nominal_refactor_advisor.scan_prediction import (
     build_scan_prediction_report,
 )
 from nominal_refactor_advisor.semantic_match import EffectStep, Maybe
+from nominal_refactor_advisor.semantic_shape_algebra import (
+    ExhaustivePolicyCatalog,
+    InjectiveTypeRegistryProof,
+    ProjectionSurfaceCatalog,
+)
 from nominal_refactor_advisor.semantic_algebra import (
     AlgebraicRentProfile,
     FiberGeometry,
@@ -114,6 +119,7 @@ from nominal_refactor_advisor.semantic_description_length import (
     OrbitPartition,
     SemanticCostVector,
 )
+from nominal_refactor_advisor.taxonomy import ConfidenceLevel
 
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
@@ -309,6 +315,171 @@ def test_coordinate_view_confusability_keeps_nonclique_failure_geometry() -> Non
         ("10", "11"),
     )
     assert not graph.is_transitive
+
+
+def test_exhaustive_policy_catalog_proves_closed_enum_coverage() -> None:
+    rows = (
+        ("medium", ConfidenceLevel.MEDIUM),
+        ("high", ConfidenceLevel.HIGH),
+    )
+
+    catalog = ExhaustivePolicyCatalog.for_enum(
+        ConfidenceLevel,
+        rows,
+        lambda row: row[1],
+    )
+
+    assert catalog.lookup(ConfidenceLevel.HIGH) == ("high", ConfidenceLevel.HIGH)
+    assert catalog.proof.expected_keys == frozenset(ConfidenceLevel)
+    assert catalog.project(lambda row: row[0])[ConfidenceLevel.MEDIUM] == "medium"
+
+
+def test_exhaustive_policy_catalog_rejects_missing_or_duplicate_keys() -> None:
+    missing_rows = (("high", ConfidenceLevel.HIGH),)
+    duplicate_rows = (
+        ("medium", ConfidenceLevel.MEDIUM),
+        ("medium-again", ConfidenceLevel.MEDIUM),
+        ("high", ConfidenceLevel.HIGH),
+    )
+
+    try:
+        ExhaustivePolicyCatalog.for_enum(
+            ConfidenceLevel, missing_rows, lambda row: row[1]
+        )
+    except ValueError as exc:
+        assert "coverage mismatch" in str(exc)
+    else:
+        raise AssertionError("missing enum rows should fail")
+
+    try:
+        ExhaustivePolicyCatalog.for_enum(
+            ConfidenceLevel, duplicate_rows, lambda row: row[1]
+        )
+    except ValueError as exc:
+        assert "duplicate finite policy keys" in str(exc)
+    else:
+        raise AssertionError("duplicate enum rows should fail")
+
+
+def test_projection_surface_catalog_proves_derived_surface_coverage() -> None:
+    rows = (
+        ("parser", ConfidenceLevel.MEDIUM, "parse_medium"),
+        ("parser", ConfidenceLevel.HIGH, "parse_high"),
+        ("validator", ConfidenceLevel.MEDIUM, "validate_medium"),
+        ("validator", ConfidenceLevel.HIGH, "validate_high"),
+        ("processor", ConfidenceLevel.MEDIUM, "process_medium"),
+        ("processor", ConfidenceLevel.HIGH, "process_high"),
+    )
+    decompression_keys = {
+        "parser": "generated from confidence axis parser projection",
+        "validator": "generated from confidence axis validator projection",
+        "processor": "generated from confidence axis processor projection",
+    }
+
+    catalog = ProjectionSurfaceCatalog.for_enum(
+        ConfidenceLevel,
+        rows,
+        surface_of=lambda row: row[0],
+        key_of=lambda row: row[1],
+        decompression_key_of=decompression_keys.__getitem__,
+    )
+
+    assert catalog.surface_names == ("parser", "processor", "validator")
+    assert catalog.keys_for_surface("parser") == frozenset(ConfidenceLevel)
+    assert catalog.proof.decompression_keys["processor"].startswith("generated")
+
+
+def test_projection_surface_catalog_rejects_partial_generated_surface() -> None:
+    rows = (
+        ("parser", ConfidenceLevel.MEDIUM),
+        ("parser", ConfidenceLevel.HIGH),
+        ("validator", ConfidenceLevel.HIGH),
+    )
+    decompression_keys = {
+        "parser": "generated from confidence axis parser projection",
+        "validator": "generated from confidence axis validator projection",
+    }
+
+    try:
+        ProjectionSurfaceCatalog.for_enum(
+            ConfidenceLevel,
+            rows,
+            surface_of=lambda row: row[0],
+            key_of=lambda row: row[1],
+            decompression_key_of=decompression_keys.__getitem__,
+        )
+    except ValueError as exc:
+        assert "projection surface coverage mismatch" in str(exc)
+        assert "validator" in str(exc)
+    else:
+        raise AssertionError("partial projection surfaces should fail")
+
+
+def test_projection_surface_catalog_rejects_duplicate_surface_keys() -> None:
+    rows = (
+        ("parser", ConfidenceLevel.MEDIUM),
+        ("parser", ConfidenceLevel.MEDIUM),
+        ("parser", ConfidenceLevel.HIGH),
+    )
+
+    try:
+        ProjectionSurfaceCatalog.for_enum(
+            ConfidenceLevel,
+            rows,
+            surface_of=lambda row: row[0],
+            key_of=lambda row: row[1],
+            decompression_key_of=lambda surface_name: "generated parser projection",
+        )
+    except ValueError as exc:
+        assert "duplicate keys" in str(exc)
+        assert "parser" in str(exc)
+    else:
+        raise AssertionError("duplicate surface keys should fail")
+
+
+def test_projection_surface_catalog_requires_decompression_key() -> None:
+    rows = (
+        ("parser", ConfidenceLevel.MEDIUM),
+        ("parser", ConfidenceLevel.HIGH),
+    )
+
+    try:
+        ProjectionSurfaceCatalog.for_enum(
+            ConfidenceLevel,
+            rows,
+            surface_of=lambda row: row[0],
+            key_of=lambda row: row[1],
+            decompression_key_of=lambda surface_name: "",
+        )
+    except ValueError as exc:
+        assert "lacks a decompression key" in str(exc)
+    else:
+        raise AssertionError("generated surfaces should expose decompression keys")
+
+
+def test_injective_type_registry_proof_detects_aliasing_and_missing_types() -> None:
+    proof = InjectiveTypeRegistryProof.from_type_map(
+        key_axis_name="Mode",
+        type_names_by_key={
+            "Mode.ALPHA": ("AlphaRunner", "AliasAlphaRunner"),
+            "Mode.BETA": ("BetaRunner",),
+        },
+        registered_type_names=(
+            "AlphaRunner",
+            "AliasAlphaRunner",
+            "BetaRunner",
+            "GammaRunner",
+        ),
+        reverse_lookup_names=("type_for_mode",),
+        consumer_symbols=("run_alpha",),
+    )
+
+    assert proof.key_axis_name == "Mode"
+    assert proof.duplicate_key_names == ("Mode.ALPHA",)
+    assert proof.duplicate_type_names == ()
+    assert proof.missing_type_names == ("GammaRunner",)
+    assert proof.reverse_lookup_names == ("type_for_mode",)
+    assert proof.consumer_symbols == ("run_alpha",)
 
 
 def test_factorization_engine_derives_shared_authority_and_residue_axes() -> None:
@@ -1325,6 +1496,51 @@ def test_planner_derives_local_minimum_escape_from_findings(
     assert "Counterfactual findings removed" in markdown
 
 
+def test_planner_orders_registry_normal_form_path(tmp_path: Path) -> None:
+    registry_spec = _finding_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Registry needs normal form",
+        "Registry algebra should choose the correct authority before metaprogramming.",
+        "typed registry normal form",
+        "registry finding carries key-axis proof obligations",
+    )
+    schema_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Projection should derive",
+        "Parallel surfaces should derive from one registry authority.",
+        "derived registry projection",
+        "parallel keyed surfaces share one axis",
+    )
+
+    findings = [
+        registry_spec.build(
+            "non_injective_type_registry",
+            "duplicate registry key blocks metaclass promotion",
+            (SourceLocation(str(tmp_path / "pkg/mod.py"), 1, "ModeRunner"),),
+        ),
+        schema_spec.build(
+            "parallel_keyed_table_and_family",
+            "table and family share a mode axis",
+            (SourceLocation(str(tmp_path / "pkg/mod.py"), 2, "MODE_CONFIGS"),),
+        ),
+        registry_spec.build(
+            "injective_type_registry",
+            "mature registry should use AutoRegisterMeta after repair",
+            (SourceLocation(str(tmp_path / "pkg/mod.py"), 3, "ModeRunner"),),
+        ),
+    ]
+
+    plan = build_refactor_plans(findings, tmp_path)[0]
+
+    assert "repair injectivity" in plan.canonical_normal_form
+    assert "choose authority and derive projection" in plan.canonical_normal_form
+    assert "promote mature injective registry" in plan.canonical_normal_form
+    assert plan.plan_steps[0].startswith("Repair `pkg` registry injectivity first")
+    assert "derive the parallel keyed table" in plan.plan_steps[1]
+    assert "Promote the mature injective registry" in plan.plan_steps[2]
+    assert "rerun NRA before promoting" in plan.plan_steps[3]
+
+
 def test_class_family_compression_profile_prices_abc_extraction() -> None:
     profile = ClassFamilyCompressionProfile.from_repeated_method_family(
         class_count=3,
@@ -1873,6 +2089,36 @@ def test_bare_function_method_family_ignores_pairs(tmp_path: Path) -> None:
     )
 
 
+def test_detects_latent_nominal_function_family_without_name_axis(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/records.py",
+        "\ndef render_dashboard(record, context):\n    title = record.title\n    status = record.status\n    return render(title, status, context.theme)\n\n\ndef validate_input(record, context):\n    errors = []\n    if not record.title:\n        errors.append('title')\n    if not record.status:\n        errors.append('status')\n    return tuple(errors)\n\n\ndef emit_payload(record, context):\n    payload = {'title': record.title, 'status': record.status}\n    return encode(payload, context.format)\n\n\ndef publish(record, context):\n    return emit_payload(record, context), render_dashboard(record, context)\n",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            item
+            for item in findings
+            if item.detector_id == "latent_nominal_function_family"
+        )
+    )
+
+    assert "render_dashboard" in finding.summary
+    assert "validate_input" in finding.summary
+    assert "emit_payload" in finding.summary
+    assert "first parameter `record`" in finding.summary
+    assert "title" in finding.summary
+    assert "consumer fanout" in finding.summary
+    assert "publish" in finding.summary
+    assert "LatentOwnerFamily" in (finding.scaffold or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
 def test_ignores_private_helpers_without_cohesive_cohort(tmp_path: Path) -> None:
     filler = "# filler\n" * 240
     _write_module(
@@ -2156,6 +2402,42 @@ def test_detects_derived_wrapper_spec_shadow(tmp_path: Path) -> None:
     assert "wrapper_name" in (finding.scaffold or "")
 
 
+def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n    inherited_fields: frozenset[str] = frozenset()\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "manual_companion_dataclass_surface"
+        )
+    )
+    assert "LazyPipelineConfig" in finding.summary
+    assert "PipelineConfig" in finding.summary
+    assert "batch_size" in finding.summary
+    assert "make_lazy_dataclass" in (finding.scaffold or "")
+    assert "dataclasses.fields(PipelineConfig)" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int = 16\n    output_dir: str = 'out'\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int = 32\n    output_dir: str = 'out'\n    inherited_fields: frozenset[str] = frozenset()\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "manual_companion_dataclass_surface"
+        for finding in findings
+    )
+
+
 def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2265,6 +2547,237 @@ def test_ignores_mature_registry_infrastructure(tmp_path: Path) -> None:
             for finding in analyze_path(tmp_path)
         )
     )
+
+
+def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @classmethod\n    def type_for_mode(cls, mode: Mode):\n        return type(cls._registry[mode])\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "injective_type_registry"
+        )
+    )
+
+    assert "ModeRunner" in finding.summary
+    assert "mature injective registry" in finding.summary
+    assert "AutoRegisterMeta" in finding.summary
+    assert "InjectiveRegistryFamily" in (finding.scaffold or "")
+
+
+def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass DuplicateAlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "duplicate"\n\n\nclass BetaModeRunner(ModeRunner):\n    def run(self):\n        return "beta"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "non_injective_type_registry"
+        )
+    )
+
+    assert "ModeRunner" in finding.summary
+    assert "Mode.ALPHA" in finding.summary
+    assert "BetaModeRunner" in finding.summary
+    assert "not injective" in finding.summary
+
+
+def test_detects_registry_projection_surface_from_injective_registry(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\nMODE_RUNNER_TYPES = {\n    Mode.ALPHA: AlphaModeRunner,\n    Mode.BETA: BetaModeRunner,\n}\n\n\n__all__ = ["AlphaModeRunner", "BetaModeRunner"]\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_surface"
+    ]
+
+    assert any("MODE_RUNNER_TYPES" in finding.summary for finding in findings)
+    assert any("__all__" in finding.summary for finding in findings)
+    finding = next(
+        finding for finding in findings if "MODE_RUNNER_TYPES" in finding.summary
+    )
+    assert "ModeRunner" in finding.summary
+    assert "key_to_type_index" in finding.summary
+    assert "lookup_projection" in finding.summary
+    assert "lookup_projection:key_to_type_index" in finding.summary
+    assert "mapping_literal" in finding.summary
+    assert (
+        "ModeRunner|Mode|full|lookup_projection:key_to_type_index|mapping_literal"
+        in finding.summary
+    )
+    assert "RegistryProjectionSpec(ModeRunner" in (finding.codemod_patch or "")
+    export_finding = next(
+        finding for finding in findings if "__all__" in finding.summary
+    )
+    assert "module_all_tuple" in export_finding.summary
+
+
+def test_detects_cross_module_registry_projection_surface(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/cli.py",
+        "\nfrom pkg.core import AlphaModeRunner, BetaModeRunner, Mode\n\n\nCLI_MODE_CHOICES = (Mode.ALPHA, Mode.BETA)\nSERIALIZER_TYPES = {\n    Mode.ALPHA: AlphaModeRunner,\n    Mode.BETA: BetaModeRunner,\n}\n",
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_surface"
+    ]
+
+    assert any("CLI_MODE_CHOICES" in finding.summary for finding in findings)
+    assert any("SERIALIZER_TYPES" in finding.summary for finding in findings)
+    serializer = next(
+        finding for finding in findings if "SERIALIZER_TYPES" in finding.summary
+    )
+    assert "ModeRunner" in serializer.summary
+    assert "key_to_type_index" in serializer.summary
+    assert "serializer_map" in serializer.summary
+    assert "serializer_map:key_to_type_index" in serializer.summary
+    assert "mapping_literal" in serializer.summary
+    assert "pkg/cli.py" in serializer.evidence[0].file_path
+
+
+def test_classifies_registry_projection_roles_for_cli_config_and_tests(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/config.py",
+        "\nfrom pkg.core import Mode\n\n\nCONFIG_MODE_CHOICES = (Mode.ALPHA, Mode.BETA)\n",
+    )
+    _write_module(
+        tmp_path,
+        "tests/test_modes.py",
+        "\nfrom pkg.core import Mode\n\n\nMODE_TEST_PARAMS = (Mode.ALPHA, Mode.BETA)\n",
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_surface"
+    ]
+
+    config = next(
+        finding for finding in findings if "CONFIG_MODE_CHOICES" in finding.summary
+    )
+    params = next(
+        finding for finding in findings if "MODE_TEST_PARAMS" in finding.summary
+    )
+
+    assert "config_choices" in config.summary
+    assert "test_params" in params.summary
+
+
+def test_registry_projection_requires_policy_for_suspicious_subset(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\nclass GammaModeRunner(ModeRunner):\n    mode = Mode.GAMMA\n\n    def run(self):\n        return "gamma"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/config.py",
+        "\nfrom pkg.core import Mode\n\n\nMODE_CHOICES = (Mode.ALPHA, Mode.BETA)\n",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_surface"
+        and "MODE_CHOICES" in finding.summary
+    )
+
+    assert "coverage 0.67" in finding.summary
+    assert "need a named projection policy" in finding.summary
+    assert "add a named projection policy" in (finding.codemod_patch or "")
+
+
+def test_registry_projection_accepts_named_subset_policy_hint(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\nclass GammaModeRunner(ModeRunner):\n    mode = Mode.GAMMA\n\n    def run(self):\n        return "gamma"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/config.py",
+        "\nfrom pkg.core import Mode\n\n\nPUBLIC_MODE_CHOICES = (Mode.ALPHA, Mode.BETA)\n",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_surface"
+        and "PUBLIC_MODE_CHOICES" in finding.summary
+    )
+
+    assert "coverage 0.67" in finding.summary
+    assert "Subset policy hint `public`" in finding.summary
+    assert "public|config_choices:key_roster|choices_tuple" in finding.summary
+    assert "explicit `public` projection policy" in (finding.codemod_patch or "")
+
+
+def test_detects_repeated_registry_projection_policy_hint_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/core.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum, auto\nfrom typing import ClassVar, Generic, TypeVar\n\n\nKeyT = TypeVar("KeyT")\n\n\nclass AutoRegisterByClassVar:\n    registry_key_attr: ClassVar[str]\n    _registry: ClassVar[dict[object, object]]\n\n\nclass KeyedNominalFamily(AutoRegisterByClassVar, Generic[KeyT]):\n    pass\n\n\nclass Mode(Enum):\n    ALPHA = auto()\n    BETA = auto()\n    GAMMA = auto()\n\n\nclass ModeRunner(KeyedNominalFamily[Mode], ABC):\n    registry_key_attr = "mode"\n    _registry = {}\n    mode: ClassVar[Mode]\n\n    @classmethod\n    def for_mode(cls, mode: Mode):\n        return cls._registry[mode]\n\n    @abstractmethod\n    def run(self):\n        raise NotImplementedError\n\n\nclass AlphaModeRunner(ModeRunner):\n    mode = Mode.ALPHA\n\n    def run(self):\n        return "alpha"\n\n\nclass BetaModeRunner(ModeRunner):\n    mode = Mode.BETA\n\n    def run(self):\n        return "beta"\n\n\nclass GammaModeRunner(ModeRunner):\n    mode = Mode.GAMMA\n\n    def run(self):\n        return "gamma"\n\n\ndef run_alpha():\n    return ModeRunner.for_mode(Mode.ALPHA).run()\n\n\ndef run_beta():\n    return ModeRunner.for_mode(Mode.BETA).run()\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/config.py",
+        "\nfrom pkg.core import AlphaModeRunner, BetaModeRunner, Mode\n\n\nPUBLIC_MODE_CHOICES = (Mode.ALPHA, Mode.BETA)\nPUBLIC_MODE_TYPES = {\n    Mode.ALPHA: AlphaModeRunner,\n    Mode.BETA: BetaModeRunner,\n}\n",
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "registry_projection_policy_authority"
+    )
+
+    assert "public" in finding.summary
+    assert "PUBLIC_MODE_CHOICES" in finding.summary
+    assert "PUBLIC_MODE_TYPES" in finding.summary
+    assert "config_choices:key_roster" in finding.summary
+    assert "config_choices:key_to_type_index" in finding.summary
+    assert "ProjectionPolicy" in (finding.scaffold or "")
+    assert "REGISTRY_PROJECTION_SPECS" in (finding.scaffold or "")
 
 
 def test_detects_parallel_keyed_table_and_family(tmp_path: Path) -> None:
@@ -6810,6 +7323,70 @@ def test_detects_closed_axis_conversion_matrix(tmp_path: Path) -> None:
     assert "cpu_to_gpu" in finding.summary
     assert "sources" in finding.summary
     assert "targets" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_repeated_bridge_axis_dispatch_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/arrays.py",
+        '\n\ndef normalize_array(backend, value):\n    if backend == "numpy":\n        return numpy.asarray(value)\n    if backend == "cupy":\n        return cupy.asarray(value)\n    if backend == "torch":\n        return torch.as_tensor(value)\n    raise ValueError(backend)\n\n\ndef transfer_array(backend, value):\n    if backend == "numpy":\n        return value.get()\n    if backend == "cupy":\n        return cupy.asarray(value)\n    if backend == "torch":\n        return value.cuda()\n    raise ValueError(backend)\n\n\ndef array_dtype(backend, value):\n    if backend == "numpy":\n        return value.dtype\n    if backend == "cupy":\n        return value.dtype\n    if backend == "torch":\n        return value.dtype\n    raise ValueError(backend)\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "bridge_axis_dispatch_family"
+        )
+    )
+    assert "normalize_array" in finding.summary
+    assert "transfer_array" in finding.summary
+    assert "array_dtype" in finding.summary
+    assert "RepresentationBridge" in (finding.scaffold or "")
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "operation hooks" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_repeated_array_protocol_probe_bridge(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/arrays.py",
+        '\n\ndef normalize(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return shape, dtype, device\n\n\ndef transfer(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return copy_to(value, device, dtype, shape)\n\n\ndef summarize(value):\n    shape = getattr(value, "shape", None)\n    dtype = getattr(value, "dtype", None)\n    device = getattr(value, "device", None)\n    return str((shape, dtype, device))\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "array_protocol_probe_bridge"
+        )
+    )
+    assert "normalize" in finding.summary
+    assert "transfer" in finding.summary
+    assert "dtype" in finding.summary
+    assert "ArrayBridge" in (finding.scaffold or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_lifecycle_stage_sequence_template(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        "\n\ndef load_alpha(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n\n\ndef load_beta(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n\n\ndef load_gamma(request):\n    data = normalize(request)\n    data = validate(data)\n    return materialize(data)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "lifecycle_stage_sequence"
+        )
+    )
+    assert "load_alpha" in finding.summary
+    assert "normalize" in finding.summary
+    assert "LifecycleTemplate" in (finding.scaffold or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
 
