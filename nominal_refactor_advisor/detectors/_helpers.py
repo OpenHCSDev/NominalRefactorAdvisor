@@ -7992,7 +7992,6 @@ _INFRASTRUCTURE_DECLARATION_SUFFIXES = (
     "EffectStep",
     "Factory",
     "Manager",
-    "Mixin",
     "Registry",
     "Service",
     "Strategy",
