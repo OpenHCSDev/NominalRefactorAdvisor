@@ -52,14 +52,21 @@ _REPLACEMENT_SHAPE_ROWS = (
 )
 
 
-def _replacement_shape(role: object) -> ObjectFamilyShape:
-    return next(
-        (
-            replacement_shape
-            for candidate_role, replacement_shape in _REPLACEMENT_SHAPE_ROWS
-            if candidate_role is role
+@dataclass(frozen=True)
+class ReplacementShapeProjector:
+    rows: tuple[tuple[object, ObjectFamilyShape], ...]
+
+    def shape_for(self, role: object) -> ObjectFamilyShape:
+        return next(
+            (
+                replacement_shape
+                for candidate_role, replacement_shape in self.rows
+                if candidate_role is role
+            )
         )
-    )
+
+
+_REPLACEMENT_SHAPE_PROJECTOR = ReplacementShapeProjector(_REPLACEMENT_SHAPE_ROWS)
 
 
 def _manual_process_step_ladder_compression_certificate(
@@ -69,7 +76,9 @@ def _manual_process_step_ladder_compression_certificate(
     step_count = max(candidate.minimum_step_count, 1)
     return CompressionCertificate.from_object_family(
         manual_object_count=table_count * (step_count + 1),
-        replacement_shape=_replacement_shape(_ReplacementShapeRole.PROCESS_STAGE_PLAN),
+        replacement_shape=_REPLACEMENT_SHAPE_PROJECTOR.shape_for(
+            _ReplacementShapeRole.PROCESS_STAGE_PLAN
+        ),
         semantic_axes=tuple((f"step:{index}" for index in range(step_count))),
     )
 
@@ -80,7 +89,9 @@ def _mirrored_file_rewrite_loop_compression_certificate(
     loop_count = len(candidate.line_numbers)
     return CompressionCertificate.from_object_family(
         manual_object_count=loop_count * 4,
-        replacement_shape=_replacement_shape(_ReplacementShapeRole.TEXT_REWRITE_PLAN),
+        replacement_shape=_REPLACEMENT_SHAPE_PROJECTOR.shape_for(
+            _ReplacementShapeRole.TEXT_REWRITE_PLAN
+        ),
         semantic_axes=tuple(
             (f"file_collection:{index}" for index in range(loop_count))
         ),
@@ -96,7 +107,9 @@ def _algebraic_duplicate_compound_block_compression_certificate(
             candidate.normal_form_size * source_count,
             source_count * 4,
         ),
-        replacement_shape=_replacement_shape(_ReplacementShapeRole.BLOCK_ALGEBRA),
+        replacement_shape=_REPLACEMENT_SHAPE_PROJECTOR.shape_for(
+            _ReplacementShapeRole.BLOCK_ALGEBRA
+        ),
         semantic_axes=(candidate.block_kind,),
         independent_source_count=source_count,
     )
@@ -119,95 +132,103 @@ def _literal_dispatch_case_class_name(literal_case: str, index: int) -> str:
     return f"{_camel_case(words) or f'Case{index}'}DispatchCase"
 
 
-def _literal_dispatch_authority_scaffold(
-    observation: LiteralDispatchObservation,
-) -> str:
-    dispatch_name = _literal_dispatch_authority_name(observation.axis_expression)
-    case_classes = tuple(
-        (
-            _literal_dispatch_case_class_name(case, index)
-            for index, case in enumerate(observation.literal_cases, start=1)
-        )
-    )
-    case_class_blocks = "\n\n".join(
-        (
-            f"class {class_name}(DispatchCase):\n    case = {case}\n\n    def apply(self, *args, **kwargs):\n        ..."
-            for class_name, case in zip(case_classes, observation.literal_cases)
-        )
-    )
-    return (
-        "from abc import ABC, abstractmethod\n"
-        "from typing import ClassVar\n"
-        "from metaclass_registry import AutoRegisterMeta\n\n"
-        "class DispatchCase(ABC, metaclass=AutoRegisterMeta):\n"
-        '    __registry_key__ = "case"\n'
-        "    __skip_if_no_key__ = True\n"
-        "    case: ClassVar[object] = None\n\n"
-        "    @classmethod\n"
-        "    def for_case(cls, key):\n"
-        "        return cls.__registry__[key]()\n\n"
-        "    @abstractmethod\n"
-        "    def apply(self, *args, **kwargs): ...\n\n"
-        f"{case_class_blocks}\n\n"
-        f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
-        "    return DispatchCase.for_case(axis_value).apply(*args, **kwargs)"
-    )
-
-
 def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
     return f"# Replace the repeated `{observation.axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
 
 
-def _literal_dispatch_finding(
-    detector: PerModuleIssueDetector,
-    module: ParsedModule,
-    observation: LiteralDispatchObservation,
-    *,
-    case_summary_label: str,
-    relation_case_label: str,
-) -> RefactorFinding:
-    return detector.build_finding(
-        f"{module.path} dispatches on `{observation.axis_expression}` through {case_summary_label} {observation.literal_cases}.",
-        (SourceLocation(observation.file_path, observation.line, observation.symbol),),
-        relation_context=(
-            f"same observed axis `{observation.axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
-        ),
-        scaffold=_literal_dispatch_authority_scaffold(observation),
-        codemod_patch=_literal_dispatch_authority_patch(observation),
-        metrics=DispatchCountMetrics.from_literal_family(
-            observation.axis_expression,
-            observation.literal_cases,
-        ),
-    )
-
-
-def _literal_dispatch_findings(
-    detector: PerModuleIssueDetector,
-    module: ParsedModule,
-    config: DetectorConfig,
-    observation_family: type[object],
-    *,
-    case_summary_label: str,
-    relation_case_label: str,
-) -> list[RefactorFinding]:
-    observations: tuple[LiteralDispatchObservation, ...] = _collect_typed_family_items(
-        module,
-        observation_family,
-        LiteralDispatchObservation,
-    )
-    return [
-        _literal_dispatch_finding(
-            detector,
-            module,
-            observation,
-            case_summary_label=case_summary_label,
-            relation_case_label=relation_case_label,
+class LiteralDispatchFindingFactory:
+    def authority_scaffold(self, observation: LiteralDispatchObservation) -> str:
+        dispatch_name = _literal_dispatch_authority_name(observation.axis_expression)
+        case_classes = tuple(
+            (
+                _literal_dispatch_case_class_name(case, index)
+                for index, case in enumerate(observation.literal_cases, start=1)
+            )
         )
-        for observation in observations
-        if len(observation.literal_cases) >= config.min_string_cases
-    ]
+        case_class_blocks = "\n\n".join(
+            (
+                f"class {class_name}(DispatchCase):\n    case = {case}\n\n    def apply(self, *args, **kwargs):\n        ..."
+                for class_name, case in zip(case_classes, observation.literal_cases)
+            )
+        )
+        return (
+            "from abc import ABC, abstractmethod\n"
+            "from typing import ClassVar\n"
+            "from metaclass_registry import AutoRegisterMeta\n\n"
+            "class DispatchCase(ABC, metaclass=AutoRegisterMeta):\n"
+            '    __registry_key__ = "case"\n'
+            "    __skip_if_no_key__ = True\n"
+            "    case: ClassVar[object] = None\n\n"
+            "    @classmethod\n"
+            "    def for_case(cls, key):\n"
+            "        return cls.__registry__[key]()\n\n"
+            "    @abstractmethod\n"
+            "    def apply(self, *args, **kwargs): ...\n\n"
+            f"{case_class_blocks}\n\n"
+            f"def {dispatch_name}(axis_value, *args, **kwargs):\n"
+            "    return DispatchCase.for_case(axis_value).apply(*args, **kwargs)"
+        )
+
+    def finding(
+        self,
+        detector: PerModuleIssueDetector,
+        module: ParsedModule,
+        observation: LiteralDispatchObservation,
+        *,
+        case_summary_label: str,
+        relation_case_label: str,
+    ) -> RefactorFinding:
+        return detector.build_finding(
+            f"{module.path} dispatches on `{observation.axis_expression}` through {case_summary_label} {observation.literal_cases}.",
+            (
+                SourceLocation(
+                    observation.file_path, observation.line, observation.symbol
+                ),
+            ),
+            relation_context=(
+                f"same observed axis `{observation.axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
+            ),
+            scaffold=self.authority_scaffold(observation),
+            codemod_patch=_literal_dispatch_authority_patch(observation),
+            metrics=DispatchCountMetrics.from_literal_family(
+                observation.axis_expression,
+                observation.literal_cases,
+            ),
+        )
+
+    def findings(
+        self,
+        detector: PerModuleIssueDetector,
+        module: ParsedModule,
+        config: DetectorConfig,
+        observation_family: type[object],
+        *,
+        case_summary_label: str,
+        relation_case_label: str,
+    ) -> list[RefactorFinding]:
+        observations: tuple[LiteralDispatchObservation, ...] = (
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+                module,
+                observation_family,
+                LiteralDispatchObservation,
+            )
+        )
+        return [
+            self.finding(
+                detector,
+                module,
+                observation,
+                case_summary_label=case_summary_label,
+                relation_case_label=relation_case_label,
+            )
+            for observation in observations
+            if len(observation.literal_cases) >= config.min_string_cases
+        ]
+
+
+LITERAL_DISPATCH_FINDING_FACTORY = LiteralDispatchFindingFactory()
 
 
 class RepeatedBuilderCallDetector(IssueDetector):
@@ -377,7 +398,9 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
         return tuple(
-            _collect_typed_family_items(module, ExportDictShapeFamily, ExportDictShape)
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+                module, ExportDictShapeFamily, ExportDictShape
+            )
         )
 
     def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
@@ -437,7 +460,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
         return [
             shape
             for module in modules
-            for shape in _collect_typed_family_items(
+            for shape in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module, RegistrationShapeFamily, RegistrationShape
             )
         ]
@@ -531,11 +554,11 @@ class ManualConcreteSubclassRosterDetector(
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])
         config_block = (
-            _declared_registry_key_block(
+            declared_registry_key_block(
                 roster_candidate.registration_site.selector_attr_name
             )
             if roster_candidate.registration_site.selector_attr_name is not None
-            else _derived_registry_key_block(roster_candidate.concrete_class_names)
+            else derived_registry_key_block(roster_candidate.concrete_class_names)
         )
         scaffold_imports = (
             "from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\n"
@@ -585,7 +608,7 @@ class SemanticInheritanceFamilySSOTDetector(
     def _finding_for_candidate(
         self, family_candidate: SemanticInheritanceFamilySSOTCandidate
     ) -> RefactorFinding:
-        key_block = _declared_registry_key_block(
+        key_block = declared_registry_key_block(
             family_candidate.suggested_key_attr_name
         )
         concrete_preview = ", ".join(family_candidate.concrete_class_names[:4])
@@ -743,7 +766,7 @@ class PredicateSelectedConcreteFamilyDetector(
             ),
             tuple(evidence[:6]),
             scaffold=(
-                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
+                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
             ),
             codemod_patch=(
                 f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
@@ -947,7 +970,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> tuple[SourceLocation, ...]:
         generation_observations: tuple[RuntimeTypeGenerationObservation, ...] = (
-            _collect_typed_family_items(
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module,
                 RuntimeTypeGenerationObservationFamily,
                 RuntimeTypeGenerationObservation,
@@ -959,7 +982,7 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
             if not _is_framework_lineage_symbol(item.symbol)
         ]
         lineage_observations: tuple[LineageMappingObservation, ...] = (
-            _collect_typed_family_items(
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module, LineageMappingObservationFamily, LineageMappingObservation
             )
         )
@@ -994,7 +1017,7 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         observations: tuple[DualAxisResolutionObservation, ...] = (
-            _collect_typed_family_items(
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module,
                 DualAxisResolutionObservationFamily,
                 DualAxisResolutionObservation,
@@ -1316,7 +1339,7 @@ class AttributeProbeDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         observations: tuple[AttributeProbeObservation, ...] = (
-            _collect_typed_family_items(
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module, AttributeProbeObservationFamily, AttributeProbeObservation
             )
         )
@@ -1357,7 +1380,7 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
         observations: tuple[LiteralDispatchObservation, ...] = (
-            _collect_typed_family_items(
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module,
                 InlineStringLiteralDispatchObservationFamily,
                 LiteralDispatchObservation,
@@ -1381,7 +1404,9 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
                     metrics=DispatchCountMetrics.from_literal_family(
                         observation.axis_expression, observation.literal_cases
                     ),
-                    scaffold=_literal_dispatch_authority_scaffold(observation),
+                    scaffold=LITERAL_DISPATCH_FINDING_FACTORY.authority_scaffold(
+                        observation
+                    ),
                     codemod_patch=_literal_dispatch_authority_patch(observation),
                 )
             )
@@ -1402,7 +1427,7 @@ class StringDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        findings = _literal_dispatch_findings(
+        findings = LITERAL_DISPATCH_FINDING_FACTORY.findings(
             self,
             module,
             config,
@@ -1447,7 +1472,7 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        return _literal_dispatch_findings(
+        return LITERAL_DISPATCH_FINDING_FACTORY.findings(
             self,
             module,
             config,
@@ -1509,31 +1534,37 @@ materialize_product_records((
 ))
 # fmt: on
 
+_RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
+_SurfaceFunctionItems: TypeAlias = tuple[tuple[str, _RuntimeFunctionNode], ...]
 
-def _function_line_count(function: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+
+def _function_line_count(function: _RuntimeFunctionNode) -> int:
     end_lineno = (
         function.end_lineno if function.end_lineno is not None else function.lineno
     )
     return end_lineno - function.lineno + 1
 
 
-def _iter_surface_functions(
-    module_node: ast.Module,
-) -> tuple[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef], ...]:
-    functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+@dataclass(frozen=True)
+class SurfaceFunctionIndex:
+    functions: _SurfaceFunctionItems
 
-    def visit_body(body: list[ast.stmt], prefix: tuple[str, ...]) -> None:
-        for statement in body:
-            if isinstance(statement, ast.ClassDef):
-                visit_body(
-                    _trim_docstring_body(statement.body), (*prefix, statement.name)
-                )
-                continue
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                functions.append((".".join((*prefix, statement.name)), statement))
+    @classmethod
+    def from_module(cls, module_node: ast.Module) -> "SurfaceFunctionIndex":
+        functions: list[tuple[str, _RuntimeFunctionNode]] = []
 
-    visit_body(_trim_docstring_body(module_node.body), ())
-    return tuple(functions)
+        def visit_body(body: list[ast.stmt], prefix: tuple[str, ...]) -> None:
+            for statement in body:
+                if isinstance(statement, ast.ClassDef):
+                    visit_body(
+                        _trim_docstring_body(statement.body), (*prefix, statement.name)
+                    )
+                    continue
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    functions.append((".".join((*prefix, statement.name)), statement))
+
+        visit_body(_trim_docstring_body(module_node.body), ())
+        return cls(tuple(functions))
 
 
 @lru_cache(maxsize=None)
@@ -1652,34 +1683,34 @@ def _static_payload_sink_kinds(
     return sorted_tuple(sink_kinds)
 
 
-def _reference_symbol_counts(
-    root: ast.AST,
-    *,
-    include_node: Callable[[ast.AST], bool] | None = None,
-) -> Counter[str]:
-    counts: Counter[str] = Counter()
-    for node in _walk_nodes(root):
-        if include_node is not None and (not include_node(node)):
-            continue
-        if isinstance(node, ast.Name):
-            counts[node.id] += 1
-        elif isinstance(node, ast.Attribute):
-            counts[node.attr] += 1
-        elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-            counts[node.value] += 1
-    return counts
-
-
 @dataclass(frozen=True)
 class ReferenceCountIndex:
     total_counts: Counter[str]
     function_counts_by_id: dict[int, Counter[str]]
 
+    @staticmethod
+    def symbol_counts(
+        root: ast.AST,
+        *,
+        include_node: Callable[[ast.AST], bool] | None = None,
+    ) -> Counter[str]:
+        counts: Counter[str] = Counter()
+        for node in _walk_nodes(root):
+            if include_node is not None and (not include_node(node)):
+                continue
+            if isinstance(node, ast.Name):
+                counts[node.id] += 1
+            elif isinstance(node, ast.Attribute):
+                counts[node.attr] += 1
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                counts[node.value] += 1
+        return counts
+
     @classmethod
     def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
         total_counts: Counter[str] = Counter()
         for module in modules:
-            total_counts.update(_reference_symbol_counts(module.module))
+            total_counts.update(cls.symbol_counts(module.module))
         return cls(
             total_counts=total_counts,
             function_counts_by_id={},
@@ -1690,9 +1721,7 @@ class ReferenceCountIndex:
     ) -> int:
         function_key = id(function)
         if function_key not in self.function_counts_by_id:
-            self.function_counts_by_id[function_key] = _reference_symbol_counts(
-                function
-            )
+            self.function_counts_by_id[function_key] = self.symbol_counts(function)
         function_counts = self.function_counts_by_id[function_key]
         return self.total_counts[symbol_name] - function_counts[symbol_name]
 
@@ -1707,7 +1736,7 @@ def _embedded_static_payload_candidates(
     reference_index = reference_index or ReferenceCountIndex.from_modules(
         reference_modules or (module,)
     )
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if not _is_private_symbol_name(function.name):
             continue
         line_count = _function_line_count(function)
@@ -1811,12 +1840,101 @@ materialize_product_record(product_record_spec('DanglingPrivateMethodCandidate',
 materialize_product_record(product_record_spec('PrivateHelperResiduePlan', 'classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; transported_parameter_names: tuple[str, ...]; callsite_axis_count: int; shared_statement_count: int; normal_form: str'))
 materialize_product_record(product_record_spec('PrivateHelperPlacementPlan', 'placement_kind: str; insertion_owner_name: str; insertion_detail: str; residue_plan: PrivateHelperResiduePlan; caller_owner_names: tuple[str, ...]'))
 materialize_product_record(product_record_spec('NonNominalPrivateHelperCandidate', 'function_name: str; parameter_names: tuple[str, ...]; caller_symbols: tuple[str, ...]; placement_plan: PrivateHelperPlacementPlan; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
+materialize_product_record(product_record_spec('PrivateHelperClusterClassification', 'owner_name: str; normal_form: str; shared_stem: str; role_tokens: tuple[str, ...]; return_kinds: tuple[str, ...]; constructed_type_names: tuple[str, ...]'))
+materialize_product_record(product_record_spec('PrivateHelperSemanticClusterCandidate', 'helper_names: tuple[str, ...]; semantic_family: str; classification: PrivateHelperClusterClassification; shared_parameter_names: tuple[str, ...]; shared_call_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; cluster_size: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "helper_names")}))
 materialize_product_record(product_record_spec('PrivateHelperResidueNameTemplate', 'kind: str; prefix: str; suffix: str; uppercase: bool; parameter_name_is_authority: bool'))
 materialize_product_record(product_record_spec('PrivateHelperAuthorityRole', 'role_tokens: tuple[str, ...]; suffix: str; drop_tokens: tuple[str, ...]'))
 # fmt: on
 
-_RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 _RuntimeFunctionsByQualname: TypeAlias = dict[str, _RuntimeFunctionNode]
+
+
+class _PrivateHelperResidueKind(StrEnum):
+    ATTRIBUTE = "attribute"
+    CALL = "call"
+    CONSTANT = "constant"
+    EXPRESSION = "expression"
+    NAME = "name"
+    SELF_ATTR = "self_attr"
+    VALUE = "value"
+
+
+class _PrivateHelperResidueSink(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = "kind"
+    __skip_if_no_key__ = True
+
+    kind: ClassVar[_PrivateHelperResidueKind | None] = None
+
+    @classmethod
+    def for_kind(cls, kind: _PrivateHelperResidueKind) -> "_PrivateHelperResidueSink":
+        sink_class = cls.__registry__.get(kind, _PrivateHelperPropertyResidueSink)
+        return sink_class()
+
+    @abstractmethod
+    def append_residue(
+        self,
+        residue_name: str,
+        *,
+        classvar_names: list[str],
+        property_hook_names: list[str],
+        behavior_hook_names: list[str],
+    ) -> None:
+        raise NotImplementedError
+
+
+class _PrivateHelperConstantResidueSink(_PrivateHelperResidueSink):
+    kind = _PrivateHelperResidueKind.CONSTANT
+
+    def append_residue(
+        self,
+        residue_name: str,
+        *,
+        classvar_names: list[str],
+        property_hook_names: list[str],
+        behavior_hook_names: list[str],
+    ) -> None:
+        classvar_names.append(residue_name)
+
+
+class _PrivateHelperCallResidueSink(_PrivateHelperResidueSink):
+    kind = _PrivateHelperResidueKind.CALL
+
+    def append_residue(
+        self,
+        residue_name: str,
+        *,
+        classvar_names: list[str],
+        property_hook_names: list[str],
+        behavior_hook_names: list[str],
+    ) -> None:
+        behavior_hook_names.append(residue_name)
+
+
+class _PrivateHelperPropertyResidueSink(_PrivateHelperResidueSink):
+    def append_residue(
+        self,
+        residue_name: str,
+        *,
+        classvar_names: list[str],
+        property_hook_names: list[str],
+        behavior_hook_names: list[str],
+    ) -> None:
+        property_hook_names.append(residue_name)
+
+
+class DerivedCandidateCollectorContracts:
+    def names(self, modules: Sequence[ParsedModule]) -> frozenset[str]:
+        return frozenset(
+            (
+                _candidate_collector_name_from_class_name(node.name)
+                for module in modules
+                for node in module.module.body
+                if isinstance(node, ast.ClassDef) and class_declares_finding_spec(node)
+            )
+        )
+
+
+DERIVED_CANDIDATE_COLLECTOR_CONTRACTS = DerivedCandidateCollectorContracts()
 
 
 def _has_external_protocol_shape(
@@ -1825,19 +1943,6 @@ def _has_external_protocol_shape(
     if function.decorator_list:
         return True
     return function.name.endswith("_")
-
-
-def _derived_candidate_collector_contract_names(
-    modules: Sequence[ParsedModule],
-) -> frozenset[str]:
-    return frozenset(
-        (
-            _candidate_collector_name_from_class_name(node.name)
-            for module in modules
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef) and _class_declares_finding_spec(node)
-        )
-    )
 
 
 def _unreferenced_private_function_candidates(
@@ -1854,9 +1959,9 @@ def _unreferenced_private_function_candidates(
     )
     derived_candidate_collector_contract_names = (
         derived_candidate_collector_contract_names
-        or _derived_candidate_collector_contract_names(contract_modules)
+        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(contract_modules)
     )
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." in qualname:
             continue
         if not _is_private_symbol_name(function.name):
@@ -1903,7 +2008,7 @@ def _dangling_private_method_candidates(
     reference_index = reference_index or ReferenceCountIndex.from_modules(
         reference_modules or (module,)
     )
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." not in qualname:
             continue
         if not _is_private_symbol_name(function.name):
@@ -1985,7 +2090,9 @@ class PrivateHelperCallGraph:
         callers_by_symbol: dict[str, set[str]] = {}
         functions_by_qualname: _RuntimeFunctionsByQualname = {}
         for module in modules:
-            for qualname, function in _iter_surface_functions(module.module):
+            for qualname, function in SurfaceFunctionIndex.from_module(
+                module.module
+            ).functions:
                 functions_by_qualname[qualname] = function
                 for symbol_name in _function_symbol_references(function):
                     callers_by_symbol.setdefault(symbol_name, set()).add(qualname)
@@ -2048,25 +2155,35 @@ def _private_helper_unique_class_symbol(
 def _private_helper_deepest_common_ancestor_symbol(
     class_index: ClassFamilyIndex, class_symbols: tuple[str, ...]
 ) -> str | None:
-    if not class_symbols:
-        return None
-    ancestor_sets = tuple(
-        (
-            frozenset(
+    return (
+        Maybe.of(class_symbols)
+        .filter(bool)
+        .map(
+            lambda symbols: tuple(
                 (
-                    class_symbol,
-                    *class_index.ancestor_symbols(class_symbol),
+                    frozenset(
+                        (
+                            class_symbol,
+                            *class_index.ancestor_symbols(class_symbol),
+                        )
+                    )
+                    for class_symbol in symbols
                 )
             )
-            for class_symbol in class_symbols
         )
-    )
-    common_symbols = set.intersection(*(set(symbols) for symbols in ancestor_sets))
-    if not common_symbols:
-        return None
-    return max(
-        common_symbols,
-        key=lambda symbol: len(class_index.ancestor_symbols(symbol)),
+        .map(
+            lambda ancestor_sets: set.intersection(
+                *(set(symbols) for symbols in ancestor_sets)
+            )
+        )
+        .filter(bool)
+        .map(
+            lambda common_symbols: max(
+                common_symbols,
+                key=lambda symbol: len(class_index.ancestor_symbols(symbol)),
+            )
+        )
+        .unwrap_or_none()
     )
 
 
@@ -2106,22 +2223,22 @@ def _private_helper_call_argument_map(
     return argument_map
 
 
-def _private_helper_residue_kind(argument: ast.AST) -> str:
+def _private_helper_residue_kind(argument: ast.AST) -> _PrivateHelperResidueKind:
     if isinstance(argument, ast.Constant):
-        return "constant"
+        return _PrivateHelperResidueKind.CONSTANT
     if isinstance(argument, ast.Attribute):
         if isinstance(argument.value, ast.Name) and argument.value.id == "self":
-            return "self_attr"
-        return "attribute"
+            return _PrivateHelperResidueKind.SELF_ATTR
+        return _PrivateHelperResidueKind.ATTRIBUTE
     if isinstance(argument, ast.Call):
-        return "call"
+        return _PrivateHelperResidueKind.CALL
     if isinstance(argument, ast.Name):
-        return "name"
-    return "expression"
+        return _PrivateHelperResidueKind.NAME
+    return _PrivateHelperResidueKind.EXPRESSION
 
 
 _PRIVATE_HELPER_VALUE_RESIDUE_TEMPLATE = PrivateHelperResidueNameTemplate(
-    kind="value",
+    kind=_PrivateHelperResidueKind.VALUE,
     prefix="",
     suffix="_value",
     uppercase=False,
@@ -2129,21 +2246,21 @@ _PRIVATE_HELPER_VALUE_RESIDUE_TEMPLATE = PrivateHelperResidueNameTemplate(
 )
 _PRIVATE_HELPER_RESIDUE_NAME_TEMPLATES = (
     PrivateHelperResidueNameTemplate(
-        kind="constant",
+        kind=_PrivateHelperResidueKind.CONSTANT,
         prefix="",
         suffix="",
         uppercase=True,
         parameter_name_is_authority=False,
     ),
     PrivateHelperResidueNameTemplate(
-        kind="call",
+        kind=_PrivateHelperResidueKind.CALL,
         prefix="_",
         suffix="_operation",
         uppercase=False,
         parameter_name_is_authority=False,
     ),
     PrivateHelperResidueNameTemplate(
-        kind="self_attr",
+        kind=_PrivateHelperResidueKind.SELF_ATTR,
         prefix="",
         suffix="",
         uppercase=False,
@@ -2153,7 +2270,7 @@ _PRIVATE_HELPER_RESIDUE_NAME_TEMPLATES = (
 
 
 def _private_helper_residue_name(
-    function_name: str, parameter_name: str, kind: str
+    function_name: str, parameter_name: str, kind: _PrivateHelperResidueKind
 ) -> str:
     template = next(
         (
@@ -2202,21 +2319,26 @@ def _private_helper_residue_plan(
         argument_kinds = {
             _private_helper_residue_kind(argument) for argument in arguments
         }
-        if argument_kinds == {"name"} and argument_values == {parameter_name}:
+        if argument_kinds == {_PrivateHelperResidueKind.NAME} and argument_values == {
+            parameter_name
+        }:
             transported_parameter_names.append(parameter_name)
             continue
-        if len(argument_values) == 1 and next(iter(argument_kinds)) == "name":
+        if (
+            len(argument_values) == 1
+            and next(iter(argument_kinds)) == _PrivateHelperResidueKind.NAME
+        ):
             transported_parameter_names.append(parameter_name)
             continue
         callsite_axis_count += 1
         kind = next(iter(sorted(argument_kinds)))
         residue_name = _private_helper_residue_name(function.name, parameter_name, kind)
-        if kind == "constant":
-            classvar_names.append(residue_name)
-        elif kind == "call":
-            behavior_hook_names.append(residue_name)
-        else:
-            property_hook_names.append(residue_name)
+        _PrivateHelperResidueSink.for_kind(kind).append_residue(
+            residue_name,
+            classvar_names=classvar_names,
+            property_hook_names=property_hook_names,
+            behavior_hook_names=behavior_hook_names,
+        )
     shared_statement_count = len(_trim_docstring_body(list(function.body)))
     leaf_residue_names = sorted_tuple(
         (*classvar_names, *property_hook_names, *behavior_hook_names)
@@ -2312,6 +2434,63 @@ def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
     return "".join(token.capitalize() for token in tokens)
 
 
+def _shared_private_helper_stem(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+) -> tuple[str, ...]:
+    token_lists = tuple(
+        (_private_helper_name_tokens(function.name) for function in functions)
+    )
+    if not token_lists:
+        return ()
+    shared: list[str] = []
+    for token_column in zip(*token_lists):
+        if len(set(token_column)) != 1:
+            break
+        shared.append(token_column[0])
+    return tuple(shared)
+
+
+_PRIVATE_HELPER_OWNER_RESIDUE_TOKENS = frozenset(
+    (
+        "api",
+        "body",
+        "candidate",
+        "candidates",
+        "expression",
+        "for",
+        "from",
+        "function",
+        "names",
+        "public",
+        "return",
+        "returns",
+        "strategy",
+        "surface",
+    )
+)
+
+
+def _dominant_private_helper_role_tokens(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    stem_tokens: tuple[str, ...],
+) -> tuple[str, ...]:
+    token_lists = tuple(
+        (_private_helper_name_tokens(function.name) for function in functions)
+    )
+    threshold = max(2, (len(token_lists) + 1) // 2)
+    stem_set = frozenset(stem_tokens)
+    ordered_tokens = tuple(
+        dict.fromkeys((token for tokens in token_lists for token in tokens))
+    )
+    return tuple(
+        token
+        for token in ordered_tokens
+        if token not in stem_set
+        and token not in _PRIVATE_HELPER_OWNER_RESIDUE_TOKENS
+        and sum((token in tokens for tokens in token_lists)) >= threshold
+    )
+
+
 def _private_helper_authority_role(
     function_name: str,
 ) -> PrivateHelperAuthorityRole | None:
@@ -2332,7 +2511,7 @@ def _private_helper_derived_authority_name(
     caller_owner_names: tuple[str, ...],
     fallback_suffix: str,
 ) -> str:
-    shared_caller_name = _shared_family_name(caller_owner_names)
+    shared_caller_name = shared_family_name(caller_owner_names)
     if shared_caller_name is not None:
         return shared_caller_name
     role = _private_helper_authority_role(function_name)
@@ -2469,6 +2648,292 @@ def _is_probably_nominal_private_helper_contract(
     return False
 
 
+def _private_helper_cluster_family(function_name: str) -> tuple[str, str]:
+    return _public_bare_support_function_family(function_name.lstrip("_"))
+
+
+def _private_helper_cluster_key(function_name: str) -> tuple[str, str, str]:
+    semantic_family, recommended_owner = _private_helper_cluster_family(function_name)
+    tokens = _private_helper_name_tokens(function_name)
+    role_token = tokens[0] if tokens else function_name.removeprefix("_")
+    return semantic_family, recommended_owner, role_token
+
+
+def _private_helper_callee_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            call_name
+            for node in _walk_function_body_nodes(function)
+            if isinstance(node, ast.Call)
+            for call_name in (_call_name(node.func),)
+            if call_name is not None and not call_name.startswith("_")
+        }
+    )
+
+
+def _private_helper_return_kind(node: ast.AST | None) -> str:
+    if node is None:
+        return "none"
+    if isinstance(node, ast.Call):
+        return _call_name(node.func) or "call"
+    if isinstance(node, ast.Tuple):
+        return "tuple_literal"
+    if isinstance(node, ast.List):
+        return "list_literal"
+    if isinstance(node, ast.Dict):
+        return "dict_literal"
+    if isinstance(node, ast.Set):
+        return "set_literal"
+    if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+        return type(node).__name__
+    if isinstance(node, ast.Constant):
+        return type(node.value).__name__
+    if isinstance(node, ast.Name):
+        return "name"
+    if isinstance(node, ast.Attribute):
+        return "attribute"
+    return type(node).__name__
+
+
+def _private_helper_return_kinds(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            _private_helper_return_kind(returned.value)
+            for function in functions
+            for returned in _walk_function_body_nodes(function)
+            if isinstance(returned, ast.Return)
+        }
+    )
+
+
+def _private_helper_constructed_type_names(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            call_name
+            for function in functions
+            for node in _walk_function_body_nodes(function)
+            if isinstance(node, ast.Call)
+            for call_name in (_call_name(node.func),)
+            if call_name is not None
+            and call_name.endswith(
+                (
+                    "Candidate",
+                    "Finding",
+                    "Metrics",
+                    "Observation",
+                    "Plan",
+                    "Profile",
+                    "Shape",
+                    "Spec",
+                    "Witness",
+                )
+            )
+        }
+    )
+
+
+def _private_helper_cluster_normal_form(
+    *,
+    semantic_tokens: tuple[str, ...],
+    return_kinds: tuple[str, ...],
+    constructed_type_names: tuple[str, ...],
+    shared_call_names: tuple[str, ...],
+) -> str:
+    stem = "_".join(semantic_tokens)
+    if "manifest" in semantic_tokens or {"TypeError", "isinstance"} <= set(
+        shared_call_names
+    ):
+        return "typed_decoder"
+    if "pattern" in semantic_tokens:
+        return "catalog_schema"
+    if "traversal" in semantic_tokens or "subclass" in semantic_tokens:
+        return "traversal_profile"
+    if "guard" in semantic_tokens or "validator" in semantic_tokens:
+        return "candidate_pipeline"
+    if "enum" in semantic_tokens and "dispatch" in semantic_tokens:
+        return "extractor_family"
+    if set(return_kinds) <= {"join", "str", "Constant", "FormattedValue"} or any(
+        token in semantic_tokens for token in ("format", "markdown", "render")
+    ):
+        return "renderer"
+    if constructed_type_names:
+        return "candidate_builder"
+    if stem.endswith("sorted_tuple") or "tuple" in return_kinds:
+        return "collection_projection"
+    if semantic_tokens and (
+        set(return_kinds) <= {"tuple", "tuple_literal", "name", "attribute"}
+    ):
+        return "syntax_projection"
+    return "semantic_authority"
+
+
+def _private_helper_owner_suffix(normal_form: str) -> str:
+    return {
+        "candidate_builder": "Builder",
+        "candidate_pipeline": "Pipeline",
+        "catalog_schema": "Catalog",
+        "collection_projection": "Projection",
+        "extractor_family": "Extractor",
+        "renderer": "Renderer",
+        "semantic_authority": "Authority",
+        "syntax_projection": "Projection",
+        "traversal_profile": "Profile",
+        "typed_decoder": "Decoder",
+    }[normal_form]
+
+
+def _private_helper_cluster_classification(
+    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    *,
+    shared_call_names: tuple[str, ...],
+) -> PrivateHelperClusterClassification:
+    stem_tokens = _shared_private_helper_stem(functions)
+    dominant_role_tokens = _dominant_private_helper_role_tokens(functions, stem_tokens)
+    semantic_tokens = (*stem_tokens, *dominant_role_tokens)
+    return_kinds = _private_helper_return_kinds(functions)
+    constructed_type_names = _private_helper_constructed_type_names(functions)
+    normal_form = _private_helper_cluster_normal_form(
+        semantic_tokens=semantic_tokens,
+        return_kinds=return_kinds,
+        constructed_type_names=constructed_type_names,
+        shared_call_names=shared_call_names,
+    )
+    owner_stem = _private_helper_pascal_name(semantic_tokens, "Semantic")
+    suffix = _private_helper_owner_suffix(normal_form)
+    owner_name = owner_stem if owner_stem.endswith(suffix) else f"{owner_stem}{suffix}"
+    role_tokens = sorted_tuple(
+        {
+            token
+            for function in functions
+            for token in _private_helper_name_tokens(function.name)
+            if token not in set(stem_tokens)
+        }
+    )
+    return PrivateHelperClusterClassification(
+        owner_name=owner_name,
+        normal_form=normal_form,
+        shared_stem="_".join(stem_tokens),
+        role_tokens=role_tokens,
+        return_kinds=return_kinds,
+        constructed_type_names=constructed_type_names,
+    )
+
+
+def _private_helper_cluster_certificate(
+    cluster: PrivateHelperSemanticClusterCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=cluster.cluster_size,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("private_helper_owner",),
+        ),
+        semantic_axes=(
+            *cluster.shared_parameter_names,
+            *cluster.shared_call_names,
+        ),
+        residual_object_count=max(
+            1,
+            (len(cluster.shared_parameter_names) + len(cluster.shared_call_names)) // 2,
+        ),
+    )
+
+
+def _private_helper_semantic_cluster_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+    reference_modules: Sequence[ParsedModule] | None = None,
+    derived_candidate_collector_contract_names: frozenset[str] | None = None,
+    private_helper_call_graph: PrivateHelperCallGraph | None = None,
+) -> tuple[PrivateHelperSemanticClusterCandidate, ...]:
+    modules = reference_modules or (module,)
+    derived_candidate_collector_contract_names = (
+        derived_candidate_collector_contract_names
+        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
+    )
+    private_helper_call_graph = (
+        private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
+    )
+    grouped: dict[
+        tuple[str, str, str], list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]]
+    ] = defaultdict(list)
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
+        if "." in qualname:
+            continue
+        if not _is_private_symbol_name(function.name):
+            continue
+        if _is_probably_nominal_private_helper_contract(
+            function,
+            derived_candidate_collector_contract_names=(
+                derived_candidate_collector_contract_names
+            ),
+        ):
+            continue
+        minimum_cluster_line_count = max(
+            3, config.min_unreferenced_private_function_lines // 2
+        )
+        if _function_line_count(function) < minimum_cluster_line_count:
+            continue
+        grouped[_private_helper_cluster_key(function.name)].append((qualname, function))
+
+    candidates: list[PrivateHelperSemanticClusterCandidate] = []
+    for (semantic_family, _, _), helpers in sorted(grouped.items()):
+        if len(helpers) < 4:
+            continue
+        helper_names = sorted_tuple((function.name for _, function in helpers))
+        parameter_sets = tuple(
+            (set(_function_parameter_names(function)) for _, function in helpers)
+        )
+        shared_parameter_names = sorted_tuple(set.intersection(*parameter_sets))
+        call_name_sets = tuple(
+            (set(_private_helper_callee_names(function)) for _, function in helpers)
+        )
+        shared_call_names = (
+            sorted_tuple(set.intersection(*call_name_sets)) if call_name_sets else ()
+        )
+        consumer_symbols = sorted_tuple(
+            {
+                caller_symbol
+                for qualname, function in helpers
+                for caller_symbol in private_helper_call_graph.caller_symbols(
+                    function_name=function.name, qualname=qualname
+                )
+            }
+        )
+        if not (shared_parameter_names or shared_call_names):
+            continue
+        functions = tuple((function for _, function in helpers))
+        classification = _private_helper_cluster_classification(
+            functions, shared_call_names=shared_call_names
+        )
+        line_numbers = tuple((function.lineno for _, function in helpers))
+        candidate = PrivateHelperSemanticClusterCandidate(
+            file_path=str(module.path),
+            line=min(line_numbers),
+            helper_names=helper_names,
+            semantic_family=semantic_family,
+            classification=classification,
+            shared_parameter_names=shared_parameter_names,
+            shared_call_names=shared_call_names,
+            consumer_symbols=consumer_symbols,
+            line_numbers=line_numbers,
+            line_count=sum((_function_line_count(function) for _, function in helpers)),
+            cluster_size=len(helpers),
+        )
+        if not _private_helper_cluster_certificate(candidate).pays_rent:
+            continue
+        candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.line, item.semantic_family),
+    )
+
+
 def _non_nominal_private_helper_candidates(
     module: ParsedModule,
     config: DetectorConfig,
@@ -2480,13 +2945,13 @@ def _non_nominal_private_helper_candidates(
     modules = reference_modules or (module,)
     derived_candidate_collector_contract_names = (
         derived_candidate_collector_contract_names
-        or _derived_candidate_collector_contract_names(modules)
+        or DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
     )
     private_helper_call_graph = (
         private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
     )
     candidates: list[NonNominalPrivateHelperCandidate] = []
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." in qualname:
             continue
         if not _is_private_symbol_name(function.name):
@@ -2557,7 +3022,7 @@ class UnreferencedPrivateFunctionDetector(
     ) -> list[RefactorFinding]:
         reference_index = ReferenceCountIndex.from_modules(modules)
         derived_candidate_collector_contract_names = (
-            _derived_candidate_collector_contract_names(modules)
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
         )
         return [
             self._finding_for_candidate(candidate)
@@ -2605,7 +3070,7 @@ class NonNominalPrivateHelperDetector(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         derived_candidate_collector_contract_names = (
-            _derived_candidate_collector_contract_names(modules)
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
         )
         private_helper_call_graph = PrivateHelperCallGraph.from_modules(modules)
         class_index = build_class_family_index(modules)
@@ -2660,6 +3125,80 @@ class NonNominalPrivateHelperDetector(
             call_site_count=helper_candidate.call_site_count,
             parameter_count=len(helper_candidate.parameter_names),
             callee_family_count=len(helper_candidate.caller_symbols),
+        ),
+    )
+
+
+class PrivateHelperSemanticClusterDetector(
+    ConfiguredModuleCollectorCandidateDetector[PrivateHelperSemanticClusterCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Private helper cluster should have a semantic owner",
+        "A family of private module helpers with shared parameters, shared callees, or shared consumers is not local residue; it is an unowned semantic algebra. Making the functions private only hides the missing owner. The normal form is a real ABC/template method, effect-step family, descriptor, product/schema algebra, or registered strategy family that owns the invariant once.",
+        "nominal owner for clustered private helper semantics",
+        "private helpers cluster by semantic family without an owning abstraction",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        derived_candidate_collector_contract_names = (
+            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
+        )
+        private_helper_call_graph = PrivateHelperCallGraph.from_modules(modules)
+        return [
+            self._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in _private_helper_semantic_cluster_candidates(
+                module,
+                config,
+                reference_modules=modules,
+                derived_candidate_collector_contract_names=(
+                    derived_candidate_collector_contract_names
+                ),
+                private_helper_call_graph=private_helper_call_graph,
+            )
+        ]
+
+    finding_renderer = CandidateFindingRenderer[PrivateHelperSemanticClusterCandidate](
+        summary=lambda cluster: (
+            f"{cluster.cluster_size} private helpers {cluster.helper_names} in "
+            f"`{cluster.semantic_family}` share stem `{cluster.classification.shared_stem}` "
+            f"and normal form `{cluster.classification.normal_form}`; inferred owner "
+            f"`{cluster.classification.owner_name}`. Roles: {cluster.classification.role_tokens}; "
+            f"returns: {cluster.classification.return_kinds}; constructs: "
+            f"{cluster.classification.constructed_type_names}; consumers: {cluster.consumer_symbols[:6]}."
+        ),
+        evidence=lambda cluster: cluster.evidence_locations,
+        scaffold=lambda cluster: (
+            f"class {cluster.classification.owner_name}(ABC):\n"
+            f"    normal_form = {cluster.classification.normal_form!r}\n"
+            f"    role_tokens = {cluster.classification.role_tokens!r}\n"
+            "    # Put the shared algorithm in concrete ABC methods.\n"
+            "    # Keep only role-specific residue as classvars/properties/hooks.\n"
+            "    ..."
+        ),
+        codemod_patch=lambda cluster: (
+            f"# Do not fix {cluster.helper_names} by renaming or wrapping them.\n"
+            f"# Factor `{cluster.classification.shared_stem}` into `{cluster.classification.owner_name}` "
+            f"as `{cluster.classification.normal_form}`.\n"
+            f"# Role/residue tokens: {cluster.classification.role_tokens}\n"
+            f"# Return kinds: {cluster.classification.return_kinds}\n"
+            f"# Constructed types: {cluster.classification.constructed_type_names}\n"
+            f"# Shared parameters: {cluster.shared_parameter_names}\n"
+            f"# Shared callees: {cluster.shared_call_names}\n"
+            "# Insert the owner only where it deletes duplicated helper mechanics; otherwise keep investigating the true invariant."
+        ),
+        compression_certificate=_private_helper_cluster_certificate,
+        metrics=lambda cluster: OrchestrationMetrics(
+            function_line_count=cluster.line_count,
+            branch_site_count=0,
+            call_site_count=len(cluster.consumer_symbols),
+            parameter_count=len(cluster.shared_parameter_names),
+            callee_family_count=max(1, len(cluster.shared_call_names)),
         ),
     )
 
@@ -2792,7 +3331,7 @@ def _normalized_small_method_template(
 
 def _method_name_family_tokens(method_names: tuple[str, ...]) -> tuple[str, ...]:
     token_sets = [
-        set(_ordered_class_name_tokens(method_name.strip("_")))
+        set(CLASS_NAME_ALGEBRA.ordered_tokens(method_name.strip("_")))
         for method_name in method_names
     ]
     if not token_sets:
@@ -2808,7 +3347,7 @@ def _sibling_small_method_template_candidates(
         tuple[str, int, tuple[str, ...]],
         list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]],
     ] = defaultdict(list)
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." not in qualname or not _is_private_symbol_name(function.name):
             continue
         if _has_external_protocol_shape(function):
@@ -3077,7 +3616,7 @@ def _constant_backed_dispatch_axis_candidates(
     grouped: dict[tuple[str, str], list[tuple[str, int, tuple[str, ...]]]] = (
         defaultdict(list)
     )
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         for node in _walk_function_body_nodes(function):
             if not isinstance(node, ast.If):
                 continue
@@ -3229,7 +3768,7 @@ def _manual_process_step_ladder_candidates(
     module: ParsedModule,
 ) -> tuple[ManualProcessStepLadderCandidate, ...]:
     sites: list[tuple[str, str, int, int]] = []
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         tables = _assigned_process_step_tables(function)
         if not tables:
             continue
@@ -3350,7 +3889,7 @@ def _mirrored_file_rewrite_loop_candidates(
     module: ParsedModule,
 ) -> tuple[MirroredFileRewriteLoopCandidate, ...]:
     candidates: list[MirroredFileRewriteLoopCandidate] = []
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         loops = tuple(
             (
                 node
@@ -3481,7 +4020,7 @@ def _repeated_local_regex_bundle_candidates(
     functions_by_owner: dict[
         (str, list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, dict[str, int]]])
     ] = defaultdict(list)
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         literals = _local_regex_literals_by_function(function)
         if literals:
             functions_by_owner[_function_owner_name(qualname)].append(
@@ -3628,7 +4167,7 @@ def _algebraic_duplicate_compound_block_candidates(
     grouped: dict[(tuple[str, object], list[tuple[str, int, object]])] = defaultdict(
         list
     )
-    for qualname, function in _iter_surface_functions(module.module):
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         for node in _walk_function_body_nodes(function):
             if not isinstance(node, (ast.For, ast.While)):
                 continue

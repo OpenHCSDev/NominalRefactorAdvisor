@@ -12,12 +12,13 @@ import ast
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, ClassVar, Generic, Sequence, TypeVar, cast, overload
+from typing import Any, Callable, ClassVar, Generic, Sequence, TypeVar, cast, overload
 
 from metaclass_registry import AutoRegisterMeta
 
 T = TypeVar("T")
 U = TypeVar("U")
+V = TypeVar("V")
 AstT = TypeVar("AstT", bound=ast.AST)
 AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
@@ -41,6 +42,32 @@ class EffectCarrier(ABC, Generic[T]):
 
     @abstractmethod
     def bind_step(self, step: EffectStep[T, U]) -> "EffectCarrier[U]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def project(self, projector: Callable[[T], U | None]) -> "EffectCarrier[U]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def map(self, projector: Callable[[T], U]) -> "EffectCarrier[U]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def filter(self, predicate: Callable[[T], bool]) -> "EffectCarrier[T]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def with_projection(
+        self, projector: Callable[[T], U | None]
+    ) -> "EffectCarrier[tuple[T, U]]":
+        raise NotImplementedError
+
+    @abstractmethod
+    def combine(
+        self,
+        projector: Callable[[T], U | None],
+        combiner: Callable[[T, U], V],
+    ) -> "EffectCarrier[V]":
         raise NotImplementedError
 
     @abstractmethod
@@ -235,6 +262,43 @@ class Maybe(EffectCarrier[T]):
             return Maybe(None)
         return Maybe(step.apply(self.value))
 
+    def project(self, projector: Callable[[T], U | None]) -> "Maybe[U]":
+        if self.value is None:
+            return Maybe(None)
+        return Maybe(projector(self.value))
+
+    def map(self, projector: Callable[[T], U]) -> "Maybe[U]":
+        if self.value is None:
+            return Maybe(None)
+        return Maybe(projector(self.value))
+
+    def filter(self, predicate: Callable[[T], bool]) -> "Maybe[T]":
+        if self.value is None or not predicate(self.value):
+            return Maybe(None)
+        return self
+
+    def with_projection(
+        self, projector: Callable[[T], U | None]
+    ) -> "Maybe[tuple[T, U]]":
+        if self.value is None:
+            return Maybe(None)
+        projected = projector(self.value)
+        if projected is None:
+            return Maybe(None)
+        return Maybe((self.value, projected))
+
+    def combine(
+        self,
+        projector: Callable[[T], U | None],
+        combiner: Callable[[T, U], V],
+    ) -> "Maybe[V]":
+        if self.value is None:
+            return Maybe(None)
+        projected = projector(self.value)
+        if projected is None:
+            return Maybe(None)
+        return Maybe(combiner(self.value, projected))
+
     def bind_all(self, steps: Sequence[EffectStep[Any, Any]]) -> "Maybe[Any]":
         result: Maybe[Any] = cast(Maybe[Any], self)
         for step in steps:
@@ -299,23 +363,33 @@ def named_call_assignment(node: ast.Assign) -> NamedCallAssignment | None:
 
 
 def named_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
-    assignment = as_ast(node, ast.Assign)
-    if assignment is None:
-        return None
-    name = name_id(single_assign_target(assignment))
-    if name is None:
-        return None
-    return NamedValueBinding(name, assignment.value, assignment.lineno)
+    return (
+        Maybe.of(as_ast(node, ast.Assign))
+        .project(
+            lambda assignment: name_id(single_assign_target(assignment)),
+        )
+        .map(
+            lambda name: NamedValueBinding(
+                name, cast(ast.Assign, node).value, cast(ast.Assign, node).lineno
+            )
+        )
+        .unwrap_or_none()
+    )
 
 
 def named_ann_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
-    assignment = as_ast(node, ast.AnnAssign)
-    if assignment is None:
-        return None
-    name = name_id(assignment.target)
-    if name is None:
-        return None
-    return NamedValueBinding(name, assignment.value, assignment.lineno)
+    return (
+        Maybe.of(as_ast(node, ast.AnnAssign))
+        .project(lambda assignment: name_id(assignment.target))
+        .map(
+            lambda name: NamedValueBinding(
+                name,
+                cast(ast.AnnAssign, node).value,
+                cast(ast.AnnAssign, node).lineno,
+            )
+        )
+        .unwrap_or_none()
+    )
 
 
 def named_value_binding(node: ast.stmt) -> NamedValueBinding | None:
@@ -378,18 +452,24 @@ def call_argument_match(
     argument_count: int | None = None,
     allow_keywords: bool = True,
 ) -> CallArgumentMatch | None:
-    if not allow_keywords and call.keywords:
-        return None
-    if argument_count is not None and len(call.args) != argument_count:
+    if (not allow_keywords and call.keywords) or (
+        argument_count is not None and len(call.args) != argument_count
+    ):
         return None
     if argument_name is None and (not required):
         return CallArgumentMatch(None, tuple(call.args))
-    argument = single_item(call.args)
-    if argument is None:
-        return None
-    if argument_name is not None and name_id(argument) != argument_name:
-        return None
-    return CallArgumentMatch(argument, tuple(call.args))
+    return (
+        Maybe.of(single_item(call.args))
+        .project(
+            lambda argument: (
+                argument
+                if argument_name is None or name_id(argument) == argument_name
+                else None
+            )
+        )
+        .map(lambda argument: CallArgumentMatch(argument, tuple(call.args)))
+        .unwrap_or_none()
+    )
 
 
 def collection_literal(

@@ -30,18 +30,23 @@ _READABILITY_DETECTOR_IDS = frozenset(
 )
 
 
-def _has_positive_impact(delta: ImpactDelta) -> bool:
-    return any(
-        (
-            delta.lower_bound_removable_loc > 0,
-            delta.upper_bound_removable_loc > 0,
-            delta.repeated_mappings_centralized > 0,
-            delta.dispatch_sites_eliminated > 0,
-            delta.registration_sites_removed > 0,
-            delta.shared_algorithm_sites_centralized > 0,
-            delta.description_length_savings > 0,
+@dataclass(frozen=True)
+class ImpactDeltaClassifier:
+    def has_positive_impact(self, delta: ImpactDelta) -> bool:
+        return any(
+            (
+                delta.lower_bound_removable_loc > 0,
+                delta.upper_bound_removable_loc > 0,
+                delta.repeated_mappings_centralized > 0,
+                delta.dispatch_sites_eliminated > 0,
+                delta.registration_sites_removed > 0,
+                delta.shared_algorithm_sites_centralized > 0,
+                delta.description_length_savings > 0,
+            )
         )
-    )
+
+
+IMPACT_DELTA_CLASSIFIER = ImpactDeltaClassifier()
 
 
 def _sum_impacts(impacts: Iterable[ImpactDelta]) -> ImpactDelta:
@@ -59,7 +64,7 @@ def _finding_has_payoff_proof(finding: RefactorFinding) -> bool:
     certificate = finding.compression_certificate
     if certificate is not None and certificate.pays_rent:
         return True
-    return _has_positive_impact(finding.metrics.impact_delta)
+    return IMPACT_DELTA_CLASSIFIER.has_positive_impact(finding.metrics.impact_delta)
 
 
 def _is_test_file_path(file_path: str) -> bool:
@@ -177,7 +182,9 @@ class RecommendationEconomics(SemanticRecord):
             (
                 1
                 for finding in finding_tuple
-                if _has_positive_impact(finding.metrics.impact_delta)
+                if IMPACT_DELTA_CLASSIFIER.has_positive_impact(
+                    finding.metrics.impact_delta
+                )
             )
         )
         semantic_payoff_finding_count = sum(

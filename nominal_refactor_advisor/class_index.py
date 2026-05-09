@@ -68,15 +68,20 @@ def _iter_class_defs(
     return tuple(classes)
 
 
-def _attribute_chain(node: ast.AST) -> tuple[str, ...] | None:
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    if isinstance(node, ast.Attribute):
-        parent = _attribute_chain(node.value)
-        if parent is None:
-            return None
-        return (*parent, node.attr)
-    return None
+@dataclass(frozen=True)
+class AttributeChainAuthority:
+    def project(self, node: ast.AST) -> tuple[str, ...] | None:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            parent = self.project(node.value)
+            if parent is None:
+                return None
+            return (*parent, node.attr)
+        return None
+
+
+ATTRIBUTE_CHAIN_AUTHORITY = AttributeChainAuthority()
 
 
 def _resolve_relative_module(
@@ -131,7 +136,7 @@ def _resolve_base_symbol(
     known_symbols: frozenset[str],
     unique_symbols_by_name: dict[str, str],
 ) -> str | None:
-    parts = _attribute_chain(base_node)
+    parts = ATTRIBUTE_CHAIN_AUTHORITY.project(base_node)
     if parts is None:
         return None
     first, *rest = parts
@@ -209,7 +214,7 @@ def _build_class_family_index_cached(
                 (
                     ast.unparse(base)
                     for base in node.bases
-                    if _attribute_chain(base) is not None
+                    if ATTRIBUTE_CHAIN_AUTHORITY.project(base) is not None
                 )
             ),
             resolved_base_symbols=resolved_base_symbols,

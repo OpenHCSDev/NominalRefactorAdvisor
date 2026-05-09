@@ -185,9 +185,30 @@ _REGISTRY_NORMAL_FORM_POLICIES = (
     ),
 )
 
-_REGISTRY_NORMAL_FORM_POLICIES_BY_DETECTOR_ID = {
-    policy.detector_id: policy for policy in _REGISTRY_NORMAL_FORM_POLICIES
-}
+
+@dataclass(frozen=True)
+class RegistryNormalFormPolicyCatalog:
+    policies: tuple[_RegistryNormalFormPolicy, ...]
+
+    @property
+    def policies_by_detector_id(self) -> dict[str, _RegistryNormalFormPolicy]:
+        return {policy.detector_id: policy for policy in self.policies}
+
+    def policies_for_findings(
+        self, findings: tuple[RefactorFinding, ...]
+    ) -> tuple[_RegistryNormalFormPolicy, ...]:
+        policies_by_detector_id = self.policies_by_detector_id
+        policies = {
+            policy
+            for finding in findings
+            if (policy := policies_by_detector_id.get(finding.detector_id)) is not None
+        }
+        return sorted_tuple(policies, key=lambda policy: policy.stage_order)
+
+
+_REGISTRY_NORMAL_FORM_POLICY_CATALOG = RegistryNormalFormPolicyCatalog(
+    _REGISTRY_NORMAL_FORM_POLICIES
+)
 
 
 class PatternPlanStepBuilder(ABC, metaclass=AutoRegisterMeta):
@@ -226,9 +247,9 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
         findings: tuple[RefactorFinding, ...],
     ) -> str:
         field_names = _field_names_from_findings(findings)
-        field_execution_level = _field_execution_level_from_findings(findings)
+        field_execution_level = _FINDING_PROJECTION.field_execution_level(findings)
         if field_names and field_execution_level != "unknown_level":
-            return f"Create one ABC field base for `{subsystem}` and lift shared fields {_human_join(list(field_names))} from {_class_list_from_findings(findings)} at {field_execution_level.replace('_', ' ')}."
+            return f"Create one ABC field base for `{subsystem}` and lift shared fields {_FINDING_PROJECTION.human_join(list(field_names))} from {_FINDING_PROJECTION.class_list(findings)} at {field_execution_level.replace('_', ' ')}."
         site_count = sum(finding.metrics.shared_algorithm_sites for finding in findings)
         return (
             f"Create one ABC template-method family for `{subsystem}` and move the shared orchestration from "
@@ -280,37 +301,246 @@ class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
         return f"Centralize forward/reverse lookup for `{subsystem}` in one bidirectional registry and delete {site_count or len(findings)} mirrored update site(s)."
 
 
-def _combined_evidence(
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[SourceLocation, ...]:
-    seen: set[tuple[str, int, str]] = set()
-    evidence: list[SourceLocation] = []
-    for finding in findings:
-        for item in finding.evidence:
-            key = (item.file_path, item.line, item.symbol)
-            if key in seen:
-                continue
-            seen.add(key)
-            evidence.append(item)
-    return tuple(sorted(evidence, key=lambda item: (item.file_path, item.line))[:8])
+_MetricValueT = TypeVar("_MetricValueT")
 
 
-def _evidence_symbols(findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for finding in findings:
-        for item in finding.evidence:
-            if item.symbol in seen:
+class FindingProjection:
+    def combined_evidence(
+        self, findings: tuple[RefactorFinding, ...]
+    ) -> tuple[SourceLocation, ...]:
+        seen: set[tuple[str, int, str]] = set()
+        evidence: list[SourceLocation] = []
+        for finding in findings:
+            for item in finding.evidence:
+                key = (item.file_path, item.line, item.symbol)
+                if key in seen:
+                    continue
+                seen.add(key)
+                evidence.append(item)
+        return tuple(sorted(evidence, key=lambda item: (item.file_path, item.line))[:8])
+
+    def evidence_symbols(
+        self, findings: tuple[RefactorFinding, ...]
+    ) -> tuple[str, ...]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for finding in findings:
+            for item in finding.evidence:
+                if item.symbol in seen:
+                    continue
+                seen.add(item.symbol)
+                ordered.append(item.symbol)
+        return tuple(ordered)
+
+    def class_names(self, findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
+        names: list[str] = []
+        for finding in findings:
+            names.extend(finding.metrics.plan_class_names)
+            for item in finding.evidence:
+                if "." not in item.symbol:
+                    continue
+                head = item.symbol.split(".", 1)[0]
+                if head and (not head.startswith("<")):
+                    names.append(head)
+        return tuple(self.dedupe_preserve_order(names))
+
+    def class_list(self, findings: tuple[RefactorFinding, ...]) -> str:
+        class_names = self.class_names(findings)
+        if not class_names:
+            return "the family"
+        return self.human_join(list(class_names))
+
+    def registry_hook_examples(self, findings: tuple[RefactorFinding, ...]) -> str:
+        for finding in findings:
+            pairs = finding.metrics.plan_class_key_pairs
+            if pairs:
+                return self.human_join(list(pairs))
+        class_names = self.class_names(findings)
+        if class_names:
+            return self.human_join(list(class_names))
+        return "the participating classes"
+
+    def field_execution_level(self, findings: tuple[RefactorFinding, ...]) -> str:
+        levels = {
+            level
+            for finding in findings
+            if (level := finding.metrics.plan_field_execution_level) is not None
+        }
+        if not levels:
+            return "unknown_level"
+        if len(levels) == 1:
+            return next(iter(levels))
+        return "mixed_levels"
+
+    def first_metric_value(
+        self,
+        findings: tuple[RefactorFinding, ...],
+        extractor: Callable[[object], _MetricValueT | None],
+        default: _MetricValueT,
+    ) -> _MetricValueT:
+        for finding in findings:
+            value = extractor(finding.metrics)
+            if value:
+                return value
+        return default
+
+    def registry_name(self, findings: tuple[RefactorFinding, ...]) -> str:
+        registry_name = self.first_metric_value(
+            findings, lambda metrics: metrics.plan_registry_name, "Registry"
+        )
+        return _safe_identifier(registry_name)
+
+    def dispatch_symbol(self, findings: tuple[RefactorFinding, ...]) -> str:
+        dispatch_axis = self.dispatch_axis(findings)
+        if dispatch_axis != "the dispatch axis":
+            identifier = _safe_identifier(dispatch_axis)
+            if identifier:
+                return f"dispatch_{identifier}"
+        symbols = self.evidence_symbols(findings)
+        if symbols:
+            root = symbols[0].split(":", 1)[0].split(".", 1)[0]
+            identifier = _safe_identifier(root)
+            if identifier:
+                return f"dispatch_{identifier}"
+        return "dispatch_by_kind"
+
+    def dispatch_axis(self, findings: tuple[RefactorFinding, ...]) -> str:
+        axes = {
+            axis
+            for finding in findings
+            if (axis := finding.metrics.plan_dispatch_axis) is not None
+        }
+        if not axes:
+            return "the dispatch axis"
+        if len(axes) == 1:
+            return next(iter(axes))
+        return "the shared dispatch axes"
+
+    def statement_count(self, findings: tuple[RefactorFinding, ...]) -> int:
+        return int(
+            self.first_metric_value(
+                findings, lambda metrics: metrics.plan_statement_count, 0
+            )
+        )
+
+    def human_join(self, items: tuple[str, ...] | list[str]) -> str:
+        if not items:
+            return ""
+        if len(items) == 1:
+            return items[0]
+        if len(items) == 2:
+            return f"{items[0]} and {items[1]}"
+        return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+    def dedupe_preserve_order(self, items) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for item in items:
+            if item in seen:
                 continue
-            seen.add(item.symbol)
-            ordered.append(item.symbol)
-    return tuple(ordered)
+            seen.add(item)
+            ordered.append(item)
+        return ordered
+
+
+_FINDING_PROJECTION = FindingProjection()
 
 
 class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
+
+    def _build_from_templates(
+        self,
+        subsystem: str,
+        findings: tuple[RefactorFinding, ...],
+        templates: tuple[ActionTemplate, ...],
+    ) -> tuple[RefactorAction, ...]:
+        context = self._build_action_context(subsystem, findings)
+        return tuple(
+            (
+                RefactorAction(
+                    kind=template.kind,
+                    description=template.description.format(**context.__dict__),
+                    target=subsystem,
+                    create_symbol=(
+                        template.create_symbol.format(**context.__dict__)
+                        if template.create_symbol is not None
+                        else None
+                    ),
+                    replace_with=(
+                        template.replace_with.format(**context.__dict__)
+                        if template.replace_with is not None
+                        else None
+                    ),
+                    symbols=context.symbols,
+                    remove_symbols=(
+                        context.symbols if template.remove_symbols_from_evidence else ()
+                    ),
+                    evidence=context.evidence,
+                    statement_operation=template.statement_operation,
+                    statement_sites=(
+                        context.evidence if template.statement_operation else ()
+                    ),
+                    confidence=template.confidence,
+                )
+                for template in templates
+            )
+        )
+
+    def _build_action_context(
+        self, subsystem: str, findings: tuple[RefactorFinding, ...]
+    ) -> ActionContext:
+        symbols = _FINDING_PROJECTION.evidence_symbols(findings)
+        class_names = _FINDING_PROJECTION.class_names(findings)
+        field_names = _field_names_from_findings(findings)
+        identity_field_names = _identity_field_names_from_findings(findings)
+        mapping_symbol = _mapping_symbol_from_findings(
+            findings,
+            field_names,
+            identity_field_names,
+            _mapping_source_name_from_findings(findings),
+        )
+        return ActionContext(
+            subsystem=subsystem,
+            evidence=_FINDING_PROJECTION.combined_evidence(findings),
+            symbols=symbols,
+            base_name=_suggest_base_name(class_names),
+            template_method_name="run",
+            statement_sequence=_statement_sequence_from_findings(findings),
+            registry_name=_FINDING_PROJECTION.registry_name(findings),
+            registry_hook_examples=_FINDING_PROJECTION.registry_hook_examples(findings),
+            class_list=(
+                _FINDING_PROJECTION.human_join(list(class_names))
+                if class_names
+                else "the family"
+            ),
+            mapping_symbol=mapping_symbol,
+            mapping_call=_mapping_call_from_symbol(
+                mapping_symbol,
+                field_names,
+                _mapping_source_name_from_findings(findings),
+            ),
+            mapping_problem=_mapping_problem_description(
+                field_names, identity_field_names
+            ),
+            field_list=(
+                _FINDING_PROJECTION.human_join(list(field_names))
+                if field_names
+                else "the repeated fields"
+            ),
+            identity_field_list=(
+                _FINDING_PROJECTION.human_join(list(identity_field_names))
+                if identity_field_names
+                else "the directly copied fields"
+            ),
+            field_execution_level=_FINDING_PROJECTION.field_execution_level(findings),
+            dispatch_symbol=_FINDING_PROJECTION.dispatch_symbol(findings),
+            dispatch_axis=_FINDING_PROJECTION.dispatch_axis(findings),
+            dispatch_cases=_dispatch_cases_from_findings(findings),
+            statement_count=_FINDING_PROJECTION.statement_count(findings),
+        )
 
     @abstractmethod
     def build(
@@ -385,7 +615,7 @@ class GenericPatternActionBuilder(PatternActionBuilder):
             description=f"Apply Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].prescription}",
             confidence=MEDIUM_CONFIDENCE,
         )
-        return _actions_from_templates(subsystem, findings, (template,))
+        return self._build_from_templates(subsystem, findings, (template,))
 
 
 class TemplatedPatternActionBuilder(PatternActionBuilder):
@@ -398,7 +628,7 @@ class TemplatedPatternActionBuilder(PatternActionBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
-        return _actions_from_templates(subsystem, findings, self.templates)
+        return self._build_from_templates(subsystem, findings, self.templates)
 
 
 class AbcFamilyActionBuilder(PatternActionBuilder):
@@ -408,95 +638,13 @@ class AbcFamilyActionBuilder(PatternActionBuilder):
         pattern_id: PatternId,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorAction, ...]:
-        context = _build_action_context(subsystem, findings)
+        context = self._build_action_context(subsystem, findings)
         templates = (
             _ABC_FIELD_ACTION_TEMPLATES
             if context.field_execution_level != "unknown_level"
             else _ABC_BEHAVIOR_ACTION_TEMPLATES
         )
-        return _actions_from_templates(subsystem, findings, templates)
-
-
-def _actions_from_templates(
-    subsystem: str,
-    findings: tuple[RefactorFinding, ...],
-    templates: tuple[ActionTemplate, ...],
-) -> tuple[RefactorAction, ...]:
-    context = _build_action_context(subsystem, findings)
-    return tuple(
-        (
-            RefactorAction(
-                kind=template.kind,
-                description=template.description.format(**context.__dict__),
-                target=subsystem,
-                create_symbol=(
-                    template.create_symbol.format(**context.__dict__)
-                    if template.create_symbol is not None
-                    else None
-                ),
-                replace_with=(
-                    template.replace_with.format(**context.__dict__)
-                    if template.replace_with is not None
-                    else None
-                ),
-                symbols=context.symbols,
-                remove_symbols=(
-                    context.symbols if template.remove_symbols_from_evidence else ()
-                ),
-                evidence=context.evidence,
-                statement_operation=template.statement_operation,
-                statement_sites=(
-                    context.evidence if template.statement_operation else ()
-                ),
-                confidence=template.confidence,
-            )
-            for template in templates
-        )
-    )
-
-
-def _build_action_context(
-    subsystem: str, findings: tuple[RefactorFinding, ...]
-) -> ActionContext:
-    symbols = _evidence_symbols(findings)
-    class_names = _class_names_from_findings(findings)
-    field_names = _field_names_from_findings(findings)
-    identity_field_names = _identity_field_names_from_findings(findings)
-    mapping_symbol = _mapping_symbol_from_findings(
-        findings,
-        field_names,
-        identity_field_names,
-        _mapping_source_name_from_findings(findings),
-    )
-    return ActionContext(
-        subsystem=subsystem,
-        evidence=_combined_evidence(findings),
-        symbols=symbols,
-        base_name=_suggest_base_name(class_names),
-        template_method_name="run",
-        statement_sequence=_statement_sequence_from_findings(findings),
-        registry_name=_registry_name_from_findings(findings),
-        registry_hook_examples=_registry_hook_examples_from_findings(findings),
-        class_list=_human_join(list(class_names)) if class_names else "the family",
-        mapping_symbol=mapping_symbol,
-        mapping_call=_mapping_call_from_symbol(
-            mapping_symbol, field_names, _mapping_source_name_from_findings(findings)
-        ),
-        mapping_problem=_mapping_problem_description(field_names, identity_field_names),
-        field_list=(
-            _human_join(list(field_names)) if field_names else "the repeated fields"
-        ),
-        identity_field_list=(
-            _human_join(list(identity_field_names))
-            if identity_field_names
-            else "the directly copied fields"
-        ),
-        field_execution_level=_field_execution_level_from_findings(findings),
-        dispatch_symbol=_dispatch_symbol_from_findings(findings),
-        dispatch_axis=_dispatch_axis_from_findings(findings),
-        dispatch_cases=_dispatch_cases_from_findings(findings),
-        statement_count=_statement_count_from_findings(findings),
-    )
+        return self._build_from_templates(subsystem, findings, templates)
 
 
 _GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
@@ -689,7 +837,7 @@ def _cluster_findings(
             _FindingCluster(
                 subsystem=_subsystem_name(ordered_findings, root),
                 findings=ordered_findings,
-                evidence=_combined_evidence(ordered_findings),
+                evidence=_FINDING_PROJECTION.combined_evidence(ordered_findings),
             )
         )
     return sorted(
@@ -778,7 +926,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     current_partial_view = _current_partial_view(cluster.findings)
     summary = _plan_summary(cluster.subsystem, ordered_patterns, cluster.findings)
     supporting_findings = tuple(
-        _dedupe_preserve_order((finding.title for finding in cluster.findings))
+        _FINDING_PROJECTION.dedupe_preserve_order(
+            (finding.title for finding in cluster.findings)
+        )
     )
     canonical_normal_form = _canonical_normal_form(ordered_patterns, cluster.findings)
     plan_steps = _build_plan_steps(
@@ -997,7 +1147,7 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
         return "The subsystem is currently described by mixed structural observations."
     return (
         "The subsystem is currently observed through "
-        f"{_human_join(observations)}, which leaves semantic distinctions to later recovery."
+        f"{_FINDING_PROJECTION.human_join(observations)}, which leaves semantic distinctions to later recovery."
     )
 
 
@@ -1016,7 +1166,7 @@ def _canonical_normal_form(
 
 
 def _registry_normal_form_clause(findings: tuple[RefactorFinding, ...]) -> str:
-    policies = _registry_normal_form_policies_for_findings(findings)
+    policies = _REGISTRY_NORMAL_FORM_POLICY_CATALOG.policies_for_findings(findings)
     if not policies:
         return ""
     stage_labels = " -> ".join((policy.stage_label for policy in policies))
@@ -1043,7 +1193,7 @@ def _registry_normal_form_steps(
     subsystem: str,
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
-    policies = _registry_normal_form_policies_for_findings(findings)
+    policies = _REGISTRY_NORMAL_FORM_POLICY_CATALOG.policies_for_findings(findings)
     if not policies:
         return ()
     steps = tuple(
@@ -1054,22 +1204,6 @@ def _registry_normal_form_steps(
             f"After the blocking registry stages are fixed in `{subsystem}`, rerun NRA before promoting any registry to metaclass registration.",
         )
     return steps
-
-
-def _registry_normal_form_policies_for_findings(
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[_RegistryNormalFormPolicy, ...]:
-    policies = {
-        policy
-        for finding in findings
-        if (
-            policy := _REGISTRY_NORMAL_FORM_POLICIES_BY_DETECTOR_ID.get(
-                finding.detector_id
-            )
-        )
-        is not None
-    }
-    return sorted_tuple(policies, key=lambda policy: policy.stage_order)
 
 
 def _pattern_step(
@@ -1250,35 +1384,13 @@ def _capability_name(capability: Hashable) -> str:
     return str(capability)
 
 
-def _class_names_from_findings(
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[str, ...]:
-    names: list[str] = []
-    for finding in findings:
-        names.extend(finding.metrics.plan_class_names)
-        for item in finding.evidence:
-            if "." not in item.symbol:
-                continue
-            head = item.symbol.split(".", 1)[0]
-            if head and (not head.startswith("<")):
-                names.append(head)
-    return tuple(_dedupe_preserve_order(names))
-
-
-def _class_list_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
-    class_names = _class_names_from_findings(findings)
-    if not class_names:
-        return "the family"
-    return _human_join(list(class_names))
-
-
 def _field_names_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
     names: list[str] = []
     for finding in findings:
         names.extend(finding.metrics.plan_field_names)
-    return tuple(_dedupe_preserve_order(names))
+    return tuple(_FINDING_PROJECTION.dedupe_preserve_order(names))
 
 
 def _statement_sequence_from_findings(
@@ -1294,63 +1406,13 @@ def _statement_sequence_from_findings(
     return "the shared orchestration"
 
 
-def _registry_hook_examples_from_findings(
-    findings: tuple[RefactorFinding, ...],
-) -> str:
-    for finding in findings:
-        pairs = finding.metrics.plan_class_key_pairs
-        if pairs:
-            return _human_join(list(pairs))
-    class_names = _class_names_from_findings(findings)
-    if class_names:
-        return _human_join(list(class_names))
-    return "the participating classes"
-
-
 def _identity_field_names_from_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[str, ...]:
     names: list[str] = []
     for finding in findings:
         names.extend(finding.metrics.plan_identity_field_names)
-    return tuple(_dedupe_preserve_order(names))
-
-
-def _field_execution_level_from_findings(
-    findings: tuple[RefactorFinding, ...],
-) -> str:
-    levels = {
-        level
-        for finding in findings
-        if (level := finding.metrics.plan_field_execution_level) is not None
-    }
-    if not levels:
-        return "unknown_level"
-    if len(levels) == 1:
-        return next(iter(levels))
-    return "mixed_levels"
-
-
-_MetricValueT = TypeVar("_MetricValueT")
-
-
-def _first_metric_value(
-    findings: tuple[RefactorFinding, ...],
-    extractor: Callable[[object], _MetricValueT | None],
-    default: _MetricValueT,
-) -> _MetricValueT:
-    for finding in findings:
-        value = extractor(finding.metrics)
-        if value:
-            return value
-    return default
-
-
-def _registry_name_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
-    registry_name = _first_metric_value(
-        findings, lambda metrics: metrics.plan_registry_name, "Registry"
-    )
-    return _safe_identifier(registry_name)
+    return tuple(_FINDING_PROJECTION.dedupe_preserve_order(names))
 
 
 def _mapping_symbol_from_findings(
@@ -1413,56 +1475,22 @@ def _mapping_problem_description(
     identity_field_names: tuple[str, ...],
 ) -> str:
     if field_names and set(identity_field_names) == set(field_names):
-        return f"name-for-name boilerplate for {_human_join(list(field_names))}"
+        return f"name-for-name boilerplate for {_FINDING_PROJECTION.human_join(list(field_names))}"
     if identity_field_names:
-        return f"mapping for {_human_join(list(field_names))} with direct copies for {_human_join(list(identity_field_names))}"
+        return f"mapping for {_FINDING_PROJECTION.human_join(list(field_names))} with direct copies for {_FINDING_PROJECTION.human_join(list(identity_field_names))}"
     if field_names:
-        return f"mapping for {_human_join(list(field_names))}"
+        return f"mapping for {_FINDING_PROJECTION.human_join(list(field_names))}"
     return "mapping boilerplate"
-
-
-def _dispatch_symbol_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
-    dispatch_axis = _dispatch_axis_from_findings(findings)
-    if dispatch_axis != "the dispatch axis":
-        identifier = _safe_identifier(dispatch_axis)
-        if identifier:
-            return f"dispatch_{identifier}"
-    symbols = _evidence_symbols(findings)
-    if symbols:
-        root = symbols[0].split(":", 1)[0].split(".", 1)[0]
-        identifier = _safe_identifier(root)
-        if identifier:
-            return f"dispatch_{identifier}"
-    return "dispatch_by_kind"
-
-
-def _dispatch_axis_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
-    axes = {
-        axis
-        for finding in findings
-        if (axis := finding.metrics.plan_dispatch_axis) is not None
-    }
-    if not axes:
-        return "the dispatch axis"
-    if len(axes) == 1:
-        return next(iter(axes))
-    return "the shared dispatch axes"
 
 
 def _dispatch_cases_from_findings(findings: tuple[RefactorFinding, ...]) -> str:
     cases: list[str] = []
     for finding in findings:
         cases.extend(finding.metrics.plan_literal_cases)
-    deduped = _dedupe_preserve_order(cases)
+    deduped = _FINDING_PROJECTION.dedupe_preserve_order(cases)
     if not deduped:
         return "the observed cases"
-    return _human_join(deduped)
-
-
-def _statement_count_from_findings(findings: tuple[RefactorFinding, ...]) -> int:
-    return int(
-        _first_metric_value(findings, lambda metrics: metrics.plan_statement_count, 0)
-    )
+    return _FINDING_PROJECTION.human_join(deduped)
 
 
 def _suggest_base_name(class_names: tuple[str, ...]) -> str:
@@ -1497,7 +1525,9 @@ def _safe_identifier(value: str) -> str:
 
 
 def _render_tag_values(items, projector) -> tuple[str, ...]:
-    return tuple(_dedupe_preserve_order((projector(item) for item in items)))
+    return tuple(
+        _FINDING_PROJECTION.dedupe_preserve_order((projector(item) for item in items))
+    )
 
 
 def _unique_capabilities(findings: tuple[RefactorFinding, ...]) -> list[CapabilityTag]:
@@ -1505,27 +1535,6 @@ def _unique_capabilities(findings: tuple[RefactorFinding, ...]) -> list[Capabili
         {tag for finding in findings for tag in finding.capability_tags}
     )
     return capabilities
-
-
-def _human_join(items: tuple[str, ...] | list[str]) -> str:
-    if not items:
-        return ""
-    if len(items) == 1:
-        return items[0]
-    if len(items) == 2:
-        return f"{items[0]} and {items[1]}"
-    return f"{', '.join(items[:-1])}, and {items[-1]}"
-
-
-def _dedupe_preserve_order(items) -> list[str]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for item in items:
-        if item in seen:
-            continue
-        seen.add(item)
-        ordered.append(item)
-    return ordered
 
 
 def _evidence_paths(finding: RefactorFinding) -> tuple[Path, ...]:

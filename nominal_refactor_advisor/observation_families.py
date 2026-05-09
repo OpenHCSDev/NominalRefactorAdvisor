@@ -49,12 +49,15 @@ from .ast_tools import (
     AutoRegisterMeta,
     AutoRegisteredModuleShapeSpec,
     ClassAstObservation,
+    CLASS_OBSERVATION_PROJECTION,
     CollectedFamily,
+    COLLECTED_ITEM_PROJECTION,
     ContextForwardingShapeSpec,
     ContextHelperShapeSpec,
     FunctionObservationSpec,
     ObservationShapeSpec,
     ParsedModule,
+    REGISTERED_TYPE_LINEAGE,
     RegisteredSpecCollectedFamily,
     ScopedAstObservation,
     SingleSpecCollectedFamily,
@@ -68,10 +71,7 @@ from .ast_tools import (
     _class_body_field_observation,
     _class_marker_observations,
     _class_name_from_expr,
-    _class_observations,
-    _collect_items_from_spec_root,
     _config_dispatch_observations,
-    _descendant_types,
     _dual_axis_resolution_observation,
     _dynamic_method_injection_observations,
     _execution_level_for_scope,
@@ -115,16 +115,38 @@ _GeneratedClassDeclaration = product_record(
 )
 
 
-def _class_declaration(
-    class_name: str,
-    *base_names: str,
-    **attributes: object,
-) -> _GeneratedClassDeclaration:
-    return _GeneratedClassDeclaration(
-        class_name,
-        tuple((name for group in base_names for name in group.split())),
-        tuple(attributes.items()),
-    )
+@dataclass(frozen=True)
+class GeneratedClassDeclarationFactory:
+    def class_declaration(
+        self,
+        class_name: str,
+        *base_names: str,
+        **attributes: object,
+    ) -> _GeneratedClassDeclaration:
+        return _GeneratedClassDeclaration(
+            class_name,
+            tuple((name for group in base_names for name in group.split())),
+            tuple(attributes.items()),
+        )
+
+    def root_spec_declaration(
+        self,
+        class_name: str,
+        item_type: type[object],
+        family_root: type[CollectedFamily],
+        *base_names: str,
+        export_name: str | None = None,
+    ) -> _GeneratedClassDeclaration:
+        return self.class_declaration(
+            class_name,
+            "FamilyGeneratingSpec",
+            *base_names,
+            _registry_root=True,
+            family_specs=_family_specs(item_type, family_root, export_name),
+        )
+
+
+_GENERATED_CLASS_DECLARATIONS = GeneratedClassDeclarationFactory()
 
 
 def _family_specs(
@@ -169,7 +191,7 @@ class FamilyGeneratingSpec(ABC):
 def _declared_family_spec_types() -> tuple[type[FamilyGeneratingSpec], ...]:
     ordered = [
         cast(type[FamilyGeneratingSpec], current)
-        for current in _descendant_types(FamilyGeneratingSpec)
+        for current in REGISTERED_TYPE_LINEAGE.descendant_types(FamilyGeneratingSpec)
         if current.__dict__.get("family_specs")
     ]
     return sorted_tuple(
@@ -194,29 +216,13 @@ class ShapeFamily(CollectedFamily, ABC):
     _registry_root = True
 
 
-def _root_spec_declaration(
-    class_name: str,
-    item_type: type[object],
-    family_root: type[CollectedFamily],
-    *base_names: str,
-    export_name: str | None = None,
-) -> _GeneratedClassDeclaration:
-    return _class_declaration(
-        class_name,
-        "FamilyGeneratingSpec",
-        *base_names,
-        _registry_root=True,
-        family_specs=_family_specs(item_type, family_root, export_name),
-    )
-
-
 def _observation_root_spec(
     class_name: str,
     item_type: type[object],
     *base_names: str,
     export_name: str | None = None,
 ) -> _GeneratedClassDeclaration:
-    return _root_spec_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.root_spec_declaration(
         class_name,
         item_type,
         ObservationFamily,
@@ -248,7 +254,7 @@ def _std_obs(
     *base_names: str,
     **attributes: object,
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         f"Standard{stem}ObservationSpec",
         f"{stem}ObservationSpec",
         *base_names,
@@ -262,7 +268,7 @@ def _multi_obs_root(
     *base_names: str,
     family_specs: tuple[GeneratedFamilySpec, ...],
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         class_name,
         "FamilyGeneratingSpec",
         *base_names,
@@ -277,7 +283,7 @@ def _shape_root(
     item_type: type[object] | None = None,
     export_name: str | None = None,
 ) -> _GeneratedClassDeclaration:
-    return _root_spec_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.root_spec_declaration(
         f"{stem}ShapeSpec",
         item_type or _derived_type(stem, "Shape"),
         ShapeFamily,
@@ -292,7 +298,7 @@ def _ctx_shape(
     *,
     item_type: type[object] | None = None,
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         f"{stem}ShapeSpec",
         "FamilyGeneratingSpec",
         "ContextHelperShapeSpec",
@@ -309,7 +315,7 @@ def _helper_decl(
     *base_names: str,
     **attributes: object,
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         class_name,
         *base_names,
         shape_helper=helper,
@@ -350,7 +356,7 @@ class TypedLiteralObservationFamily(ObservationFamily, ABC):
             ]
         return [
             item
-            for item in _collect_items_from_spec_root(
+            for item in COLLECTED_ITEM_PROJECTION.from_spec_root(
                 cls.spec_root, parsed_module, LiteralDispatchObservation
             )
             if isinstance(item, LiteralDispatchObservation)
@@ -364,7 +370,7 @@ def _literal_spec(
     literal_type: type[object],
     literal_kind: LiteralKind,
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         f"{stem}LiteralDispatchObservationSpec",
         "FamilyGeneratingSpec",
         base_name,
@@ -384,7 +390,7 @@ def _probe_spec(
     *,
     attribute_arg_index: int | None = 1,
 ) -> _GeneratedClassDeclaration:
-    return _class_declaration(
+    return _GENERATED_CLASS_DECLARATIONS.class_declaration(
         f"{stem}ProbeObservationSpec",
         "CallAttributeProbeObservationSpec",
         call_family=call_family,
@@ -1002,7 +1008,7 @@ class ClassObservationSpec(FieldObservationSpec, ABC, metaclass=AutoRegisterMeta
 
     def collect(self, parsed_module: ParsedModule) -> list[object]:
         observations: list[object] = []
-        for class_observation in _class_observations(parsed_module):
+        for class_observation in CLASS_OBSERVATION_PROJECTION.project(parsed_module):
             observations.extend(
                 self.collect_for_class(parsed_module, class_observation)
             )

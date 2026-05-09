@@ -265,7 +265,9 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
 
     def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
         return tuple(
-            _collect_typed_family_items(module, MethodShapeFamily, MethodShape)
+            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+                module, MethodShapeFamily, MethodShape
+            )
         )
 
     def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
@@ -339,7 +341,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
             (
                 method
                 for module in modules
-                for method in _collect_typed_family_items(
+                for method in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                     module, MethodShapeFamily, MethodShape
                 )
                 if method.class_name
@@ -362,9 +364,7 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                 tuple(
                     (
                         _as_method_shape(item)
-                        for item in _materialize_observations(
-                            fiber.observations, lookup
-                        )
+                        for item in materialize_observations(fiber.observations, lookup)
                     )
                 )
                 for fiber in cohort.fibers
@@ -700,6 +700,157 @@ declare_candidate_rule_detector(
 )
 
 
+declare_candidate_rule_detector(
+    FacadeOnlyNominalAuthorityCandidate,
+    high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Nominal authority facade must own behavior, not only forward",
+        "A nominal authority class whose public methods only call private module functions is a facade-only refactor. It hides bare helpers without moving semantic ownership, so the abstraction does not pay rent until the class owns the shared algorithm, policy state, registration axis, or derived projections.",
+        "authority object with real semantic ownership rather than one-line private-helper delegation",
+        "nominal authority methods are all pass-through calls to private functions",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` exposes facade-only methods {candidate.method_names} "
+        f"that delegate to private helpers {candidate.delegate_names}; move the algorithms into "
+        "the authority or delete the facade."
+    ),
+    scaffold=lambda candidate: (
+        f"class {candidate.class_name}:\n"
+        "    # Method bodies own the algorithm/policy directly.\n"
+        "    # Private helpers remain only for tiny local residue.\n"
+        "    ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Inline private delegate bodies {candidate.delegate_names} into `{candidate.class_name}` methods, "
+        "then delete the private delegate functions.\n"
+        "# If the class still has no state, registry, policy, or shared algorithm after inlining, delete the class instead."
+    ),
+    metrics=lambda candidate: OrchestrationMetrics(
+        function_line_count=candidate.line_count,
+        branch_site_count=0,
+        call_site_count=len(candidate.delegate_names),
+        parameter_count=len(candidate.method_names),
+        callee_family_count=1,
+    ),
+    candidate_collector=_facade_only_nominal_authority_candidates,
+    detector_name="FacadeOnlyNominalAuthorityDetector",
+)
+
+
+declare_candidate_rule_detector(
+    AliasOnlyNominalAuthorityCandidate,
+    high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Nominal authority alias catalog does not pay rent",
+        "A nominal authority whose public surface is only aliases to private helpers is name shuffling, not semantic compression. The authority must own a shared algorithm, policy state, registry axis, or derived projection; otherwise keep the helpers local until a real invariant is found.",
+        "authority object with owned shared behavior rather than alias catalog",
+        "nominal authority class contains only public aliases to helper functions",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` aliases public names {candidate.alias_names} "
+        f"to delegates {candidate.delegate_names}; this is not a rent-paying authority."
+    ),
+    scaffold=lambda candidate: (
+        f"class {candidate.class_name}:\n"
+        "    # Own the common algorithm here, or delete the authority.\n"
+        "    ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete alias-only authority `{candidate.class_name}` or replace it with "
+        "a real shared algorithm/policy object. Do not re-export bound aliases as a refactor."
+    ),
+    metrics=lambda candidate: OrchestrationMetrics(
+        function_line_count=candidate.line_count,
+        branch_site_count=0,
+        call_site_count=len(candidate.delegate_names),
+        parameter_count=len(candidate.alias_names),
+        callee_family_count=1,
+    ),
+    candidate_collector=_alias_only_nominal_authority_candidates,
+    detector_name="AliasOnlyNominalAuthorityDetector",
+)
+
+
+declare_candidate_rule_detector(
+    ModuleAuthorityReexportCatalogCandidate,
+    high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Module authority re-export catalog hides non-paying refactor",
+        "A module-level block that re-exports authority methods under the old helper names preserves the public helper surface while adding an object indirection. That is not semantic compression unless the authority removes duplicate algorithms or derives the surface from one invariant.",
+        "authority-owned algorithm without compatibility re-export catalog",
+        "module re-exports several authority methods as top-level helper aliases",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _CLASS_FAMILY_METHOD_ROLE_PARTIAL_VIEW_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.authority_name}` is re-exported through helper aliases "
+        f"{candidate.alias_names}; remove the alias catalog or prove the authority owns a shared invariant."
+    ),
+    scaffold=lambda candidate: (
+        f"class {candidate.authority_name.title().replace('_', '')}:\n"
+        "    # One shared algorithm/projection schema, not one alias per helper.\n"
+        "    ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete module-level re-export aliases for `{candidate.authority_name}`.\n"
+        "# Either call a real authority object directly at consumers, or collapse the helpers into one derived algebra."
+    ),
+    metrics=lambda candidate: MappingMetrics(
+        mapping_site_count=len(candidate.alias_names),
+        field_count=len(candidate.alias_names),
+        mapping_name=candidate.authority_name,
+        field_names=candidate.alias_names,
+    ),
+    candidate_collector=_module_authority_reexport_catalog_candidates,
+    detector_name="ModuleAuthorityReexportCatalogDetector",
+)
+
+
+declare_candidate_rule_detector(
+    CollectionAuthorityStreamAlgebraCandidate,
+    high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Collection authority should derive from one stream algebra",
+        "A collection authority with several methods that repeat source selection, projection, and tuple/sorted materialization is still manually declaring a product of stream mechanics. The semantic normal form is one typed stream/spec algebra whose methods only declare the source stream and projection.",
+        "typed candidate stream algebra deriving projection and materialization mechanics",
+        "collection authority repeats stream projection and materialization across methods",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` repeats stream materialization across methods "
+        f"{candidate.method_names}; derive them from one CandidateStream/CandidateProjection algebra."
+    ),
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\n"
+        "class CandidateStream(Generic[T]):\n"
+        "    items: Iterable[T]\n"
+        "    sort_key: Callable[[T], object] | None = None\n"
+        "    def materialized(self) -> tuple[T, ...]: ...\n\n"
+        "class CandidateCollectionAuthority:\n"
+        "    def named_function_candidates(...):\n"
+        "        return CandidateStream(projected, sort_key).materialized()"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Extract the repeated projection/materialization tail into `CandidateStream.materialized()`.\n"
+        "# Keep source-stream selection and projector invocation as the only method-specific residue."
+    ),
+    metrics=lambda candidate: OrchestrationMetrics(
+        function_line_count=candidate.line_count,
+        branch_site_count=0,
+        call_site_count=len(candidate.method_names),
+        parameter_count=len(candidate.method_names),
+        callee_family_count=1,
+    ),
+    candidate_collector=_collection_authority_stream_algebra_candidates,
+    detector_name="CollectionAuthorityStreamAlgebraDetector",
+)
+
+
 @dataclass(frozen=True)
 class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
@@ -720,14 +871,19 @@ class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
         )
 
 
-def _is_self_attribute(node: ast.AST) -> str | None:
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and (node.value.id == "self")
-    ):
-        return node.attr
-    return None
+@dataclass(frozen=True)
+class SelfAttributeAuthority:
+    def attr_name(self, node: ast.AST) -> str | None:
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and (node.value.id == "self")
+        ):
+            return node.attr
+        return None
+
+
+SELF_ATTRIBUTE_AUTHORITY = SelfAttributeAuthority()
 
 
 def _is_path_projection_part(node: ast.AST) -> bool:
@@ -739,7 +895,7 @@ def _is_path_projection_part(node: ast.AST) -> bool:
                 isinstance(value, ast.Constant)
                 or (
                     isinstance(value, ast.FormattedValue)
-                    and _is_self_attribute(value.value) is not None
+                    and SELF_ATTRIBUTE_AUTHORITY.attr_name(value.value) is not None
                 )
                 for value in node.values
             )
@@ -757,7 +913,7 @@ def _path_projection_base(returned: ast.AST) -> str | None:
         node = node.left
     if not saw_path_part:
         return None
-    return _is_self_attribute(node)
+    return SELF_ATTRIBUTE_AUTHORITY.attr_name(node)
 
 
 def _projection_property_family_candidates(
@@ -832,30 +988,39 @@ declare_candidate_rule_detector(
 def _collection_projection_property_shape(
     returned: ast.AST,
 ) -> tuple[str, str] | None:
-    if not (
-        isinstance(returned, ast.Call)
-        and name_id(returned.func) in {"tuple", "list", "set", "frozenset"}
-        and len(returned.args) == 1
-        and not returned.keywords
-    ):
-        return None
-    generator = as_ast(returned.args[0], ast.GeneratorExp)
-    if generator is None or len(generator.generators) != 1:
-        return None
-    comprehension = generator.generators[0]
-    if comprehension.ifs:
-        return None
-    target_name = name_id(comprehension.target)
-    collection_name = _is_self_attribute(comprehension.iter)
-    projected = as_ast(generator.elt, ast.Attribute)
-    if (
-        target_name is None
-        or collection_name is None
-        or projected is None
-        or name_id(projected.value) != target_name
-    ):
-        return None
-    return collection_name, projected.attr
+    return (
+        Maybe.of(as_ast(returned, ast.Call))
+        .filter(
+            lambda call: name_id(call.func) in {"tuple", "list", "set", "frozenset"}
+            and len(call.args) == 1
+            and not call.keywords
+        )
+        .project(lambda call: as_ast(call.args[0], ast.GeneratorExp))
+        .filter(lambda generator: len(generator.generators) == 1)
+        .map(lambda generator: (generator, generator.generators[0]))
+        .filter(lambda context: not context[1].ifs)
+        .combine(
+            lambda context: SELF_ATTRIBUTE_AUTHORITY.attr_name(context[1].iter),
+            lambda context, collection_name: (
+                collection_name,
+                as_ast(context[0].elt, ast.Attribute),
+                name_id(context[1].target),
+            ),
+        )
+        .project(
+            lambda context: (
+                (
+                    context[0],
+                    context[1].attr,
+                )
+                if context[1] is not None
+                and context[2] is not None
+                and name_id(context[1].value) == context[2]
+                else None
+            )
+        )
+        .unwrap_or_none()
+    )
 
 
 def _is_property_method(
@@ -877,7 +1042,7 @@ def _collection_projection_property_family_candidates(
         node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
-        for statement in _iter_class_methods(class_node):
+        for statement in CLASS_NODE_AUTHORITY.methods(class_node):
             if not _is_property_method(statement):
                 continue
             body = _trim_docstring_body(statement.body)
@@ -1575,7 +1740,7 @@ declare_candidate_rule_detector(
     scaffold=lambda shadow_candidate: _axis_policy_registry_scaffold("invariant(self)")
     + f"\n\ndef run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n    # derive local execution from authoritative policy facts\n",
     codemod_patch=lambda shadow_candidate: f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`.",
-    metrics=lambda shadow_candidate: _axis_dispatch_metrics(
+    metrics=lambda shadow_candidate: axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
     detector_base=CrossModuleCollectorCandidateDetector,
@@ -1672,7 +1837,7 @@ class ParallelKeyedAxisFamilyDetector(
                 f"# Collapse `{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` onto one authoritative keyed family.\n"
                 "# Move the irreducible case-specific hooks to that family or to a single derived adapter table, not two parallel nominal roots."
             ),
-            metrics=_axis_dispatch_metrics(
+            metrics=axis_dispatch_metrics(
                 family_candidate.shared_case_names,
                 family_candidate.key_type_name,
             ),
@@ -1743,7 +1908,7 @@ class ParallelKeyedTableAndFamilyDetector(
                 f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
                 "# Keep the runtime boundary on the auto-registered family and derive any keyed rows/views from `AxisPolicy.__registry__`."
             ),
-            metrics=_axis_dispatch_metrics(
+            metrics=axis_dispatch_metrics(
                 table_candidate.shared_case_names,
                 table_candidate.key_type_name,
             ),
@@ -2326,7 +2491,9 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
             else ""
         )
         suggested_family_name = _camel_case(case_candidate.subject_role)
-        shared_suffix = _longest_common_suffix(case_candidate.concrete_class_names)
+        shared_suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(
+            case_candidate.concrete_class_names
+        )
         if (
             shared_suffix
             and len(shared_suffix) >= 6
@@ -2695,13 +2862,16 @@ class FailSoftEffectPipelineDetector(
             (
                 f"`{pipeline_candidate.function_name}` manually threads {pipeline_candidate.guard_count} "
                 f"fail-soft guard stages{binding_suffix} before returning {pipeline_candidate.success_return_kind}; "
-                f"normal form is `{pipeline_candidate.normal_form}`."
+                f"normal form is `{pipeline_candidate.normal_form}`, family is "
+                f"`{pipeline_candidate.pipeline_family}`, and owner should be "
+                f"{pipeline_candidate.recommended_owner}."
                 f"{helper_suffix}"
             ),
             (pipeline_candidate.evidence,),
             scaffold=self._normal_form_scaffold(pipeline_candidate.normal_form),
             codemod_patch=(
                 f"# Collapse repeated `if value is None: return None` guard stages into `{pipeline_candidate.normal_form}`.\n"
+                f"# {pipeline_candidate.refactor_action}.\n"
                 "# Keep domain extraction semantics on nominal `EffectStep` subclasses; let the typed carrier own absence and provenance flow."
             ),
             metrics=OrchestrationMetrics(
@@ -2836,6 +3006,51 @@ class UnderAmortizedInfrastructureDetector(
                 branch_site_count=len(under_amortized.declaration_names),
                 call_site_count=len(under_amortized.consumer_symbols),
                 parameter_count=len(under_amortized.support_names),
+                callee_family_count=1,
+            ),
+        )
+
+
+class PublicBareSupportFunctionDetector(
+    CrossModuleCollectorCandidateDetector[PublicBareSupportFunctionCandidate]
+):
+    finding_spec = finding_spec_template(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Public bare support function in private module should become nominal",
+        "A public snake_case function inside an underscore-prefixed support module is usually a promoted helper, not a real public contract. If the behavior is reusable, the semantic owner should be an ABC method, projection/authority object, catalog, descriptor, or registered step; otherwise the function should stay private and local to its only owner.",
+        "nominal owner for reusable support behavior rather than public helper surface",
+        "private support module exposes public bare functions without a nominal owner",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, support_candidate: PublicBareSupportFunctionCandidate
+    ) -> RefactorFinding:
+        function_preview = ", ".join(support_candidate.function_names[:10])
+        return self.build_finding(
+            (
+                f"{support_candidate.file_path} exposes public bare support functions "
+                f"{function_preview} from private module role `{support_candidate.module_role}`; "
+                f"semantic family is `{support_candidate.semantic_family}` and owner should be "
+                f"`{support_candidate.recommended_owner}`; "
+                f"external references: {support_candidate.external_reference_count}."
+            ),
+            (support_candidate.evidence,),
+            scaffold=(
+                f"class {support_candidate.recommended_owner}:\n"
+                "    def project(self, source): ...\n\n"
+                "# Or move the behavior onto the existing ABC/catalog/descriptor/EffectStep that owns the axis."
+            ),
+            codemod_patch=(
+                f"# Replace public module-level helper exports in `{support_candidate.semantic_family}` with nominal owner `{support_candidate.recommended_owner}`.\n"
+                "# Keep tiny single-owner residue private; route reusable behavior through an ABC method, authority object, descriptor, catalog, or AutoRegisterMeta-backed step."
+            ),
+            metrics=OrchestrationMetrics(
+                function_line_count=0,
+                branch_site_count=0,
+                call_site_count=support_candidate.external_reference_count,
+                parameter_count=len(support_candidate.function_names),
                 callee_family_count=1,
             ),
         )
@@ -3057,6 +3272,47 @@ declare_candidate_rule_detector(
     ),
     detector_priority=-13,
     candidate_collector=_identity_keyword_forwarding_shell_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    TupleIndexSemanticOpacityCandidate,
+    high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Carrier tuple context should become a named semantic record",
+        "A typed carrier pipeline that accesses context as `pair[0]`, `pair[1]`, or nested numeric tuple paths has collapsed the control-flow smell but introduced a positional data smell. The semantic-compressor normal form is a named product record, authority-owned context object, or step result type whose field names carry the invariant.",
+        "named effect context record instead of positional tuple plumbing",
+        "effect pipeline stores semantic context in numeric tuple indexes",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.function_name}` uses positional tuple paths "
+        f"{candidate.index_expressions} inside carrier pipeline calls "
+        f"{candidate.carrier_call_names}."
+    ),
+    scaffold=lambda candidate: (
+        "PipelineContext = product_record('PipelineContext', 'source: Source; projection: Projection')\n"
+        "# Replace `pair[0]`/`pair[1]` with named fields derived once by the carrier stage."
+    ),
+    codemod_patch=lambda candidate: (
+        "# Introduce a named product record or authority-owned context for the carrier stage.\n"
+        "# Replace numeric tuple paths with named fields; keep the carrier, but stop encoding semantics by position."
+    ),
+    compression_certificate=lambda candidate: CompressionCertificate.from_object_family(
+        manual_object_count=candidate.nested_index_count
+        + len(candidate.index_expressions),
+        replacement_shape=ObjectFamilyShape(shared_objects=("named_effect_context",)),
+        semantic_axes=candidate.index_expressions,
+    ),
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=candidate.nested_index_count,
+        mapping_name=candidate.function_name,
+        field_names=candidate.index_expressions,
+        source_name="carrier_tuple_context",
+    ),
+    detector_priority=-13,
+    candidate_collector=_tuple_index_semantic_opacity_candidates,
 )
 
 

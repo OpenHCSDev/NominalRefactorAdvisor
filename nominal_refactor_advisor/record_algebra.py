@@ -22,7 +22,7 @@ def _caller_module_name() -> str:
         del frame, product_record_frame, caller
 
 
-def _is_classvar_annotation(annotation: str) -> bool:
+def is_classvar_annotation(annotation: str) -> bool:
     return annotation == "ClassVar" or annotation.startswith(
         ("ClassVar[", "typing.ClassVar[")
     )
@@ -38,7 +38,7 @@ def _field_annotations(field_spec: str) -> dict[str, Any]:
             raise ValueError(f"Product record field lacks annotation: {field!r}")
         annotation = annotation.strip()
         annotations[field_name.strip()] = (
-            ClassVar[Any] if _is_classvar_annotation(annotation) else annotation
+            ClassVar[Any] if is_classvar_annotation(annotation) else annotation
         )
     return annotations
 
@@ -84,35 +84,43 @@ def product_record_spec(
     )
 
 
-def _caller_globals() -> dict[str, Any]:
-    frame = inspect.currentframe()
-    helper_frame = None if frame is None else frame.f_back
-    caller = None if helper_frame is None else helper_frame.f_back
-    try:
-        return {} if caller is None else caller.f_globals
-    finally:
-        del frame, helper_frame, caller
+@dataclass(frozen=True)
+class ProductRecordMaterializer:
+    def caller_globals(self) -> dict[str, Any]:
+        frame = inspect.currentframe()
+        helper_frame = None if frame is None else frame.f_back
+        caller = None if helper_frame is None else helper_frame.f_back
+        try:
+            return {} if caller is None else caller.f_globals
+        finally:
+            del frame, helper_frame, caller
+
+    def materialize_in(
+        self, caller_globals: dict[str, Any], specs: tuple[ProductRecordSpec, ...]
+    ) -> None:
+        for class_name, field_spec, base_names, options in specs:
+            options = dict(options)
+            bases = options.pop("bases", None)
+            if bases is None:
+                bases = tuple((caller_globals[name] for name in base_names))
+            caller_globals[class_name] = product_record(
+                class_name,
+                field_spec,
+                bases=bases,
+                **options,
+            )
 
 
-def _materialize_product_records_in(
-    caller_globals: dict[str, Any], specs: tuple[ProductRecordSpec, ...]
-) -> None:
-    for class_name, field_spec, base_names, options in specs:
-        options = dict(options)
-        bases = options.pop("bases", None)
-        if bases is None:
-            bases = tuple((caller_globals[name] for name in base_names))
-        caller_globals[class_name] = product_record(
-            class_name,
-            field_spec,
-            bases=bases,
-            **options,
-        )
+_PRODUCT_RECORD_MATERIALIZER = ProductRecordMaterializer()
 
 
 def materialize_product_records(specs: tuple[ProductRecordSpec, ...]) -> None:
-    _materialize_product_records_in(_caller_globals(), specs)
+    _PRODUCT_RECORD_MATERIALIZER.materialize_in(
+        _PRODUCT_RECORD_MATERIALIZER.caller_globals(), specs
+    )
 
 
 def materialize_product_record(spec: ProductRecordSpec) -> None:
-    _materialize_product_records_in(_caller_globals(), (spec,))
+    _PRODUCT_RECORD_MATERIALIZER.materialize_in(
+        _PRODUCT_RECORD_MATERIALIZER.caller_globals(), (spec,)
+    )

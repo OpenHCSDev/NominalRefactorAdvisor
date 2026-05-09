@@ -2089,6 +2089,33 @@ def test_bare_function_method_family_ignores_pairs(tmp_path: Path) -> None:
     )
 
 
+def test_detects_public_bare_support_functions_in_private_modules(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/_helpers.py",
+        "\ndef parameter_names(function):\n    return tuple(function.args)\n\n\ndef enum_member_ref(node):\n    return node.name, node.value\n\n\nclass WidgetProjection:\n    def project(self, node):\n        return enum_member_ref(node)\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        "\nfrom pkg._helpers import parameter_names\n\n\ndef consume(function):\n    return parameter_names(function)\n",
+    )
+
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "public_bare_support_function"
+    ]
+    summaries = "\n".join((finding.summary for finding in findings))
+
+    assert "parameter_names" in summaries
+    assert "enum_member_ref" in summaries
+    assert any("semantic family" in finding.summary for finding in findings)
+    assert any("nominal owner" in (finding.codemod_patch or "") for finding in findings)
+
+
 def test_detects_latent_nominal_function_family_without_name_axis(
     tmp_path: Path,
 ) -> None:
@@ -2252,6 +2279,26 @@ def test_detects_literal_match_dispatch_with_autoregistermeta_guidance(
     assert "'csv'" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "DispatchCase.for_case" in (finding.scaffold or "")
+
+
+def test_detects_two_case_string_dispatch_as_polymorphism(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
+        )
+    )
+
+    assert "'csv'" in finding.summary
+    assert "'json'" in finding.summary
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
 
 
 def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
@@ -3222,6 +3269,90 @@ def test_detects_fail_soft_effect_pipeline(tmp_path: Path) -> None:
     assert "nominal `EffectStep` subclasses" in (finding.codemod_patch or "")
 
 
+def test_detects_short_fail_soft_effect_pipeline(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build(node):\n    head = parse_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    return Route(route)\n",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+        )
+    )
+
+    assert "2 fail-soft guard stages" in finding.summary
+    assert "Maybe" in (finding.scaffold or "")
+
+
+def test_fail_soft_effect_pipeline_requires_none_binding_guards(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build(node):\n    args = tuple(node.args)\n    if len(args) != 2:\n        return None\n    if not getattr(node, 'ready', False):\n        return None\n    return Route(args)\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (
+            finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+            for finding in findings
+        )
+    )
+
+
+def test_fail_soft_effect_pipeline_classifies_inheritance_optimizer_proof_builder(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _abc_optimizer_method_group_profile(methods):\n    shared_statement_count = _abc_optimizer_shared_statement_count(methods)\n    if shared_statement_count is None:\n        return None\n    residue_profile = _abc_optimizer_residue_profile(methods)\n    if residue_profile is None:\n        return None\n    certificate = _abc_optimizer_paid_certificate(shared_statement_count, residue_profile)\n    if certificate is None:\n        return None\n    return MethodGroupProfile(shared_statement_count, residue_profile, certificate)\n",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+        )
+    )
+
+    assert "inheritance_optimizer_proof_builder" in finding.summary
+    assert "ABC optimizer proof/result carrier" in finding.summary
+    assert "derive the optimizer proof/result carrier once" in (
+        finding.codemod_patch or ""
+    )
+
+
+def test_fail_soft_effect_pipeline_classifies_statement_sequence_matcher(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _transport_shell_template_shape(function):\n    body = list(function.body)\n    assignment_shape = _transport_shell_assignment_shape(body)\n    if assignment_shape is None:\n        return None\n    tail_shape = _transport_shell_tail_shape(body)\n    if tail_shape is None:\n        return None\n    return assignment_shape, tail_shape\n",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+        )
+    )
+
+    assert "statement_sequence_matcher" in finding.summary
+    assert "statement-sequence matcher authority" in finding.summary
+    assert "factor the statement role sequence" in (finding.codemod_patch or "")
+
+
 def test_detects_effect_step_amortization_opportunity(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3836,18 +3967,20 @@ def test_ignores_abstract_effect_step_template_base(tmp_path: Path) -> None:
     )
 
 
-def test_ignores_short_fail_soft_helper(tmp_path: Path) -> None:
+def test_detects_short_fail_soft_helper(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\ndef build_route(node):\n    head = extract_head(node)\n    if head is None:\n        return None\n    route = parse_route(head)\n    if route is None:\n        return None\n    return RouteWitness(route)\n",
     )
-    assert not any(
+    finding = next(
         (
-            finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
+            finding
             for finding in analyze_path(tmp_path)
+            if finding.detector_id == FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID
         )
     )
+    assert "2 fail-soft guard stages" in finding.summary
 
 
 def test_classifies_fail_soft_call_chain_pipeline(tmp_path: Path) -> None:
@@ -5634,6 +5767,26 @@ def test_ignores_lexically_local_private_helper(tmp_path: Path) -> None:
     )
 
 
+def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/_helpers.py",
+        "\ndef _class_field_names(node):\n    names = []\n    for item in node.body:\n        if isinstance(item, AnnAssign):\n            names.append(item.target)\n    return tuple(names)\n\n\ndef _class_method_names(node):\n    names = []\n    for item in node.body:\n        if isinstance(item, FunctionDef):\n            names.append(item.name)\n    return tuple(names)\n\n\ndef _class_base_names(node):\n    names = []\n    for item in node.bases:\n        if isinstance(item, Name):\n            names.append(item.id)\n    return tuple(names)\n\n\ndef _class_decorator_names(node):\n    names = []\n    for item in node.decorator_list:\n        if isinstance(item, Name):\n            names.append(item.id)\n    return tuple(names)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "private_helper_semantic_cluster"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "ClassProjection" in finding.summary
+    assert "collection_projection" in finding.summary
+    assert "_class_field_names" in finding.summary
+    assert "Do not fix" in (finding.codemod_patch or "")
+
+
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -5955,6 +6108,78 @@ def test_detects_pass_through_composition_facade(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
     assert "CombinedRole" in finding.summary
     assert "CompositeClassSpec" in (finding.scaffold or "")
+
+
+def test_detects_facade_only_nominal_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _collect_named(module, projector):\n    return tuple(projector(module))\n\n\ndef _collect_nodes(module, projector):\n    return tuple(projector(module.tree))\n\n\nclass CandidateCollectionAuthority:\n    def named(self, module, projector):\n        return _collect_named(module, projector)\n\n    def nodes(self, module, projector):\n        return _collect_nodes(module, projector)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "facade_only_nominal_authority"
+        )
+    )
+    assert "CandidateCollectionAuthority" in finding.summary
+    assert "_collect_named" in finding.summary
+    assert "Inline private delegate bodies" in (finding.codemod_patch or "")
+
+
+def test_detects_alias_only_nominal_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _field_names(node):\n    return tuple(node.fields)\n\n\ndef _method_names(node):\n    return tuple(node.methods)\n\n\nclass SyntaxProjectionAuthority:\n    field_names = staticmethod(_field_names)\n    method_names = staticmethod(_method_names)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "alias_only_nominal_authority"
+        )
+    )
+    assert "SyntaxProjectionAuthority" in finding.summary
+    assert "not a rent-paying authority" in finding.summary
+    assert "Do not re-export bound aliases" in (finding.codemod_patch or "")
+
+
+def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "module_authority_reexport_catalog"
+        )
+    )
+    assert "SYNTAX_PROJECTION_AUTHORITY" in finding.summary
+    assert "helper aliases" in finding.summary
+    assert "Delete module-level re-export aliases" in (finding.codemod_patch or "")
+
+
+def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass CandidateCollectionAuthority:\n    def named_function_candidates(self, module, projector, *, sort_key=None):\n        projected = (\n            candidate\n            for qualname, function in module.functions\n            for candidate in projector(module, qualname, function)\n        )\n        return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)\n\n    def ast_node_candidates(self, module, root, node_type, projector, *, sort_key=None):\n        nodes = tuple(node for node in walk(root) if isinstance(node, node_type))\n        projected = (\n            candidate\n            for node in nodes\n            for candidate in projector(module, node)\n        )\n        return sorted_tuple(projected, key=sort_key) if sort_key else tuple(projected)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "collection_authority_stream_algebra"
+        )
+    )
+    assert "CandidateCollectionAuthority" in finding.summary
+    assert "CandidateStream" in (finding.scaffold or "")
+    assert "projection/materialization" in (finding.codemod_patch or "")
 
 
 def test_detects_projection_property_family(tmp_path: Path) -> None:
@@ -6732,6 +6957,31 @@ def test_abc_optimizer_uses_transitive_inheritance_closure(tmp_path: Path) -> No
         )
         for summary in summaries
     )
+
+
+def test_global_abc_optimizer_uses_transitive_overlap_lattice(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass Worker(ABC):\n    pass\n\n\nclass CsvWorker(Worker):\n    pass\n\n\nclass JsonWorker(Worker):\n    pass\n\n\nclass XmlWorker(Worker):\n    pass\n\n\nclass CsvAuditWorker(CsvWorker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_csv(cleaned)\n        self.write(encoded, suffix=".csv")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".csv")\n        return checked\n\n\nclass JsonAuditWorker(JsonWorker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_json(cleaned)\n        self.write(encoded, suffix=".json")\n        return encoded\n\n    def audit(self, rows):\n        clean = self.normalize(rows)\n        checked = audit_tabular(clean)\n        self.write(checked, suffix=".json")\n        return checked\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".json")\n        return stored\n\n\nclass XmlAuditWorker(XmlWorker):\n    def emit(self, rows):\n        cleaned = self.normalize(rows)\n        encoded = encode_xml(cleaned)\n        self.write(encoded, suffix=".xml")\n        return encoded\n\n    def cache(self, rows):\n        clean = self.normalize(rows)\n        stored = cache_payload(clean)\n        self.write(stored, suffix=".xml")\n        return stored\n',
+    )
+
+    global_finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "global_inheritance_optimization"
+    )
+
+    assert "`Worker` has a global inheritance lattice" in global_finding.summary
+    assert "CsvAuditWorker" in global_finding.summary
+    assert "JsonAuditWorker" in global_finding.summary
+    assert "XmlAuditWorker" in global_finding.summary
+    assert "audit[CsvAuditWorker,JsonAuditWorker]" in global_finding.summary
+    assert "cache[JsonAuditWorker,XmlAuditWorker]" in global_finding.summary
+    assert global_finding.compression_certificate is not None
+    assert global_finding.compression_certificate.pays_rent
 
 
 def test_abc_optimizer_prefers_specific_base_for_duplicate_closure(
@@ -7772,3 +8022,22 @@ def test_under_amortized_infrastructure_ignores_data_carriers_and_ids(
     assert "SharedService" in findings[0].summary
     assert "ActionBuilderId" not in findings[0].summary
     assert "AlphaStrategyCandidate" not in findings[0].summary
+
+
+def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        "\nclass Maybe:\n    @classmethod\n    def of(cls, value): ...\n\n\ndef build(source):\n    return (\n        Maybe.of(source)\n        .with_projection(lambda item: item.value)\n        .map(lambda pair: (pair[0][1], pair[1]))\n    )\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == "tuple_index_semantic_opacity"
+        )
+    )
+    assert "pair[0][1]" in finding.summary
+    assert "product_record" in (finding.scaffold or "")

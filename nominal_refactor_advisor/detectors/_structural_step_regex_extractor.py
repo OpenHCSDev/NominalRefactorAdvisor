@@ -6,7 +6,7 @@ import ast
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TypeVar, cast
+from typing import Generic, TypeVar, cast
 
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..collection_algebra import sorted_tuple
@@ -36,7 +36,7 @@ from ._base import (
     _dataclass_field_names,
     _is_classmethod,
 )
-from ._helpers import _constructor_return_call
+from ._helpers import constructor_return_call
 from ._substrate_support import (
     _ast_terminal_name,
     _is_dataclass_class,
@@ -48,6 +48,9 @@ materialize_product_records((
     product_record_spec('ConstructorVariantFamilyCandidate', 'callee_name: str; coordinate_count: int; varying_coordinate_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
     product_record_spec('AccumulatorFoldFamilyCandidate', 'accumulator_type_name: str; result_method_name: str; source_parameter_names: tuple[str, ...]; step_method_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
     product_record_spec('RegexGroupExtractorFamilyCandidate', 'pattern_attribute_names: tuple[str, ...]; matcher_names: tuple[str, ...]; group_index: int', 'ClassMethodFamilyCandidate'),
+    product_record_spec('_ConstructorCallContext', 'call: ast.Call; callee_name: str'),
+    product_record_spec('_AccumulatorFoldStatements', 'assign: ast.stmt; loop: ast.For; returned: ast.Return'),
+    product_record_spec('_AccumulatorFoldContext', 'statements: _AccumulatorFoldStatements; accumulator_name: str; accumulator_type_name: str; step_call: ast.Call'),
 ))
 # fmt: on
 
@@ -127,27 +130,34 @@ def _call_coordinate_fingerprints(call: ast.Call) -> tuple[str, ...] | None:
 def _constructor_variant_method(
     method: ast.FunctionDef,
 ) -> _ConstructorVariantMethod | None:
-    call = _simple_classmethod_return_call(method)
-    if call is None:
-        return None
-    callee_name = _classmethod_constructor_callee_name(call)
-    if callee_name is None:
-        return None
-    coordinate_fingerprints = _call_coordinate_fingerprints(call)
-    if coordinate_fingerprints is None:
-        return None
-    return _ConstructorVariantMethod(
-        method_name=method.name,
-        line=method.lineno,
-        callee_name=callee_name,
-        positional_count=len(call.args),
-        keyword_names=tuple(
-            (
-                keyword.arg or ""
-                for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
-            )
-        ),
-        coordinate_fingerprints=coordinate_fingerprints,
+    return (
+        Maybe.of(_simple_classmethod_return_call(method))
+        .combine(
+            _classmethod_constructor_callee_name,
+            lambda call, callee_name: _ConstructorCallContext(
+                call=call,
+                callee_name=callee_name,
+            ),
+        )
+        .combine(
+            lambda context: _call_coordinate_fingerprints(context.call),
+            lambda context, coordinate_fingerprints: _ConstructorVariantMethod(
+                method_name=method.name,
+                line=method.lineno,
+                callee_name=context.callee_name,
+                positional_count=len(context.call.args),
+                keyword_names=tuple(
+                    (
+                        keyword.arg or ""
+                        for keyword in sorted(
+                            context.call.keywords, key=lambda item: item.arg or ""
+                        )
+                    )
+                ),
+                coordinate_fingerprints=coordinate_fingerprints,
+            ),
+        )
+        .unwrap_or_none()
     )
 
 
@@ -172,43 +182,49 @@ def _varying_coordinate_names(
 _ParsedFamilyMethod = TypeVar("_ParsedFamilyMethod")
 
 
-def _class_method_shape_groups(
-    module: ParsedModule,
-    method_parser: Callable[[ast.FunctionDef], _ParsedFamilyMethod | None],
-    shape_key: Callable[[_ParsedFamilyMethod], object],
-) -> tuple[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]], ...]:
-    groups: list[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]]] = []
-    for class_node in (
-        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
-    ):
-        grouped: dict[object, list[_ParsedFamilyMethod]] = defaultdict(list)
-        for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            method = method_parser(statement)
-            if method is not None:
-                grouped[shape_key(method)].append(method)
-        for methods in grouped.values():
-            if len(methods) < 2:
-                continue
-            groups.append(
-                (
-                    class_node,
-                    sorted_tuple(
-                        methods, key=lambda item: (item.line, item.method_name)
-                    ),
+@dataclass(frozen=True)
+class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod]):
+    method_parser: Callable[[ast.FunctionDef], _ParsedFamilyMethod | None]
+    shape_key: Callable[[_ParsedFamilyMethod], object]
+
+    def project(
+        self, module: ParsedModule
+    ) -> tuple[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]], ...]:
+        groups: list[tuple[ast.ClassDef, tuple[_ParsedFamilyMethod, ...]]] = []
+        for class_node in (
+            node
+            for node in _walk_nodes(module.module)
+            if isinstance(node, ast.ClassDef)
+        ):
+            grouped: dict[object, list[_ParsedFamilyMethod]] = defaultdict(list)
+            for statement in class_node.body:
+                if not isinstance(statement, ast.FunctionDef):
+                    continue
+                method = self.method_parser(statement)
+                if method is not None:
+                    grouped[self.shape_key(method)].append(method)
+            for methods in grouped.values():
+                if len(methods) < 2:
+                    continue
+                groups.append(
+                    (
+                        class_node,
+                        sorted_tuple(
+                            methods, key=lambda item: (item.line, item.method_name)
+                        ),
+                    )
                 )
-            )
-    return tuple(groups)
+        return tuple(groups)
 
 
 def _constructor_variant_family_candidates(
     module: ParsedModule,
 ) -> tuple[ConstructorVariantFamilyCandidate, ...]:
     candidates: list[ConstructorVariantFamilyCandidate] = []
-    for class_node, ordered in _class_method_shape_groups(
-        module, _constructor_variant_method, lambda method: method.shape_key
-    ):
+    projector = ClassMethodGroupsShapeProjector(
+        _constructor_variant_method, lambda method: method.shape_key
+    )
+    for class_node, ordered in projector.project(module):
         varying_coordinates = _varying_coordinate_names(ordered)
         if not varying_coordinates:
             continue
@@ -257,22 +273,48 @@ def _accumulator_fold_method(
 def _accumulator_fold_shape(
     body: list[ast.stmt],
 ) -> tuple[str, str, ast.For, ast.Call, ast.Call] | None:
-    if len(body) != 3:
-        return None
-    assign, loop, returned = body
-    accumulator = _accumulator_initializer(assign)
-    if (
-        accumulator is None
-        or not isinstance(loop, ast.For)
-        or (not isinstance(returned, ast.Return))
-    ):
-        return None
-    accumulator_name, accumulator_type_name = accumulator
-    step_call = _accumulator_step_call(loop, accumulator_name)
-    result_call = _accumulator_result_call(returned, accumulator_name)
-    if step_call is None or result_call is None:
-        return None
-    return accumulator_name, accumulator_type_name, loop, step_call, result_call
+    return (
+        Maybe.of(tuple(body) if len(body) == 3 else None)
+        .project(
+            lambda statements: (
+                _AccumulatorFoldStatements(
+                    assign=statements[0],
+                    loop=statements[1],
+                    returned=statements[2],
+                )
+                if isinstance(statements[1], ast.For)
+                and isinstance(statements[2], ast.Return)
+                else None
+            )
+        )
+        .combine(
+            lambda statements: _accumulator_initializer(statements.assign),
+            lambda statements, accumulator: (
+                _AccumulatorFoldContext(
+                    statements=statements,
+                    accumulator_name=accumulator[0],
+                    accumulator_type_name=accumulator[1],
+                    step_call=_accumulator_step_call(statements.loop, accumulator[0]),
+                )
+                if _accumulator_step_call(statements.loop, accumulator[0]) is not None
+                else None
+            ),
+        )
+        .combine(
+            lambda context: _accumulator_result_call(
+                context.statements.returned,
+                context.accumulator_name,
+            ),
+            lambda context, result_call: (
+                context.accumulator_name,
+                context.accumulator_type_name,
+                context.statements.loop,
+                context.step_call,
+                result_call,
+            ),
+        )
+        .unwrap_or_none()
+    )
 
 
 def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:
@@ -324,9 +366,10 @@ def _accumulator_fold_family_candidates(
     module: ParsedModule,
 ) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
     candidates: list[AccumulatorFoldFamilyCandidate] = []
-    for class_node, ordered in _class_method_shape_groups(
-        module, _accumulator_fold_method, lambda method: method.shape_key
-    ):
+    projector = ClassMethodGroupsShapeProjector(
+        _accumulator_fold_method, lambda method: method.shape_key
+    )
+    for class_node, ordered in projector.project(module):
         if len({method.step_method_name for method in ordered}) < 2:
             continue
         candidates.append(
@@ -585,7 +628,7 @@ def _sparse_constructor_variant_family_candidates(
                 statement
             ):
                 continue
-            call = _constructor_return_call(statement)
+            call = constructor_return_call(statement)
             if call is None or call.args:
                 continue
             keyword_names = tuple(

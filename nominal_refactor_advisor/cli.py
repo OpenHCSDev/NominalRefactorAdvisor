@@ -228,11 +228,11 @@ def _format_markdown(
     elif not plans:
         sections.append("No refactoring findings.")
     if plans is not None:
-        sections.append(_format_plans_markdown(plans))
+        sections.append(format_plans_markdown(plans))
     if economics is not None:
-        sections.append(_format_economics_markdown(economics, change_budget))
+        sections.append(format_economics_markdown(economics, change_budget))
     if timing is not None:
-        sections.append(_format_timing_markdown(timing))
+        sections.append(format_timing_markdown(timing))
     return "\n\n".join(section for section in sections if section)
 
 
@@ -276,7 +276,7 @@ def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
     return "\n".join(lines)
 
 
-def _format_plans_markdown(plans: list[RefactorPlan]) -> str:
+def format_plans_markdown(plans: list[RefactorPlan]) -> str:
     if not plans:
         return "No subsystem plans."
     lines = ["Subsystem plans:"]
@@ -361,7 +361,7 @@ def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
     return f"{name} +{budget.added}/-{budget.deleted} " f"(net {budget.net_added:+d})"
 
 
-def _format_timing_markdown(timing: ScanTiming) -> str:
+def format_timing_markdown(timing: ScanTiming) -> str:
     return "\n".join(
         (
             "Timing:",
@@ -392,7 +392,7 @@ def _format_scan_prediction_markdown(report: ScanPredictionReport) -> str:
     return "\n".join(lines)
 
 
-def _format_economics_markdown(
+def format_economics_markdown(
     economics: RecommendationEconomics,
     change_budget: RepositoryChangeBudget | None = None,
 ) -> str:
@@ -622,10 +622,10 @@ def main() -> int:
         )
     else:
         if args.plans_only:
-            sections = [_format_plans_markdown(plans or [])]
+            sections = [format_plans_markdown(plans or [])]
             if economics is not None:
-                sections.append(_format_economics_markdown(economics, change_budget))
-            sections.append(_format_timing_markdown(timing))
+                sections.append(format_economics_markdown(economics, change_budget))
+            sections.append(format_timing_markdown(timing))
             print("\n\n".join(sections))
         else:
             print(

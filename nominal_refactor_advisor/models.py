@@ -745,12 +745,12 @@ def impact_delta_semantic_bag_descriptor() -> SemanticBagDescriptor:
 
 
 def _concrete_metric_types() -> tuple[type[FindingMetrics], ...]:
-    from .ast_tools import _descendant_types
+    from .ast_tools import REGISTERED_TYPE_LINEAGE
 
     discovered = tuple(
         (
             cast(type[FindingMetrics], metric_type)
-            for metric_type in _descendant_types(FindingMetrics)
+            for metric_type in REGISTERED_TYPE_LINEAGE.descendant_types(FindingMetrics)
             if is_dataclass(metric_type)
         )
     )

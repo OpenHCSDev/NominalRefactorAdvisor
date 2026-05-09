@@ -209,7 +209,7 @@ from ._substrate_support import *
 def _witness_mixin_enforcement_candidate(
     module: ParsedModule,
 ) -> WitnessMixinEnforcementCandidate | None:
-    all_classes = _witness_carrier_class_candidates(module)
+    all_classes = witness_carrier_class_candidates(module)
     grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
     for candidate in all_classes:
         for token in candidate.family_tokens:
@@ -331,8 +331,10 @@ def _shared_field_type_map(
 
 
 def _field_family_candidates(module: ParsedModule) -> tuple[FieldFamilyCandidate, ...]:
-    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
-        module, FieldObservationFamily, FieldObservation
+    observations: tuple[FieldObservation, ...] = (
+        CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+            module, FieldObservationFamily, FieldObservation
+        )
     )
     graph = ObservationGraph(
         observations=tuple((item.structural_observation for item in observations))
@@ -483,7 +485,7 @@ def _prefixed_role_field_groups(
 ) -> RoleFieldObservationGroups:
     groups: RoleFieldObservationGroups = defaultdict(dict)
     for observation in observations:
-        tokens = _ordered_class_name_tokens(observation.field_name)
+        tokens = CLASS_NAME_ALGEBRA.ordered_tokens(observation.field_name)
         if len(tokens) <= prefix_token_count:
             continue
         role_name = _role_member_name(tokens[:prefix_token_count])
@@ -498,14 +500,14 @@ def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(
         (
             base_name
-            for base_name in _declared_base_names(node)
+            for base_name in CLASS_NODE_AUTHORITY.declared_base_names(node)
             if "pytree" in base_name.lower()
         )
     )
 
 
 def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(_method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
+    return sorted_tuple(method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
 
 
 def _connected_role_components(
@@ -657,8 +659,10 @@ def _prefixed_role_bundle_candidate_for_class(
 def _prefixed_role_field_bundle_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[PrefixedRoleFieldBundleCandidate, ...]:
-    observations: tuple[FieldObservation, ...] = _collect_typed_family_items(
-        module, FieldObservationFamily, FieldObservation
+    observations: tuple[FieldObservation, ...] = (
+        CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+            module, FieldObservationFamily, FieldObservation
+        )
     )
     observations_by_class: dict[str, list[FieldObservation]] = defaultdict(list)
     for observation in observations:
@@ -698,14 +702,16 @@ def _prefixed_role_bundle_scaffold(
 
 
 def _public_class_name(name: str) -> str:
-    return "".join((token.capitalize() for token in _ordered_class_name_tokens(name)))
+    return "".join(
+        (token.capitalize() for token in CLASS_NAME_ALGEBRA.ordered_tokens(name))
+    )
 
 
 def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
-    suffix = _longest_common_suffix(class_names)
+    suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(class_names)
     if suffix:
         return suffix if suffix.endswith("Base") else f"{suffix}Base"
-    prefix = _longest_common_prefix(class_names)
+    prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(class_names)
     if prefix:
         return prefix if prefix.endswith("Base") else f"{prefix}Base"
     return "SharedFieldsBase"
@@ -849,7 +855,7 @@ class RepeatedPropertyAliasHookDetector(
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
-            metrics=_repeated_property_hook_metrics(
+            metrics=repeated_property_hook_metrics(
                 hook_group.class_names, hook_group.property_name
             ),
         )
@@ -904,7 +910,7 @@ class ConstantPropertyHookDetector(
             evidence,
             scaffold=scaffold,
             codemod_patch=patch,
-            metrics=_repeated_property_hook_metrics(
+            metrics=repeated_property_hook_metrics(
                 hook_group.class_names, hook_group.property_name
             ),
         )
@@ -1296,7 +1302,7 @@ def _autoregister_family_nodes(
     )
     children_by_base_name: dict[str, list[ast.ClassDef]] = defaultdict(list)
     for class_node in class_nodes:
-        for base_name in _class_base_names(class_node):
+        for base_name in class_base_names(class_node):
             children_by_base_name[base_name].append(class_node)
     family_nodes: list[ast.ClassDef] = []
     queue = [root_node]
@@ -1316,7 +1322,7 @@ def _autoregister_family_is_metadata_only(
 ) -> bool:
     return all(
         (
-            _metadata_only_class_assignment_names(class_node) is not None
+            metadata_only_class_assignment_names(class_node) is not None
             for class_node in _autoregister_family_nodes(module, root_node)
         )
     )
@@ -1349,7 +1355,7 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 continue
             if not _uses_autoregister_meta(node):
                 continue
-            assigned_names = _metadata_only_class_assignment_names(node)
+            assigned_names = metadata_only_class_assignment_names(node)
             if assigned_names is None:
                 continue
             if not _autoregister_family_is_metadata_only(module, node):
@@ -1683,7 +1689,7 @@ declare_candidate_rule_detector(
             union_candidate.owner_name,
         ),
     ),
-    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
+    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
     codemod_patch=lambda union_candidate: f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.",
     metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(union_candidate.root_names),
@@ -1728,7 +1734,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             "" if not group.filter_names else f" with filter hooks {group.filter_names}"
         )
         scaffold = (
-            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{_derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
+            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
             if group.registry_attribute_names
             else (
                 "from metaclass_registry import AutoRegisterMeta\n\ndef walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    seen = set()\n    ordered = []\n    queue = list(root.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not include(current) or current in seen:\n            continue\n        seen.add(current)\n        ordered.append(materialize(current))\n    return tuple(ordered)\n\n# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n# read registered classes from cls.__registry__.values() instead of maintaining a second walker."
@@ -1881,7 +1887,10 @@ def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
 
 
 # fmt: off
-materialize_product_record(product_record_spec('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call'))
+materialize_product_records((
+    product_record_spec('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call'),
+    product_record_spec('_ExpressionCallPair', 'first_call: ast.Call; second_call: ast.Call'),
+))
 # fmt: on
 
 
@@ -1900,18 +1909,33 @@ class _NamedFunctionExprCallPairStep(
     function_name: ClassVar[str]
 
     def project_ast(self, value: ast.FunctionDef) -> _FunctionCallPairResult | None:
-        if value.name != self.function_name:
-            return None
-        body = _trim_docstring_body(value.body)
-        statements = ast_sequence(body, ast.Expr, ast.Expr)
-        if statements is None:
-            return None
-        first, second = statements
-        first_call = as_ast(first.value, ast.Call)
-        second_call = as_ast(second.value, ast.Call)
-        if first_call is None or second_call is None:
-            return None
-        return self.project_call_pair(first_call, second_call)
+        return (
+            Maybe.of(value)
+            .filter(lambda function: function.name == self.function_name)
+            .project(
+                lambda function: ast_sequence(
+                    _trim_docstring_body(function.body), ast.Expr, ast.Expr
+                )
+            )
+            .project(
+                lambda statements: Maybe.of(as_ast(statements[0].value, ast.Call))
+                .combine(
+                    lambda first_call: as_ast(statements[1].value, ast.Call),
+                    lambda first_call, second_call: _ExpressionCallPair(
+                        first_call=first_call,
+                        second_call=second_call,
+                    ),
+                )
+                .unwrap_or_none()
+            )
+            .project(
+                lambda call_pair: self.project_call_pair(
+                    call_pair.first_call,
+                    call_pair.second_call,
+                )
+            )
+            .unwrap_or_none()
+        )
 
     @abstractmethod
     def project_call_pair(

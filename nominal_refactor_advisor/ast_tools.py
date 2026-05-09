@@ -108,6 +108,10 @@ materialize_product_records((
     product_record_spec('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.'),
     product_record_spec('AstNameFamily', 'names: frozenset[str]'),
     product_record_spec('AstCallObservation', 'call: ast.Call; matched_name: str'),
+    product_record_spec('_BuilderCallContext', 'call: ast.Call; callee_name: str; keyword_pairs: tuple[tuple[str, ast.AST], ...]'),
+    product_record_spec('_ExportDictContext', 'dict_node: ast.Dict; key_pairs: tuple[tuple[str, ast.AST], ...]'),
+    product_record_spec('_ScopedShapeSpecCall', 'spec_name: str; call: ast.Call'),
+    product_record_spec('_ScopedShapeSpecKeywords', 'function_name: str; node_types: tuple[str, ...]'),
 ))
 # fmt: on
 
@@ -201,20 +205,6 @@ _TRegistered = TypeVar("_TRegistered")
 _TRegisteredType = TypeVar("_TRegisteredType", bound=type[object])
 
 
-def _descendant_types(root: type[object]) -> tuple[type[object], ...]:
-    seen: set[type[object]] = set()
-    ordered: list[type[object]] = []
-    queue = list(root.__subclasses__())
-    while queue:
-        current = queue.pop(0)
-        queue.extend(current.__subclasses__())
-        if current in seen:
-            continue
-        seen.add(current)
-        ordered.append(current)
-    return tuple(ordered)
-
-
 def _registry_member_key(registered_type: type[object]) -> tuple[str, int, str]:
     return (
         registered_type.__module__,
@@ -227,24 +217,6 @@ def _registered_type_token(_name: str, cls: type[object]) -> str | None:
     if cls.__dict__.get("_registry_skip", False):
         return None
     return f"{cls.__module__}:{cls.__qualname__}"
-
-
-def _ordered_registered_types(
-    root: type[_TRegisteredType],
-) -> tuple[type[_TRegisteredType], ...]:
-    registry = root.__registry__
-    seen: set[type[object]] = set()
-    ordered: list[type[_TRegisteredType]] = []
-    for registered_type in sorted(
-        registry.values(),
-        key=lambda candidate: _registry_member_key(cast(type[object], candidate)),
-    ):
-        registered_class = cast(type[_TRegisteredType], registered_type)
-        if registered_class in seen or not issubclass(registered_class, root):
-            continue
-        seen.add(registered_class)
-        ordered.append(registered_class)
-    return tuple(ordered)
 
 
 def _is_direct_registered_descendant(
@@ -267,18 +239,53 @@ def _is_direct_registered_descendant(
     return False
 
 
-def _direct_registered_types(
-    root: type[_TRegisteredType], *, registry_base: type[object]
-) -> tuple[type[_TRegisteredType], ...]:
-    return tuple(
-        (
-            registered_type
-            for registered_type in _ordered_registered_types(root)
-            if _is_direct_registered_descendant(
-                registered_type, root, registry_base=registry_base
+class RegisteredTypeLineage:
+    def descendant_types(self, root: type[object]) -> tuple[type[object], ...]:
+        seen: set[type[object]] = set()
+        ordered: list[type[object]] = []
+        queue = list(root.__subclasses__())
+        while queue:
+            current = queue.pop(0)
+            queue.extend(current.__subclasses__())
+            if current in seen:
+                continue
+            seen.add(current)
+            ordered.append(current)
+        return tuple(ordered)
+
+    def ordered_registered_types(
+        self,
+        root: type[_TRegisteredType],
+    ) -> tuple[type[_TRegisteredType], ...]:
+        registry = root.__registry__
+        seen: set[type[object]] = set()
+        ordered: list[type[_TRegisteredType]] = []
+        for registered_type in sorted(
+            registry.values(),
+            key=lambda candidate: _registry_member_key(cast(type[object], candidate)),
+        ):
+            registered_class = cast(type[_TRegisteredType], registered_type)
+            if registered_class in seen or not issubclass(registered_class, root):
+                continue
+            seen.add(registered_class)
+            ordered.append(registered_class)
+        return tuple(ordered)
+
+    def direct_registered_types(
+        self, root: type[_TRegisteredType], *, registry_base: type[object]
+    ) -> tuple[type[_TRegisteredType], ...]:
+        return tuple(
+            (
+                registered_type
+                for registered_type in self.ordered_registered_types(root)
+                if _is_direct_registered_descendant(
+                    registered_type, root, registry_base=registry_base
+                )
             )
         )
-    )
+
+
+REGISTERED_TYPE_LINEAGE = RegisteredTypeLineage()
 
 
 class ModuleShapeSpec(ABC):
@@ -304,7 +311,7 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
         return tuple(
             (
                 spec_type()
-                for spec_type in _direct_registered_types(
+                for spec_type in REGISTERED_TYPE_LINEAGE.direct_registered_types(
                     cls, registry_base=AutoRegisteredModuleShapeSpec
                 )
             )
@@ -313,7 +320,12 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
     @classmethod
     def all_registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
         """Return all concrete specs reachable from descendant registry roots."""
-        return tuple((spec_type() for spec_type in _ordered_registered_types(cls)))
+        return tuple(
+            (
+                spec_type()
+                for spec_type in REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
+            )
+        )
 
 
 class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
@@ -329,12 +341,14 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
         """Return concrete families registered directly under this root."""
-        return _direct_registered_types(cls, registry_base=CollectedFamily)
+        return REGISTERED_TYPE_LINEAGE.direct_registered_types(
+            cls, registry_base=CollectedFamily
+        )
 
     @classmethod
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
-        return _ordered_registered_types(cls)
+        return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
 
     @classmethod
     @abstractmethod
@@ -349,7 +363,7 @@ def _collect_family_items_cached(
     return tuple(
         (
             item
-            for item in _flatten_collected_items(family.collect(parsed_module))
+            for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(parsed_module))
             if isinstance(item, family.item_type)
         )
     )
@@ -371,7 +385,7 @@ class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[object]:
-        return _collect_items_from_spec_root(
+        return COLLECTED_ITEM_PROJECTION.from_spec_root(
             cls.spec_root, parsed_module, cls.item_type
         )
 
@@ -386,7 +400,9 @@ class SingleSpecCollectedFamily(CollectedFamily, ABC):
     def collect(cls, parsed_module: ParsedModule) -> list[object]:
         return [
             item
-            for item in _flatten_collected_items(cls.spec.collect(parsed_module))
+            for item in COLLECTED_ITEM_PROJECTION.flatten(
+                cls.spec.collect(parsed_module)
+            )
             if isinstance(item, cls.item_type)
         ]
 
@@ -786,31 +802,35 @@ def collect_scoped_shapes(
     return spec.collect(parsed_module)
 
 
-def _flatten_collected_items(items: list[object]) -> tuple[object, ...]:
-    flattened: list[object] = []
-    for item in items:
-        if isinstance(item, tuple):
-            flattened.extend(item)
-        else:
-            flattened.append(item)
-    return tuple(flattened)
+class CollectedItemProjection:
+    def flatten(self, items: list[object]) -> tuple[object, ...]:
+        flattened: list[object] = []
+        for item in items:
+            if isinstance(item, tuple):
+                flattened.extend(item)
+            else:
+                flattened.append(item)
+        return tuple(flattened)
 
-
-def _collect_items_from_spec_root(
-    spec_root: type[AutoRegisteredModuleShapeSpec],
-    parsed_module: ParsedModule,
-    item_type: type[object],
-) -> list[object]:
-    items: list[object] = []
-    for spec in spec_root.registered_specs():
-        items.extend(
-            (
-                item
-                for item in _flatten_collected_items(spec.collect(parsed_module))
-                if isinstance(item, item_type)
+    def from_spec_root(
+        self,
+        spec_root: type[AutoRegisteredModuleShapeSpec],
+        parsed_module: ParsedModule,
+        item_type: type[object],
+    ) -> list[object]:
+        items: list[object] = []
+        for spec in spec_root.registered_specs():
+            items.extend(
+                (
+                    item
+                    for item in self.flatten(spec.collect(parsed_module))
+                    if isinstance(item, item_type)
+                )
             )
-        )
-    return items
+        return items
+
+
+COLLECTED_ITEM_PROJECTION = CollectedItemProjection()
 
 
 def _execution_level_for_scope(function_name: str | None) -> StructuralExecutionLevel:
@@ -819,27 +839,33 @@ def _execution_level_for_scope(function_name: str | None) -> StructuralExecution
     return StructuralExecutionLevel.FUNCTION_BODY
 
 
-def _class_observations(parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
-    observations: list[ClassAstObservation] = []
-    for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
-        node = observation.node
-        assert isinstance(node, ast.ClassDef)
-        observations.append(
-            ClassAstObservation(
-                node=node,
-                is_dataclass_family=any(
-                    (
-                        _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
-                        for decorator in node.decorator_list
-                    )
-                ),
+class ClassObservationProjection:
+    def project(self, parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
+        observations: list[ClassAstObservation] = []
+        for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
+            node = observation.node
+            assert isinstance(node, ast.ClassDef)
+            observations.append(
+                ClassAstObservation(
+                    node=node,
+                    is_dataclass_family=any(
+                        (
+                            _node_matches_family(decorator, _DATACLASS_DECORATOR_FAMILY)
+                            for decorator in node.decorator_list
+                        )
+                    ),
+                )
             )
-        )
-    return tuple(observations)
+        return tuple(observations)
+
+
+CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
 
 
 def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
-    return _name_family({item.node.name for item in _class_observations(parsed_module)})
+    return _name_family(
+        {item.node.name for item in CLASS_OBSERVATION_PROJECTION.project(parsed_module)}
+    )
 
 
 def _class_body_field_observation(
@@ -968,26 +994,34 @@ def _parent_map(module: ast.Module) -> dict[ast.AST, ast.AST]:
     }
 
 
-def _enclosing_function_name(
-    node: ast.AST, parent_map: dict[ast.AST, ast.AST]
-) -> str | None:
-    current: ast.AST | None = node
-    while current is not None:
-        current = parent_map.get(current)
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            return current.name
-    return None
+class ScopeParentage:
+    def enclosing_function_name(
+        self, node: ast.AST, parent_map: dict[ast.AST, ast.AST]
+    ) -> str | None:
+        current: ast.AST | None = node
+        while current is not None:
+            current = parent_map.get(current)
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                return current.name
+        return None
 
 
-def _literal_dispatch_case(
-    test: ast.AST, literal_type: type[object]
-) -> tuple[str, str, str] | None:
-    return (
-        Maybe.of(test)
-        .bind(_LiteralDispatchCompareStep())
-        .bind(_LiteralDispatchCaseStep(literal_type))
-        .unwrap_or_none()
-    )
+SCOPE_PARENTAGE = ScopeParentage()
+
+
+class LiteralDispatchCaseMatcher:
+    def match(
+        self, test: ast.AST, literal_type: type[object]
+    ) -> tuple[str, str, str] | None:
+        return (
+            Maybe.of(test)
+            .bind(_LiteralDispatchCompareStep())
+            .bind(_LiteralDispatchCaseStep(literal_type))
+            .unwrap_or_none()
+        )
+
+
+LITERAL_DISPATCH_CASE_MATCHER = LiteralDispatchCaseMatcher()
 
 
 # fmt: off
@@ -1043,7 +1077,7 @@ def _literal_dispatch_observation_from_if(
     axis_expression: str | None = None
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
-        case = _literal_dispatch_case(current.test, literal_type)
+        case = LITERAL_DISPATCH_CASE_MATCHER.match(current.test, literal_type)
         if case is None:
             return None
         current_fingerprint, current_expression, literal_case = case
@@ -1057,7 +1091,7 @@ def _literal_dispatch_observation_from_if(
         current = current.orelse[0] if len(current.orelse) == 1 else None
     if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
         return None
-    function_name = _enclosing_function_name(node, parent_map)
+    function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     return LiteralDispatchObservation(
         file_path=str(parsed_module.path),
         line=node.lineno,
@@ -1098,7 +1132,7 @@ def _literal_dispatch_observation_from_match(
     )
     if len(literal_cases) < 2:
         return None
-    function_name = _enclosing_function_name(node, parent_map)
+    function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     axis_expression = ast.unparse(node.subject)
     return LiteralDispatchObservation(
         file_path=str(parsed_module.path),
@@ -1135,7 +1169,7 @@ def _inline_literal_dispatch_groups(
     for stmt in block:
         if not isinstance(stmt, ast.If):
             continue
-        case = _literal_dispatch_case(stmt.test, literal_type)
+        case = LITERAL_DISPATCH_CASE_MATCHER.match(stmt.test, literal_type)
         if case is None:
             continue
         axis_fingerprint, axis_expression, literal_case = case
@@ -1297,16 +1331,20 @@ def _projection_outer_inner_calls(
         .bind_all(registered_effect_steps(_ProjectionOuterCallStep))
         .unwrap_or_none()
     )
-    if outer_call is None:
-        return None
-    inner_call = as_ast(single_call_arg(outer_call), ast.Call)
-    if inner_call is not None and len(inner_call.args) != 1:
-        inner_call = None
-    if inner_call is None:
-        return None
-    outer_call_name = _terminal_name(outer_call.func)
-    assert outer_call_name is not None
-    return outer_call_name, inner_call
+    return (
+        Maybe.of(outer_call)
+        .combine(
+            lambda call: as_ast(single_call_arg(call), ast.Call),
+            lambda call, inner_call: (
+                (call, inner_call) if len(inner_call.args) == 1 else None
+            ),
+        )
+        .combine(
+            lambda context: _terminal_name(context[0].func),
+            lambda context, outer_call_name: (outer_call_name, context[1]),
+        )
+        .unwrap_or_none()
+    )
 
 
 # fmt: off
@@ -1327,10 +1365,11 @@ class _SingleProjectionGeneratorStep(
     node_type = ast.GeneratorExp
 
     def project_ast(self, value: ast.GeneratorExp) -> _ProjectionGeneratorMatch | None:
-        comprehension = single_item(value.generators)
-        if comprehension is None:
-            return None
-        return _ProjectionGeneratorMatch(value, comprehension)
+        return (
+            Maybe.of(single_item(value.generators))
+            .map(lambda comprehension: _ProjectionGeneratorMatch(value, comprehension))
+            .unwrap_or_none()
+        )
 
 
 class _ProjectionNameTargetStep(
@@ -1378,35 +1417,40 @@ def _projection_generator_attribute(node: ast.AST) -> str | None:
 
 
 def _projection_inner_shape(inner_call: ast.Call) -> tuple[str, str] | None:
-    aggregator_name = _terminal_name(inner_call.func)
-    if aggregator_name is None:
-        return None
-    projected_attribute = _projection_generator_attribute(inner_call.args[0])
-    if projected_attribute is None:
-        return None
-    return aggregator_name, projected_attribute
+    return (
+        Maybe.of(_terminal_name(inner_call.func))
+        .combine(
+            lambda _aggregator_name: _projection_generator_attribute(
+                inner_call.args[0]
+            ),
+            lambda aggregator_name, projected_attribute: (
+                aggregator_name,
+                projected_attribute,
+            ),
+        )
+        .unwrap_or_none()
+    )
 
 
 def _projection_helper_shape_from_function(
     parsed_module: ParsedModule,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ProjectionHelperShape | None:
-    call_pair = _projection_outer_inner_calls(function)
-    if call_pair is None:
-        return None
-    outer_call_name, inner_call = call_pair
-    inner_shape = _projection_inner_shape(inner_call)
-    if inner_shape is None:
-        return None
-    aggregator_name, projected_attribute = inner_shape
-    return ProjectionHelperShape(
-        file_path=str(parsed_module.path),
-        function_name=function.name,
-        lineno=function.lineno,
-        outer_call_name=outer_call_name,
-        aggregator_name=aggregator_name,
-        iterable_fingerprint=fingerprint_function(function),
-        projected_attribute=projected_attribute,
+    return (
+        Maybe.of(_projection_outer_inner_calls(function))
+        .combine(
+            lambda call_pair: _projection_inner_shape(call_pair[1]),
+            lambda call_pair, inner_shape: ProjectionHelperShape(
+                file_path=str(parsed_module.path),
+                function_name=function.name,
+                lineno=function.lineno,
+                outer_call_name=call_pair[0],
+                aggregator_name=inner_shape[0],
+                iterable_fingerprint=fingerprint_function(function),
+                projected_attribute=inner_shape[1],
+            ),
+        )
+        .unwrap_or_none()
     )
 
 
@@ -1462,7 +1506,7 @@ def _scoped_shape_wrapper_node_types(
         return None
     if not isinstance(second_stmt, ast.If):
         return None
-    node_types = _guarded_node_types(second_stmt.test, "node")
+    node_types = TYPE_GUARD_PROJECTION.guarded_node_types(second_stmt.test, "node")
     if not node_types or not _if_returns_none(second_stmt):
         return None
     return node_types
@@ -1510,47 +1554,46 @@ def _scoped_shape_wrapper_function_from_function(
     )
 
 
-def _scoped_shape_spec_call(node: ast.Assign) -> tuple[str, ast.Call] | None:
+def _scoped_shape_spec_call(node: ast.Assign) -> _ScopedShapeSpecCall | None:
     target = as_ast(single_assign_target(node), ast.Name)
     call = as_ast(node.value, ast.Call)
     if target is None or call is None:
         return None
     if _terminal_name(call.func) != "ScopedShapeSpec":
         return None
-    return target.id, call
+    return _ScopedShapeSpecCall(target.id, call)
 
 
-def _scoped_shape_spec_keywords(call: ast.Call) -> tuple[str, tuple[str, ...]] | None:
+def _scoped_shape_spec_keywords(call: ast.Call) -> _ScopedShapeSpecKeywords | None:
     node_types: tuple[str, ...] = ()
     function_name = None
     for keyword in call.keywords:
         if keyword.arg == "node_types":
-            node_types = _type_name_tuple(keyword.value)
+            node_types = TYPE_GUARD_PROJECTION.type_name_tuple(keyword.value)
         if keyword.arg == "build_shape":
             function_name = _terminal_name(keyword.value)
     if not node_types or function_name is None:
         return None
-    return function_name, node_types
+    return _ScopedShapeSpecKeywords(function_name, node_types)
 
 
 def _scoped_shape_wrapper_spec_from_assign(
     parsed_module: ParsedModule,
     node: ast.Assign,
 ) -> ScopedShapeWrapperSpec | None:
-    spec_call = _scoped_shape_spec_call(node)
-    if spec_call is None:
-        return None
-    spec_name, call = spec_call
-    keywords = _scoped_shape_spec_keywords(call)
-    if keywords is None:
-        return None
-    function_name, node_types = keywords
-    return ScopedShapeWrapperSpec(
-        file_path=str(parsed_module.path),
-        spec_name=spec_name,
-        lineno=node.lineno,
-        function_name=function_name,
-        node_types=node_types,
+    return (
+        Maybe.of(_scoped_shape_spec_call(node))
+        .combine(
+            lambda spec_call: _scoped_shape_spec_keywords(spec_call.call),
+            lambda spec_call, keywords: ScopedShapeWrapperSpec(
+                file_path=str(parsed_module.path),
+                spec_name=spec_call.spec_name,
+                lineno=node.lineno,
+                function_name=keywords.function_name,
+                node_types=keywords.node_types,
+            ),
+        )
+        .unwrap_or_none()
     )
 
 
@@ -1579,16 +1622,23 @@ def _setter_wrapper_candidate(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     body: list[ast.stmt],
 ) -> tuple[str, str] | None:
-    if len(function.args.args) != 2 or len(body) != 1:
-        return None
-    assignment = _self_attribute_assignment(body[0], function.args.args[1].arg)
-    if assignment is None:
-        return None
-    target = assignment
-    observed_attribute = _self_attribute_name(target)
-    if observed_attribute is None:
-        return None
-    return ast.unparse(target), observed_attribute
+    return (
+        Maybe.of(body[0] if len(function.args.args) == 2 and len(body) == 1 else None)
+        .project(
+            lambda statement: _self_attribute_assignment(
+                statement,
+                function.args.args[1].arg,
+            )
+        )
+        .combine(
+            _self_attribute_name,
+            lambda target, observed_attribute: (
+                ast.unparse(target),
+                observed_attribute,
+            ),
+        )
+        .unwrap_or_none()
+    )
 
 
 def _self_attribute_assignment(
@@ -1617,11 +1667,7 @@ def _is_self_attribute_expression(node: ast.AST) -> bool:
 
 
 def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
-    call = as_ast(node, ast.Call)
-    arg = single_call_arg(node)
-    if call is None or arg is None or (not isinstance(call.func, ast.Name)):
-        return None
-    if call.func.id not in {
+    wrapper_names = {
         "tuple",
         "list",
         "set",
@@ -1631,12 +1677,22 @@ def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
         "bool",
         "len",
         "sorted",
-    }:
-        return None
-    observed_attribute = _self_attribute_name(arg)
-    if observed_attribute is None:
-        return None
-    return call.func.id, observed_attribute
+    }
+    return (
+        Maybe.of(as_ast(node, ast.Call))
+        .filter(
+            lambda call: isinstance(call.func, ast.Name)
+            and call.func.id in wrapper_names
+        )
+        .combine(
+            lambda call: _self_attribute_name(single_call_arg(call)),
+            lambda call, observed_attribute: (
+                cast(ast.Name, call.func).id,
+                observed_attribute,
+            ),
+        )
+        .unwrap_or_none()
+    )
 
 
 def _self_attribute_name(node: ast.AST) -> str | None:
@@ -1661,31 +1717,34 @@ def _has_property_like_decorator(
     return False
 
 
-def _guarded_node_types(test: ast.AST, expected_name: str) -> tuple[str, ...]:
-    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
-        return _guarded_node_types(test.operand, expected_name)
-    if not isinstance(test, ast.Call):
+class TypeGuardProjection:
+    def guarded_node_types(self, test: ast.AST, expected_name: str) -> tuple[str, ...]:
+        if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+            return self.guarded_node_types(test.operand, expected_name)
+        if not isinstance(test, ast.Call):
+            return ()
+        if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
+            return ()
+        if len(test.args) != 2:
+            return ()
+        if not isinstance(test.args[0], ast.Name) or test.args[0].id != expected_name:
+            return ()
+        return self.type_name_tuple(test.args[1])
+
+    def type_name_tuple(self, node: ast.AST) -> tuple[str, ...]:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (node.attr,)
+        if isinstance(node, ast.Tuple):
+            names: list[str] = []
+            for item in node.elts:
+                names.extend(self.type_name_tuple(item))
+            return tuple(names)
         return ()
-    if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
-        return ()
-    if len(test.args) != 2:
-        return ()
-    if not isinstance(test.args[0], ast.Name) or test.args[0].id != expected_name:
-        return ()
-    return _type_name_tuple(test.args[1])
 
 
-def _type_name_tuple(node: ast.AST) -> tuple[str, ...]:
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    if isinstance(node, ast.Attribute):
-        return (node.attr,)
-    if isinstance(node, ast.Tuple):
-        names: list[str] = []
-        for item in node.elts:
-            names.extend(_type_name_tuple(item))
-        return tuple(names)
-    return ()
+TYPE_GUARD_PROJECTION = TypeGuardProjection()
 
 
 def _config_dispatch_observations(
@@ -1752,8 +1811,8 @@ def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
                 continue
             if not isinstance(node.ops[0], (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
                 continue
-            left_name = _config_subject_name(node.left)
-            right_name = _config_subject_name(node.comparators[0])
+            left_name = CONFIG_SUBJECT_PROJECTION.subject_name(node.left)
+            right_name = CONFIG_SUBJECT_PROJECTION.subject_name(node.comparators[0])
             left_literal = _literal_dispatch_value(node.left)
             right_literal = _literal_dispatch_value(node.comparators[0])
             if left_name is not None and right_literal is not None:
@@ -1764,7 +1823,7 @@ def _config_dispatch_attributes(test: ast.AST) -> tuple[str, ...]:
 
 
 def _match_config_dispatch_attributes(subject: ast.AST) -> tuple[str, ...]:
-    attr_name = _config_subject_name(subject)
+    attr_name = CONFIG_SUBJECT_PROJECTION.subject_name(subject)
     if attr_name is not None:
         return (attr_name,)
     return ()
@@ -2020,16 +2079,20 @@ def _attribute_name_if_root(node: ast.AST, expected_root: str) -> str | None:
     return None
 
 
-def _config_subject_name(node: ast.AST) -> str | None:
-    attr_name = _attribute_name_if_root(node, "config")
-    if attr_name is not None:
-        return attr_name
-    if isinstance(node, ast.Call) and _terminal_name_in_family(
-        node.func, _GETATTR_CALL_FAMILY
-    ):
-        if _call_targets_name(node, "config") and len(node.args) >= 2:
-            return _constant_string(node.args[1])
-    return None
+class ConfigSubjectProjection:
+    def subject_name(self, node: ast.AST) -> str | None:
+        attr_name = _attribute_name_if_root(node, "config")
+        if attr_name is not None:
+            return attr_name
+        if isinstance(node, ast.Call) and _terminal_name_in_family(
+            node.func, _GETATTR_CALL_FAMILY
+        ):
+            if _call_targets_name(node, "config") and len(node.args) >= 2:
+                return _constant_string(node.args[1])
+        return None
+
+
+CONFIG_SUBJECT_PROJECTION = ConfigSubjectProjection()
 
 
 def _literal_dispatch_value(node: ast.AST) -> object | None:
@@ -2054,33 +2117,41 @@ def _builder_call_shape(
     class_name: str | None,
     function_name: str | None,
 ) -> BuilderCallShape | None:
-    if not isinstance(node, ast.Call):
+    context = (
+        Maybe.of(as_ast(node, ast.Call))
+        .filter(lambda _call: function_name is not None)
+        .combine(
+            lambda call: _terminal_name(call.func),
+            lambda call, callee_name: _BuilderCallContext(
+                call=call,
+                callee_name=callee_name,
+                keyword_pairs=tuple(
+                    (kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
+                ),
+            ),
+        )
+        .filter(lambda builder_context: bool(builder_context.keyword_pairs))
+        .unwrap_or_none()
+    )
+    if context is None:
         return None
-    if function_name is None:
-        return None
-    keyword_pairs = [(kw.arg, kw.value) for kw in node.keywords if kw.arg is not None]
-    if not keyword_pairs:
-        return None
-    callee_name = _terminal_name(node.func)
-    if callee_name is None:
-        return None
-    keyword_names = tuple(name for name, _ in keyword_pairs)
+    keyword_names = tuple(name for name, _ in context.keyword_pairs)
     value_fingerprint = tuple(
-        (_fingerprint_builder_value(value) for _, value in keyword_pairs)
+        (_fingerprint_builder_value(value) for _, value in context.keyword_pairs)
     )
     source_roots = set()
-    for _, value in keyword_pairs:
-        source_roots.update(_root_names(value))
+    for _, value in context.keyword_pairs:
+        source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
-        (name for name, value in keyword_pairs if _terminal_name(value) == name)
+        (name for name, value in context.keyword_pairs if _terminal_name(value) == name)
     )
     return BuilderCallShape(
         file_path=str(parsed_module.path),
         class_name=class_name,
         function_name=function_name,
-        lineno=node.lineno,
-        callee_name=callee_name,
+        lineno=context.call.lineno,
+        callee_name=context.callee_name,
         keyword_names=keyword_names,
         value_fingerprint=value_fingerprint,
         source_arity=len(source_roots),
@@ -2095,41 +2166,69 @@ def _export_dict_shape(
     class_name: str | None,
     function_name: str | None,
 ) -> ExportDictShape | None:
-    if not isinstance(node, ast.Dict):
-        return None
-    if function_name is None:
-        return None
-    key_pairs = [
-        (key.value, value)
-        for key, value in zip(node.keys, node.values, strict=False)
-        if isinstance(key, ast.Constant) and isinstance(key.value, str)
-    ]
-    if len(key_pairs) < 3 or len(key_pairs) != len(node.keys):
-        return None
-    key_names = tuple(name for name, _ in key_pairs)
-    value_fingerprint = tuple(
-        (_fingerprint_builder_value(value) for _, value in key_pairs)
+    context = (
+        Maybe.of(as_ast(node, ast.Dict))
+        .filter(lambda _dict: function_name is not None)
+        .map(
+            lambda dict_node: _ExportDictContext(
+                dict_node=dict_node,
+                key_pairs=tuple(
+                    (key.value, value)
+                    for key, value in zip(
+                        dict_node.keys, dict_node.values, strict=False
+                    )
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                ),
+            )
+        )
+        .filter(
+            lambda export_context: len(export_context.key_pairs) >= 3
+            and len(export_context.key_pairs) == len(export_context.dict_node.keys)
+        )
+        .unwrap_or_none()
     )
-    source_roots = set()
-    for _, value in key_pairs:
-        source_roots.update(_root_names(value))
-    if not source_roots:
-        return None
-    source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
-    identity_field_names = tuple(
-        (name for name, value in key_pairs if _terminal_name(value) == name)
+    return (
+        Maybe.of(context)
+        .combine(
+            lambda export_context: _source_roots_for_value_pairs(
+                export_context.key_pairs
+            ),
+            lambda export_context, source_roots: ExportDictShape(
+                file_path=str(parsed_module.path),
+                class_name=class_name,
+                function_name=function_name,
+                lineno=export_context.dict_node.lineno,
+                key_names=tuple(name for name, _ in export_context.key_pairs),
+                value_fingerprint=tuple(
+                    (
+                        _fingerprint_builder_value(value)
+                        for _, value in export_context.key_pairs
+                    )
+                ),
+                source_arity=len(source_roots),
+                source_name=(
+                    next(iter(source_roots)) if len(source_roots) == 1 else None
+                ),
+                identity_field_names=tuple(
+                    (
+                        name
+                        for name, value in export_context.key_pairs
+                        if _terminal_name(value) == name
+                    )
+                ),
+            ),
+        )
+        .unwrap_or_none()
     )
-    return ExportDictShape(
-        file_path=str(parsed_module.path),
-        class_name=class_name,
-        function_name=function_name,
-        lineno=node.lineno,
-        key_names=key_names,
-        value_fingerprint=value_fingerprint,
-        source_arity=len(source_roots),
-        source_name=source_name,
-        identity_field_names=identity_field_names,
-    )
+
+
+def _source_roots_for_value_pairs(
+    value_pairs: tuple[tuple[str, ast.AST], ...],
+) -> set[str] | None:
+    source_roots: set[str] = set()
+    for _, value in value_pairs:
+        source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
+    return source_roots or None
 
 
 class _BuilderValueNormalizer(ast.NodeTransformer):
@@ -2154,29 +2253,33 @@ def _fingerprint_builder_value(node: ast.AST) -> str:
     return ast.dump(normalized, include_attributes=False)
 
 
-def _root_names(node: ast.AST) -> set[str]:
-    roots: set[str] = set()
+class RootNameProjection:
+    def root_names(self, node: ast.AST) -> set[str]:
+        roots: set[str] = set()
 
-    class Visitor(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:
-            for argument in node.args:
-                self.visit(argument)
-            for keyword in node.keywords:
-                self.visit(keyword.value)
+        class Visitor(ast.NodeVisitor):
+            def visit_Call(self, node: ast.Call) -> None:
+                for argument in node.args:
+                    self.visit(argument)
+                for keyword in node.keywords:
+                    self.visit(keyword.value)
 
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            current: ast.AST = node
-            while isinstance(current, ast.Attribute):
-                current = current.value
-            if isinstance(current, ast.Name):
-                roots.add(current.id)
-            self.generic_visit(node)
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                current: ast.AST = node
+                while isinstance(current, ast.Attribute):
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    roots.add(current.id)
+                self.generic_visit(node)
 
-        def visit_Name(self, node: ast.Name) -> None:
-            roots.add(node.id)
+            def visit_Name(self, node: ast.Name) -> None:
+                roots.add(node.id)
 
-    Visitor().visit(node)
-    return roots
+        Visitor().visit(node)
+        return roots
+
+
+ROOT_NAME_PROJECTION = RootNameProjection()
 
 
 def _registration_key_fingerprint(node: ast.AST) -> str | None:

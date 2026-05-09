@@ -134,33 +134,39 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         return tuple(args)
 
 
-def _surface_names(
-    nodes: Iterable[ast.expr],
-    *,
-    expand_calls: bool = False,
-    expand_subscripts: bool = False,
-) -> tuple[str, ...]:
-    names = []
-    for node in nodes:
-        if isinstance(node, ast.Name):
-            names.append(node.id)
-        elif isinstance(node, ast.Attribute):
-            names.append(node.attr)
-        elif expand_calls and isinstance(node, ast.Call):
-            names.extend(_surface_names((node.func,), expand_calls=expand_calls))
-        elif expand_subscripts and isinstance(node, ast.Subscript):
-            names.extend(
-                _surface_names((node.value,), expand_subscripts=expand_subscripts)
-            )
-    return tuple(names)
+@dataclass(frozen=True)
+class SurfaceNameProjection:
+    def project(
+        self,
+        nodes: Iterable[ast.expr],
+        *,
+        expand_calls: bool = False,
+        expand_subscripts: bool = False,
+    ) -> tuple[str, ...]:
+        names = []
+        for node in nodes:
+            if isinstance(node, ast.Name):
+                names.append(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.append(node.attr)
+            elif expand_calls and isinstance(node, ast.Call):
+                names.extend(self.project((node.func,), expand_calls=expand_calls))
+            elif expand_subscripts and isinstance(node, ast.Subscript):
+                names.extend(
+                    self.project((node.value,), expand_subscripts=expand_subscripts)
+                )
+        return tuple(names)
+
+
+SURFACE_NAME_PROJECTION = SurfaceNameProjection()
 
 
 def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:
-    return _surface_names(decorators, expand_calls=True)
+    return SURFACE_NAME_PROJECTION.project(decorators, expand_calls=True)
 
 
 def _base_names(bases: Iterable[ast.expr]) -> tuple[str, ...]:
-    return _surface_names(bases, expand_subscripts=True)
+    return SURFACE_NAME_PROJECTION.project(bases, expand_subscripts=True)
 
 
 def _file_digest(module: ParsedModule) -> SourceFileDigest:
