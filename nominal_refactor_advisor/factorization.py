@@ -16,7 +16,7 @@ from itertools import combinations
 from typing import Generic, Hashable, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
-from .descriptor_algebra import AliasProperty
+from .descriptor_algebra import AliasProperty, CollectionAttributeProjection
 from .record_algebra import materialize_product_records, product_record_spec
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
@@ -658,10 +658,9 @@ class RefactorTrajectory(CompressibleExplanation):
     moves: tuple[RefactorMove, ...]
     initial_capabilities: frozenset[Hashable] = frozenset()
     predicted_states: tuple[RefactorState, ...] = ()
-
-    @property
-    def explanation_key(self) -> Hashable:
-        return tuple((move.explanation_key for move in self.moves))
+    explanation_key = CollectionAttributeProjection[Hashable](
+        "moves", "explanation_key"
+    )
 
     @property
     def covered_objects(self) -> frozenset[Hashable]:
@@ -725,9 +724,7 @@ class RefactorTrajectory(CompressibleExplanation):
     def temporary_debt(self) -> int:
         return sum((move.temporary_debt for move in self.moves))
 
-    @property
-    def move_descriptions(self) -> tuple[str, ...]:
-        return tuple((move.move_description for move in self.moves))
+    move_descriptions = CollectionAttributeProjection[str]("moves", "move_description")
 
     @property
     def debt_justifications(self) -> tuple[str, ...]:

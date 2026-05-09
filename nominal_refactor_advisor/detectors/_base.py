@@ -48,7 +48,7 @@ from ..constructor_algebra import (
     ConstructorVariantCatalog,
     ConstructorVariantSpec,
 )
-from ..descriptor_algebra import AliasProperty
+from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
 from ..observation_shapes import LineSymbolObservationMixin
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from ..semantic_match import (
@@ -9478,7 +9478,8 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
 _materialize_product_records((
     _product_record_spec('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool'),
     _product_record_spec('ManualFamilyRosterCandidate', 'owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str', 'LineWitnessCandidate'),
-    _product_record_spec('SemanticInheritanceFamilySSOTCandidate', 'concrete_class_names: tuple[str, ...]; semantic_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; key_attr_names: tuple[str, ...]; suggested_key_attr_name: str; line_count: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
+    _product_record_spec('SemanticInheritanceFamilySSOTCandidate', 'concrete_class_names: tuple[str, ...]; semantic_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; key_attr_names: tuple[str, ...]; suggested_key_attr_name: str; membership_object_count: int; derived_projection_count: int; rent_margin: int; line_count: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
+    _product_record_spec('AutoRegisterMetaRentCandidate', 'concrete_class_names: tuple[str, ...]; dynamic_factory_symbols: tuple[str, ...]; registry_key_attr_name: str | None; key_extractor_name: str | None; behavior_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; registry_projection_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_rent_signals: tuple[str, ...]; membership_object_count: int; derived_projection_count: int; rent_margin: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
 ))
 # fmt: on
 
@@ -9778,14 +9779,8 @@ class SiblingRoleHelperSymmetryCandidate:
     owner_name: str
     shared_tokens: tuple[str, ...]
     methods: tuple[SiblingRoleHelperMethod, ...]
-
-    @property
-    def role_tokens(self) -> tuple[str, ...]:
-        return tuple((method.role_token for method in self.methods))
-
-    @property
-    def method_names(self) -> tuple[str, ...]:
-        return tuple((method.method_name for method in self.methods))
+    role_tokens = CollectionAttributeProjection[str]("methods", "role_token")
+    method_names = CollectionAttributeProjection[str]("methods", "method_name")
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -10525,6 +10520,7 @@ _materialize_product_records((
     _product_record_spec('ManualSortedTupleExpressionCandidate', 'context_kind: str', 'ManualSortedTupleReturnCandidate'),
     _product_record_spec('SimplePropertyAliasClassCandidate', 'alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
     _product_record_spec('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', 'ClassMethodLineWitnessCandidate'),
+    _product_record_spec('CollectionProjectionPropertyFamilyCandidate', 'property_names: tuple[str, ...]; line_numbers: tuple[int, ...]; collection_name: str; projected_attribute_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'ClassLineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")}),
     _product_record_spec('SourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_attribute_name: str; symbol_attribute_name: str', 'ClassMethodLineWitnessCandidate'),
     _product_record_spec('ZippedSourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_numbers_attribute_name: str; symbol_names_attribute_name: str; line_count: int', 'ClassMethodLineWitnessCandidate'),
     _product_record_spec('PrivateHelperShadowCandidate', 'private_name: str; public_name: str; public_file_path: str; public_line: int', 'EvidenceLocationsWitnessCandidate'),
@@ -10539,6 +10535,7 @@ _materialize_product_records((
     _product_record_spec('OptionRecordQuotientCandidate', 'class_names: tuple[str, ...]; line_numbers: tuple[int, ...]; field_names: tuple[str, ...]; default_names: tuple[str, ...]; common_base_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "class_names")}),
     _product_record_spec('IdentityKeywordForwardingShellCandidate', 'callee_name: str; forwarded_keyword_names: tuple[str, ...]; line_count: int', 'FunctionLineWitnessCandidate'),
     _product_record_spec('OptionalParameterBranchCandidate', 'parameter_name: str; annotation_text: str; observed_attribute_names: tuple[str, ...]; none_check_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
+    _product_record_spec('AllMissingAxisPredicateCandidate', 'predicate_names: tuple[str, ...]; append_target_name: str; signal_name: str; line_count: int', 'FunctionLineWitnessCandidate'),
     _product_record_spec('BridgeAxisDispatchFamilyCandidate', 'axis_expression: str; literal_cases: tuple[str, ...]; function_names: tuple[str, ...]; operation_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('ArrayProtocolProbeBridgeCandidate', 'function_names: tuple[str, ...]; attribute_names: tuple[str, ...]; line_numbers: tuple[int, ...]; probe_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
     _product_record_spec('LifecycleStageSequenceCandidate', 'function_names: tuple[str, ...]; stage_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),

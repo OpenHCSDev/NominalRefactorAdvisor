@@ -4751,6 +4751,10 @@ def test_detects_semantic_inheritance_family_missing_membership_ssot(
     assert "CsvExporter" in finding.summary
     assert "JsonExporter" in finding.summary
     assert "metaclass membership SSOT" in finding.summary
+    assert "AutoRegisterMeta pays rent" in finding.summary
+    assert "membership object" in finding.summary
+    assert "derived registry projection" in finding.summary
+    assert "Rent proof:" in (finding.codemod_patch or "")
     assert "format" in finding.summary
     assert "AutoRegisterMeta" in (finding.scaffold or "")
     assert "__registry__" in (finding.codemod_patch or "")
@@ -4770,6 +4774,72 @@ def test_ignores_semantic_inheritance_family_with_autoregister_meta(
         finding.detector_id == "semantic_inheritance_family_ssot"
         for finding in analyze_path(tmp_path)
     )
+
+
+def test_detects_autoregister_meta_family_without_rent_proof(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Marker(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "kind"\n\n\nclass AlphaMarker(Marker):\n    kind = "alpha"\n\n\nclass BetaMarker(Marker):\n    kind = "beta"\n',
+    )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "autoregister_meta_under_rented"
+    )
+    assert "Marker" in finding.summary
+    assert "behavior_contract" in finding.summary
+    assert "explicit_registry_projection_or_consumer" in finding.summary
+    assert "AutoRegisterMeta" in finding.summary
+    assert "Rent margin" in finding.summary
+    assert finding.compression_certificate is not None
+
+
+def test_ignores_autoregister_meta_family_with_computed_rent_proof(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "format"\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_ignores_autoregister_meta_family_with_dynamic_factory_rent_proof(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass GeneratedStep(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "step_name"\n\n    @abstractmethod\n    def run(self, value): ...\n\n\ndef materialize_steps(declarations):\n    for step_name, transform in declarations:\n        AutoRegisterMeta(step_name, (GeneratedStep,), {"step_name": step_name, "run": transform})\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_detects_all_missing_axis_predicate(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\n\ndef missing_signals(behavior_axis, abstract_axis, projection_axis, consumer_axis):\n    missing = []\n    if (\n        not behavior_axis\n        and not abstract_axis\n        and not projection_axis\n        and not consumer_axis\n    ):\n        missing.append("projection_or_consumer")\n    return tuple(missing)\n',
+    )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "all_missing_axis_predicate"
+    )
+    assert "missing_signals" in finding.summary
+    assert "behavior_axis" in finding.summary
+    assert "projection_or_consumer" in finding.summary
+    assert "not any" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_concrete_subclass_roster_across_modules(tmp_path: Path) -> None:
@@ -5432,7 +5502,7 @@ def test_detects_unreferenced_private_function(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Cleanup:\n    def run(self, item):\n        return self._live(item)\n\n    def _live(self, item):\n        return item\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n",
+        "\ndef _stale_export(rows):\n    normalized = []\n    for row in rows:\n        normalized.append(str(row).strip())\n    if not normalized:\n        return []\n    return [\n        value.upper()\n        for value in normalized\n        if value\n    ]\n",
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -5443,9 +5513,29 @@ def test_detects_unreferenced_private_function(tmp_path: Path) -> None:
         )
     )
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "Cleanup._stale_export" in finding.summary
+    assert "_stale_export" in finding.summary
     assert "no in-module references" in finding.summary
     assert "registry, callback table, or public facade" in (finding.scaffold or "")
+
+
+def test_detects_dangling_private_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Cleanup:\n    def run(self, item):\n        return item\n\n    def _stale_export(self, rows):\n        normalized = []\n        for row in rows:\n            normalized.append(str(row).strip())\n        if not normalized:\n            return []\n        return [\n            value.upper()\n            for value in normalized\n            if value\n        ]\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "dangling_private_method"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "Cleanup._stale_export" in finding.summary
+    assert "no repository-visible method reference" in finding.summary
+    assert "ABC hook" in (finding.scaffold or "")
 
 
 def test_keeps_referenced_private_function(tmp_path: Path) -> None:
@@ -5460,6 +5550,9 @@ def test_keeps_referenced_private_function(tmp_path: Path) -> None:
             finding.detector_id == UNREFERENCED_PRIVATE_FUNCTION_DETECTOR_ID
             for finding in findings
         )
+    )
+    assert not any(
+        (finding.detector_id == "dangling_private_method" for finding in findings)
     )
 
 
@@ -5802,6 +5895,25 @@ def test_detects_projection_property_family(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
     assert "ExportContext" in finding.summary
     assert "PathProjection" in (finding.scaffold or "")
+
+
+def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass Member:\n    module_name: str\n    class_name: str\n\n\n@dataclass(frozen=True)\nclass ModuleFamilyCatalog:\n    members: tuple[Member, ...]\n\n    @property\n    def class_names(self) -> tuple[str, ...]:\n        return tuple(member.class_name for member in self.members)\n\n    @property\n    def module_names(self) -> tuple[str, ...]:\n        return tuple(member.module_name for member in self.members)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "collection_projection_property_family"
+        )
+    )
+    assert finding.pattern_id == PatternId.DESCRIPTOR_DERIVED_VIEW
+    assert "ModuleFamilyCatalog" in finding.summary
+    assert "self.members" in finding.summary
+    assert "CollectionAttributeProjection" in (finding.scaffold or "")
 
 
 def test_detects_live_template_payload_family(tmp_path: Path) -> None:

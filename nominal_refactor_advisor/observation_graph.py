@@ -13,6 +13,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 from .collection_algebra import sorted_tuple
+from .descriptor_algebra import CollectionAttributeProjection
 from .export_tools import PublicExportPolicy, derive_public_exports
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from metaclass_registry import AutoRegisterMeta
@@ -152,14 +153,8 @@ class ObservationCohort:
     execution_level: StructuralExecutionLevel
     nominal_witnesses: tuple[str, ...]
     fibers: tuple[ObservationFiber, ...]
-
-    @property
-    def observed_names(self) -> tuple[str, ...]:
-        return tuple((fiber.observed_name for fiber in self.fibers))
-
-    @property
-    def fiber_keys(self) -> tuple[str, ...]:
-        return tuple((fiber.fiber_key for fiber in self.fibers))
+    observed_names = CollectionAttributeProjection[str]("fibers", "observed_name")
+    fiber_keys = CollectionAttributeProjection[str]("fibers", "fiber_key")
 
 
 @dataclass(frozen=True)

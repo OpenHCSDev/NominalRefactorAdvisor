@@ -829,6 +829,133 @@ declare_candidate_rule_detector(
 )
 
 
+def _collection_projection_property_shape(
+    returned: ast.AST,
+) -> tuple[str, str] | None:
+    if not (
+        isinstance(returned, ast.Call)
+        and name_id(returned.func) in {"tuple", "list", "set", "frozenset"}
+        and len(returned.args) == 1
+        and not returned.keywords
+    ):
+        return None
+    generator = as_ast(returned.args[0], ast.GeneratorExp)
+    if generator is None or len(generator.generators) != 1:
+        return None
+    comprehension = generator.generators[0]
+    if comprehension.ifs:
+        return None
+    target_name = name_id(comprehension.target)
+    collection_name = _is_self_attribute(comprehension.iter)
+    projected = as_ast(generator.elt, ast.Attribute)
+    if (
+        target_name is None
+        or collection_name is None
+        or projected is None
+        or name_id(projected.value) != target_name
+    ):
+        return None
+    return collection_name, projected.attr
+
+
+def _is_property_method(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any(
+        (
+            _ast_terminal_name(decorator) == "property"
+            for decorator in method.decorator_list
+        )
+    )
+
+
+def _collection_projection_property_family_candidates(
+    module: ParsedModule,
+) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
+    candidates: list[CollectionProjectionPropertyFamilyCandidate] = []
+    for class_node in (
+        node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)
+    ):
+        properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
+        for statement in _iter_class_methods(class_node):
+            if not _is_property_method(statement):
+                continue
+            body = _trim_docstring_body(statement.body)
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            shape = _collection_projection_property_shape(body[0].value)
+            if shape is None:
+                continue
+            collection_name, projected_attribute_name = shape
+            properties.append((statement, collection_name, projected_attribute_name))
+        grouped: dict[str, list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]] = (
+            defaultdict(list)
+        )
+        for statement, collection_name, projected_attribute_name in properties:
+            grouped[collection_name].append((statement, projected_attribute_name))
+        for collection_name, grouped_properties in grouped.items():
+            if len(grouped_properties) < 2:
+                continue
+            ordered = sorted_tuple(grouped_properties, key=lambda item: item[0].lineno)
+            candidates.append(
+                CollectionProjectionPropertyFamilyCandidate(
+                    file_path=str(module.path),
+                    line=class_node.lineno,
+                    class_name=class_node.name,
+                    property_names=tuple((statement.name for statement, _ in ordered)),
+                    line_numbers=tuple((statement.lineno for statement, _ in ordered)),
+                    collection_name=collection_name,
+                    projected_attribute_names=tuple(
+                        (attribute_name for _, attribute_name in ordered)
+                    ),
+                    line_count=(class_node.end_lineno or class_node.lineno)
+                    - class_node.lineno
+                    + 1,
+                )
+            )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.class_name)
+    )
+
+
+declare_candidate_rule_detector(
+    CollectionProjectionPropertyFamilyCandidate,
+    high_confidence_certified_spec(
+        PatternId.DESCRIPTOR_DERIVED_VIEW,
+        "Collection projection properties should be derived descriptors",
+        "Sibling properties that only map one owned collection to member attributes are descriptor-derived views. Repeating `tuple(item.attr for item in self.collection)` per property makes each projected attribute look like behavior when the actual semantic object is the collection projection relation.",
+        "single collection-projection descriptor parameterized by collection and member attribute",
+        "same class repeats collection projection properties over one owned collection",
+        _AUTHORITATIVE_PROVENANCE_UNIT_RATE_COHERENCE_CAPABILITY_TAGS,
+        _PROJECTION_HELPER_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` repeats collection projection properties "
+        f"{candidate.property_names} over `self.{candidate.collection_name}` "
+        f"for member attributes {candidate.projected_attribute_names}."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=lambda candidate: (
+        "@dataclass(frozen=True)\n"
+        "class CollectionAttributeProjection:\n"
+        "    collection_attr: str\n"
+        "    member_attr: str\n"
+        "    def __get__(self, instance, owner=None): ..."
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace repeated collection projection @property methods with one "
+        "CollectionAttributeProjection descriptor; keep only collection and "
+        "member attribute names as class-level data."
+    ),
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.property_names),
+        mapping_name=f"{candidate.class_name}.{candidate.collection_name}",
+        field_names=candidate.projected_attribute_names,
+    ),
+    candidate_collector=_collection_projection_property_family_candidates,
+)
+
+
 @dataclass(frozen=True)
 class LiveTemplatePayloadFamilyCandidate(ClassLineWitnessCandidate):
     method_names: tuple[str, ...]
@@ -2306,6 +2433,41 @@ class RepeatedGuardValidatorFamilyDetector(
             ),
             codemod_patch=(
                 "# Collapse these sibling boolean helpers into one authoritative case-policy family or one declarative rule table.\n# Keep shared fail-fast guards in one concrete validator method, and leave only case-specific predicates or handle sets per case."
+            ),
+        )
+
+
+class AllMissingAxisPredicateDetector(
+    ConfiguredModuleCollectorCandidateDetector[AllMissingAxisPredicateCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "All-missing axis predicates should be named axis authorities",
+        "A raw conjunction of several `not axis` clauses is a derived predicate over a semantic axis bundle. Spelling that bundle inline makes the relation easy to fork and hard to audit. The normal form is a named tuple, policy, or context method that owns the axis set and lets the branch ask the derived question once.",
+        "one named axis bundle or policy predicate deriving the all-missing condition",
+        "three or more sibling axes are checked through an inline all-negative boolean conjunction before appending a missing signal",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, predicate_candidate: AllMissingAxisPredicateCandidate
+    ) -> RefactorFinding:
+        axis_names = ", ".join(predicate_candidate.predicate_names)
+        return self.build_finding(
+            (
+                f"`{predicate_candidate.function_name}` checks all-missing axes "
+                f"{axis_names} inline before appending `{predicate_candidate.signal_name}`."
+            ),
+            (predicate_candidate.evidence,),
+            scaffold=(
+                "rent_axes = (behavior_axis, abstract_axis, projection_axis, consumer_axis)\n"
+                "if not any(rent_axes):\n"
+                '    missing.append("derived_signal")'
+            ),
+            codemod_patch=(
+                f"# Name the axis bundle in `{predicate_candidate.function_name}` before testing it.\n"
+                f"# Replace the raw conjunction over {predicate_candidate.predicate_names} with `not any(axis_bundle)` "
+                f"or a policy method that owns the same axes, then append `{predicate_candidate.signal_name}`."
             ),
         )
 

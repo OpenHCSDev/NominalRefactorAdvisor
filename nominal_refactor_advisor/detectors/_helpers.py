@@ -3207,11 +3207,11 @@ def _semantic_inheritance_ssot_certificate(
     abstract_method_names: tuple[str, ...],
     suggested_key_attr_name: str,
 ) -> CompressionCertificate:
-    leaf_membership_objects = len(semantic_method_names) + 3
     return CompressionCertificate.from_object_family(
-        manual_object_count=(
-            len(concrete_class_names) * leaf_membership_objects
-            + len(abstract_method_names)
+        manual_object_count=_semantic_inheritance_membership_object_count(
+            concrete_class_names,
+            semantic_method_names=semantic_method_names,
+            abstract_method_names=abstract_method_names,
         ),
         replacement_shape=ObjectFamilyShape(
             shared_objects=("autoregister_lineage_authority", "semantic_family_abc"),
@@ -3225,6 +3225,38 @@ def _semantic_inheritance_ssot_certificate(
         residual_object_count=len(concrete_class_names),
         independent_source_count=len(concrete_class_names),
     )
+
+
+def _semantic_inheritance_derived_projection_count(
+    *,
+    semantic_method_names: tuple[str, ...],
+    key_attr_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+) -> int:
+    projections = 2
+    if key_attr_names:
+        projections += 1
+    if abstract_method_names:
+        projections += 1
+    if semantic_method_names:
+        projections += 1
+    return projections
+
+
+def _semantic_inheritance_membership_object_count(
+    concrete_class_names: tuple[str, ...],
+    *,
+    semantic_method_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+) -> int:
+    leaf_membership_objects = len(semantic_method_names) + 3
+    return len(concrete_class_names) * leaf_membership_objects + len(
+        abstract_method_names
+    )
+
+
+def _semantic_inheritance_rent_margin(certificate: CompressionCertificate) -> int:
+    return certificate.certified_description_length_savings
 
 
 def _semantic_inheritance_family_ssot_candidates(
@@ -3277,6 +3309,11 @@ def _semantic_inheritance_family_ssot_candidates(
         )
         if not certificate.pays_rent:
             continue
+        derived_projection_count = _semantic_inheritance_derived_projection_count(
+            semantic_method_names=semantic_method_names,
+            key_attr_names=key_attr_names,
+            abstract_method_names=abstract_method_names,
+        )
         candidates.append(
             SemanticInheritanceFamilySSOTCandidate(
                 file_path=indexed_class.file_path,
@@ -3287,9 +3324,403 @@ def _semantic_inheritance_family_ssot_candidates(
                 abstract_method_names=abstract_method_names,
                 key_attr_names=key_attr_names,
                 suggested_key_attr_name=suggested_key_attr_name,
+                membership_object_count=_semantic_inheritance_membership_object_count(
+                    concrete_class_names,
+                    semantic_method_names=semantic_method_names,
+                    abstract_method_names=abstract_method_names,
+                ),
+                derived_projection_count=derived_projection_count,
+                rent_margin=_semantic_inheritance_rent_margin(certificate),
                 line_count=(indexed_class.node.end_lineno or indexed_class.node.lineno)
                 - indexed_class.node.lineno
                 + 1,
+                compression_certificate=certificate,
+            )
+        )
+    return tuple(candidates)
+
+
+def _autoregister_registry_key_attr_name(node: ast.ClassDef) -> str | None:
+    return _constant_string(_class_direct_assignments(node).get("__registry_key__"))
+
+
+def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
+    extractor = _class_direct_assignments(node).get("__key_extractor__")
+    if extractor is None:
+        return None
+    return ast.unparse(extractor)
+
+
+def _references_dunder_registry(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any(
+        (
+            isinstance(node, ast.Attribute)
+            and node.attr in {"__registry__", "_registry", "registry"}
+            for node in _walk_nodes(method)
+        )
+    )
+
+
+def _autoregister_registry_projection_names(node: ast.ClassDef) -> tuple[str, ...]:
+    return tuple(
+        (
+            method.name
+            for method in _iter_class_methods(node)
+            if _references_dunder_registry(method)
+        )
+    )
+
+
+def _autoregister_behavior_method_names(
+    indexed_class: IndexedClass, concrete_descendants: tuple[IndexedClass, ...]
+) -> tuple[str, ...]:
+    registry_projection_names = set(
+        _autoregister_registry_projection_names(indexed_class.node)
+    )
+    return sorted_tuple(
+        {
+            method.name
+            for class_node in (
+                indexed_class.node,
+                *(descendant.node for descendant in concrete_descendants),
+            )
+            for method in _iter_class_methods(class_node)
+            if not method.name.startswith("__")
+            and method.name not in registry_projection_names
+        }
+    )
+
+
+def _autoregister_membership_object_count(
+    *,
+    concrete_class_names: tuple[str, ...],
+    dynamic_factory_symbols: tuple[str, ...],
+    behavior_method_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+    registry_projection_names: tuple[str, ...],
+    consumer_symbols: tuple[str, ...],
+) -> int:
+    leaf_objects = max(1, len(behavior_method_names)) + 2
+    leaf_axis_count = len(concrete_class_names) + len(dynamic_factory_symbols)
+    root_objects = (
+        len(abstract_method_names)
+        + len(registry_projection_names)
+        + len(consumer_symbols)
+        + 2
+    )
+    return leaf_axis_count * leaf_objects + root_objects
+
+
+def _autoregister_derived_projection_count(
+    *,
+    registry_key_attr_name: str | None,
+    key_extractor_name: str | None,
+    behavior_method_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+    registry_projection_names: tuple[str, ...],
+    consumer_symbols: tuple[str, ...],
+) -> int:
+    projection_count = 1
+    if registry_key_attr_name is not None:
+        projection_count += 1
+    if key_extractor_name is not None:
+        projection_count += 1
+    if behavior_method_names:
+        projection_count += 1
+    if abstract_method_names:
+        projection_count += 1
+    projection_count += len(registry_projection_names)
+    if consumer_symbols:
+        projection_count += 1
+    return projection_count
+
+
+def _autoregister_rent_certificate(
+    *,
+    manual_object_count: int,
+    class_name: str,
+    registry_axis_name: str,
+    semantic_axis_names: tuple[str, ...],
+    residual_object_count: int,
+    independent_source_count: int,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=manual_object_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("autoregister_meta", "semantic_family_root"),
+            per_axis_objects=("registered_leaf_key",),
+        ),
+        semantic_axes=(
+            class_name,
+            registry_axis_name,
+            *semantic_axis_names,
+        ),
+        residual_object_count=residual_object_count,
+        independent_source_count=independent_source_count,
+    )
+
+
+def _function_calls_autoregister_meta(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    return any(
+        (
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == "AutoRegisterMeta")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "AutoRegisterMeta"
+                )
+            )
+            for node in _walk_nodes(function)
+        )
+    )
+
+
+def _node_mentions_any_symbol(node: ast.AST, symbol_names: frozenset[str]) -> bool:
+    for child in _walk_nodes(node):
+        if isinstance(child, ast.Name) and child.id in symbol_names:
+            return True
+        if isinstance(child, ast.Constant) and child.value in symbol_names:
+            return True
+        if isinstance(child, ast.Attribute) and child.attr in symbol_names:
+            return True
+    return False
+
+
+def _autoregister_dynamic_factory_symbols(
+    modules: list[ParsedModule],
+    *,
+    family_name: str,
+    concrete_class_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    symbol_names = frozenset((family_name, *concrete_class_names))
+    return sorted_tuple(
+        {
+            qualname
+            for module in modules
+            for qualname, function in _iter_named_functions(module)
+            if _function_calls_autoregister_meta(function)
+            and _node_mentions_any_symbol(function, symbol_names)
+        }
+    )
+
+
+def _autoregister_missing_rent_signals(
+    *,
+    concrete_class_names: tuple[str, ...],
+    dynamic_factory_symbols: tuple[str, ...],
+    registry_key_attr_name: str | None,
+    key_extractor_name: str | None,
+    behavior_method_names: tuple[str, ...],
+    abstract_method_names: tuple[str, ...],
+    registry_projection_names: tuple[str, ...],
+    consumer_symbols: tuple[str, ...],
+    min_leaf_count: int,
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if not dynamic_factory_symbols and len(concrete_class_names) < min_leaf_count:
+        missing.append("registered_leaf_axis")
+    if registry_key_attr_name is None and key_extractor_name is None:
+        missing.append("stable_key_axis")
+    if not behavior_method_names and not abstract_method_names:
+        missing.append("behavior_contract")
+    projection_rent_axes = (
+        behavior_method_names,
+        abstract_method_names,
+        registry_projection_names,
+        consumer_symbols,
+    )
+    if not any(projection_rent_axes):
+        missing.append("explicit_registry_projection_or_consumer")
+    return tuple(missing)
+
+
+def _all_missing_axis_predicate_names(test: ast.AST) -> tuple[str, ...]:
+    if not isinstance(test, ast.BoolOp) or not isinstance(test.op, ast.And):
+        return ()
+    predicate_names: list[str] = []
+    for value in test.values:
+        if not (
+            isinstance(value, ast.UnaryOp)
+            and isinstance(value.op, ast.Not)
+            and isinstance(value.operand, ast.Name)
+        ):
+            return ()
+        predicate_names.append(value.operand.id)
+    return tuple(predicate_names)
+
+
+def _single_missing_signal_append(
+    statements: list[ast.stmt],
+) -> tuple[str, str] | None:
+    if len(statements) != 1:
+        return None
+    statement = statements[0]
+    if not (
+        isinstance(statement, ast.Expr)
+        and isinstance(statement.value, ast.Call)
+        and isinstance(statement.value.func, ast.Attribute)
+        and statement.value.func.attr == "append"
+        and isinstance(statement.value.func.value, ast.Name)
+    ):
+        return None
+    signal_name = _constant_string(single_item(tuple(statement.value.args)))
+    if signal_name is None or statement.value.keywords:
+        return None
+    return statement.value.func.value.id, signal_name
+
+
+def _all_missing_axis_predicate_for_if(
+    module: ParsedModule, node: ast.If, function_name: str
+) -> tuple[AllMissingAxisPredicateCandidate, ...]:
+    predicate_names = _all_missing_axis_predicate_names(node.test)
+    append_shape = _single_missing_signal_append(node.body)
+    if len(predicate_names) < 3 or append_shape is None:
+        return ()
+    append_target_name, signal_name = append_shape
+    return (
+        AllMissingAxisPredicateCandidate(
+            file_path=str(module.path),
+            line=node.lineno,
+            function_name=function_name,
+            predicate_names=predicate_names,
+            append_target_name=append_target_name,
+            signal_name=signal_name,
+            line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+        ),
+    )
+
+
+def _all_missing_axis_predicates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+) -> tuple[AllMissingAxisPredicateCandidate, ...]:
+    return _collect_ast_node_candidates(
+        module, function, ast.If, _all_missing_axis_predicate_for_if, qualname
+    )
+
+
+def _all_missing_axis_predicate_candidates(
+    module: ParsedModule, config: DetectorConfig
+) -> tuple[AllMissingAxisPredicateCandidate, ...]:
+    del config
+    return _collect_named_function_candidates(
+        module, _all_missing_axis_predicates_for_function
+    )
+
+
+def _autoregister_meta_rent_candidates(
+    modules: list[ParsedModule], config: DetectorConfig
+) -> tuple[AutoRegisterMetaRentCandidate, ...]:
+    class_index = build_class_family_index(modules)
+    min_leaf_count = max(2, config.min_registration_sites)
+    candidates: list[AutoRegisterMetaRentCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if indexed_class.file_path.startswith("tests/") or "/tests/" in (
+            indexed_class.file_path
+        ):
+            continue
+        node = indexed_class.node
+        if not _declares_autoregister_meta(node):
+            continue
+        concrete_descendants = tuple(
+            descendant
+            for descendant in _indexed_descendant_classes(
+                class_index, indexed_class.symbol
+            )
+            if not _is_abstract_class(descendant.node)
+        )
+        concrete_class_names = _indexed_class_display_names(
+            concrete_descendants, class_index
+        )
+        family_name = _indexed_class_display_name(indexed_class, class_index)
+        dynamic_factory_symbols = _autoregister_dynamic_factory_symbols(
+            modules,
+            family_name=family_name,
+            concrete_class_names=concrete_class_names,
+        )
+        registry_key_attr_name = _autoregister_registry_key_attr_name(node)
+        key_extractor_name = _autoregister_key_extractor_name(node)
+        registry_projection_names = _autoregister_registry_projection_names(node)
+        consumer_symbols = _registry_consumer_symbols(
+            modules,
+            family_name=family_name,
+            lookup_method_names=registry_projection_names,
+        )
+        behavior_method_names = _autoregister_behavior_method_names(
+            indexed_class, concrete_descendants
+        )
+        abstract_method_names = _abstract_method_names(node)
+        missing_rent_signals = _autoregister_missing_rent_signals(
+            concrete_class_names=concrete_class_names,
+            dynamic_factory_symbols=dynamic_factory_symbols,
+            registry_key_attr_name=registry_key_attr_name,
+            key_extractor_name=key_extractor_name,
+            behavior_method_names=behavior_method_names,
+            abstract_method_names=abstract_method_names,
+            registry_projection_names=registry_projection_names,
+            consumer_symbols=consumer_symbols,
+            min_leaf_count=min_leaf_count,
+        )
+        if not missing_rent_signals:
+            continue
+        membership_object_count = _autoregister_membership_object_count(
+            concrete_class_names=concrete_class_names,
+            dynamic_factory_symbols=dynamic_factory_symbols,
+            behavior_method_names=behavior_method_names,
+            abstract_method_names=abstract_method_names,
+            registry_projection_names=registry_projection_names,
+            consumer_symbols=consumer_symbols,
+        )
+        certificate = _autoregister_rent_certificate(
+            manual_object_count=membership_object_count,
+            class_name=family_name,
+            registry_axis_name=registry_key_attr_name
+            or key_extractor_name
+            or "class_identity",
+            semantic_axis_names=(
+                *behavior_method_names,
+                *abstract_method_names,
+                *registry_projection_names,
+                *dynamic_factory_symbols,
+            ),
+            residual_object_count=len(concrete_class_names)
+            + len(dynamic_factory_symbols),
+            independent_source_count=max(
+                1, len(concrete_class_names) + len(dynamic_factory_symbols)
+            ),
+        )
+        candidates.append(
+            AutoRegisterMetaRentCandidate(
+                file_path=indexed_class.file_path,
+                line=indexed_class.line,
+                class_name=family_name,
+                concrete_class_names=concrete_class_names,
+                dynamic_factory_symbols=dynamic_factory_symbols,
+                registry_key_attr_name=registry_key_attr_name,
+                key_extractor_name=key_extractor_name,
+                behavior_method_names=behavior_method_names,
+                abstract_method_names=abstract_method_names,
+                registry_projection_names=registry_projection_names,
+                consumer_symbols=consumer_symbols,
+                missing_rent_signals=missing_rent_signals,
+                membership_object_count=membership_object_count,
+                derived_projection_count=_autoregister_derived_projection_count(
+                    registry_key_attr_name=registry_key_attr_name,
+                    key_extractor_name=key_extractor_name,
+                    behavior_method_names=behavior_method_names,
+                    abstract_method_names=abstract_method_names,
+                    registry_projection_names=registry_projection_names,
+                    consumer_symbols=consumer_symbols,
+                ),
+                rent_margin=certificate.certified_description_length_savings,
                 compression_certificate=certificate,
             )
         )

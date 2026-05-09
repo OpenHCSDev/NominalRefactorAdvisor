@@ -7,6 +7,7 @@ from operator import attrgetter
 from typing import Callable, Generic, TypeVar, cast, overload
 
 ValueT = TypeVar("ValueT")
+MemberValueT = TypeVar("MemberValueT")
 
 
 @dataclass(frozen=True)
@@ -69,3 +70,49 @@ class ConstantProperty(Generic[ValueT]):
         if instance is None:
             return self
         return self.value
+
+
+@dataclass(frozen=True)
+class CollectionAttributeProjection(Generic[MemberValueT]):
+    """Descriptor projecting one member attribute across an owned collection."""
+
+    collection_name: str
+    member_attribute_name: str
+    _collection: Callable[[object], object] = field(init=False, repr=False)
+    _member_attribute: Callable[[object], MemberValueT] = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "_collection",
+            attrgetter(self.collection_name),
+        )
+        object.__setattr__(
+            self,
+            "_member_attribute",
+            cast(
+                Callable[[object], MemberValueT], attrgetter(self.member_attribute_name)
+            ),
+        )
+
+    @overload
+    def __get__(
+        self, instance: None, owner: type[object] | None = None
+    ) -> "CollectionAttributeProjection[MemberValueT]": ...
+
+    @overload
+    def __get__(
+        self, instance: object, owner: type[object] | None = None
+    ) -> tuple[MemberValueT, ...]: ...
+
+    def __get__(
+        self,
+        instance: object | None,
+        owner: type[object] | None = None,
+    ) -> tuple[MemberValueT, ...] | "CollectionAttributeProjection[MemberValueT]":
+        del owner
+        if instance is None:
+            return self
+        return tuple(
+            self._member_attribute(member) for member in self._collection(instance)
+        )

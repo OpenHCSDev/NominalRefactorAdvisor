@@ -598,7 +598,9 @@ class SemanticInheritanceFamilySSOTDetector(
             (
                 f"`{family_candidate.class_name}` has {len(family_candidate.concrete_class_names)} concrete semantic leaves "
                 f"({concrete_preview}) with methods {family_candidate.semantic_method_names} and abstract hooks "
-                f"{family_candidate.abstract_method_names}, but no metaclass membership SSOT; {key_summary}."
+                f"{family_candidate.abstract_method_names}, but no metaclass membership SSOT; {key_summary}. "
+                f"AutoRegisterMeta pays rent by replacing {family_candidate.membership_object_count} membership object(s) "
+                f"with {family_candidate.derived_projection_count} derived registry projection(s), margin {family_candidate.rent_margin}."
             ),
             (
                 family_candidate.evidence,
@@ -622,7 +624,8 @@ class SemanticInheritanceFamilySSOTDetector(
             ),
             codemod_patch=(
                 f"# Make `{family_candidate.class_name}` the class-time membership authority with `AutoRegisterMeta`.\n"
-                f"# Keep only canonical key `{family_candidate.suggested_key_attr_name}` and semantic hooks on leaves; derive rosters, selectors, and projections from `cls.__registry__`."
+                f"# Keep only canonical key `{family_candidate.suggested_key_attr_name}` and semantic hooks on leaves; derive rosters, selectors, and projections from `cls.__registry__`.\n"
+                f"# Rent proof: {family_candidate.membership_object_count} manual membership objects -> {family_candidate.derived_projection_count} derived projections, margin {family_candidate.rent_margin}."
             ),
             compression_certificate=family_candidate.compression_certificate,
             metrics=RegistrationMetrics.from_class_names(
@@ -635,6 +638,71 @@ class SemanticInheritanceFamilySSOTDetector(
                         for class_name in family_candidate.concrete_class_names
                     )
                 ),
+            ),
+        )
+
+
+class AutoRegisterMetaUnderRentedDetector(
+    ConfiguredCrossModuleCollectorCandidateDetector[AutoRegisterMetaRentCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "AutoRegisterMeta family should prove its rent",
+        "A metaclass registry pays rent when it derives a semantic family membership surface: a stable key axis, multiple registered leaves, a behavioral or abstract contract, and some registry projection or consumer. Without those coordinates, the metaclass is mostly signature noise and the same information usually belongs in a typed declaration table, enum, or ordinary ABC.",
+        "AutoRegisterMeta-backed family with computed rent evidence over key axis, leaves, behavior, projections, and consumers",
+        "class declares AutoRegisterMeta but lacks enough generic rent signals to justify metaclass registration",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+    detector_id = "autoregister_meta_under_rented"
+    candidate_collector = _autoregister_meta_rent_candidates
+
+    def _finding_for_candidate(
+        self, rent_candidate: AutoRegisterMetaRentCandidate
+    ) -> RefactorFinding:
+        key_summary = (
+            f"key `{rent_candidate.registry_key_attr_name}`"
+            if rent_candidate.registry_key_attr_name is not None
+            else (
+                f"key extractor `{rent_candidate.key_extractor_name}`"
+                if rent_candidate.key_extractor_name is not None
+                else "no stable key axis"
+            )
+        )
+        concrete_preview = ", ".join(rent_candidate.concrete_class_names[:4]) or "none"
+        return self.build_finding(
+            (
+                f"`{rent_candidate.class_name}` declares AutoRegisterMeta with {key_summary}, "
+                f"{len(rent_candidate.concrete_class_names)} concrete leaf/leaves ({concrete_preview}), "
+                f"dynamic factories {rent_candidate.dynamic_factory_symbols}, "
+                f"behavior methods {rent_candidate.behavior_method_names}, abstract hooks "
+                f"{rent_candidate.abstract_method_names}, projections {rent_candidate.registry_projection_names}, "
+                f"and consumers {rent_candidate.consumer_symbols}; missing rent signal(s): "
+                f"{rent_candidate.missing_rent_signals}. Rent margin {rent_candidate.rent_margin}."
+            ),
+            (rent_candidate.evidence,),
+            scaffold=(
+                "from abc import ABC, abstractmethod\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                "class RentedFamily(ABC, metaclass=AutoRegisterMeta):\n"
+                '    __registry_key__ = "semantic_key"\n\n'
+                "    @classmethod\n"
+                "    def for_key(cls, key):\n"
+                "        return cls.__registry__[key]\n\n"
+                "    @abstractmethod\n"
+                "    def run(self, value): ..."
+            ),
+            codemod_patch=(
+                f"# Prove or remove AutoRegisterMeta on `{rent_candidate.class_name}`.\n"
+                "# Rent proof must expose a stable key axis, multiple registered leaves, a behavioral contract,\n"
+                "# and a registry projection/consumer derived from `cls.__registry__`.\n"
+                "# If the family is metadata-only or has no projection surface, replace it with a typed table or ordinary ABC."
+            ),
+            compression_certificate=rent_candidate.compression_certificate,
+            metrics=RegistrationMetrics.from_class_names(
+                registration_site_count=len(rent_candidate.concrete_class_names),
+                registry_name=rent_candidate.class_name,
+                class_names=rent_candidate.concrete_class_names,
             ),
         )
 
@@ -1739,6 +1807,7 @@ class DeadEmbeddedStaticPayloadDetector(
 
 # fmt: off
 materialize_product_record(product_record_spec('UnreferencedPrivateFunctionCandidate', 'function_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
+materialize_product_record(product_record_spec('DanglingPrivateMethodCandidate', 'owner_name: str; method_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
 # fmt: on
 
 
@@ -1780,6 +1849,8 @@ def _unreferenced_private_function_candidates(
         or _derived_candidate_collector_contract_names(contract_modules)
     )
     for qualname, function in _iter_surface_functions(module.module):
+        if "." in qualname:
+            continue
         if not _is_private_symbol_name(function.name):
             continue
         if _has_external_protocol_shape(function):
@@ -1800,6 +1871,53 @@ def _unreferenced_private_function_candidates(
                 line=function.lineno,
                 qualname=qualname,
                 function_name=function.name,
+                line_count=line_count,
+                call_site_count=sum(
+                    (
+                        isinstance(node, ast.Call)
+                        for node in _walk_function_body_nodes(function)
+                    )
+                ),
+            )
+        )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    )
+
+
+def _dangling_private_method_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+    reference_modules: Sequence[ParsedModule] | None = None,
+    reference_index: ReferenceCountIndex | None = None,
+) -> tuple[DanglingPrivateMethodCandidate, ...]:
+    candidates: list[DanglingPrivateMethodCandidate] = []
+    reference_index = reference_index or ReferenceCountIndex.from_modules(
+        reference_modules or (module,)
+    )
+    for qualname, function in _iter_surface_functions(module.module):
+        if "." not in qualname:
+            continue
+        if not _is_private_symbol_name(function.name):
+            continue
+        if _has_external_protocol_shape(function):
+            continue
+        line_count = _function_line_count(function)
+        if line_count < config.min_unreferenced_private_function_lines:
+            continue
+        if (
+            reference_index.reference_count_outside_function(function, function.name)
+            > 0
+        ):
+            continue
+        owner_name = qualname.rsplit(".", 1)[0]
+        candidates.append(
+            DanglingPrivateMethodCandidate(
+                file_path=str(module.path),
+                line=function.lineno,
+                qualname=qualname,
+                owner_name=owner_name,
+                method_name=function.name,
                 line_count=line_count,
                 call_site_count=sum(
                     (
@@ -1857,6 +1975,59 @@ class UnreferencedPrivateFunctionDetector(
             function_line_count=function_candidate.line_count,
             branch_site_count=0,
             call_site_count=function_candidate.call_site_count,
+            parameter_count=0,
+            callee_family_count=1,
+        ),
+    )
+
+
+class DanglingPrivateMethodDetector(
+    ConfiguredModuleCollectorCandidateDetector[DanglingPrivateMethodCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Dangling private method should be deleted or made nominal",
+        "A private method that has no visible callsite, override contract, decorator, or framework hook is not a nominal interface. Inside a class it looks owned, but without a witnessed edge it is dead residue or an implicit protocol that should be made explicit through an ABC hook, public facade, strategy object, or registry-backed dispatch surface.",
+        "explicit nominal hook or deletion of unreferenced private method residue",
+        "private class method has no repository-visible reference outside its own body",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        reference_index = ReferenceCountIndex.from_modules(modules)
+        return [
+            self._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in _dangling_private_method_candidates(
+                module,
+                config,
+                reference_modules=modules,
+                reference_index=reference_index,
+            )
+        ]
+
+    finding_renderer = CandidateFindingRenderer[DanglingPrivateMethodCandidate](
+        summary=lambda method_candidate: (
+            f"`{method_candidate.qualname}` spans {method_candidate.line_count} lines "
+            "and has no repository-visible method reference."
+        ),
+        evidence=lambda method_candidate: (method_candidate.evidence,),
+        scaffold=lambda method_candidate: (
+            f"# Delete `{method_candidate.qualname}` if it is dead.\n"
+            "# If subclasses or framework code call it, declare an explicit ABC hook, public facade,\n"
+            "# strategy object, or registry dispatch surface that owns the protocol."
+        ),
+        codemod_patch=lambda method_candidate: (
+            f"# Make `{method_candidate.owner_name}.{method_candidate.method_name}` nominal or remove it.\n"
+            "# Private method names should not be the only witness for a dynamic protocol."
+        ),
+        metrics=lambda method_candidate: OrchestrationMetrics(
+            function_line_count=method_candidate.line_count,
+            branch_site_count=0,
+            call_site_count=method_candidate.call_site_count,
             parameter_count=0,
             callee_family_count=1,
         ),
