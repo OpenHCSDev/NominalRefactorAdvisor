@@ -43,8 +43,7 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cli import _calibration_exit_code
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
-from nominal_refactor_advisor.cli import _format_economics_proof_markdown
-from nominal_refactor_advisor.cli import _format_markdown
+from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import _proof_exit_code
 from nominal_refactor_advisor.cli import analyze_path
@@ -1291,7 +1290,7 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
         compression_certificate=certificate,
     )
 
-    markdown = _format_markdown([finding])
+    markdown = MARKDOWN_RENDERER.report([finding])
 
     assert finding.compression_certificate == certificate
     assert "Semantic description length: 8 -> 3" in markdown
@@ -1327,7 +1326,7 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
         ).stable_id
     )
     assert finding.stable_id != moved.stable_id
-    assert f"Stable id: {finding.stable_id}" in _format_markdown([finding])
+    assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert finding.to_dict()["stable_id"] == finding.stable_id
     assert (
         _json_payload([finding], [], [])["findings"][0]["stable_id"]
@@ -1490,7 +1489,7 @@ def test_planner_derives_local_minimum_escape_from_findings(
         for finding in findings
     )
 
-    markdown = _format_markdown(findings, [plan])
+    markdown = MARKDOWN_RENDERER.report(findings, [plan])
     assert "Local-minimum escape" in markdown
     assert "Pattern 1: Normalize records -> Pattern 5: Extract ABC" in markdown
     assert "Counterfactual findings removed" in markdown
@@ -1646,7 +1645,7 @@ def test_economics_markdown_and_json_expose_payoff_proof() -> None:
         ("5\t1\tnominal_refactor_advisor/economics.py",)
     )
 
-    markdown = _format_markdown(
+    markdown = MARKDOWN_RENDERER.report(
         [finding], economics=economics, change_budget=change_budget
     )
     payload = _json_payload([finding], [], [], economics=economics)
@@ -1718,7 +1717,7 @@ def test_economics_proof_report_serializes_gate_and_budget(tmp_path: Path) -> No
     )
 
     payload = report.to_dict()
-    markdown = _format_economics_proof_markdown(report)
+    markdown = MARKDOWN_RENDERER.economics_proof(report)
 
     assert report.proof_passes
     assert payload["proof_passes"] is True
@@ -1777,7 +1776,7 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
     assert not report.proof_passes
     assert report.to_dict()["regression_reasons"] == report.regression_reasons
     assert "Regression reasons: package_production_findings" in (
-        _format_economics_proof_markdown(report)
+        MARKDOWN_RENDERER.economics_proof(report)
     )
 
 
@@ -4484,7 +4483,7 @@ def test_markdown_output_includes_prescription_details(tmp_path: Path) -> None:
         "\ndef build(param_type):\n    if is_optional(param_type):\n        return OptionalInfo()\n    elif is_dataclass(param_type):\n        return DataclassInfo()\n    return GenericInfo()\n",
     )
     findings = analyze_path(tmp_path)
-    output = _format_markdown(findings)
+    output = MARKDOWN_RENDERER.report(findings)
     assert "Prescription:" in output
     assert "Canonical shape:" in output
     assert "First move:" in output
@@ -4498,7 +4497,7 @@ def test_markdown_output_handles_multiple_example_skeletons(tmp_path: Path) -> N
         "\nclass Alpha:\n    def _prepare(self, item):\n        ready = self.normalize(item)\n        checked = self.validate(ready)\n        return self.finish(checked)\n\n\nclass Beta:\n    def _build(self, value):\n        ready = self.normalize(value)\n        checked = self.validate(ready)\n        return self.finish(checked)\n",
     )
     findings = analyze_path(tmp_path)
-    output = _format_markdown(findings)
+    output = MARKDOWN_RENDERER.report(findings)
     assert output.count("Example skeleton:") >= 2
     assert "Suggested scaffold:" in output
     assert "Suggested patch:" in output
@@ -6531,7 +6530,7 @@ def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     plans = build_refactor_plans(findings, tmp_path)
-    output = _format_markdown(findings, plans)
+    output = MARKDOWN_RENDERER.report(findings, plans)
     assert "Subsystem plans:" in output
     assert "Primary pattern:" in output
     assert "Outcome:" in output

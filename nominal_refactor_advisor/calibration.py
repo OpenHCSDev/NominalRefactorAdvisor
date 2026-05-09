@@ -9,11 +9,13 @@ without hard-coding those objects into the detector implementation.
 from __future__ import annotations
 
 import json
+from abc import ABC, abstractmethod
 from collections import Counter
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from typing import Generic, TypeVar, cast
 
 from .analysis import analyze_modules
 from .ast_tools import parse_python_modules
@@ -26,35 +28,83 @@ from .record_algebra import materialize_product_record, product_record_spec
 
 _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
 
-
-def _manifest_mapping(value: object, context: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise TypeError(f"{context} must be an object")
-    return value
+ManifestT = TypeVar("ManifestT")
 
 
-def _manifest_sequence(value: object | None, context: str) -> tuple[object, ...]:
-    if value is None:
-        return ()
-    if not isinstance(value, list | tuple):
-        raise TypeError(f"{context} must be a sequence")
-    return tuple(value)
+class ManifestDecoder(ABC, Generic[ManifestT]):
+    """Fail-loud typed decoder for calibration manifest fields."""
+
+    @abstractmethod
+    def decode(self, value: object, context: str) -> ManifestT:
+        raise NotImplementedError
+
+    def __call__(self, value: object, context: str) -> ManifestT:
+        return self.decode(value, context)
 
 
-def _manifest_string(value: object, context: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"{context} must be a non-empty string")
-    return value
+@dataclass(frozen=True)
+class TypedManifestDecoder(ManifestDecoder[ManifestT]):
+    expected_types: tuple[type[object], ...]
+    type_label: str
+    projection: Callable[[object], ManifestT]
+    reject_bool: bool = False
+    allow_none: bool = False
+    none_value: ManifestT | None = None
+    validation_error: Callable[[ManifestT], str | None] = lambda value: None
+
+    def decode(self, value: object, context: str) -> ManifestT:
+        if value is None and self.allow_none:
+            return cast(ManifestT, self.none_value)
+        if self.reject_bool and isinstance(value, bool):
+            raise TypeError(f"{context} must be {self.type_label}")
+        if not isinstance(value, self.expected_types):
+            raise TypeError(f"{context} must be {self.type_label}")
+        result = self.projection(value)
+        if error := self.validation_error(result):
+            raise ValueError(f"{context} must be {error}")
+        return result
 
 
-def _manifest_int(value: object, context: str) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{context} must be an integer")
-    return value
+MANIFEST_MAPPING = TypedManifestDecoder[Mapping[str, object]](
+    expected_types=(Mapping,),
+    type_label="an object",
+    projection=lambda value: cast(Mapping[str, object], value),
+)
+MANIFEST_SEQUENCE = TypedManifestDecoder[tuple[object, ...]](
+    expected_types=(list, tuple),
+    type_label="a sequence",
+    projection=lambda value: tuple(cast(Iterable[object], value)),
+    allow_none=True,
+    none_value=(),
+)
+MANIFEST_STRING = TypedManifestDecoder[str](
+    expected_types=(str,),
+    type_label="a non-empty string",
+    projection=lambda value: cast(str, value),
+    validation_error=lambda value: None if value else "a non-empty string",
+)
+MANIFEST_INT = TypedManifestDecoder[int](
+    expected_types=(int,),
+    type_label="an integer",
+    projection=lambda value: cast(int, value),
+    reject_bool=True,
+)
+MANIFEST_FLOAT = TypedManifestDecoder[float](
+    expected_types=(int, float),
+    type_label="a number",
+    projection=float,
+    reject_bool=True,
+    validation_error=lambda value: None if value >= 0 else "non-negative",
+)
+MANIFEST_BOOL = TypedManifestDecoder[bool](
+    expected_types=(bool,),
+    type_label="a boolean",
+    projection=lambda value: cast(bool, value),
+)
 
 
 def _non_negative_int(value: object, context: str) -> int:
-    number = _manifest_int(value, context)
+    number = MANIFEST_INT(value, context)
     if number < 0:
         raise ValueError(f"{context} must be non-negative")
     return number
@@ -64,21 +114,6 @@ def _optional_non_negative_int(value: object | None, context: str) -> int | None
     if value is None:
         return None
     return _non_negative_int(value, context)
-
-
-def _manifest_float(value: object, context: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise TypeError(f"{context} must be a number")
-    number = float(value)
-    if number < 0:
-        raise ValueError(f"{context} must be non-negative")
-    return number
-
-
-def _manifest_bool(value: object, context: str) -> bool:
-    if not isinstance(value, bool):
-        raise TypeError(f"{context} must be a boolean")
-    return value
 
 
 @dataclass(frozen=True)
@@ -93,8 +128,8 @@ class DetectorExpectation(SemanticRecord):
     def from_manifest(cls, value: object) -> "DetectorExpectation":
         if isinstance(value, str):
             return cls(detector_id=value)
-        row = _manifest_mapping(value, "detector expectation")
-        detector_id = _manifest_string(row.get("detector_id"), "detector_id")
+        row = MANIFEST_MAPPING(value, "detector expectation")
+        detector_id = MANIFEST_STRING(row.get("detector_id"), "detector_id")
         min_count = _non_negative_int(row.get("min_count", 1), "min_count")
         max_count = _optional_non_negative_int(row.get("max_count"), "max_count")
         if max_count is not None and max_count < min_count:
@@ -150,24 +185,24 @@ class CalibrationTarget(SemanticRecord):
         *,
         manifest_dir: Path,
     ) -> "CalibrationTarget":
-        row = _manifest_mapping(value, "calibration target")
-        name = _manifest_string(row.get("name"), "target.name")
-        raw_path = _manifest_string(row.get("path"), "target.path")
+        row = MANIFEST_MAPPING(value, "calibration target")
+        name = MANIFEST_STRING(row.get("name"), "target.name")
+        raw_path = MANIFEST_STRING(row.get("path"), "target.path")
         path = Path(raw_path)
         if not path.is_absolute():
             path = manifest_dir / path
         expected = tuple(
             (
                 DetectorExpectation.from_manifest(item)
-                for item in _manifest_sequence(
+                for item in MANIFEST_SEQUENCE(
                     row.get("expected_detectors"), "expected_detectors"
                 )
             )
         )
         forbidden = sorted_tuple(
             (
-                _manifest_string(item, "forbidden_detectors item")
-                for item in _manifest_sequence(
+                MANIFEST_STRING(item, "forbidden_detectors item")
+                for item in MANIFEST_SEQUENCE(
                     row.get("forbidden_detectors"), "forbidden_detectors"
                 )
             )
@@ -183,13 +218,11 @@ class CalibrationTarget(SemanticRecord):
             max_test_only_findings=_optional_non_negative_int(
                 row.get("max_test_only_findings"), "max_test_only_findings"
             ),
-            require_payoff_guard=_manifest_bool(
+            require_payoff_guard=MANIFEST_BOOL(
                 row.get("require_payoff_guard", True), "require_payoff_guard"
             ),
-            max_scan_seconds=_manifest_float(
-                row.get(
-                    "max_scan_seconds", _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS
-                ),
+            max_scan_seconds=MANIFEST_FLOAT(
+                row.get("max_scan_seconds", _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS),
                 "max_scan_seconds",
             ),
             min_certified_description_length_savings=_non_negative_int(
@@ -212,14 +245,14 @@ class CalibrationManifest(SemanticRecord):
     @classmethod
     def from_file(cls, manifest_path: Path) -> "CalibrationManifest":
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        row = _manifest_mapping(manifest, "calibration manifest")
+        row = MANIFEST_MAPPING(manifest, "calibration manifest")
         targets = tuple(
             (
                 CalibrationTarget.from_manifest(
                     item,
                     manifest_dir=manifest_path.resolve().parent,
                 )
-                for item in _manifest_sequence(row.get("targets"), "targets")
+                for item in MANIFEST_SEQUENCE(row.get("targets"), "targets")
             )
         )
         return cls(targets=targets)
@@ -276,8 +309,7 @@ class CalibrationTargetResult(SemanticRecord):
             )
         if (
             self.target.max_production_findings is not None
-            and self.scan.production_finding_count
-            > self.target.max_production_findings
+            and self.scan.production_finding_count > self.target.max_production_findings
         ):
             reasons.append(
                 "production_finding_budget:"
@@ -490,7 +522,6 @@ def format_calibration_markdown(report: CalibrationReport) -> str:
             lines.append(f"     unavailable: {target_result.unavailable_reason}")
         if target_result.regression_reasons:
             lines.append(
-                "     target reasons: "
-                + ", ".join(target_result.regression_reasons)
+                "     target reasons: " + ", ".join(target_result.regression_reasons)
             )
     return "\n".join(lines)

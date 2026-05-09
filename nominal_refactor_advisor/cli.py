@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
@@ -215,67 +216,6 @@ def _json_payload(
     return payload
 
 
-def _format_markdown(
-    findings: list[RefactorFinding],
-    plans: list[RefactorPlan] | None = None,
-    economics: RecommendationEconomics | None = None,
-    change_budget: RepositoryChangeBudget | None = None,
-    timing: ScanTiming | None = None,
-) -> str:
-    sections: list[str] = []
-    if findings:
-        sections.append(_format_findings_markdown(findings))
-    elif not plans:
-        sections.append("No refactoring findings.")
-    if plans is not None:
-        sections.append(format_plans_markdown(plans))
-    if economics is not None:
-        sections.append(format_economics_markdown(economics, change_budget))
-    if timing is not None:
-        sections.append(format_timing_markdown(timing))
-    return "\n\n".join(section for section in sections if section)
-
-
-def _format_findings_markdown(findings: list[RefactorFinding]) -> str:
-    if not findings:
-        return "No refactoring findings."
-    lines: list[str] = []
-    for index, finding in enumerate(findings, start=1):
-        pattern = PATTERN_SPECS[finding.pattern_id]
-        lines.append(f"{index}. {finding.title}")
-        lines.append(f"   - Stable id: {finding.stable_id}")
-        lines.append(f"   - Pattern {pattern.pattern_id.value}: {pattern.name}")
-        lines.append(f"   - Summary: {finding.summary}")
-        lines.append(f"   - Capability gap: {finding.capability_gap}")
-        lines.append(f"   - Prescription: {pattern.prescription}")
-        lines.append(f"   - Canonical shape: {pattern.canonical_shape}")
-        lines.append(f"   - Why: {finding.why}")
-        lines.append(f"   - Relation: {finding.relation_context}")
-        lines.append(f"   - Confidence: {finding.confidence}")
-        lines.append(f"   - Certification: {finding.certification}")
-        if finding.compression_certificate is not None:
-            certificate = finding.compression_certificate
-            lines.append(
-                "   - Semantic description length: "
-                f"{certificate.before_description_length} -> "
-                f"{certificate.description_cost.description_length}; "
-                f"certified savings {certificate.certified_description_length_savings}"
-            )
-        for step in pattern.first_moves:
-            lines.append(f"   - First move: {step}")
-        for skeleton in pattern.example_skeletons:
-            lines.append(f"   - Example skeleton: {skeleton}")
-        if finding.scaffold:
-            lines.append(f"   - Suggested scaffold: {finding.scaffold}")
-        if finding.codemod_patch:
-            lines.append("   - Suggested patch:")
-            for patch_line in finding.codemod_patch.splitlines():
-                lines.append(f"     {patch_line}")
-        for item in finding.evidence:
-            lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
-    return "\n".join(lines)
-
-
 def format_plans_markdown(plans: list[RefactorPlan]) -> str:
     if not plans:
         return "No subsystem plans."
@@ -374,24 +314,6 @@ def format_timing_markdown(timing: ScanTiming) -> str:
     )
 
 
-def _format_scan_prediction_markdown(report: ScanPredictionReport) -> str:
-    lines = [
-        "Scan prediction:",
-        f"   - Compare ref: {report.compare_ref}",
-        f"   - Changed Python paths: {len(report.changed_python_paths)}",
-        f"   - Total modules: {report.total_module_count}",
-    ]
-    for branch in report.branches:
-        lines.append(
-            f"   - {branch.label}: {branch.module_count} module(s), "
-            f"{branch.finding_count} finding(s), "
-            f"{branch.elapsed_seconds:.3f}s observed/projected, "
-            f"{branch.estimated_repository_seconds:.3f}s repository estimate, "
-            f"{branch.ast_target_count} AST target(s)"
-        )
-    return "\n".join(lines)
-
-
 def format_economics_markdown(
     economics: RecommendationEconomics,
     change_budget: RepositoryChangeBudget | None = None,
@@ -448,61 +370,162 @@ def format_economics_markdown(
     return "\n".join(lines)
 
 
-def _format_scan_proof_markdown(scan: ScanEconomicsProof) -> list[str]:
-    lines = [
-        f"   - {scan.label}: {scan.finding_count} finding(s), "
-        f"{scan.production_finding_count} production, "
-        f"{scan.semantic_production_finding_count} semantic production, "
-        f"{scan.readability_finding_count} readability, "
-        f"{scan.test_only_finding_count} test-only; "
-        f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
-        f"     proof: {'pass' if scan.proof_passes else 'fail'}; "
-        f"payoff guard: {'pass' if scan.economics.payoff_guard_passes else 'fail'}",
-    ]
-    if scan.production_detector_ids:
-        lines.append(
-            "     production detectors: " + ", ".join(scan.production_detector_ids)
-        )
-    if scan.detector_ids:
-        lines.append("     all detectors: " + ", ".join(scan.detector_ids))
-    return lines
+class MarkdownReportRenderer(ABC):
+    """Shared markdown rendering algorithm with one layout hook."""
 
+    @property
+    @abstractmethod
+    def section_separator(self) -> str:
+        raise NotImplementedError
 
-def _format_economics_proof_markdown(report: EconomicsProofReport) -> str:
-    lines = [
-        "Economics proof:",
-        f"   - Overall: {'pass' if report.proof_passes else 'fail'}",
-    ]
-    if report.regression_reasons:
-        lines.append("   - Regression reasons: " + ", ".join(report.regression_reasons))
-    lines.extend(_format_scan_proof_markdown(report.package_scan))
-    lines.extend(_format_scan_proof_markdown(report.repository_scan))
-    if report.change_budget.unavailable_reason is not None:
-        lines.append(
-            "   - Working-tree change budget unavailable: "
-            f"{report.change_budget.unavailable_reason}"
-        )
-    else:
-        lines.append(
-            "   - Working-tree change budget: "
-            + "; ".join(
-                (
-                    _format_change_budget_item(
-                        "advisor backend", report.change_budget.advisor_backend
-                    ),
-                    _format_change_budget_item(
-                        "detectors", report.change_budget.detectors
-                    ),
-                    _format_change_budget_item("tests", report.change_budget.tests),
-                    _format_change_budget_item("docs", report.change_budget.docs),
-                    _format_change_budget_item(
-                        "generated", report.change_budget.generated
-                    ),
-                    _format_change_budget_item("other", report.change_budget.other),
+    def join_sections(self, sections: list[str]) -> str:
+        return self.section_separator.join(section for section in sections if section)
+
+    def report(
+        self,
+        findings: list[RefactorFinding],
+        plans: list[RefactorPlan] | None = None,
+        economics: RecommendationEconomics | None = None,
+        change_budget: RepositoryChangeBudget | None = None,
+        timing: ScanTiming | None = None,
+    ) -> str:
+        sections: list[str] = []
+        if findings:
+            sections.append(self.findings(findings))
+        elif not plans:
+            sections.append("No refactoring findings.")
+        if plans is not None:
+            sections.append(format_plans_markdown(plans))
+        if economics is not None:
+            sections.append(format_economics_markdown(economics, change_budget))
+        if timing is not None:
+            sections.append(format_timing_markdown(timing))
+        return self.join_sections(sections)
+
+    def findings(self, findings: list[RefactorFinding]) -> str:
+        if not findings:
+            return "No refactoring findings."
+        lines: list[str] = []
+        for index, finding in enumerate(findings, start=1):
+            pattern = PATTERN_SPECS[finding.pattern_id]
+            lines.append(f"{index}. {finding.title}")
+            lines.append(f"   - Stable id: {finding.stable_id}")
+            lines.append(f"   - Pattern {pattern.pattern_id.value}: {pattern.name}")
+            lines.append(f"   - Summary: {finding.summary}")
+            lines.append(f"   - Capability gap: {finding.capability_gap}")
+            lines.append(f"   - Prescription: {pattern.prescription}")
+            lines.append(f"   - Canonical shape: {pattern.canonical_shape}")
+            lines.append(f"   - Why: {finding.why}")
+            lines.append(f"   - Relation: {finding.relation_context}")
+            lines.append(f"   - Confidence: {finding.confidence}")
+            lines.append(f"   - Certification: {finding.certification}")
+            if finding.compression_certificate is not None:
+                certificate = finding.compression_certificate
+                lines.append(
+                    "   - Semantic description length: "
+                    f"{certificate.before_description_length} -> "
+                    f"{certificate.description_cost.description_length}; "
+                    "certified savings "
+                    f"{certificate.certified_description_length_savings}"
+                )
+            for step in pattern.first_moves:
+                lines.append(f"   - First move: {step}")
+            for skeleton in pattern.example_skeletons:
+                lines.append(f"   - Example skeleton: {skeleton}")
+            if finding.scaffold:
+                lines.append(f"   - Suggested scaffold: {finding.scaffold}")
+            if finding.codemod_patch:
+                lines.append("   - Suggested patch:")
+                for patch_line in finding.codemod_patch.splitlines():
+                    lines.append(f"     {patch_line}")
+            for item in finding.evidence:
+                lines.append(
+                    f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`"
+                )
+        return "\n".join(lines)
+
+    def scan_prediction(self, report: ScanPredictionReport) -> str:
+        lines = [
+            "Scan prediction:",
+            f"   - Compare ref: {report.compare_ref}",
+            f"   - Changed Python paths: {len(report.changed_python_paths)}",
+            f"   - Total modules: {report.total_module_count}",
+        ]
+        for branch in report.branches:
+            lines.append(
+                f"   - {branch.label}: {branch.module_count} module(s), "
+                f"{branch.finding_count} finding(s), "
+                f"{branch.elapsed_seconds:.3f}s observed/projected, "
+                f"{branch.estimated_repository_seconds:.3f}s repository estimate, "
+                f"{branch.ast_target_count} AST target(s)"
+            )
+        return "\n".join(lines)
+
+    def scan_proof(self, scan: ScanEconomicsProof) -> list[str]:
+        lines = [
+            f"   - {scan.label}: {scan.finding_count} finding(s), "
+            f"{scan.production_finding_count} production, "
+            f"{scan.semantic_production_finding_count} semantic production, "
+            f"{scan.readability_finding_count} readability, "
+            f"{scan.test_only_finding_count} test-only; "
+            f"{scan.elapsed_seconds:.3f}s/{scan.scan_budget_seconds:.3f}s",
+            f"     proof: {'pass' if scan.proof_passes else 'fail'}; "
+            f"payoff guard: {'pass' if scan.economics.payoff_guard_passes else 'fail'}",
+        ]
+        if scan.production_detector_ids:
+            lines.append(
+                "     production detectors: " + ", ".join(scan.production_detector_ids)
+            )
+        if scan.detector_ids:
+            lines.append("     all detectors: " + ", ".join(scan.detector_ids))
+        return lines
+
+    def economics_proof(self, report: EconomicsProofReport) -> str:
+        lines = [
+            "Economics proof:",
+            f"   - Overall: {'pass' if report.proof_passes else 'fail'}",
+        ]
+        if report.regression_reasons:
+            lines.append(
+                "   - Regression reasons: " + ", ".join(report.regression_reasons)
+            )
+        lines.extend(self.scan_proof(report.package_scan))
+        lines.extend(self.scan_proof(report.repository_scan))
+        if report.change_budget.unavailable_reason is not None:
+            lines.append(
+                "   - Working-tree change budget unavailable: "
+                f"{report.change_budget.unavailable_reason}"
+            )
+        else:
+            lines.append(
+                "   - Working-tree change budget: "
+                + "; ".join(
+                    (
+                        _format_change_budget_item(
+                            "advisor backend", report.change_budget.advisor_backend
+                        ),
+                        _format_change_budget_item(
+                            "detectors", report.change_budget.detectors
+                        ),
+                        _format_change_budget_item("tests", report.change_budget.tests),
+                        _format_change_budget_item("docs", report.change_budget.docs),
+                        _format_change_budget_item(
+                            "generated", report.change_budget.generated
+                        ),
+                        _format_change_budget_item("other", report.change_budget.other),
+                    )
                 )
             )
-        )
-    return "\n".join(lines)
+        return "\n".join(lines)
+
+
+class StandardMarkdownReportRenderer(MarkdownReportRenderer):
+    @property
+    def section_separator(self) -> str:
+        return "\n\n"
+
+
+MARKDOWN_RENDERER = StandardMarkdownReportRenderer()
 
 
 def _proof_exit_code(
@@ -552,7 +575,7 @@ def main() -> int:
         if args.json:
             print(json.dumps(prediction_report.to_dict(), indent=2))
         else:
-            print(_format_scan_prediction_markdown(prediction_report))
+            print(MARKDOWN_RENDERER.scan_prediction(prediction_report))
         return 0
 
     if args.prove_economics:
@@ -565,7 +588,7 @@ def main() -> int:
         if args.json:
             print(json.dumps(proof_report.to_dict(), indent=2))
         else:
-            print(_format_economics_proof_markdown(proof_report))
+            print(MARKDOWN_RENDERER.economics_proof(proof_report))
         return _proof_exit_code(
             proof_report,
             fail_on_proof_regression=args.fail_on_proof_regression,
@@ -629,7 +652,7 @@ def main() -> int:
             print("\n\n".join(sections))
         else:
             print(
-                _format_markdown(
+                MARKDOWN_RENDERER.report(
                     findings,
                     plans,
                     economics=economics,
