@@ -2697,24 +2697,6 @@ class SyntaxProjectionAuthority:
 
 
 SYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()
-non_nested_subnodes = SYNTAX_PROJECTION_AUTHORITY.non_nested_subnodes
-class_annassign_target_names = SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names
-concrete_indexed_descendant_classes = (
-    SYNTAX_PROJECTION_AUTHORITY.concrete_indexed_descendant_classes
-)
-attribute_names_for_roots = SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots
-assigned_self_attr_from_param = (
-    SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param
-)
-keyed_family_key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name
-enum_member_refs_for_known_key_types = (
-    SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types
-)
-indexed_class_for_simple_name = (
-    SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name
-)
-method_names = SYNTAX_PROJECTION_AUTHORITY.method_names
-is_dataclass_decorator = SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator
 
 
 class DispatchAlgebraAuthority:
@@ -2736,7 +2718,7 @@ class DispatchAlgebraAuthority:
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
             node = indexed_class.node
-            key_type_name = keyed_family_key_type_name(node)
+            key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name(node)
             if key_type_name is None:
                 continue
             registry_key_attr_name = _constant_string(
@@ -2856,7 +2838,7 @@ class DispatchAlgebraAuthority:
             ):
                 continue
             node = indexed_class.node
-            key_type_name = keyed_family_key_type_name(node)
+            key_type_name = SYNTAX_PROJECTION_AUTHORITY.keyed_family_key_type_name(node)
             if key_type_name is None:
                 continue
             registry_key_attr_name = _constant_string(
@@ -2988,18 +2970,6 @@ class DispatchAlgebraAuthority:
 
 
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
-comparison_dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case
-keyed_family_axis_specs = DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs
-case_overlap_ratio = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio
-module_keyed_table_axis_specs = DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs
-cls_registry_membership_test = DISPATCH_ALGEBRA_AUTHORITY.cls_registry_membership_test
-keyed_registry_axis_fact_records = (
-    DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records
-)
-derivable_registry_key_suffix = DISPATCH_ALGEBRA_AUTHORITY.derivable_registry_key_suffix
-derived_registry_key_block = DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block
-declared_registry_key_block = DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block
-axis_dispatch_metrics = DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics
 
 
 def _enum_dispatch_from_if(node: ast.If) -> tuple[str, tuple[str, ...]] | None:
@@ -3007,7 +2977,9 @@ def _enum_dispatch_from_if(node: ast.If) -> tuple[str, tuple[str, ...]] | None:
     cases: list[str] = []
     current: ast.If | None = node
     while current is not None:
-        dispatch_case = comparison_dispatch_case(current.test)
+        dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
+            current.test
+        )
         if dispatch_case is None:
             return None
         current_axis, case_name = dispatch_case
@@ -3040,7 +3012,9 @@ def _enum_dispatch_from_body(
         for statement in body[start:]:
             if not isinstance(statement, ast.If) or statement.orelse:
                 break
-            dispatch_case = comparison_dispatch_case(statement.test)
+            dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
+                statement.test
+            )
             if dispatch_case is None:
                 break
             current_axis, case_name = dispatch_case
@@ -3476,7 +3450,7 @@ def _selector_assignments_for_function(
         (spec.root_name, spec.selector_method_name): spec for spec in selector_specs
     }
     assignments: list[_SelectorAssignment] = []
-    for subnode in non_nested_subnodes(function.body):
+    for subnode in SYNTAX_PROJECTION_AUTHORITY.non_nested_subnodes(function.body):
         if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
             target = subnode.targets[0]
             value = subnode.value
@@ -3555,7 +3529,7 @@ def _strategy_bridge_calls(
     strategy_variable_name: str,
 ) -> tuple[ast.Call, ...]:
     calls: list[ast.Call] = []
-    for subnode in non_nested_subnodes(function.body):
+    for subnode in SYNTAX_PROJECTION_AUTHORITY.non_nested_subnodes(function.body):
         if not isinstance(subnode, ast.Call):
             continue
         if (
@@ -5070,7 +5044,7 @@ def _derived_wrapper_spec_shadow_candidates(
 
 
 def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return class_annassign_target_names(node)
+    return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
 def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
@@ -5928,7 +5902,7 @@ def _enum_keyed_table_class_axis_shadow_candidates(
             )
             if len(shared_case_names) < 2:
                 continue
-            case_overlap_score = case_overlap_ratio(
+            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
                 sorted_tuple(table_case_names), class_case_names
             )
             if case_overlap_score < 0.8:
@@ -5964,12 +5938,12 @@ def _parallel_keyed_table_and_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
     family_specs_by_file: KeyedFamilyAxisSpecsByKey = {}
-    for family_spec in keyed_family_axis_specs(modules):
+    for family_spec in DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules):
         family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
     candidates: list[ParallelKeyedTableAndFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for module in modules:
-        table_specs = module_keyed_table_axis_specs(module)
+        table_specs = DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(module)
         family_specs = family_specs_by_file.get(str(module.path), ())
         for table_spec in table_specs:
             for family_spec in family_specs:
@@ -5980,7 +5954,7 @@ def _parallel_keyed_table_and_family_candidates(
                 )
                 if len(shared_case_names) < 2:
                     continue
-                case_overlap_score = case_overlap_ratio(
+                case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
                     table_spec.case_names, family_spec.case_names
                 )
                 if case_overlap_score < 0.8:
@@ -6031,7 +6005,9 @@ def _parallel_keyed_table_axis_candidates(
         (
             table_spec
             for module in modules
-            for table_spec in module_keyed_table_axis_specs(module)
+            for table_spec in DISPATCH_ALGEBRA_AUTHORITY.module_keyed_table_axis_specs(
+                module
+            )
         ),
         key=lambda item: (item.file_path, item.line, item.table_name),
     )
@@ -6048,7 +6024,7 @@ def _parallel_keyed_table_axis_candidates(
             )
             if len(shared_case_names) < 2:
                 continue
-            case_overlap_score = case_overlap_ratio(
+            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
                 left_spec.case_names, right_spec.case_names
             )
             if case_overlap_score < 0.8:
@@ -6098,7 +6074,7 @@ def _parallel_keyed_table_axis_candidates(
 def _parallel_keyed_axis_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
-    specs = keyed_family_axis_specs(modules)
+    specs = DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
     candidates: list[ParallelKeyedAxisFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
     for index, left_spec in enumerate(specs):
@@ -6118,7 +6094,7 @@ def _parallel_keyed_axis_family_candidates(
                 left_spec.family_label is not None
                 and left_spec.family_label == right_spec.family_label
             )
-            case_overlap_score = case_overlap_ratio(
+            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
                 left_spec.case_names, right_spec.case_names
             )
             name_overlap_ratio = _parallel_keyed_family_name_overlap(
@@ -6191,7 +6167,7 @@ def _manual_selector_axis_specs(
 def _cross_module_axis_shadow_family_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
-    authoritative_specs = keyed_family_axis_specs(modules)
+    authoritative_specs = DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules)
     shadow_specs = _manual_selector_axis_specs(modules)
     candidates: list[CrossModuleAxisShadowFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
@@ -6248,9 +6224,9 @@ def _closed_axis_branch_refs_for_function(
 ) -> tuple[Counter[str], dict[str, set[str]]]:
     branch_site_count: Counter[str] = Counter()
     case_names_by_key: dict[str, set[str]] = defaultdict(set)
-    for subnode in non_nested_subnodes(function.body):
+    for subnode in SYNTAX_PROJECTION_AUTHORITY.non_nested_subnodes(function.body):
         if isinstance(subnode, ast.If):
-            refs = enum_member_refs_for_known_key_types(
+            refs = SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
                 subnode.test, key_type_names=key_type_names
             )
             for key_type_name, case_names in refs.items():
@@ -6260,13 +6236,15 @@ def _closed_axis_branch_refs_for_function(
         if isinstance(subnode, ast.Match):
             refs_by_key: dict[str, set[str]] = defaultdict(set)
             for case in subnode.cases:
-                pattern_refs = enum_member_refs_for_known_key_types(
-                    case.pattern, key_type_names=key_type_names
+                pattern_refs = (
+                    SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
+                        case.pattern, key_type_names=key_type_names
+                    )
                 )
                 for key_type_name, case_names in pattern_refs.items():
                     refs_by_key[key_type_name].update(case_names)
                 if case.guard is not None:
-                    guard_refs = enum_member_refs_for_known_key_types(
+                    guard_refs = SYNTAX_PROJECTION_AUTHORITY.enum_member_refs_for_known_key_types(
                         case.guard, key_type_names=key_type_names
                     )
                     for key_type_name, case_names in guard_refs.items():
@@ -6327,7 +6305,7 @@ def _residual_closed_axis_branching_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
     authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
-    for spec in keyed_family_axis_specs(modules):
+    for spec in DISPATCH_ALGEBRA_AUTHORITY.keyed_family_axis_specs(modules):
         authoritative_specs_by_key[spec.key_type_name].append(spec)
     if not authoritative_specs_by_key:
         return ()
@@ -6560,7 +6538,9 @@ def _guarded_registry_lookup_body(
             ),
         )
         .combine(
-            lambda context: cls_registry_membership_test(context[0].test),
+            lambda context: DISPATCH_ALGEBRA_AUTHORITY.cls_registry_membership_test(
+                context[0].test
+            ),
             lambda context, membership: (
                 _GuardedRegistryLookupBody(context[0], context[1], membership[1])
                 if membership[0] == "not_in"
@@ -6721,7 +6701,9 @@ def _registered_keyed_type_names_by_key(
     registry_key_attr_name: str,
 ) -> dict[str, tuple[str, ...]]:
     grouped: dict[str, list[str]] = defaultdict(list)
-    for descendant in concrete_indexed_descendant_classes(class_index, indexed_class):
+    for descendant in SYNTAX_PROJECTION_AUTHORITY.concrete_indexed_descendant_classes(
+        class_index, indexed_class
+    ):
         assignment = CLASS_NODE_AUTHORITY.direct_assignments(descendant.node).get(
             registry_key_attr_name
         )
@@ -6761,7 +6743,7 @@ def _keyed_type_registry_injectivity_proof(
     registered_type_names = tuple(
         (
             CLASS_INDEX_PROJECTION.display_name(descendant, class_index)
-            for descendant in concrete_indexed_descendant_classes(
+            for descendant in SYNTAX_PROJECTION_AUTHORITY.concrete_indexed_descendant_classes(
                 class_index, indexed_class
             )
         )
@@ -6829,7 +6811,9 @@ def _premature_registry_infrastructure_candidates(
     modules: Sequence[ParsedModule], config: DetectorConfig
 ) -> tuple[PrematureRegistryInfrastructureCandidate, ...]:
     candidates: list[PrematureRegistryInfrastructureCandidate] = []
-    for fact in keyed_registry_axis_fact_records(modules, config):
+    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
+        modules, config
+    ):
         if not fact.missing_maturity_signals:
             continue
         candidates.append(
@@ -6852,7 +6836,9 @@ def _non_injective_type_registry_candidates(
     modules: Sequence[ParsedModule], config: DetectorConfig
 ) -> tuple[NonInjectiveTypeRegistryCandidate, ...]:
     candidates: list[NonInjectiveTypeRegistryCandidate] = []
-    for fact in keyed_registry_axis_fact_records(modules, config):
+    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
+        modules, config
+    ):
         proof = fact.injectivity_proof
         if not (
             proof.duplicate_key_names
@@ -6883,7 +6869,9 @@ def _injective_type_registry_candidates(
     modules: Sequence[ParsedModule], config: DetectorConfig
 ) -> tuple[InjectiveTypeRegistryCandidate, ...]:
     candidates: list[InjectiveTypeRegistryCandidate] = []
-    for fact in keyed_registry_axis_fact_records(modules, config):
+    for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
+        modules, config
+    ):
         proof = fact.injectivity_proof
         if fact.missing_maturity_signals:
             continue
@@ -6915,7 +6903,9 @@ def _mature_injective_registry_facts(
     return tuple(
         (
             fact
-            for fact in keyed_registry_axis_fact_records(modules, config)
+            for fact in DISPATCH_ALGEBRA_AUTHORITY.keyed_registry_axis_fact_records(
+                modules, config
+            )
             if not fact.missing_maturity_signals
             and not fact.injectivity_proof.duplicate_key_names
             and not fact.injectivity_proof.duplicate_type_names
@@ -7504,7 +7494,9 @@ def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
     first_statement = body[0] if len(body) >= 2 else None
     if not isinstance(first_statement, ast.If):
         return None
-    membership = cls_registry_membership_test(first_statement.test)
+    membership = DISPATCH_ALGEBRA_AUTHORITY.cls_registry_membership_test(
+        first_statement.test
+    )
     if membership is None or membership[0] != "in":
         return None
     return membership[1]
@@ -7896,7 +7888,9 @@ def _resolved_isinstance_type_names(
         type_name = _ast_terminal_name(item)
         if type_name in {None, "None", "NoneType"}:
             continue
-        indexed_class = indexed_class_for_simple_name(module, class_index, type_name)
+        indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
+            module, class_index, type_name
+        )
         if indexed_class is None:
             continue
         display_name = CLASS_INDEX_PROJECTION.display_name(indexed_class, class_index)
@@ -7941,7 +7935,7 @@ def _common_abstract_base_names(
             indexed_class
             for class_name in class_names
             if (
-                indexed_class := indexed_class_for_simple_name(
+                indexed_class := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
                     module, class_index, class_name
                 )
             )
@@ -8174,7 +8168,9 @@ def _implicit_self_contract_mixin_candidates(
             method_lines.append(method.lineno)
             cast_type_names.update(method_cast_type_names)
             accessed_attr_names.update(
-                attribute_names_for_roots(method, root_names=set(alias_names))
+                SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
+                    method, root_names=set(alias_names)
+                )
             )
         if not method_names:
             continue
@@ -8336,7 +8332,9 @@ def _guard_validator_access_profile(
         return None
     if not any((_contains_nonfalse_return(statement) for statement in body)):
         return None
-    accessed_attr_names = attribute_names_for_roots(function, root_names=root_names)
+    accessed_attr_names = SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
+        function, root_names=root_names
+    )
     if len(accessed_attr_names) < min_guard_count:
         return None
     return guard_count, accessed_attr_names
@@ -8691,7 +8689,9 @@ def _string_dispatch_cases_from_body(
         return ()
     current = body[0]
     while isinstance(current, ast.If):
-        dispatch_case = comparison_dispatch_case(current.test)
+        dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
+            current.test
+        )
         if dispatch_case is None:
             return ()
         current_axis, case_name = dispatch_case
@@ -8725,7 +8725,9 @@ def _manual_fiber_tag_candidates(
         init_method = methods.get("__init__")
         if init_method is None:
             continue
-        assigned_from_param = assigned_self_attr_from_param(init_method)
+        assigned_from_param = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
+            init_method
+        )
         tag_names = tuple(
             (
                 attr_name
@@ -8789,7 +8791,9 @@ def _descriptor_derived_view_candidates(
         init_method = next((item for item in methods if item.name == "__init__"), None)
         if init_method is None:
             continue
-        source_assignments = assigned_self_attr_from_param(init_method)
+        source_assignments = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
+            init_method
+        )
         for source_attr in source_assignments:
             derived_field_names = []
             for subnode in _walk_nodes(init_method):
@@ -9013,7 +9017,8 @@ def _structural_confusability_candidates_for_function(
         confusable_classes = tuple(
             node
             for node in class_nodes
-            if set(observed_method_names) <= method_names(node)
+            if set(observed_method_names)
+            <= SYNTAX_PROJECTION_AUTHORITY.method_names(node)
         )
         if len(confusable_classes) < 2:
             continue
@@ -9048,20 +9053,22 @@ def _structural_confusability_candidates(
 
 def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
     for decorator in node.decorator_list:
-        if isinstance(decorator, ast.Call) and is_dataclass_decorator(decorator.func):
+        if isinstance(
+            decorator, ast.Call
+        ) and SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator.func):
             for keyword in decorator.keywords:
                 if keyword.arg == "frozen":
                     return isinstance(keyword.value, ast.Constant) and bool(
                         keyword.value.value
                     )
             return False
-        if is_dataclass_decorator(decorator):
+        if SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator):
             return False
     return False
 
 
 def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return class_annassign_target_names(node)
+    return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
 def normalize_semantic_field_roles(field_name: str) -> tuple[str, ...]:
@@ -9285,7 +9292,9 @@ def _metaclass_registry_keyed_family_scaffold(
         "from typing import ClassVar",
         "",
         f"class {root_name}(ABC, metaclass=AutoRegisterMeta):",
-        declared_registry_key_block(key_attr_name, key_type_name=key_type_name),
+        DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
+            key_attr_name, key_type_name=key_type_name
+        ),
         "",
         "    @classmethod",
         f"    def for_key(cls, key: {key_type_name}):",

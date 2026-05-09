@@ -47,7 +47,7 @@ class ManualFamilyRosterDetector(IssueDetector):
                         ),
                         tuple(evidence[:6]),
                         scaffold=(
-                            f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import ClassVar\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n    registration_order: ClassVar[int] = 0\n\nordered_types = tuple(\n    sorted(\n        Registered{candidate.family_base_name}.__registry__.values(),\n        key=lambda registered_type: registered_type.registration_order,\n    )\n)"
+                            f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import ClassVar\n\nclass Registered{candidate.family_base_name}({candidate.family_base_name}, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(candidate.member_names, registry_key_attr_name='registration_key')}\n    registration_order: ClassVar[int] = 0\n\nordered_types = tuple(\n    sorted(\n        Registered{candidate.family_base_name}.__registry__.values(),\n        key=lambda registered_type: registered_type.registration_order,\n    )\n)"
                         ),
                         codemod_patch=(
                             f"# Replace `{candidate.owner_name}` with metaclass-registry class-time registration for the `{candidate.family_base_name}` family.\n"

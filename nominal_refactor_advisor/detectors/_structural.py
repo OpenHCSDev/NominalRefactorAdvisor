@@ -507,7 +507,9 @@ def _class_pytree_base_names(node: ast.ClassDef) -> tuple[str, ...]:
 
 
 def _class_manual_transport_methods(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES)
+    return sorted_tuple(
+        SYNTAX_PROJECTION_AUTHORITY.method_names(node) & _PYTREE_TRANSPORT_METHOD_NAMES
+    )
 
 
 def _connected_role_components(
@@ -1689,7 +1691,7 @@ declare_candidate_rule_detector(
             union_candidate.owner_name,
         ),
     ),
-    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
+    scaffold=lambda union_candidate: f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass UnifiedRegistryRoot(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(union_candidate.root_names)}\n\ndef {union_candidate.owner_name}(...):\n    return tuple(UnifiedRegistryRoot.__registry__.values())",
     codemod_patch=lambda union_candidate: f"# Replace the manual union over {union_candidate.root_names} with one authoritative `{union_candidate.accessor_name}` query.\n# Let one shared metaclass-registry root derive the full set from `__registry__` instead of concatenating sibling roots by hand.",
     metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(union_candidate.root_names),
@@ -1734,7 +1736,7 @@ class RegistryTraversalSubstrateDetector(IssueDetector):
             "" if not group.filter_names else f" with filter hooks {group.filter_names}"
         )
         scaffold = (
-            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
+            f"import re\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nclass RegisteredFamily(ABC, metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(group.symbols or ('RegisteredFamily',))}\n\ndef materialize_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    return tuple(\n        materialize(item)\n        for item in root.__registry__.values()\n        if include(item)\n    )"
             if group.registry_attribute_names
             else (
                 "from metaclass_registry import AutoRegisterMeta\n\ndef walk_family(root, *, include=lambda item: True, materialize=lambda item: item):\n    seen = set()\n    ordered = []\n    queue = list(root.__subclasses__())\n    while queue:\n        current = queue.pop(0)\n        queue.extend(current.__subclasses__())\n        if not include(current) or current in seen:\n            continue\n        seen.add(current)\n        ordered.append(materialize(current))\n    return tuple(ordered)\n\n# If this family is really registry-shaped, make the root an AutoRegisterMeta family and\n# read registered classes from cls.__registry__.values() instead of maintaining a second walker."

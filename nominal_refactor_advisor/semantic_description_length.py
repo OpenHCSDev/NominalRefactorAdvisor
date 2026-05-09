@@ -236,6 +236,16 @@ class CompressionCertificate(SemanticDescription):
     def pays_rent(self) -> bool:
         return self.certified_description_length_savings > 0
 
+    @property
+    def rent_proof_summary(self) -> str:
+        status = "pays_rent" if self.pays_rent else "does_not_pay_rent"
+        return (
+            f"{status}: before={self.before_description_length}, "
+            f"after={self.after_description_length}, "
+            f"margin={self.margin_description_length}, "
+            f"certified_savings={self.certified_description_length_savings}"
+        )
+
 
 @dataclass(frozen=True)
 class ClassFamilyCompressionProfile(SemanticDescription):

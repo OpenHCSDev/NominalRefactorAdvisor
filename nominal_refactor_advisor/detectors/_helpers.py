@@ -752,7 +752,9 @@ def _nominal_authority_shapes(
                     ancestor_names=(),
                     field_names=tuple((name for name, _ in field_type_map)),
                     field_type_map=field_type_map,
-                    method_names=sorted_tuple(method_names(node)),
+                    method_names=sorted_tuple(
+                        SYNTAX_PROJECTION_AUTHORITY.method_names(node)
+                    ),
                     is_abstract=CLASS_NODE_AUTHORITY.is_abstract(node),
                     is_dataclass_family=_is_dataclass_class(node),
                 )
@@ -7400,12 +7402,15 @@ def _autoregister_patch(
         )
     )
     use_extractor = len(key_values) == len(ordered_class_names) and (
-        derivable_registry_key_suffix(ordered_class_names, key_values) is not None
+        DISPATCH_ALGEBRA_AUTHORITY.derivable_registry_key_suffix(
+            ordered_class_names, key_values
+        )
+        is not None
     )
     config_block = (
-        derived_registry_key_block(ordered_class_names)
+        DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(ordered_class_names)
         if use_extractor
-        else declared_registry_key_block("registry_key")
+        else DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block("registry_key")
     )
     return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n" + (
         "+from metaclass_registry import AutoRegisterMeta\n"
@@ -7478,7 +7483,7 @@ def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> s
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
     base_name = shared_family_name(sorted(class_names)) or "RegisteredBase"
     sample = sorted(class_names)[:2]
-    config_block = derived_registry_key_block(sample)
+    config_block = DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(sample)
     subclass_block = "\n".join(
         (f"class {name}({base_name}):\n    ..." for name in sample)
     )

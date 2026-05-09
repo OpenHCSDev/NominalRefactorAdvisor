@@ -554,11 +554,13 @@ class ManualConcreteSubclassRosterDetector(
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])
         config_block = (
-            declared_registry_key_block(
+            DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
                 roster_candidate.registration_site.selector_attr_name
             )
             if roster_candidate.registration_site.selector_attr_name is not None
-            else derived_registry_key_block(roster_candidate.concrete_class_names)
+            else DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(
+                roster_candidate.concrete_class_names
+            )
         )
         scaffold_imports = (
             "from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\n"
@@ -608,7 +610,7 @@ class SemanticInheritanceFamilySSOTDetector(
     def _finding_for_candidate(
         self, family_candidate: SemanticInheritanceFamilySSOTCandidate
     ) -> RefactorFinding:
-        key_block = declared_registry_key_block(
+        key_block = DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
             family_candidate.suggested_key_attr_name
         )
         concrete_preview = ", ".join(family_candidate.concrete_class_names[:4])
@@ -766,7 +768,7 @@ class PredicateSelectedConcreteFamilyDetector(
             ),
             tuple(evidence[:6]),
             scaffold=(
-                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
+                f'from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\nfrom typing import Generic, Self, TypeVar\n\nContextT = TypeVar("ContextT")\n\nclass PredicateSelectedConcreteFamily(ABC, Generic[ContextT], metaclass=AutoRegisterMeta):\n{DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(family_candidate.concrete_class_names)}\n\n    @classmethod\n    def matches_context(cls, context: ContextT) -> bool:\n        return True\n\n    @classmethod\n    def select_matching_type(cls, context: ContextT) -> type[Self]:\n        matches = tuple(\n            candidate\n            for candidate in cls.__registry__.values()\n            if candidate.matches_context(context)\n        )\n        ...\n'
             ),
             codemod_patch=(
                 f"# Move `{family_candidate.class_name}` selection logic into a reusable predicate-selected family base.\n"
@@ -1535,6 +1537,7 @@ materialize_product_records((
 # fmt: on
 
 _RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
+_RuntimeFunctionSequence: TypeAlias = Sequence[_RuntimeFunctionNode]
 _SurfaceFunctionItems: TypeAlias = tuple[tuple[str, _RuntimeFunctionNode], ...]
 
 
@@ -2435,7 +2438,7 @@ def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
 
 
 def _shared_private_helper_stem(
-    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    functions: _RuntimeFunctionSequence,
 ) -> tuple[str, ...]:
     token_lists = tuple(
         (_private_helper_name_tokens(function.name) for function in functions)
@@ -2471,7 +2474,7 @@ _PRIVATE_HELPER_OWNER_RESIDUE_TOKENS = frozenset(
 
 
 def _dominant_private_helper_role_tokens(
-    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    functions: _RuntimeFunctionSequence,
     stem_tokens: tuple[str, ...],
 ) -> tuple[str, ...]:
     token_lists = tuple(
@@ -2660,7 +2663,7 @@ def _private_helper_cluster_key(function_name: str) -> tuple[str, str, str]:
 
 
 def _private_helper_callee_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: _RuntimeFunctionNode,
 ) -> tuple[str, ...]:
     return sorted_tuple(
         {
@@ -2698,7 +2701,7 @@ def _private_helper_return_kind(node: ast.AST | None) -> str:
 
 
 def _private_helper_return_kinds(
-    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    functions: _RuntimeFunctionSequence,
 ) -> tuple[str, ...]:
     return sorted_tuple(
         {
@@ -2711,7 +2714,7 @@ def _private_helper_return_kinds(
 
 
 def _private_helper_constructed_type_names(
-    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    functions: _RuntimeFunctionSequence,
 ) -> tuple[str, ...]:
     return sorted_tuple(
         {
@@ -2789,7 +2792,7 @@ def _private_helper_owner_suffix(normal_form: str) -> str:
 
 
 def _private_helper_cluster_classification(
-    functions: Sequence[ast.FunctionDef | ast.AsyncFunctionDef],
+    functions: _RuntimeFunctionSequence,
     *,
     shared_call_names: tuple[str, ...],
 ) -> PrivateHelperClusterClassification:
@@ -3170,7 +3173,8 @@ class PrivateHelperSemanticClusterDetector(
             f"and normal form `{cluster.classification.normal_form}`; inferred owner "
             f"`{cluster.classification.owner_name}`. Roles: {cluster.classification.role_tokens}; "
             f"returns: {cluster.classification.return_kinds}; constructs: "
-            f"{cluster.classification.constructed_type_names}; consumers: {cluster.consumer_symbols[:6]}."
+            f"{cluster.classification.constructed_type_names}; consumers: {cluster.consumer_symbols[:6]}. "
+            f"Rent proof: {_private_helper_cluster_certificate(cluster).rent_proof_summary}."
         ),
         evidence=lambda cluster: cluster.evidence_locations,
         scaffold=lambda cluster: (
@@ -3190,6 +3194,7 @@ class PrivateHelperSemanticClusterDetector(
             f"# Constructed types: {cluster.classification.constructed_type_names}\n"
             f"# Shared parameters: {cluster.shared_parameter_names}\n"
             f"# Shared callees: {cluster.shared_call_names}\n"
+            f"# Rent proof: {_private_helper_cluster_certificate(cluster).rent_proof_summary}\n"
             "# Insert the owner only where it deletes duplicated helper mechanics; otherwise keep investigating the true invariant."
         ),
         compression_certificate=_private_helper_cluster_certificate,

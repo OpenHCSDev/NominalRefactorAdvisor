@@ -739,6 +739,34 @@ declare_candidate_rule_detector(
 )
 
 
+def _alias_only_authority_certificate(
+    candidate: AliasOnlyNominalAuthorityCandidate,
+) -> CompressionCertificate:
+    alias_count = len(candidate.alias_names)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=alias_count,
+        replacement_shape=ObjectFamilyShape(shared_objects=("authority_shell",)),
+        semantic_axes=candidate.alias_names,
+        residual_object_count=alias_count,
+        wiring_object_count=len(candidate.delegate_names),
+    )
+
+
+def _module_authority_reexport_certificate(
+    candidate: ModuleAuthorityReexportCatalogCandidate,
+) -> CompressionCertificate:
+    alias_count = len(candidate.alias_names)
+    return CompressionCertificate.from_object_family(
+        manual_object_count=alias_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("authority_reexport_catalog",)
+        ),
+        semantic_axes=candidate.alias_names,
+        residual_object_count=alias_count,
+        wiring_object_count=len(candidate.delegate_names),
+    )
+
+
 declare_candidate_rule_detector(
     AliasOnlyNominalAuthorityCandidate,
     high_confidence_spec(
@@ -752,7 +780,8 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` aliases public names {candidate.alias_names} "
-        f"to delegates {candidate.delegate_names}; this is not a rent-paying authority."
+        f"to delegates {candidate.delegate_names}; this is not a rent-paying authority. "
+        f"Rent proof: {_alias_only_authority_certificate(candidate).rent_proof_summary}."
     ),
     scaffold=lambda candidate: (
         f"class {candidate.class_name}:\n"
@@ -761,8 +790,10 @@ declare_candidate_rule_detector(
     ),
     codemod_patch=lambda candidate: (
         f"# Delete alias-only authority `{candidate.class_name}` or replace it with "
-        "a real shared algorithm/policy object. Do not re-export bound aliases as a refactor."
+        "a real shared algorithm/policy object. Do not re-export bound aliases as a refactor.\n"
+        f"# Rent proof: {_alias_only_authority_certificate(candidate).rent_proof_summary}"
     ),
+    compression_certificate=_alias_only_authority_certificate,
     metrics=lambda candidate: OrchestrationMetrics(
         function_line_count=candidate.line_count,
         branch_site_count=0,
@@ -788,7 +819,8 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.authority_name}` is re-exported through helper aliases "
-        f"{candidate.alias_names}; remove the alias catalog or prove the authority owns a shared invariant."
+        f"{candidate.alias_names}; remove the alias catalog or prove the authority owns a shared invariant. "
+        f"Rent proof: {_module_authority_reexport_certificate(candidate).rent_proof_summary}."
     ),
     scaffold=lambda candidate: (
         f"class {candidate.authority_name.title().replace('_', '')}:\n"
@@ -797,11 +829,12 @@ declare_candidate_rule_detector(
     ),
     codemod_patch=lambda candidate: (
         f"# Delete module-level re-export aliases for `{candidate.authority_name}`.\n"
-        "# Either call a real authority object directly at consumers, or collapse the helpers into one derived algebra."
+        "# Either call a real authority object directly at consumers, or collapse the helpers into one derived algebra.\n"
+        f"# Rent proof: {_module_authority_reexport_certificate(candidate).rent_proof_summary}"
     ),
-    metrics=lambda candidate: MappingMetrics(
+    compression_certificate=_module_authority_reexport_certificate,
+    metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.alias_names),
-        field_count=len(candidate.alias_names),
         mapping_name=candidate.authority_name,
         field_names=candidate.alias_names,
     ),
@@ -1740,7 +1773,7 @@ declare_candidate_rule_detector(
     scaffold=lambda shadow_candidate: _axis_policy_registry_scaffold("invariant(self)")
     + f"\n\ndef run_with_axis(axis: {_AXIS_POLICY_KEY_TYPE_NAME}, ...):\n    policy = {_AXIS_POLICY_ROOT_NAME}.for_key(axis)\n    # derive local execution from authoritative policy facts\n",
     codemod_patch=lambda shadow_candidate: f"# Remove shadow family `{shadow_candidate.shadow.family_name}`.\n# Derive local behavior from authoritative family `{shadow_candidate.authoritative.family_name}` instead of re-owning axis `{shadow_candidate.key_type_name}`.",
-    metrics=lambda shadow_candidate: axis_dispatch_metrics(
+    metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
     detector_base=CrossModuleCollectorCandidateDetector,
@@ -1837,7 +1870,7 @@ class ParallelKeyedAxisFamilyDetector(
                 f"# Collapse `{family_candidate.left.family_name}` and `{family_candidate.right.family_name}` onto one authoritative keyed family.\n"
                 "# Move the irreducible case-specific hooks to that family or to a single derived adapter table, not two parallel nominal roots."
             ),
-            metrics=axis_dispatch_metrics(
+            metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
                 family_candidate.shared_case_names,
                 family_candidate.key_type_name,
             ),
@@ -1908,7 +1941,7 @@ class ParallelKeyedTableAndFamilyDetector(
                 f"# Collapse `{table_candidate.table_name}` and `{table_candidate.family_name}` onto one authoritative metaclass-registry family.\n"
                 "# Keep the runtime boundary on the auto-registered family and derive any keyed rows/views from `AxisPolicy.__registry__`."
             ),
-            metrics=axis_dispatch_metrics(
+            metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
                 table_candidate.shared_case_names,
                 table_candidate.key_type_name,
             ),

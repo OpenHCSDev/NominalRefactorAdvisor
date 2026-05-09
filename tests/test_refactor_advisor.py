@@ -5783,8 +5783,10 @@ def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
     assert "ClassProjection" in finding.summary
     assert "collection_projection" in finding.summary
+    assert "certified_savings" in finding.summary
     assert "_class_field_names" in finding.summary
     assert "Do not fix" in (finding.codemod_patch or "")
+    assert "Rent proof" in (finding.codemod_patch or "")
 
 
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
@@ -6143,6 +6145,9 @@ def test_detects_alias_only_nominal_authority(tmp_path: Path) -> None:
     )
     assert "SyntaxProjectionAuthority" in finding.summary
     assert "not a rent-paying authority" in finding.summary
+    assert "does_not_pay_rent" in finding.summary
+    assert finding.compression_certificate is not None
+    assert not finding.compression_certificate.pays_rent
     assert "Do not re-export bound aliases" in (finding.codemod_patch or "")
 
 
@@ -6161,6 +6166,9 @@ def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:
     )
     assert "SYNTAX_PROJECTION_AUTHORITY" in finding.summary
     assert "helper aliases" in finding.summary
+    assert "does_not_pay_rent" in finding.summary
+    assert finding.compression_certificate is not None
+    assert not finding.compression_certificate.pays_rent
     assert "Delete module-level re-export aliases" in (finding.codemod_patch or "")
 
 
