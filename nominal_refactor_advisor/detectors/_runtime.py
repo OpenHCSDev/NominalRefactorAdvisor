@@ -1808,11 +1808,19 @@ class DeadEmbeddedStaticPayloadDetector(
 # fmt: off
 materialize_product_record(product_record_spec('UnreferencedPrivateFunctionCandidate', 'function_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
 materialize_product_record(product_record_spec('DanglingPrivateMethodCandidate', 'owner_name: str; method_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
+materialize_product_record(product_record_spec('PrivateHelperResiduePlan', 'classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; transported_parameter_names: tuple[str, ...]; callsite_axis_count: int; shared_statement_count: int; normal_form: str'))
+materialize_product_record(product_record_spec('PrivateHelperPlacementPlan', 'placement_kind: str; insertion_owner_name: str; insertion_detail: str; residue_plan: PrivateHelperResiduePlan; caller_owner_names: tuple[str, ...]'))
+materialize_product_record(product_record_spec('NonNominalPrivateHelperCandidate', 'function_name: str; parameter_names: tuple[str, ...]; caller_symbols: tuple[str, ...]; placement_plan: PrivateHelperPlacementPlan; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
+materialize_product_record(product_record_spec('PrivateHelperResidueNameTemplate', 'kind: str; prefix: str; suffix: str; uppercase: bool; parameter_name_is_authority: bool'))
+materialize_product_record(product_record_spec('PrivateHelperAuthorityRole', 'role_tokens: tuple[str, ...]; suffix: str; drop_tokens: tuple[str, ...]'))
 # fmt: on
+
+_RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
+_RuntimeFunctionsByQualname: TypeAlias = dict[str, _RuntimeFunctionNode]
 
 
 def _has_external_protocol_shape(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    function: _RuntimeFunctionNode,
 ) -> bool:
     if function.decorator_list:
         return True
@@ -1932,6 +1940,605 @@ def _dangling_private_method_candidates(
     )
 
 
+def _function_parameter_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        (
+            argument.arg
+            for argument in (
+                *function.args.posonlyargs,
+                *function.args.args,
+                *function.args.kwonlyargs,
+            )
+        )
+    )
+
+
+def _function_symbol_references(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> frozenset[str]:
+    return frozenset(
+        (
+            (
+                node.id
+                if isinstance(node, ast.Name)
+                else node.attr if isinstance(node, ast.Attribute) else node.value
+            )
+            for node in _walk_function_body_nodes(function)
+            if (
+                isinstance(node, ast.Name)
+                or isinstance(node, ast.Attribute)
+                or (isinstance(node, ast.Constant) and isinstance(node.value, str))
+            )
+        )
+    )
+
+
+@dataclass(frozen=True)
+class PrivateHelperCallGraph:
+    caller_symbols_by_name: dict[str, tuple[str, ...]]
+    functions_by_qualname: _RuntimeFunctionsByQualname
+
+    @classmethod
+    def from_modules(cls, modules: Sequence[ParsedModule]) -> "PrivateHelperCallGraph":
+        callers_by_symbol: dict[str, set[str]] = {}
+        functions_by_qualname: _RuntimeFunctionsByQualname = {}
+        for module in modules:
+            for qualname, function in _iter_surface_functions(module.module):
+                functions_by_qualname[qualname] = function
+                for symbol_name in _function_symbol_references(function):
+                    callers_by_symbol.setdefault(symbol_name, set()).add(qualname)
+        return cls(
+            caller_symbols_by_name={
+                symbol_name: sorted_tuple(caller_symbols)
+                for symbol_name, caller_symbols in callers_by_symbol.items()
+            },
+            functions_by_qualname=functions_by_qualname,
+        )
+
+    def caller_symbols(self, *, function_name: str, qualname: str) -> tuple[str, ...]:
+        return tuple(
+            caller_symbol
+            for caller_symbol in self.caller_symbols_by_name.get(function_name, ())
+            if caller_symbol != qualname
+        )
+
+    def caller_functions(
+        self, *, function_name: str, qualname: str
+    ) -> tuple[_RuntimeFunctionNode, ...]:
+        return tuple(
+            (
+                function
+                for caller_symbol in self.caller_symbols(
+                    function_name=function_name, qualname=qualname
+                )
+                if (function := self.functions_by_qualname.get(caller_symbol))
+                is not None
+            )
+        )
+
+
+def _private_helper_caller_owner_names(
+    caller_symbols: tuple[str, ...],
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        (
+            caller_symbol.rsplit(".", 1)[0]
+            for caller_symbol in caller_symbols
+            if "." in caller_symbol
+        )
+    )
+
+
+def _private_helper_unique_class_symbol(
+    class_index: ClassFamilyIndex, owner_name: str
+) -> str | None:
+    symbols = tuple(
+        symbol
+        for symbol, indexed_class in class_index.classes_by_symbol.items()
+        if indexed_class.qualname == owner_name
+        or indexed_class.simple_name == owner_name.rsplit(".", 1)[-1]
+    )
+    if len(symbols) == 1:
+        return symbols[0]
+    return None
+
+
+def _private_helper_deepest_common_ancestor_symbol(
+    class_index: ClassFamilyIndex, class_symbols: tuple[str, ...]
+) -> str | None:
+    if not class_symbols:
+        return None
+    ancestor_sets = tuple(
+        (
+            frozenset(
+                (
+                    class_symbol,
+                    *class_index.ancestor_symbols(class_symbol),
+                )
+            )
+            for class_symbol in class_symbols
+        )
+    )
+    common_symbols = set.intersection(*(set(symbols) for symbols in ancestor_sets))
+    if not common_symbols:
+        return None
+    return max(
+        common_symbols,
+        key=lambda symbol: len(class_index.ancestor_symbols(symbol)),
+    )
+
+
+def _private_helper_call_nodes(
+    function: _RuntimeFunctionNode, helper_name: str
+) -> tuple[ast.Call, ...]:
+    return tuple(
+        (
+            node
+            for node in _walk_function_body_nodes(function)
+            if isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name) and node.func.id == helper_name)
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == helper_name
+                )
+            )
+        )
+    )
+
+
+def _private_helper_call_argument_map(
+    call: ast.Call, parameter_names: tuple[str, ...]
+) -> dict[str, ast.AST]:
+    argument_map: dict[str, ast.AST] = {
+        parameter_name: argument
+        for parameter_name, argument in zip(parameter_names, call.args)
+    }
+    argument_map.update(
+        {
+            keyword.arg: keyword.value
+            for keyword in call.keywords
+            if keyword.arg is not None
+        }
+    )
+    return argument_map
+
+
+def _private_helper_residue_kind(argument: ast.AST) -> str:
+    if isinstance(argument, ast.Constant):
+        return "constant"
+    if isinstance(argument, ast.Attribute):
+        if isinstance(argument.value, ast.Name) and argument.value.id == "self":
+            return "self_attr"
+        return "attribute"
+    if isinstance(argument, ast.Call):
+        return "call"
+    if isinstance(argument, ast.Name):
+        return "name"
+    return "expression"
+
+
+_PRIVATE_HELPER_VALUE_RESIDUE_TEMPLATE = PrivateHelperResidueNameTemplate(
+    kind="value",
+    prefix="",
+    suffix="_value",
+    uppercase=False,
+    parameter_name_is_authority=False,
+)
+_PRIVATE_HELPER_RESIDUE_NAME_TEMPLATES = (
+    PrivateHelperResidueNameTemplate(
+        kind="constant",
+        prefix="",
+        suffix="",
+        uppercase=True,
+        parameter_name_is_authority=False,
+    ),
+    PrivateHelperResidueNameTemplate(
+        kind="call",
+        prefix="_",
+        suffix="_operation",
+        uppercase=False,
+        parameter_name_is_authority=False,
+    ),
+    PrivateHelperResidueNameTemplate(
+        kind="self_attr",
+        prefix="",
+        suffix="",
+        uppercase=False,
+        parameter_name_is_authority=True,
+    ),
+)
+
+
+def _private_helper_residue_name(
+    function_name: str, parameter_name: str, kind: str
+) -> str:
+    template = next(
+        (
+            template
+            for template in _PRIVATE_HELPER_RESIDUE_NAME_TEMPLATES
+            if template.kind == kind
+        ),
+        _PRIVATE_HELPER_VALUE_RESIDUE_TEMPLATE,
+    )
+    if template.parameter_name_is_authority:
+        return parameter_name
+    base_name = f"{function_name.removeprefix('_')}_{parameter_name}"
+    residue_name = f"{template.prefix}{base_name}{template.suffix}"
+    if template.uppercase:
+        return residue_name.upper()
+    return residue_name
+
+
+def _private_helper_residue_plan(
+    *,
+    function: _RuntimeFunctionNode,
+    parameter_names: tuple[str, ...],
+    caller_functions: tuple[_RuntimeFunctionNode, ...],
+) -> PrivateHelperResiduePlan:
+    call_argument_maps = tuple(
+        (
+            _private_helper_call_argument_map(call, parameter_names)
+            for caller_function in caller_functions
+            for call in _private_helper_call_nodes(caller_function, function.name)
+        )
+    )
+    classvar_names: list[str] = []
+    property_hook_names: list[str] = []
+    behavior_hook_names: list[str] = []
+    transported_parameter_names: list[str] = []
+    callsite_axis_count = 0
+    for parameter_name in parameter_names:
+        arguments = tuple(
+            argument_map[parameter_name]
+            for argument_map in call_argument_maps
+            if parameter_name in argument_map
+        )
+        if not arguments:
+            continue
+        argument_values = {ast.unparse(argument) for argument in arguments}
+        argument_kinds = {
+            _private_helper_residue_kind(argument) for argument in arguments
+        }
+        if argument_kinds == {"name"} and argument_values == {parameter_name}:
+            transported_parameter_names.append(parameter_name)
+            continue
+        if len(argument_values) == 1 and next(iter(argument_kinds)) == "name":
+            transported_parameter_names.append(parameter_name)
+            continue
+        callsite_axis_count += 1
+        kind = next(iter(sorted(argument_kinds)))
+        residue_name = _private_helper_residue_name(function.name, parameter_name, kind)
+        if kind == "constant":
+            classvar_names.append(residue_name)
+        elif kind == "call":
+            behavior_hook_names.append(residue_name)
+        else:
+            property_hook_names.append(residue_name)
+    shared_statement_count = len(_trim_docstring_body(list(function.body)))
+    leaf_residue_names = sorted_tuple(
+        (*classvar_names, *property_hook_names, *behavior_hook_names)
+    )
+    normal_form = (
+        f"HELPER_TEMPLATE({function.name})"
+        f" -> input({','.join(sorted_tuple(transported_parameter_names))})"
+        f" + residue({','.join(leaf_residue_names)})"
+    )
+    return PrivateHelperResiduePlan(
+        classvar_names=tuple(dict.fromkeys(classvar_names)),
+        property_hook_names=tuple(dict.fromkeys(property_hook_names)),
+        behavior_hook_names=tuple(dict.fromkeys(behavior_hook_names)),
+        transported_parameter_names=tuple(dict.fromkeys(transported_parameter_names)),
+        callsite_axis_count=callsite_axis_count,
+        shared_statement_count=shared_statement_count,
+        normal_form=normal_form,
+    )
+
+
+_PRIVATE_HELPER_AUTHORITY_VERB_TOKENS = frozenset(
+    {
+        "as",
+        "build",
+        "candidate",
+        "candidates",
+        "collect",
+        "compute",
+        "derive",
+        "derived",
+        "detect",
+        "find",
+        "for",
+        "from",
+        "get",
+        "has",
+        "is",
+        "iter",
+        "make",
+        "to",
+    }
+)
+_PRIVATE_HELPER_AUTHORITY_ROLES = (
+    PrivateHelperAuthorityRole(
+        role_tokens=("candidate", "candidates", "collect", "collector"),
+        suffix="CandidateCollector",
+        drop_tokens=("candidate", "candidates", "collect", "collector"),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("metric", "metrics"),
+        suffix="MetricsBuilder",
+        drop_tokens=("metric", "metrics"),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("dispatch",),
+        suffix="DispatchAuthority",
+        drop_tokens=("dispatch",),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("registry", "registered"),
+        suffix="RegistryAuthority",
+        drop_tokens=("registry", "registered"),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("template", "templates"),
+        suffix="TemplateAuthority",
+        drop_tokens=("template", "templates"),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("shape", "shapes"),
+        suffix="ShapeProjector",
+        drop_tokens=("shape", "shapes"),
+    ),
+    PrivateHelperAuthorityRole(
+        role_tokens=("name", "names"),
+        suffix="NameProjection",
+        drop_tokens=("name", "names"),
+    ),
+)
+
+
+def _private_helper_name_tokens(function_name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in function_name.removeprefix("_").split("_")
+        if token and token not in _PRIVATE_HELPER_AUTHORITY_VERB_TOKENS
+    )
+
+
+def _private_helper_pascal_name(tokens: tuple[str, ...], fallback: str) -> str:
+    if not tokens:
+        return fallback
+    return "".join(token.capitalize() for token in tokens)
+
+
+def _private_helper_authority_role(
+    function_name: str,
+) -> PrivateHelperAuthorityRole | None:
+    all_tokens = frozenset(function_name.removeprefix("_").split("_"))
+    return next(
+        (
+            role
+            for role in _PRIVATE_HELPER_AUTHORITY_ROLES
+            if all_tokens & frozenset(role.role_tokens)
+        ),
+        None,
+    )
+
+
+def _private_helper_derived_authority_name(
+    function_name: str,
+    *,
+    caller_owner_names: tuple[str, ...],
+    fallback_suffix: str,
+) -> str:
+    shared_caller_name = _shared_family_name(caller_owner_names)
+    if shared_caller_name is not None:
+        return shared_caller_name
+    role = _private_helper_authority_role(function_name)
+    tokens = _private_helper_name_tokens(function_name)
+    if role is not None:
+        role_drop_tokens = frozenset(role.drop_tokens)
+        subject_tokens = tuple(
+            token for token in tokens if token not in role_drop_tokens
+        )
+        return f"{_private_helper_pascal_name(subject_tokens, 'Semantic')}{role.suffix}"
+    return f"{_private_helper_pascal_name(tokens, 'Semantic')}{fallback_suffix}"
+
+
+def _private_helper_placement_plan(
+    modules: Sequence[ParsedModule],
+    *,
+    function: _RuntimeFunctionNode,
+    function_name: str,
+    parameter_names: tuple[str, ...],
+    caller_symbols: tuple[str, ...],
+    caller_functions: tuple[_RuntimeFunctionNode, ...],
+    class_index: ClassFamilyIndex | None = None,
+) -> PrivateHelperPlacementPlan:
+    caller_owner_names = _private_helper_caller_owner_names(caller_symbols)
+    residue_plan = _private_helper_residue_plan(
+        function=function,
+        parameter_names=parameter_names,
+        caller_functions=caller_functions,
+    )
+    if len(caller_owner_names) == len(caller_symbols):
+        class_index = class_index or build_class_family_index(list(modules))
+        class_symbols = tuple(
+            (
+                class_symbol
+                for owner_name in caller_owner_names
+                if (
+                    class_symbol := _private_helper_unique_class_symbol(
+                        class_index, owner_name
+                    )
+                )
+                is not None
+            )
+        )
+        if len(class_symbols) == len(caller_owner_names):
+            common_ancestor_symbol = _private_helper_deepest_common_ancestor_symbol(
+                class_index, class_symbols
+            )
+            if common_ancestor_symbol is not None:
+                ancestor = class_index.class_for(common_ancestor_symbol)
+                owner_name = (
+                    ancestor.simple_name
+                    if ancestor is not None
+                    else common_ancestor_symbol.rsplit(".", 1)[-1]
+                )
+                return PrivateHelperPlacementPlan(
+                    placement_kind="existing_inheritance_root",
+                    insertion_owner_name=owner_name,
+                    insertion_detail=(
+                        f"Insert `{function_name}` as a concrete/template method on `{owner_name}`; "
+                        "thread transported inputs through the template method and keep callsite axes "
+                        "as typed classvars/hooks on the leaves."
+                    ),
+                    residue_plan=residue_plan,
+                    caller_owner_names=caller_owner_names,
+                )
+        if len(caller_owner_names) == 1:
+            owner_name = caller_owner_names[0]
+            return PrivateHelperPlacementPlan(
+                placement_kind="owning_class_method",
+                insertion_owner_name=owner_name,
+                insertion_detail=(
+                    f"Move `{function_name}` onto `{owner_name}` as an owned method; "
+                    "promote it to the nearest ABC only if subclasses also consume it."
+                ),
+                residue_plan=residue_plan,
+                caller_owner_names=caller_owner_names,
+            )
+        owner_name = _private_helper_derived_authority_name(
+            function_name,
+            caller_owner_names=caller_owner_names,
+            fallback_suffix="FamilyAuthority",
+        )
+        return PrivateHelperPlacementPlan(
+            placement_kind="new_family_mixin_or_abc",
+            insertion_owner_name=owner_name,
+            insertion_detail=(
+                f"Create `{owner_name}` as the nominal family/mixin owner for `{function_name}`; "
+                "attach the participating caller classes through inheritance or composition."
+            ),
+            residue_plan=residue_plan,
+            caller_owner_names=caller_owner_names,
+        )
+    if caller_owner_names:
+        owner_name = _private_helper_derived_authority_name(
+            function_name,
+            caller_owner_names=caller_owner_names,
+            fallback_suffix="BoundaryPolicy",
+        )
+        return PrivateHelperPlacementPlan(
+            placement_kind="boundary_strategy",
+            insertion_owner_name=owner_name,
+            insertion_detail=(
+                f"Mixed class/module callers should route through `{owner_name}` as an explicit policy "
+                f"or effect step that owns `{function_name}`."
+            ),
+            residue_plan=residue_plan,
+            caller_owner_names=caller_owner_names,
+        )
+    return PrivateHelperPlacementPlan(
+        placement_kind="module_nominal_authority",
+        insertion_owner_name=_private_helper_derived_authority_name(
+            function_name,
+            caller_owner_names=caller_owner_names,
+            fallback_suffix="Authority",
+        ),
+        insertion_detail=(
+            f"Create a typed product/schema/strategy authority for `{function_name}` and inject it "
+            "into the module-level callers."
+        ),
+        residue_plan=residue_plan,
+        caller_owner_names=caller_owner_names,
+    )
+
+
+def _is_probably_nominal_private_helper_contract(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    derived_candidate_collector_contract_names: frozenset[str],
+) -> bool:
+    if _has_external_protocol_shape(function):
+        return True
+    if function.name in derived_candidate_collector_contract_names:
+        return True
+    return False
+
+
+def _non_nominal_private_helper_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+    reference_modules: Sequence[ParsedModule] | None = None,
+    derived_candidate_collector_contract_names: frozenset[str] | None = None,
+    private_helper_call_graph: PrivateHelperCallGraph | None = None,
+    class_index: ClassFamilyIndex | None = None,
+) -> tuple[NonNominalPrivateHelperCandidate, ...]:
+    modules = reference_modules or (module,)
+    derived_candidate_collector_contract_names = (
+        derived_candidate_collector_contract_names
+        or _derived_candidate_collector_contract_names(modules)
+    )
+    private_helper_call_graph = (
+        private_helper_call_graph or PrivateHelperCallGraph.from_modules(modules)
+    )
+    candidates: list[NonNominalPrivateHelperCandidate] = []
+    for qualname, function in _iter_surface_functions(module.module):
+        if "." in qualname:
+            continue
+        if not _is_private_symbol_name(function.name):
+            continue
+        if _is_probably_nominal_private_helper_contract(
+            function,
+            derived_candidate_collector_contract_names=(
+                derived_candidate_collector_contract_names
+            ),
+        ):
+            continue
+        line_count = _function_line_count(function)
+        if line_count < config.min_unreferenced_private_function_lines:
+            continue
+        caller_symbols = private_helper_call_graph.caller_symbols(
+            function_name=function.name, qualname=qualname
+        )
+        if len(caller_symbols) < 2:
+            continue
+        parameter_names = _function_parameter_names(function)
+        caller_functions = private_helper_call_graph.caller_functions(
+            function_name=function.name, qualname=qualname
+        )
+        call_site_count = sum(
+            (isinstance(node, ast.Call) for node in _walk_function_body_nodes(function))
+        )
+        candidates.append(
+            NonNominalPrivateHelperCandidate(
+                file_path=str(module.path),
+                line=function.lineno,
+                qualname=qualname,
+                function_name=function.name,
+                parameter_names=parameter_names,
+                caller_symbols=caller_symbols,
+                placement_plan=_private_helper_placement_plan(
+                    modules,
+                    function=function,
+                    function_name=function.name,
+                    parameter_names=parameter_names,
+                    caller_symbols=caller_symbols,
+                    caller_functions=caller_functions,
+                    class_index=class_index,
+                ),
+                line_count=line_count,
+                call_site_count=call_site_count,
+            )
+        )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    )
+
+
 class UnreferencedPrivateFunctionDetector(
     ConfiguredModuleCollectorCandidateDetector[UnreferencedPrivateFunctionCandidate]
 ):
@@ -1977,6 +2584,82 @@ class UnreferencedPrivateFunctionDetector(
             call_site_count=function_candidate.call_site_count,
             parameter_count=0,
             callee_family_count=1,
+        ),
+    )
+
+
+class NonNominalPrivateHelperDetector(
+    ConfiguredModuleCollectorCandidateDetector[NonNominalPrivateHelperCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Reused private helper should become nominal",
+        "A module-level private helper that is called from multiple functions has become a hidden API. Private lexical residue is acceptable only while it is tiny and locally owned; once multiple callsites share it, the helper should move into a nominal owner such as an ABC method, strategy object, descriptor, product/schema object, or registered effect step.",
+        "explicit nominal owner for reused private helper behavior",
+        "module-level private helper is reused by multiple functions without a nominal owner",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        derived_candidate_collector_contract_names = (
+            _derived_candidate_collector_contract_names(modules)
+        )
+        private_helper_call_graph = PrivateHelperCallGraph.from_modules(modules)
+        class_index = build_class_family_index(modules)
+        return [
+            self._finding_for_candidate(candidate)
+            for module in modules
+            for candidate in _non_nominal_private_helper_candidates(
+                module,
+                config,
+                reference_modules=modules,
+                derived_candidate_collector_contract_names=(
+                    derived_candidate_collector_contract_names
+                ),
+                private_helper_call_graph=private_helper_call_graph,
+                class_index=class_index,
+            )
+        ]
+
+    finding_renderer = CandidateFindingRenderer[NonNominalPrivateHelperCandidate](
+        summary=lambda helper_candidate: (
+            f"`{helper_candidate.qualname}` spans {helper_candidate.line_count} lines "
+            f"and is called from {len(helper_candidate.caller_symbols)} surfaces "
+            f"{helper_candidate.caller_symbols}; parameters {helper_candidate.parameter_names}. "
+            f"Placement: {helper_candidate.placement_plan.placement_kind} "
+            f"at `{helper_candidate.placement_plan.insertion_owner_name}`."
+        ),
+        evidence=lambda helper_candidate: (helper_candidate.evidence,),
+        scaffold=lambda helper_candidate: (
+            f"class {helper_candidate.placement_plan.insertion_owner_name}(ABC):\n"
+            f"    def {helper_candidate.function_name.removeprefix('_')}(self, request): ...\n\n"
+            f"# {helper_candidate.placement_plan.insertion_detail}\n"
+            f"# Normal form: {helper_candidate.placement_plan.residue_plan.normal_form}\n"
+            f"# Classvar residue: {helper_candidate.placement_plan.residue_plan.classvar_names}\n"
+            f"# Property hook residue: {helper_candidate.placement_plan.residue_plan.property_hook_names}\n"
+            f"# Behavior hook residue: {helper_candidate.placement_plan.residue_plan.behavior_hook_names}"
+        ),
+        codemod_patch=lambda helper_candidate: (
+            f"# Move `{helper_candidate.qualname}` into a nominal owner instead of keeping a reused private helper.\n"
+            f"# Placement kind: {helper_candidate.placement_plan.placement_kind}\n"
+            f"# Insertion owner: `{helper_candidate.placement_plan.insertion_owner_name}`\n"
+            f"# {helper_candidate.placement_plan.insertion_detail}\n"
+            f"# Normal form: {helper_candidate.placement_plan.residue_plan.normal_form}\n"
+            f"# Caller owners: {helper_candidate.placement_plan.caller_owner_names}\n"
+            f"# Transported inputs: {helper_candidate.placement_plan.residue_plan.transported_parameter_names}\n"
+            f"# Classvars: {helper_candidate.placement_plan.residue_plan.classvar_names}\n"
+            f"# Property hooks: {helper_candidate.placement_plan.residue_plan.property_hook_names}\n"
+            f"# Behavior hooks: {helper_candidate.placement_plan.residue_plan.behavior_hook_names}"
+        ),
+        metrics=lambda helper_candidate: OrchestrationMetrics(
+            function_line_count=helper_candidate.line_count,
+            branch_site_count=0,
+            call_site_count=helper_candidate.call_site_count,
+            parameter_count=len(helper_candidate.parameter_names),
+            callee_family_count=len(helper_candidate.caller_symbols),
         ),
     )
 

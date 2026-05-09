@@ -5556,6 +5556,84 @@ def test_keeps_referenced_private_function(tmp_path: Path) -> None:
     )
 
 
+def test_detects_reused_non_nominal_private_helper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n\n\ndef emit_json(rows):\n    return list(_normalize_rows(rows, trim=True))\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "non_nominal_private_helper"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "_normalize_rows" in finding.summary
+    assert "emit_csv" in finding.summary
+    assert "emit_json" in finding.summary
+    assert "module_nominal_authority" in finding.summary
+    assert "Insertion owner" in (finding.codemod_patch or "")
+
+
+def test_places_reused_private_helper_on_existing_inheritance_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\nclass BaseEmitter:\n    pass\n\n\nclass CsvEmitter(BaseEmitter):\n    def emit(self, rows):\n        return ','.join(_normalize_rows(rows, trim=True))\n\n\nclass JsonEmitter(BaseEmitter):\n    def emit(self, rows):\n        return list(_normalize_rows(rows, trim=True))\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "non_nominal_private_helper"
+        )
+    )
+    assert "existing_inheritance_root" in finding.summary
+    assert "`BaseEmitter`" in finding.summary
+    assert "concrete/template method on `BaseEmitter`" in (finding.codemod_patch or "")
+    assert "Transported inputs: ('rows',)" in (finding.codemod_patch or "")
+    assert "Classvars: ('NORMALIZE_ROWS_TRIM',)" in (finding.codemod_patch or "")
+
+
+def test_derives_private_helper_residue_from_callsite_axes(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _render(rows, *, formatter, suffix):\n    normalized = []\n    for row in rows:\n        value = formatter(row)\n        if value:\n            normalized.append(value + suffix)\n    if not normalized:\n        return ()\n    return tuple(normalized)\n\n\nclass BaseEmitter:\n    pass\n\n\nclass CsvEmitter(BaseEmitter):\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_row, suffix=',')\n\n\nclass JsonEmitter(BaseEmitter):\n    def emit(self, rows):\n        return _render(rows, formatter=self.format_value, suffix=';')\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "non_nominal_private_helper"
+        )
+    )
+    patch = finding.codemod_patch or ""
+    assert "existing_inheritance_root" in finding.summary
+    assert "Transported inputs: ('rows',)" in patch
+    assert "Classvars: ('RENDER_SUFFIX',)" in patch
+    assert "Property hooks: ('formatter',)" in patch
+    assert "HELPER_TEMPLATE(_render)" in patch
+
+
+def test_ignores_lexically_local_private_helper(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n",
+    )
+    assert not any(
+        (
+            finding.detector_id == "non_nominal_private_helper"
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_detects_sibling_small_method_template(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
