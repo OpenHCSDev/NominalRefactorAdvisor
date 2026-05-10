@@ -740,41 +740,71 @@ _PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = {
 }
 
 
-def _pattern_priority(pattern_id: PatternId) -> int:
-    pattern = PATTERN_SPECS.get(pattern_id)
-    if pattern is None:
-        return 0
-    return pattern.priority
+@dataclass(frozen=True)
+class PatternCatalog:
+    """Authoritative catalog for pattern metadata and derived builders."""
+
+    plan_step_builders: dict[PlanStepBuilderId, PatternPlanStepBuilder]
+    action_builders: dict[ActionBuilderId, PatternActionBuilder]
+
+    def priority(self, pattern_id: PatternId) -> int:
+        pattern = PATTERN_SPECS.get(pattern_id)
+        return 0 if pattern is None else pattern.priority
+
+    def dependencies(self, pattern_id: PatternId) -> tuple[PatternId, ...]:
+        pattern = PATTERN_SPECS.get(pattern_id)
+        return () if pattern is None else pattern.dependencies
+
+    def synergy_with(self, pattern_id: PatternId) -> tuple[PatternId, ...]:
+        pattern = PATTERN_SPECS.get(pattern_id)
+        return () if pattern is None else pattern.synergy_with
+
+    def plan_step_builder(self, pattern_id: PatternId) -> PatternPlanStepBuilder | None:
+        pattern = PATTERN_SPECS.get(pattern_id)
+        if pattern is None or pattern.plan_step_builder_id is None:
+            return None
+        return self.plan_step_builders.get(pattern.plan_step_builder_id)
+
+    def action_builder(self, pattern_id: PatternId) -> PatternActionBuilder | None:
+        pattern = PATTERN_SPECS.get(pattern_id)
+        if pattern is None or pattern.action_builder_id is None:
+            return None
+        return self.action_builders.get(pattern.action_builder_id)
+
+    def plan_step(
+        self,
+        subsystem: str,
+        pattern_id: PatternId,
+        findings: tuple[RefactorFinding, ...],
+    ) -> str:
+        supporting = [
+            finding for finding in findings if finding.pattern_id == pattern_id
+        ]
+        builder = (
+            self.plan_step_builder(pattern_id) or _GENERIC_PATTERN_PLAN_STEP_BUILDER
+        )
+        return builder.build(subsystem, pattern_id, tuple(supporting))
+
+    def plan_actions(
+        self,
+        subsystem: str,
+        pattern_ids: Sequence[PatternId],
+        findings: tuple[RefactorFinding, ...],
+    ) -> tuple[RefactorAction, ...]:
+        actions: list[RefactorAction] = []
+        for pattern_id in pattern_ids:
+            supporting = tuple(
+                (finding for finding in findings if finding.pattern_id == pattern_id)
+            )
+            builder = self.action_builder(pattern_id) or _GENERIC_PATTERN_ACTION_BUILDER
+            actions.extend(builder.build(subsystem, pattern_id, supporting))
+        return tuple(actions)
 
 
-def _pattern_dependencies(pattern_id: PatternId) -> tuple[PatternId, ...]:
-    pattern = PATTERN_SPECS.get(pattern_id)
-    if pattern is None:
-        return ()
-    return pattern.dependencies
-
-
-def _pattern_synergy_with(pattern_id: PatternId) -> tuple[PatternId, ...]:
-    pattern = PATTERN_SPECS.get(pattern_id)
-    if pattern is None:
-        return ()
-    return pattern.synergy_with
-
-
-def _pattern_plan_step_builder(
-    pattern_id: PatternId,
-) -> PatternPlanStepBuilder | None:
-    pattern = PATTERN_SPECS.get(pattern_id)
-    if pattern is None or pattern.plan_step_builder_id is None:
-        return None
-    return _PATTERN_PLAN_STEP_BUILDERS.get(pattern.plan_step_builder_id)
-
-
-def _pattern_action_builder(pattern_id: PatternId) -> PatternActionBuilder | None:
-    pattern = PATTERN_SPECS.get(pattern_id)
-    if pattern is None or pattern.action_builder_id is None:
-        return None
-    return _PATTERN_ACTION_BUILDERS.get(pattern.action_builder_id)
+PATTERN_CATALOG = PatternCatalog(
+    plan_step_builders=_PATTERN_PLAN_STEP_BUILDERS,
+    action_builders=_PATTERN_ACTION_BUILDERS,
+)
 
 
 def build_refactor_plans(
@@ -864,7 +894,9 @@ def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -
 
 
 def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
-    return right in _pattern_synergy_with(left) or left in _pattern_synergy_with(right)
+    return right in PATTERN_CATALOG.synergy_with(
+        left
+    ) or left in PATTERN_CATALOG.synergy_with(right)
 
 
 def _shared_symbol_roots(left: RefactorFinding, right: RefactorFinding) -> bool:
@@ -934,7 +966,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     plan_steps = _build_plan_steps(
         cluster.subsystem, ordered_patterns, cluster.findings
     )
-    actions = _build_plan_actions(cluster.subsystem, ordered_patterns, cluster.findings)
+    actions = PATTERN_CATALOG.plan_actions(
+        cluster.subsystem, ordered_patterns, cluster.findings
+    )
     trajectories = _build_escape_trajectories(cluster.findings)
     return RefactorPlan(
         subsystem=cluster.subsystem,
@@ -987,7 +1021,7 @@ def _select_pattern_cover(
             score = (
                 sum((pattern_counts[pattern_id] for pattern_id in subset)),
                 sum((certified_counts[pattern_id] for pattern_id in subset)),
-                sum((_pattern_priority(pattern_id) for pattern_id in subset)),
+                sum((PATTERN_CATALOG.priority(pattern_id) for pattern_id in subset)),
                 tuple((pattern_counts[pattern_id] for pattern_id in subset)),
             )
             if best_score is None or score > best_score:
@@ -1006,7 +1040,7 @@ def _order_patterns(
 
     pattern_set = set(pattern_ids)
     dependencies = {
-        pattern_id: set(_pattern_dependencies(pattern_id)) & pattern_set
+        pattern_id: set(PATTERN_CATALOG.dependencies(pattern_id)) & pattern_set
         for pattern_id in pattern_ids
     }
     pattern_counts = Counter(finding.pattern_id for finding in findings)
@@ -1023,7 +1057,7 @@ def _order_patterns(
     while ready:
         ready.sort(
             key=lambda pattern_id: (
-                _pattern_priority(pattern_id),
+                PATTERN_CATALOG.priority(pattern_id),
                 pattern_counts[pattern_id],
                 certified_counts[pattern_id],
                 -pattern_id,
@@ -1045,7 +1079,7 @@ def _order_patterns(
             pattern_id for pattern_id in pattern_ids if pattern_id not in ordered
         ]
         remaining.sort(
-            key=lambda pattern_id: (_pattern_priority(pattern_id), -pattern_id),
+            key=lambda pattern_id: (PATTERN_CATALOG.priority(pattern_id), -pattern_id),
             reverse=True,
         )
         ordered.extend(remaining)
@@ -1181,7 +1215,10 @@ def _build_plan_steps(
 ) -> tuple[str, ...]:
     steps = list(_registry_normal_form_steps(subsystem, findings))
     steps.extend(
-        (_pattern_step(subsystem, pattern_id, findings) for pattern_id in pattern_ids)
+        (
+            PATTERN_CATALOG.plan_step(subsystem, pattern_id, findings)
+            for pattern_id in pattern_ids
+        )
     )
     steps.append(
         f"Delete superseded partial views in `{subsystem}` and route call sites through the new authorities."
@@ -1204,31 +1241,6 @@ def _registry_normal_form_steps(
             f"After the blocking registry stages are fixed in `{subsystem}`, rerun NRA before promoting any registry to metaclass registration.",
         )
     return steps
-
-
-def _pattern_step(
-    subsystem: str, pattern_id: PatternId, findings: tuple[RefactorFinding, ...]
-) -> str:
-    supporting = [finding for finding in findings if finding.pattern_id == pattern_id]
-    builder = (
-        _pattern_plan_step_builder(pattern_id) or _GENERIC_PATTERN_PLAN_STEP_BUILDER
-    )
-    return builder.build(subsystem, pattern_id, tuple(supporting))
-
-
-def _build_plan_actions(
-    subsystem: str,
-    pattern_ids: Sequence[PatternId],
-    findings: tuple[RefactorFinding, ...],
-) -> tuple[RefactorAction, ...]:
-    actions: list[RefactorAction] = []
-    for pattern_id in pattern_ids:
-        supporting = tuple(
-            (finding for finding in findings if finding.pattern_id == pattern_id)
-        )
-        builder = _pattern_action_builder(pattern_id) or _GENERIC_PATTERN_ACTION_BUILDER
-        actions.extend(builder.build(subsystem, pattern_id, supporting))
-    return tuple(actions)
 
 
 def _build_escape_trajectories(
@@ -1355,14 +1367,14 @@ def _trajectory_prerequisites(
     return frozenset(
         (
             dependency
-            for dependency in _pattern_dependencies(pattern_id)
+            for dependency in PATTERN_CATALOG.dependencies(pattern_id)
             if dependency in present_patterns
         )
     )
 
 
 def _trajectory_unlocks(pattern_id: PatternId) -> frozenset[Hashable]:
-    return frozenset((pattern_id, *_pattern_synergy_with(pattern_id)))
+    return frozenset((pattern_id, *PATTERN_CATALOG.synergy_with(pattern_id)))
 
 
 def _missing_capabilities_for_blocked_moves(

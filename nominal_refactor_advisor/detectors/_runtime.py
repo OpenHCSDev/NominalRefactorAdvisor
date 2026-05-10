@@ -590,6 +590,76 @@ class ManualConcreteSubclassRosterDetector(
         )
 
 
+class LatentImplementationRosterDetector(
+    ConfiguredCrossModuleCollectorCandidateDetector[LatentImplementationRosterCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Latent implementation roster should derive from the ABC registry",
+        "A module-level collection whose members exactly mirror concrete implementations of one ABC family is a shadow registry even when it is just strings, class objects, or instances. Membership should be derived from an AutoRegisterMeta-backed ABC or from a named projection policy over that registry.",
+        "AutoRegisterMeta-backed implementation registry with generated projection surfaces",
+        "module collection repeats the complete concrete implementation set of an ABC family",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self, roster_candidate: LatentImplementationRosterCandidate
+    ) -> RefactorFinding:
+        key_attr = roster_candidate.key_attr_name or "derived_registry_key"
+        projection_suffix = (
+            f" with subset policy `{roster_candidate.projection_policy_hint}`; "
+            f"missing {roster_candidate.missing_member_names}"
+            if roster_candidate.projection_policy_hint is not None
+            else ""
+        )
+        projection_expression = (
+            f"tuple({roster_candidate.class_name}.__registry__.keys())"
+            if roster_candidate.key_attr_name is not None
+            else f"tuple({roster_candidate.class_name}.__registry__.values())"
+        )
+        registry_block = (
+            DISPATCH_ALGEBRA_AUTHORITY.declared_registry_key_block(
+                roster_candidate.key_attr_name
+            )
+            if roster_candidate.key_attr_name is not None
+            else DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(
+                roster_candidate.concrete_class_names
+            )
+        )
+        return self.build_finding(
+            (
+                f"`{roster_candidate.roster_name}` is a `{roster_candidate.roster_kind}` roster "
+                f"{roster_candidate.roster_member_names} via `{roster_candidate.projection_role}` "
+                f"covering {roster_candidate.coverage_ratio:.2f} of concrete `{roster_candidate.class_name}` "
+                f"implementations {roster_candidate.concrete_class_names}; derive it from registry key `{key_attr}`"
+                f"{projection_suffix}."
+            ),
+            (roster_candidate.evidence,),
+            scaffold=(
+                "from abc import ABC\n"
+                "from metaclass_registry import AutoRegisterMeta\n\n"
+                f"class {roster_candidate.class_name}(ABC, metaclass=AutoRegisterMeta):\n"
+                f"{registry_block}\n\n"
+                f"{roster_candidate.roster_name} = {projection_expression}"
+            ),
+            codemod_patch=(
+                f"# Delete manual roster `{roster_candidate.roster_name}`.\n"
+                f"# Promote `{roster_candidate.class_name}` to `ABC, metaclass=AutoRegisterMeta` and derive this projection from `__registry__`"
+                + (
+                    f" through a named `{roster_candidate.projection_policy_hint}` subset policy."
+                    if roster_candidate.projection_policy_hint is not None
+                    else "."
+                )
+            ),
+            metrics=RegistrationMetrics.from_class_names(
+                registration_site_count=len(roster_candidate.concrete_class_names),
+                registry_name=roster_candidate.roster_name,
+                class_names=roster_candidate.concrete_class_names,
+            ),
+        )
+
+
 class SemanticInheritanceFamilySSOTDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[
         SemanticInheritanceFamilySSOTCandidate
@@ -957,7 +1027,7 @@ class ConcreteConfigFieldProbeDetector(
 
 
 class GeneratedTypeLineageDetector(StaticModulePatternDetector):
-    finding_spec = finding_spec_template(
+    finding_spec = speculative_finding_spec(
         PatternId.TYPE_LINEAGE,
         "Generated types need explicit lineage tracking",
         "The docs say generated and rebuilt types need explicit nominal lineage so normalization, reverse lookup, and provenance remain exact.",
@@ -965,7 +1035,6 @@ class GeneratedTypeLineageDetector(StaticModulePatternDetector):
         "same module combines runtime type generation with lineage-sensitive registries",
         _TYPE_LINEAGE_PROVENANCE_BIDIRECTIONAL_NORMALIZATION_CAPABILITY_TAGS,
         _RUNTIME_TYPE_GENERATION_LINEAGE_OBSERVATION_TAGS,
-        certification=SPECULATIVE,
     )
 
     def _module_evidence(
@@ -1272,7 +1341,7 @@ _IDENTIFIER_PATH_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*")
 
 declare_typed_observation_detector(
     "DynamicInterfaceGenerationDetector",
-    finding_spec_template(
+    speculative_finding_spec(
         PatternId.DYNAMIC_INTERFACE,
         "Dynamic interface generation is present or required",
         "The docs treat dynamically generated empty or near-empty interface types as explicit nominal identity handles when structure alone cannot express membership.",
@@ -1280,7 +1349,6 @@ declare_typed_observation_detector(
         "same module generates interface-like nominal types at runtime",
         _GENERATED_INTERFACE_IDENTITY_VIRTUAL_MEMBERSHIP_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _RUNTIME_TYPE_GENERATION_INTERFACE_IDENTITY_OBSERVATION_TAGS,
-        certification=SPECULATIVE,
     ),
     InterfaceGenerationObservationFamily,
     InterfaceGenerationObservation,
@@ -1932,7 +2000,8 @@ class DerivedCandidateCollectorContracts:
                 _candidate_collector_name_from_class_name(node.name)
                 for module in modules
                 for node in module.module.body
-                if isinstance(node, ast.ClassDef) and class_declares_finding_spec(node)
+                if isinstance(node, ast.ClassDef)
+                and HELPER_SYNTAX_PROJECTION_AUTHORITY.class_declares_finding_spec(node)
             )
         )
 
@@ -2048,19 +2117,23 @@ def _dangling_private_method_candidates(
     )
 
 
-def _function_parameter_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ...]:
-    return tuple(
-        (
-            argument.arg
-            for argument in (
-                *function.args.posonlyargs,
-                *function.args.args,
-                *function.args.kwonlyargs,
+class FunctionParameterNameProjection:
+    def names(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[str, ...]:
+        return tuple(
+            (
+                argument.arg
+                for argument in (
+                    *function.args.posonlyargs,
+                    *function.args.args,
+                    *function.args.kwonlyargs,
+                )
             )
         )
-    )
+
+
+FUNCTION_PARAMETER_NAME_PROJECTION = FunctionParameterNameProjection()
 
 
 def _function_symbol_references(
@@ -2514,7 +2587,9 @@ def _private_helper_derived_authority_name(
     caller_owner_names: tuple[str, ...],
     fallback_suffix: str,
 ) -> str:
-    shared_caller_name = shared_family_name(caller_owner_names)
+    shared_caller_name = HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(
+        caller_owner_names
+    )
     if shared_caller_name is not None:
         return shared_caller_name
     role = _private_helper_authority_role(function_name)
@@ -2639,20 +2714,29 @@ def _private_helper_placement_plan(
     )
 
 
-def _is_probably_nominal_private_helper_contract(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    *,
-    derived_candidate_collector_contract_names: frozenset[str],
-) -> bool:
-    if _has_external_protocol_shape(function):
-        return True
-    if function.name in derived_candidate_collector_contract_names:
-        return True
-    return False
+class ProbablyNominalPrivateHelperContractAuthority:
+    def owns(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        derived_candidate_collector_contract_names: frozenset[str],
+    ) -> bool:
+        if _has_external_protocol_shape(function):
+            return True
+        if function.name in derived_candidate_collector_contract_names:
+            return True
+        return False
+
+
+PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY = (
+    ProbablyNominalPrivateHelperContractAuthority()
+)
 
 
 def _private_helper_cluster_family(function_name: str) -> tuple[str, str]:
-    return _public_bare_support_function_family(function_name.lstrip("_"))
+    return PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(
+        function_name.lstrip("_")
+    )
 
 
 def _private_helper_cluster_key(function_name: str) -> tuple[str, str, str]:
@@ -2870,7 +2954,7 @@ def _private_helper_semantic_cluster_candidates(
             continue
         if not _is_private_symbol_name(function.name):
             continue
-        if _is_probably_nominal_private_helper_contract(
+        if PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY.owns(
             function,
             derived_candidate_collector_contract_names=(
                 derived_candidate_collector_contract_names
@@ -2890,7 +2974,10 @@ def _private_helper_semantic_cluster_candidates(
             continue
         helper_names = sorted_tuple((function.name for _, function in helpers))
         parameter_sets = tuple(
-            (set(_function_parameter_names(function)) for _, function in helpers)
+            (
+                set(FUNCTION_PARAMETER_NAME_PROJECTION.names(function))
+                for _, function in helpers
+            )
         )
         shared_parameter_names = sorted_tuple(set.intersection(*parameter_sets))
         call_name_sets = tuple(
@@ -2959,7 +3046,7 @@ def _non_nominal_private_helper_candidates(
             continue
         if not _is_private_symbol_name(function.name):
             continue
-        if _is_probably_nominal_private_helper_contract(
+        if PROBABLY_NOMINAL_PRIVATE_HELPER_CONTRACT_AUTHORITY.owns(
             function,
             derived_candidate_collector_contract_names=(
                 derived_candidate_collector_contract_names
@@ -2974,7 +3061,7 @@ def _non_nominal_private_helper_candidates(
         )
         if len(caller_symbols) < 2:
             continue
-        parameter_names = _function_parameter_names(function)
+        parameter_names = FUNCTION_PARAMETER_NAME_PROJECTION.names(function)
         caller_functions = private_helper_call_graph.caller_functions(
             function_name=function.name, qualname=qualname
         )

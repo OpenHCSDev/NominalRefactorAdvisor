@@ -364,7 +364,9 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
                 tuple(
                     (
                         _as_method_shape(item)
-                        for item in materialize_observations(fiber.observations, lookup)
+                        for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
+                            fiber.observations, lookup
+                        )
                     )
                 )
                 for fiber in cohort.fibers
@@ -881,6 +883,175 @@ declare_candidate_rule_detector(
     ),
     candidate_collector=_collection_authority_stream_algebra_candidates,
     detector_name="CollectionAuthorityStreamAlgebraDetector",
+)
+
+
+_PREDICATE_GRAMMAR_AUTHORITY_SUFFIXES = (
+    "Authority",
+    "Builder",
+    "Catalog",
+    "Decoder",
+    "Extractor",
+    "Pipeline",
+    "Profile",
+    "Projection",
+    "Renderer",
+)
+
+
+class AstTypeIsinstanceNameProjection:
+    def from_expr(self, node: ast.AST) -> str | None:
+        attribute = as_ast(node, ast.Attribute)
+        if attribute is not None and name_id(attribute.value) == "ast":
+            return attribute.attr
+        name = name_id(node)
+        return name if name is not None and name[:1].isupper() else None
+
+    def from_isinstance_call(self, call: ast.Call) -> tuple[str, ...]:
+        if _call_name(call.func) != "isinstance" or len(call.args) < 2:
+            return ()
+        type_expr = call.args[1]
+        if isinstance(type_expr, ast.Tuple):
+            return sorted_tuple(
+                (
+                    type_name
+                    for element in type_expr.elts
+                    if (type_name := self.from_expr(element)) is not None
+                )
+            )
+        type_name = self.from_expr(type_expr)
+        return () if type_name is None else (type_name,)
+
+
+AST_TYPE_ISINSTANCE_NAME_PROJECTION = AstTypeIsinstanceNameProjection()
+
+
+def _uses_ast_traversal(node: ast.AST) -> bool:
+    return any(
+        (
+            isinstance(call, ast.Call)
+            and _call_name(call.func) in {"_walk_nodes", "ast.walk"}
+            for call in _walk_nodes(node)
+        )
+    )
+
+
+def _predicate_grammar_score(method: ast.FunctionDef | ast.AsyncFunctionDef) -> int:
+    return sum(
+        (
+            isinstance(node, (ast.If, ast.BoolOp, ast.Compare))
+            or (
+                isinstance(node, ast.Call)
+                and bool(AST_TYPE_ISINSTANCE_NAME_PROJECTION.from_isinstance_call(node))
+            )
+        )
+        for node in _walk_nodes(method)
+    )
+
+
+def _inline_ast_predicate_grammar_candidates(
+    module: ParsedModule,
+) -> tuple[InlineAstPredicateGrammarCandidate, ...]:
+    candidates: list[InlineAstPredicateGrammarCandidate] = []
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef) or not node.name.endswith(
+            _PREDICATE_GRAMMAR_AUTHORITY_SUFFIXES
+        ):
+            continue
+        for method in CLASS_NODE_AUTHORITY.methods(node):
+            ast_type_names = sorted_tuple(
+                {
+                    type_name
+                    for call in _walk_nodes(method)
+                    if isinstance(call, ast.Call)
+                    for type_name in (
+                        AST_TYPE_ISINSTANCE_NAME_PROJECTION.from_isinstance_call(call)
+                    )
+                }
+            )
+            predicate_count = _predicate_grammar_score(method)
+            traversal_count = sum(
+                (isinstance(loop, (ast.For, ast.While)) for loop in _walk_nodes(method))
+            )
+            if (
+                predicate_count < 6
+                or traversal_count == 0
+                or not ast_type_names
+                or not _uses_ast_traversal(method)
+            ):
+                continue
+            candidates.append(
+                InlineAstPredicateGrammarCandidate(
+                    file_path=str(module.path),
+                    line=method.lineno,
+                    class_name=node.name,
+                    method_name=method.name,
+                    ast_type_names=ast_type_names,
+                    predicate_count=predicate_count,
+                    traversal_count=traversal_count,
+                    line_count=max(
+                        1, (method.end_lineno or method.lineno) - method.lineno + 1
+                    ),
+                )
+            )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.class_name)
+    )
+
+
+def _inline_ast_predicate_grammar_certificate(
+    candidate: InlineAstPredicateGrammarCandidate,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=candidate.predicate_count + candidate.traversal_count,
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("ast_predicate_grammar", "matcher_runner"),
+            per_axis_objects=("node_type_rule",),
+        ),
+        semantic_axes=candidate.ast_type_names,
+        residual_object_count=max(1, len(candidate.ast_type_names)),
+    )
+
+
+declare_candidate_rule_detector(
+    InlineAstPredicateGrammarCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Authority method contains inline AST predicate grammar",
+        "A nominal authority method that still hand-codes AST traversal, isinstance checks, attribute guards, and boolean predicate ladders has only moved the smell. The deeper normal form is a declarative matcher/effect-step grammar: node types and field predicates are data, while traversal and failure semantics live in one reusable ABC.",
+        "declarative AST matcher grammar with traversal and predicate semantics owned once",
+        "authority method repeats AST traversal and predicate mechanics inline",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}.{candidate.method_name}` has "
+        f"{candidate.predicate_count} inline AST predicates over {candidate.ast_type_names} "
+        f"inside {candidate.traversal_count} traversal block(s); move this into a matcher grammar."
+    ),
+    scaffold=lambda candidate: (
+        "class AstPredicateRule(ABC):\n"
+        "    node_types: ClassVar[tuple[type[ast.AST], ...]]\n"
+        "    def matches(self, node: ast.AST) -> bool: ...\n\n"
+        "class AstPredicateGrammar(ABC):\n"
+        "    rules: ClassVar[tuple[AstPredicateRule, ...]]\n"
+        "    def matches_anywhere(self, root: ast.AST): ..."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace inline predicate ladder in `{candidate.class_name}.{candidate.method_name}` "
+        "with declarative `AstPredicateRule` rows and one traversal runner.\n"
+        "# Keep node type, field name, operator, and projection residue as typed rule data; "
+        "do not hide repeated predicates inside another authority method."
+    ),
+    metrics=lambda candidate: OrchestrationMetrics(
+        function_line_count=candidate.line_count,
+        branch_site_count=candidate.predicate_count,
+        call_site_count=candidate.traversal_count,
+        parameter_count=len(candidate.ast_type_names),
+        callee_family_count=1,
+    ),
+    compression_certificate=_inline_ast_predicate_grammar_certificate,
+    candidate_collector=_inline_ast_predicate_grammar_candidates,
 )
 
 
@@ -1411,7 +1582,7 @@ declare_candidate_rule_detector(
         dispatch_axis=dispatch_candidate.dispatch_axis,
         literal_cases=dispatch_candidate.case_names,
     ),
-    candidate_collector=_enum_strategy_dispatch_candidates,
+    candidate_collector=ENUM_DISPATCH_EXTRACTOR.strategy_candidates,
 )
 
 
@@ -3309,6 +3480,47 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    OptionalKeywordBagAssemblyCandidate,
+    high_confidence_certified_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Optional keyword bag assembly should become a named call variant",
+        "A function that initializes a temporary dict, guards several optional parameters with `is not None`, copies same-name values into that dict, and unpacks it into a call is encoding a constructor/call variant as branch mechanics. The stable semantic object is a named variant factory, policy, or direct call surface that owns those optional coordinates.",
+        "named call variant or factory instead of optional keyword bag mutation",
+        "empty dict plus repeated non-None guards feeds a call through **kwargs",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
+    ),
+    summary=lambda bag: (
+        f"`{bag.function_name}` builds `{bag.bag_name}` from optional parameters "
+        f"{bag.parameter_names} and unpacks it into `{bag.call_name}`."
+    ),
+    scaffold=lambda bag: (
+        f"# Replace `{bag.bag_name}` with a named factory/variant for `{bag.call_name}`.\n"
+        "# Move optional-coordinate policy into the factory type or call the concrete constructor directly."
+    ),
+    codemod_patch=lambda bag: (
+        f"# Delete the mutable `{bag.bag_name}` assembly and its repeated `is not None` branches.\n"
+        "# Use a named spec factory/variant whose constructor signature exposes only valid coordinates."
+    ),
+    compression_certificate=lambda bag: CompressionCertificate.from_object_family(
+        manual_object_count=bag.line_count,
+        replacement_shape=ObjectFamilyShape.from_roles(
+            ("call_variant_factory",),
+            axis=bag.target_keyword_names,
+        ),
+        semantic_axes=bag.target_keyword_names,
+    ),
+    metrics=lambda bag: ParameterThreadMetrics(
+        function_count=1,
+        shared_parameter_count=len(bag.parameter_names),
+        shared_parameter_names=bag.parameter_names,
+    ),
+    detector_priority=-13,
+    candidate_collector=_optional_keyword_bag_assembly_candidates,
+)
+
+
+declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
@@ -3710,7 +3922,7 @@ declare_candidate_rule_detector(
         field_names=_sorted_tuple_candidate_axes(candidate),
     ),
     compression_certificate=_sorted_tuple_compression_certificate,
-    candidate_collector=_manual_sorted_tuple_return_candidates,
+    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.return_candidates,
 )
 
 
@@ -3734,7 +3946,7 @@ declare_candidate_rule_detector(
         field_names=_sorted_tuple_candidate_axes(candidate),
     ),
     compression_certificate=_sorted_tuple_compression_certificate,
-    candidate_collector=_manual_sorted_tuple_expression_candidates,
+    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.expression_candidates,
 )
 
 

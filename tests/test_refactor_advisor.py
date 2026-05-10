@@ -4037,6 +4037,26 @@ def test_detects_identity_keyword_forwarding_shell(tmp_path: Path) -> None:
     assert "typed request record" in (finding.scaffold or "")
 
 
+def test_detects_nested_identity_keyword_forwarding_shell(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SupportProjectionAuthority:\n    def object_family_compression_certificate(\n        self,\n        *,\n        manual_object_count,\n        shared_objects,\n        semantic_axes,\n        per_axis_objects=(),\n        per_source_objects=(),\n        residual_object_count=0,\n        independent_source_count=1,\n    ):\n        return CompressionCertificate.from_object_family(\n            manual_object_count=manual_object_count,\n            replacement_shape=ObjectFamilyShape(\n                shared_objects=shared_objects,\n                per_axis_objects=per_axis_objects,\n                per_source_objects=per_source_objects,\n            ),\n            semantic_axes=semantic_axes,\n            residual_object_count=residual_object_count,\n            independent_source_count=independent_source_count,\n        )\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID
+        )
+    )
+    assert (
+        "SupportProjectionAuthority.object_family_compression_certificate"
+        in finding.summary
+    )
+    assert "per_source_objects" in finding.summary
+
+
 def test_ignores_non_shell_same_name_keyword_call(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -4066,6 +4086,24 @@ def test_identity_keyword_forwarding_ignores_owned_semantic_surfaces(
             for finding in analyze_path(tmp_path)
         )
     )
+
+
+def test_detects_optional_keyword_bag_assembly(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_spec(pattern_id, title, *, confidence=None, certification=None):\n    optional_levels = {}\n    if confidence is not None:\n        optional_levels['confidence'] = confidence\n    if certification is not None:\n        optional_levels['certification'] = certification\n    return FindingSpec(\n        pattern_id=pattern_id,\n        title=title,\n        **optional_levels,\n    )\n",
+    )
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == "optional_keyword_bag_assembly"
+        )
+    )
+    assert "optional_levels" in finding.summary
+    assert "confidence" in finding.summary
+    assert "FindingSpec" in finding.summary
 
 
 def test_detects_optional_parameter_branch_axis(tmp_path: Path) -> None:
@@ -5021,6 +5059,99 @@ def test_detects_manual_concrete_subclass_roster_with_module_level_consumer(
     assert "materialize_declared_families" in finding.summary
     assert "AlphaSpec" in finding.summary
     assert "BetaSpec" in finding.summary
+
+
+def test_detects_latent_implementation_string_roster(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n\n\nEXPORT_FORMATS = ("csv", "json")\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "latent_implementation_roster"
+        )
+    )
+    assert "EXPORT_FORMATS" in finding.summary
+    assert "Exporter" in finding.summary
+    assert "format" in finding.summary
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "Exporter.__registry__.keys()" in (finding.scaffold or "")
+
+
+def test_detects_latent_implementation_class_roster(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC, abstractmethod\n\n\nclass Step(ABC):\n    @abstractmethod\n    def run(self): ...\n\n\nclass AlphaStep(Step):\n    def run(self):\n        return 'alpha'\n\n\nclass BetaStep(Step):\n    def run(self):\n        return 'beta'\n\n\nSTEP_TYPES = (AlphaStep, BetaStep)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "latent_implementation_roster"
+        )
+    )
+    assert "STEP_TYPES" in finding.summary
+    assert "AlphaStep" in finding.summary
+    assert "BetaStep" in finding.summary
+    assert "__registry__" in (finding.codemod_patch or "")
+
+
+def test_detects_latent_implementation_subset_roster_with_policy_hint(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n\n\nclass ParquetExporter(Exporter):\n    format = "parquet"\n\n    def emit(self, rows):\n        return rows\n\n\nSUPPORTED_EXPORT_FORMATS = ("csv", "json")\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "latent_implementation_roster"
+        )
+    )
+    assert "SUPPORTED_EXPORT_FORMATS" in finding.summary
+    assert "supported" in finding.summary
+    assert "parquet" in finding.summary
+    assert "subset policy" in (finding.codemod_patch or "")
+
+
+def test_detects_latent_implementation_dict_projection_roster(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n\n\nEXPORTER_BY_FORMAT = {"csv": CsvExporter, "json": JsonExporter}\n',
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "latent_implementation_roster"
+    ]
+    assert any("dict_keys" in finding.summary for finding in findings)
+    assert any("dict_values" in finding.summary for finding in findings)
+
+
+def test_ignores_unnamed_latent_implementation_subset_roster(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n\n\nclass ParquetExporter(Exporter):\n    format = "parquet"\n\n    def emit(self, rows):\n        return rows\n\n\nEXPORT_FORMATS = ("csv", "json")\n',
+    )
+    assert not any(
+        (
+            finding.detector_id == "latent_implementation_roster"
+            for finding in analyze_path(tmp_path)
+        )
+    )
 
 
 def test_detects_predicate_selected_concrete_family_across_modules(
@@ -6129,6 +6260,24 @@ def test_detects_facade_only_nominal_authority(tmp_path: Path) -> None:
     assert "Inline private delegate bodies" in (finding.codemod_patch or "")
 
 
+def test_detects_single_method_facade_only_nominal_authority(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _project_name(node):\n    return node.name\n\n\nclass SyntaxProjectionAuthority:\n    def name(self, node):\n        return _project_name(node)\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "facade_only_nominal_authority"
+        )
+    )
+    assert "SyntaxProjectionAuthority" in finding.summary
+    assert "_project_name" in finding.summary
+    assert "delete the facade" in finding.summary
+
+
 def test_detects_alias_only_nominal_authority(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -6187,6 +6336,29 @@ def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:
     assert "CandidateCollectionAuthority" in finding.summary
     assert "CandidateStream" in (finding.scaffold or "")
     assert "projection/materialization" in (finding.codemod_patch or "")
+
+
+def test_detects_inline_ast_predicate_grammar_in_authority_method(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nimport ast\n\n\nclass TraversalProfileAuthority:\n    def filter_names(self, node, current_name):\n        names = set()\n        for current in _walk_nodes(node):\n            if not isinstance(current, ast.Call):\n                continue\n            if isinstance(current.func, ast.Name) and any(\n                isinstance(subnode, ast.Name) and subnode.id == current_name\n                for subnode in current.args\n            ):\n                names.add(current.func.id)\n                continue\n            if (\n                isinstance(current.func, ast.Attribute)\n                and current.func.attr == 'get'\n                and isinstance(current.func.value, ast.Attribute)\n                and current.func.value.attr == '__dict__'\n                and isinstance(current.func.value.value, ast.Name)\n                and current.func.value.value.id == current_name\n            ):\n                names.add(current.func.attr)\n        return tuple(names)\n",
+    )
+
+    finding = next(
+        (
+            item
+            for item in analyze_path(tmp_path)
+            if item.detector_id == "inline_ast_predicate_grammar"
+        )
+    )
+
+    assert "TraversalProfileAuthority.filter_names" in finding.summary
+    assert "matcher grammar" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_projection_property_family(tmp_path: Path) -> None:

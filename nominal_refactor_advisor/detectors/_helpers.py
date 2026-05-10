@@ -345,32 +345,38 @@ def _recommend_metrics_dataclass(
     items: dict[str, ast.AST], owner_symbol: str
 ) -> SemanticDataclassRecommendation:
     key_names = sorted_tuple(items)
-    exact_schema = exact_schema_match(key_names, _METRIC_BAG_SCHEMAS)
+    exact_schema = HELPER_SUPPORT_PROJECTION_AUTHORITY.exact_schema_match(
+        key_names, _METRIC_BAG_SCHEMAS
+    )
     if exact_schema is not None:
         class_name = exact_schema.class_name
         base_class_name = exact_schema.base_class_name
         rationale = f"Use existing `{class_name}`, which already inherits `{base_class_name}` for this semantic field family."
-        scaffold = instantiation_scaffold(
+        scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.instantiation_scaffold(
             class_name, key_names, items, prefix="metrics="
         )
         return SemanticDataclassRecommendation.existing_schema(
             class_name, base_class_name, rationale, scaffold
         )
 
-    closest_schema = closest_schema_match(key_names, _METRIC_BAG_SCHEMAS)
+    closest_schema = HELPER_SUPPORT_PROJECTION_AUTHORITY.closest_schema_match(
+        key_names, _METRIC_BAG_SCHEMAS
+    )
     base_class_name = (
         closest_schema.base_class_name
         if closest_schema is not None
         else FindingMetrics.__name__
     )
-    class_name = suggest_dataclass_name(owner_symbol, "Metrics")
+    class_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.suggest_dataclass_name(
+        owner_symbol, "Metrics"
+    )
     rationale = (
         f"Create `{class_name}` inheriting from `{base_class_name}` because this key family is closest to "
         f"existing `{closest_schema.class_name}`."
         if closest_schema is not None
         else f"Create `{class_name}` inheriting from `{FindingMetrics.__name__}` to give this metrics bag a nominal schema."
     )
-    scaffold = declaration_scaffold(
+    scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.declaration_scaffold(
         class_name, base_class_name, key_names, items, instantiation_prefix="metrics="
     )
     return SemanticDataclassRecommendation.proposed_schema(
@@ -388,24 +394,32 @@ def _recommend_local_semantic_record(
     variable_name: str,
     value_nodes: dict[str, ast.AST],
 ) -> SemanticDataclassRecommendation | None:
-    exact_schema = exact_schema_match(key_names, (_IMPACT_BAG_SCHEMA,))
+    exact_schema = HELPER_SUPPORT_PROJECTION_AUTHORITY.exact_schema_match(
+        key_names, (_IMPACT_BAG_SCHEMA,)
+    )
     if exact_schema is not None:
         class_name = exact_schema.class_name
         rationale = f"Use `{class_name}` directly instead of a string-key impact bag."
-        scaffold = instantiation_scaffold(class_name, key_names, value_nodes)
+        scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.instantiation_scaffold(
+            class_name, key_names, value_nodes
+        )
         return SemanticDataclassRecommendation.existing_schema(
             class_name, exact_schema.base_class_name, rationale, scaffold
         )
 
-    closest_schema = closest_schema_match(key_names, (_IMPACT_BAG_SCHEMA,))
+    closest_schema = HELPER_SUPPORT_PROJECTION_AUTHORITY.closest_schema_match(
+        key_names, (_IMPACT_BAG_SCHEMA,)
+    )
     if closest_schema is None:
         if not (variable_name.endswith("metrics") or variable_name in {"metrics"}):
             return None
         return _recommend_metrics_dataclass(value_nodes, owner_symbol=owner_symbol)
 
-    class_name = suggest_dataclass_name(owner_symbol, "ImpactDelta")
+    class_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.suggest_dataclass_name(
+        owner_symbol, "ImpactDelta"
+    )
     rationale = f"Create `{class_name}` inheriting from `{closest_schema.class_name}` because the local bag carries the same quantified impact fields nominally modeled there."
-    scaffold = declaration_scaffold(
+    scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.declaration_scaffold(
         class_name, closest_schema.class_name, key_names, value_nodes
     )
     return SemanticDataclassRecommendation.proposed_schema(
@@ -423,12 +437,14 @@ def _recommend_return_record_dataclass(
     value_nodes: dict[str, ast.AST],
     local_annotations: Mapping[str, str] | None = None,
 ) -> SemanticDataclassRecommendation:
-    class_name = suggest_dataclass_name(owner_symbol, "Result")
+    class_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.suggest_dataclass_name(
+        owner_symbol, "Result"
+    )
     rationale = (
         f"Create `{class_name}` because this return value is a fixed-key anonymous "
         "record whose keys mirror local values or parameters."
     )
-    scaffold = declaration_scaffold(
+    scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.declaration_scaffold(
         class_name,
         "object",
         key_names,
@@ -446,55 +462,456 @@ def _recommend_return_record_dataclass(
     )
 
 
-def exact_schema_match(
-    key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
-) -> SemanticBagDescriptor | None:
-    key_set = frozenset(key_names)
-    for schema in schemas:
-        if key_set in schema.accepted_key_sets:
-            return schema
-    return None
-
-
-def closest_schema_match(
-    key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
-) -> SemanticBagDescriptor | None:
-    key_set = frozenset(key_names)
-    best_schema: SemanticBagDescriptor | None = None
-    best_score = 0.0
-    for schema in schemas:
-        for accepted in schema.accepted_key_sets:
-            score = _set_similarity(key_set, accepted)
-            if score > best_score:
-                best_schema = schema
-                best_score = score
-    if best_score < 0.4:
-        return None
-    return best_schema
-
-
 def _set_similarity(left: frozenset[str], right: frozenset[str]) -> float:
     if not left and (not right):
         return 1.0
     return len(left & right) / len(left | right)
 
 
-def declaration_scaffold(
-    class_name: str,
-    base_class_name: str,
-    key_names: tuple[str, ...],
-    value_nodes: dict[str, ast.AST],
-    instantiation_prefix: str = "",
-    field_type_overrides: Mapping[str, str] | None = None,
-) -> str:
-    field_type_overrides = field_type_overrides or {}
-    field_lines = "\n".join(
-        (
-            f"    {key}: {field_type_overrides.get(key, _infer_field_type_name(key, value_nodes.get(key)))}"
-            for key in key_names
+class HelperSupportProjectionAuthority:
+    def exact_schema_match(
+        self, key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
+    ) -> SemanticBagDescriptor | None:
+        key_set = frozenset(key_names)
+        for schema in schemas:
+            if key_set in schema.accepted_key_sets:
+                return schema
+        return None
+
+    def closest_schema_match(
+        self, key_names: tuple[str, ...], schemas: tuple[SemanticBagDescriptor, ...]
+    ) -> SemanticBagDescriptor | None:
+        key_set = frozenset(key_names)
+        best_schema: SemanticBagDescriptor | None = None
+        best_score = 0.0
+        for schema in schemas:
+            for accepted in schema.accepted_key_sets:
+                score = _set_similarity(key_set, accepted)
+                if score > best_score:
+                    best_schema = schema
+                    best_score = score
+        if best_score < 0.4:
+            return None
+        return best_schema
+
+    def declaration_scaffold(
+        self,
+        class_name: str,
+        base_class_name: str,
+        key_names: tuple[str, ...],
+        value_nodes: dict[str, ast.AST],
+        instantiation_prefix: str = "",
+        field_type_overrides: Mapping[str, str] | None = None,
+    ) -> str:
+        field_type_overrides = field_type_overrides or {}
+        field_lines = "\n".join(
+            (
+                f"    {key}: {field_type_overrides.get(key, _infer_field_type_name(key, value_nodes.get(key)))}"
+                for key in key_names
+            )
         )
-    )
-    return f"@dataclass(frozen=True)\nclass {class_name}({base_class_name}):\n{field_lines}\n\n{instantiation_scaffold(class_name, key_names, value_nodes, prefix=instantiation_prefix)}"
+        instantiation = self.instantiation_scaffold(
+            class_name, key_names, value_nodes, prefix=instantiation_prefix
+        )
+        return (
+            f"@dataclass(frozen=True)\nclass {class_name}({base_class_name}):\n"
+            f"{field_lines}\n\n{instantiation}"
+        )
+
+    def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
+        return any(
+            (
+                _ast_terminal_name(keyword.value) == "AutoRegisterMeta"
+                for keyword in node.keywords
+                if keyword.arg == "metaclass"
+            )
+        )
+
+    def family_has_autoregister_authority(
+        self, class_index: ClassFamilyIndex, indexed_class: IndexedClass
+    ) -> bool:
+        return any(
+            (
+                ancestor is not None and self.declares_autoregister_meta(ancestor.node)
+                for ancestor in (
+                    class_index.class_for(symbol)
+                    for symbol in (
+                        indexed_class.symbol,
+                        *class_index.ancestor_symbols(indexed_class.symbol),
+                    )
+                )
+            )
+        )
+
+    def common_semantic_key_attr_names(
+        self, concrete_descendants: tuple[IndexedClass, ...]
+    ) -> tuple[str, ...]:
+        if not concrete_descendants:
+            return ()
+        assignment_name_sets = tuple(
+            (
+                frozenset(
+                    name
+                    for name, value in CLASS_NODE_AUTHORITY.direct_assignments(
+                        descendant.node
+                    ).items()
+                    if value is not None and _looks_like_semantic_key_attr(name)
+                )
+                for descendant in concrete_descendants
+            )
+        )
+        common_names = set(assignment_name_sets[0])
+        for assignment_names in assignment_name_sets[1:]:
+            common_names &= set(assignment_names)
+        return sorted_tuple(common_names)
+
+    def derivable_nominal_root_names(
+        self, shapes: Sequence[NominalAuthorityShape]
+    ) -> tuple[str, ...]:
+        root_counts: Counter[str] = Counter()
+        for shape in shapes:
+            root_counts.update(
+                (
+                    name
+                    for name in {*shape.declared_base_names, *shape.ancestor_names}
+                    if name not in _IGNORED_ANCESTOR_NAMES and name != shape.class_name
+                )
+            )
+        return sorted_tuple(
+            (root_name for root_name, count in root_counts.items() if count >= 3)
+        )
+
+    def constructor_return_call(self, node: ast.FunctionDef) -> ast.Call | None:
+        body = _trim_docstring_body(node.body)
+        if (
+            len(body) != 1
+            or not isinstance(body[0], ast.Return)
+            or body[0].value is None
+        ):
+            return None
+        returned = body[0].value
+        if not isinstance(returned, ast.Call):
+            return None
+        if not isinstance(returned.func, ast.Name) or returned.func.id != "cls":
+            return None
+        return returned
+
+    def expression_root_names(self, node: ast.AST) -> set[str]:
+        roots: set[str] = set()
+
+        class Visitor(ast.NodeVisitor):
+            def visit_Attribute(self, node: ast.Attribute) -> None:
+                current: ast.AST = node
+                while isinstance(current, ast.Attribute):
+                    current = current.value
+                if isinstance(current, ast.Name):
+                    roots.add(current.id)
+                self.generic_visit(node)
+
+            def visit_Name(self, node: ast.Name) -> None:
+                roots.add(node.id)
+
+        Visitor().visit(node)
+        return roots
+
+    def function_wrapper_candidate_from_context(
+        self,
+        context: _FunctionWrapperContext,
+        *,
+        delegate_symbol: str,
+        wrapper_kind: str,
+        projected_attributes: tuple[str, ...] = (),
+    ) -> FunctionWrapperCandidate:
+        return FunctionWrapperCandidate(
+            file_path=str(context.module.path),
+            qualname=context.qualname,
+            lineno=context.function.lineno,
+            delegate_symbol=delegate_symbol,
+            wrapper_kind=wrapper_kind,
+            statement_count=len(context.body),
+            projected_attributes=projected_attributes,
+        )
+
+    def detector_payoff_missing_guard_names(
+        self, action_text: str, guard_text: str
+    ) -> tuple[str, ...]:
+        has_structured_payoff = bool(guard_text.strip())
+        has_compression_certificate = "compression_certificate" in guard_text
+        has_backend_loc_budget = has_structured_payoff
+        has_net_reduction_action = bool(
+            _matched_terms(action_text, _NET_REDUCTION_GUARD_TERMS)
+        )
+        has_amortization_or_fanout = bool(
+            has_structured_payoff
+            and _matched_terms(guard_text, _AMORTIZATION_GUARD_TERMS)
+        )
+        if (
+            has_compression_certificate
+            or has_amortization_or_fanout
+            or (has_backend_loc_budget and has_net_reduction_action)
+        ):
+            return ()
+        missing: list[str] = []
+        if not has_structured_payoff:
+            missing.append("structured_payoff_metrics")
+        if not has_backend_loc_budget:
+            missing.append("backend_loc_budget")
+        if not has_net_reduction_action:
+            missing.append("net_reduction_action")
+        if not has_amortization_or_fanout:
+            missing.append("amortization_or_fanout_gate")
+        if not has_compression_certificate:
+            missing.append("compression_certificate_or_explicit_fanout")
+        return tuple(missing)
+
+    def concrete_detector_base_name(self, node: ast.ClassDef) -> str | None:
+        if not any(
+            (
+                isinstance(statement, ast.Assign)
+                and any(
+                    (name_id(target) == "detector_id" for target in statement.targets)
+                )
+                for statement in node.body
+            )
+        ):
+            return None
+        base_names = tuple(
+            (
+                base_name
+                for base_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(
+                    node
+                )
+                if base_name in _TYPED_CANDIDATE_DETECTOR_BASE_NAMES
+            )
+        )
+        return single_item(base_names) if len(base_names) == 1 else None
+
+    def instantiation_scaffold(
+        self,
+        class_name: str,
+        key_names: tuple[str, ...],
+        value_nodes: dict[str, ast.AST],
+        prefix: str = "",
+    ) -> str:
+        rendered_args = ",\n    ".join(
+            (
+                f"{key}={_render_value_expression(key, value_nodes.get(key))}"
+                for key in key_names
+            )
+        )
+        return f"{prefix}{class_name}(\n    {rendered_args}\n)"
+
+    def if_returns_none_only(self, node: ast.If) -> bool:
+        return bool(
+            len(node.body) == 1
+            and isinstance(node.body[0], ast.Return)
+            and isinstance(node.body[0].value, ast.Constant)
+            and (node.body[0].value.value is None)
+            and (not node.orelse)
+        )
+
+    def module_string_sequence_assignments(
+        self, module: ParsedModule
+    ) -> NamedStringSequenceSpecs:
+        assignments: MutableNamedStringSequenceSpecs = []
+        for statement in _trim_docstring_body(module.module.body):
+            target_name: str | None = None
+            value: ast.AST | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                if isinstance(target, ast.Name):
+                    target_name = target.id
+                    value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                target_name = statement.target.id
+                value = statement.value
+            if target_name is None or value is None:
+                continue
+            if not isinstance(value, (ast.Tuple, ast.List)):
+                continue
+            string_items = tuple(
+                (
+                    item.value
+                    for item in value.elts
+                    if isinstance(item, ast.Constant) and isinstance(item.value, str)
+                )
+            )
+            if len(string_items) != len(value.elts) or len(string_items) < 3:
+                continue
+            assignments.append((target_name, statement.lineno, string_items))
+        return tuple(assignments)
+
+    def queue_pop_target_name(self, statement: ast.stmt, queue_name: str) -> str | None:
+        assignment_node = as_ast(statement, ast.Assign)
+        assignment = named_call_assignment(assignment_node) if assignment_node else None
+        pop_call = (
+            attribute_call_match(
+                assignment.call,
+                method_name="pop",
+                owner_type=ast.Name,
+                owner_name=queue_name,
+                single_argument_required=True,
+            )
+            if assignment is not None
+            else None
+        )
+        if pop_call is None or constant_value(pop_call.single_argument) != 0:
+            return None
+        return assignment.target_name
+
+    def result_append_args(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
+    ) -> tuple[ast.AST, ...]:
+        return tuple(
+            (
+                current.args[0]
+                for current in _walk_nodes(node)
+                if isinstance(current, ast.Call)
+                and isinstance(current.func, ast.Attribute)
+                and (current.func.attr == _APPEND_METHOD_NAME)
+                and isinstance(current.func.value, ast.Name)
+                and (current.func.value.id == result_name)
+                and (len(current.args) == 1)
+            )
+        )
+
+    def matching_external_callsites(
+        self,
+        callsites_by_target: ExternalCallsitesByTarget,
+        *,
+        target_symbol: str,
+    ) -> tuple[ResolvedExternalCallsite, ...]:
+        matched: set[ResolvedExternalCallsite] = set()
+        for observed_target, callsites in callsites_by_target.items():
+            if (
+                observed_target == target_symbol
+                or observed_target.endswith(f".{target_symbol}")
+                or target_symbol.endswith(f".{observed_target}")
+            ):
+                matched.update(callsites)
+        return sorted_tuple(
+            matched,
+            key=lambda item: (
+                item.location.file_path,
+                item.location.line,
+                item.location.symbol,
+                item.module_name,
+            ),
+        )
+
+    def keyword_value_text(self, call: ast.Call, keyword_names: frozenset[str]) -> str:
+        return "\n".join(
+            (
+                "\n".join(_all_string_literals(keyword.value))
+                for keyword in call.keywords
+                if keyword.arg in keyword_names
+            )
+        )
+
+    def raw_effect_step_guard_count(self, method: ast.FunctionDef) -> int:
+        raw_guard_count = sum(
+            (
+                1
+                for item in _walk_nodes(method)
+                if isinstance(item, ast.Call)
+                and (
+                    _call_name(item.func) in {"as_ast", "isinstance", "single_item"}
+                    or (
+                        isinstance(item.func, ast.Attribute)
+                        and item.func.attr in {"args", "keywords"}
+                    )
+                )
+                or (
+                    isinstance(item, ast.Compare)
+                    and any(
+                        (
+                            isinstance(value, ast.Call)
+                            and _call_name(value.func) == "len"
+                            for value in (item.left, *item.comparators)
+                        )
+                    )
+                )
+            )
+        )
+        boolean_clause_count = sum(
+            (
+                max(0, len(item.values) - 1)
+                for item in _walk_nodes(method)
+                if isinstance(item, ast.BoolOp)
+            )
+        )
+        return raw_guard_count + boolean_clause_count
+
+    def none_return_count(self, node: ast.AST) -> int:
+        return sum(
+            (
+                1
+                for item in _walk_nodes(node)
+                if isinstance(item, ast.Return)
+                and isinstance(item.value, ast.Constant)
+                and (item.value.value is None)
+            )
+        )
+
+    def module_level_subject_parameter_name(
+        self, qualname: str, function: NamedFunctionNode
+    ) -> str | None:
+        if "." in qualname or function.name.startswith("__"):
+            return None
+        if function.decorator_list:
+            return None
+        arguments = _FunctionSignatureView(function).arguments
+        if not arguments:
+            return None
+        parameter_name = arguments[0].arg
+        return (
+            None
+            if parameter_name in _IMPLICIT_METHOD_PARAMETER_NAMES
+            else parameter_name
+        )
+
+    def semantic_inheritance_membership_object_count(
+        self,
+        concrete_class_names: tuple[str, ...],
+        *,
+        semantic_method_names: tuple[str, ...],
+        abstract_method_names: tuple[str, ...],
+    ) -> int:
+        leaf_membership_objects = len(semantic_method_names) + 3
+        return len(concrete_class_names) * leaf_membership_objects + len(
+            abstract_method_names
+        )
+
+    def shared_family_name(self, class_names: Sequence[str]) -> str | None:
+        if not class_names:
+            return None
+        prefix = class_names[0]
+        for name in class_names[1:]:
+            while prefix and (not name.startswith(prefix)):
+                prefix = prefix[:-1]
+        return prefix or None
+
+    def wrapper_delegate_symbol(
+        self,
+        node: ast.AST,
+        *,
+        class_name: str | None,
+    ) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and (node.value.id in {"self", "cls"})
+            and (class_name is not None)
+        ):
+            return f"{class_name}.{node.attr}"
+        return None
+
+
+HELPER_SUPPORT_PROJECTION_AUTHORITY = HelperSupportProjectionAuthority()
 
 
 def _field_type_overrides_from_local_annotations(
@@ -509,21 +926,6 @@ def _field_type_overrides_from_local_annotations(
         if isinstance(value, ast.Name)
         if value.id in local_annotations
     }
-
-
-def instantiation_scaffold(
-    class_name: str,
-    key_names: tuple[str, ...],
-    value_nodes: dict[str, ast.AST],
-    prefix: str = "",
-) -> str:
-    rendered_args = ",\n    ".join(
-        (
-            f"{key}={_render_value_expression(key, value_nodes.get(key))}"
-            for key in key_names
-        )
-    )
-    return f"{prefix}{class_name}(\n    {rendered_args}\n)"
 
 
 def _infer_field_type_name(key_name: str, node: ast.AST | None) -> str:
@@ -564,22 +966,6 @@ def _render_value_expression(key_name: str, node: ast.AST | None) -> str:
             return "0"
         return "..."
     return ast.unparse(node)
-
-
-def suggest_dataclass_name(owner_symbol: str, suffix: str) -> str:
-    semantic_owner = owner_symbol.split(":", maxsplit=1)[0]
-    parts = [
-        _camel_case(part)
-        for part in re.split(r"[^A-Za-z0-9]+", semantic_owner)
-        if part and part not in {"module", "record", "metrics", "return"}
-    ]
-    if suffix == "Result" and len(parts) >= 2 and parts[-1] != suffix:
-        prefix = "".join(parts[-2:])
-    else:
-        prefix = parts[-1] if parts else "Semantic"
-    if prefix.endswith(suffix):
-        return prefix
-    return f"{prefix}{suffix}"
 
 
 def _owner_symbol(
@@ -638,26 +1024,6 @@ def _class_direct_non_none_assignment_names(node: ast.ClassDef) -> tuple[str, ..
     )
 
 
-def abstract_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return sorted_tuple(
-        (
-            method.name
-            for method in CLASS_NODE_AUTHORITY.methods(node)
-            if _is_abstract_method(method)
-        )
-    )
-
-
-def is_classvar_annotation(node: ast.AST) -> bool:
-    if isinstance(node, ast.Name):
-        return node.id == "ClassVar"
-    if isinstance(node, ast.Attribute):
-        return node.attr == "ClassVar"
-    if isinstance(node, ast.Subscript):
-        return is_classvar_annotation(node.value)
-    return False
-
-
 def _function_parameter_annotation_map(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, str]:
@@ -673,48 +1039,12 @@ def _function_parameter_annotation_map(
     return annotations
 
 
-def typed_field_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
-    typed_fields: dict[str, str] = {}
-    for statement in node.body:
-        if isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            if is_classvar_annotation(statement.annotation):
-                continue
-            typed_fields.setdefault(
-                statement.target.id, ast.unparse(statement.annotation)
-            )
-            continue
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if statement.name != "__init__":
-            continue
-        parameter_annotations = _function_parameter_annotation_map(statement)
-        for inner in statement.body:
-            target: ast.AST | None = None
-            value: ast.AST | None = None
-            if isinstance(inner, ast.Assign) and len(inner.targets) == 1:
-                target = inner.targets[0]
-                value = inner.value
-            elif isinstance(inner, ast.AnnAssign):
-                target = inner.target
-                value = inner.value
-            if not (
-                isinstance(target, ast.Attribute)
-                and isinstance(target.value, ast.Name)
-                and (target.value.id == "self")
-                and isinstance(value, ast.Name)
-                and (value.id in parameter_annotations)
-            ):
-                continue
-            typed_fields.setdefault(target.attr, parameter_annotations[value.id])
-    return sorted_tuple(typed_fields.items())
-
-
 def _semantic_role_names_for_fields(field_names: tuple[str, ...]) -> tuple[str, ...]:
     role_names: set[str] = set()
     for field_name in field_names:
-        normalized_roles = normalize_semantic_field_roles(field_name)
+        normalized_roles = SUPPORT_PROJECTION_AUTHORITY.normalize_semantic_field_roles(
+            field_name
+        )
         if normalized_roles:
             role_names.update(normalized_roles)
             continue
@@ -742,7 +1072,7 @@ def _nominal_authority_shapes(
         for node in _walk_nodes(module.module):
             if not isinstance(node, ast.ClassDef):
                 continue
-            field_type_map = typed_field_map(node)
+            field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
             shapes_without_ancestors.append(
                 NominalAuthorityShape(
                     file_path=str(module.path),
@@ -818,7 +1148,11 @@ class NominalAuthorityIndex:
                 continue
             if not _is_reusable_nominal_authority(authority):
                 continue
-            shared_field_names = shared_typed_field_names(shape, authority)
+            shared_field_names = (
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
+                    shape, authority
+                )
+            )
             if len(shared_field_names) < 2:
                 continue
             if set(shared_field_names) != set(authority.field_names):
@@ -839,19 +1173,6 @@ def _is_reusable_nominal_authority(shape: NominalAuthorityShape) -> bool:
         return False
     return bool(
         shape.is_abstract or shape.class_name.endswith(("Base", "Mixin", "Carrier"))
-    )
-
-
-def shared_typed_field_names(
-    concrete: NominalAuthorityShape, authority: NominalAuthorityShape
-) -> tuple[str, ...]:
-    concrete_types = dict(concrete.field_type_map)
-    return tuple(
-        (
-            name
-            for name, annotation_text in authority.field_type_map
-            if concrete_types.get(name) == annotation_text
-        )
     )
 
 
@@ -1203,16 +1524,6 @@ def _is_observation_spec_class(node: ast.ClassDef) -> bool:
     )
 
 
-def if_returns_none_only(node: ast.If) -> bool:
-    return bool(
-        len(node.body) == 1
-        and isinstance(node.body[0], ast.Return)
-        and isinstance(node.body[0].value, ast.Constant)
-        and (node.body[0].value.value is None)
-        and (not node.orelse)
-    )
-
-
 def _delegate_name_from_return(node: ast.AST) -> str | None:
     if isinstance(node, ast.Call):
         outer_name = _call_display_name(node)
@@ -1273,7 +1584,9 @@ def _guarded_delegator_candidates_for_class(
         if len(body) != 2:
             continue
         guard, return_stmt = body
-        if not isinstance(guard, ast.If) or not if_returns_none_only(guard):
+        if not isinstance(
+            guard, ast.If
+        ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
         if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
             continue
@@ -1494,25 +1807,15 @@ def _derived_query_index_candidates(
     )
 
 
-def simple_attribute_accesses(node: ast.AST) -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (
-            (current.value.id, current.attr)
-            for current in _walk_nodes(node)
-            if isinstance(current, ast.Attribute)
-            and isinstance(current.value, ast.Name)
-            and (current.value.id not in {"self", "cls"})
-        )
-    )
-
-
 def _projection_source_name(node: ast.Call) -> str | None:
     source_counts: Counter[str] = Counter(
         (
             root_name
             for keyword in node.keywords
             if keyword.arg is not None
-            for root_name, _ in simple_attribute_accesses(keyword.value)
+            for root_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.simple_attribute_accesses(
+                keyword.value
+            )
         )
     )
     if not source_counts:
@@ -1525,16 +1828,6 @@ def _projection_source_name(node: ast.Call) -> str | None:
     return source_name
 
 
-def direct_source_attribute_name(node: ast.AST, source_name: str) -> str | None:
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and (node.value.id == source_name)
-    ):
-        return node.attr
-    return None
-
-
 def _resolver_lookup_metadata(
     node: ast.AST, source_name: str
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
@@ -1542,7 +1835,9 @@ def _resolver_lookup_metadata(
     selector_field_names = sorted_tuple(
         {
             attr_name
-            for root_name, attr_name in simple_attribute_accesses(node)
+            for root_name, attr_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.simple_attribute_accesses(
+                node
+            )
             if root_name == source_name
         }
     )
@@ -1595,7 +1890,7 @@ def _runtime_adapter_shell_candidates_for_function(
             if keyword.arg is None:
                 continue
             if (
-                direct_attr_name := direct_source_attribute_name(
+                direct_attr_name := HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
                     keyword.value, source_name
                 )
             ) is not None:
@@ -1672,7 +1967,9 @@ def _is_none_guard_for_source_attr(
         or (not isinstance(node.ops[0], (ast.IsNot, ast.NotEq)))
     ):
         return None
-    attr_name = direct_source_attribute_name(node.left, source_name)
+    attr_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
+        node.left, source_name
+    )
     comparator = node.comparators[0]
     if attr_name is None or not (
         isinstance(comparator, ast.Constant) and comparator.value is None
@@ -1719,7 +2016,9 @@ def _keyword_bag_adapter_candidates_for_function(
                 if key_name is None:
                     invalid_shape = True
                     break
-                accesses = simple_attribute_accesses(value)
+                accesses = HELPER_SYNTAX_PROJECTION_AUTHORITY.simple_attribute_accesses(
+                    value
+                )
                 if len(accesses) != 1:
                     invalid_shape = True
                     break
@@ -1766,7 +2065,11 @@ def _keyword_bag_adapter_candidates_for_function(
         ):
             invalid_shape = True
             break
-        value_attr_name = direct_source_attribute_name(value, guard_source_name)
+        value_attr_name = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_source_attribute_name(
+                value, guard_source_name
+            )
+        )
         if value_attr_name != guard_field_name:
             invalid_shape = True
             break
@@ -1866,7 +2169,11 @@ def _existing_nominal_authority_reuse_candidates(
         )
         if authority is None:
             continue
-        shared_field_names = shared_typed_field_names(shape, authority)
+        shared_field_names = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
+                shape, authority
+            )
+        )
         if len(shared_field_names) < 2:
             continue
         candidates.append(
@@ -1942,19 +2249,81 @@ def _forwarded_delegate_call(
     return call
 
 
-def _method_forwarded_parameter_names(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ...]:
-    return tuple(
-        (
-            arg.arg
-            for arg in (
-                *method.args.posonlyargs,
-                *method.args.args[1:],
-                *method.args.kwonlyargs,
+class MethodProjection:
+    def forwarded_parameter_names(
+        self, method: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[str, ...]:
+        return tuple(
+            (
+                arg.arg
+                for arg in (
+                    *method.args.posonlyargs,
+                    *method.args.args[1:],
+                    *method.args.kwonlyargs,
+                )
             )
         )
-    )
+
+    def aliases_to_self_attrs(
+        self, method: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        changed = True
+        while changed:
+            changed = False
+            for subnode in _walk_nodes(method):
+                binding = named_value_binding(subnode)
+                if binding is None or binding.value is None:
+                    continue
+                attr_name = None
+                if (value_attr_name := _self_attr_name(binding.value)) is not None:
+                    attr_name = value_attr_name
+                elif (value_name := name_id(binding.value)) is not None:
+                    attr_name = aliases.get(value_name)
+                if attr_name is None or aliases.get(binding.name) == attr_name:
+                    continue
+                aliases[binding.name] = attr_name
+                changed = True
+        return aliases
+
+    def has_stream_materialization(
+        self, method: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> bool:
+        body = _trim_docstring_body(method.body)
+        has_projection_binding = any(
+            (
+                isinstance(statement, ast.Assign)
+                and any(
+                    (
+                        isinstance(target, ast.Name)
+                        and target.id in {"projected", "items", "nodes"}
+                        for target in statement.targets
+                    )
+                )
+            )
+            for statement in body
+        )
+        return has_projection_binding and any(
+            (
+                RETURN_STATEMENT_AUTHORITY.uses_sort_materialization(statement)
+                for statement in body
+            )
+        )
+
+    def calls_template_hook(self, method: ast.FunctionDef) -> bool:
+        return any(
+            (
+                isinstance(item, ast.Call)
+                and isinstance(item.func, ast.Attribute)
+                and isinstance(item.func.value, ast.Name)
+                and (item.func.value.id == "self")
+                and (item.func.attr in _EFFECT_STEP_TEMPLATE_HOOK_NAMES)
+                for item in _walk_nodes(method)
+            )
+        )
+
+
+METHOD_PROJECTION = MethodProjection()
 
 
 def _call_forwards_parameters(
@@ -2009,7 +2378,7 @@ def _forwarded_delegate_member_name(
         )
         .filter(
             lambda call: _call_forwards_parameters(
-                call, _method_forwarded_parameter_names(method)
+                call, METHOD_PROJECTION.forwarded_parameter_names(method)
             )
         )
         .map(lambda _call: method.name)
@@ -2024,7 +2393,7 @@ def _pass_through_nominal_wrapper_candidates_for_class(
 ) -> Iterable[PassThroughNominalWrapperCandidate]:
     if CLASS_NODE_AUTHORITY.is_abstract(node):
         return
-    typed_fields = typed_field_map(node)
+    typed_fields = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
     if len(typed_fields) != 1:
         return
     delegate_field_name, annotation_text = typed_fields[0]
@@ -2163,7 +2532,9 @@ def _projection_helper_groups(
         ordered = tuple(
             (
                 _as_projection_helper_shape(item)
-                for item in materialize_observations(fiber.observations, lookup)
+                for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
+                    fiber.observations, lookup
+                )
             )
         )
         attributes = {shape.projected_attribute for shape in ordered}
@@ -2192,7 +2563,9 @@ def _accessor_wrapper_groups(
         ordered = tuple(
             (
                 _as_accessor_wrapper_candidate(item)
-                for item in materialize_observations(witness_group.observations, lookup)
+                for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
+                    witness_group.observations, lookup
+                )
             )
         )
         if not _supports_accessor_wrapper_finding(list(ordered)):
@@ -2577,14 +2950,14 @@ def _is_helper_wrapper_prelude(statement: ast.stmt) -> bool:
             and (statement.value.value.id == "observation")
         )
     if isinstance(statement, ast.If):
-        return if_returns_none_only(statement)
+        return HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement)
     return False
 
 
 def _helper_backed_observation_spec_candidates_for_class(
     module: ParsedModule, node: ast.ClassDef
 ) -> Iterable[HelperBackedObservationSpecCandidate]:
-    base_names = shared_record_base_names(node)
+    base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(node)
     if not base_names:
         return
     for method in node.body:
@@ -2616,7 +2989,7 @@ def _helper_backed_observation_spec_candidates_for_class(
             method_name=method.name,
             helper_name=helper_name,
             wrapper_kind=wrapper_kind,
-            parameter_names=parameter_names(method),
+            parameter_names=SUPPORT_PROJECTION_AUTHORITY.parameter_names(method),
         )
 
 
@@ -2694,7 +3067,9 @@ def _guarded_wrapper_function_candidates(
         if len(body) != 2:
             continue
         guard, return_stmt = body
-        if not isinstance(guard, ast.If) or not if_returns_none_only(guard):
+        if not isinstance(
+            guard, ast.If
+        ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
             continue
         if not isinstance(return_stmt, ast.Return) or return_stmt.value is None:
             continue
@@ -3131,40 +3506,6 @@ _SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES = frozenset(
 )
 
 
-def declares_autoregister_meta(node: ast.ClassDef) -> bool:
-    for keyword in node.keywords:
-        if keyword.arg != "metaclass":
-            continue
-        if (
-            isinstance(keyword.value, ast.Name)
-            and keyword.value.id == "AutoRegisterMeta"
-        ):
-            return True
-        if (
-            isinstance(keyword.value, ast.Attribute)
-            and keyword.value.attr == "AutoRegisterMeta"
-        ):
-            return True
-    return False
-
-
-def _family_has_autoregister_authority(
-    class_index: ClassFamilyIndex, indexed_class: IndexedClass
-) -> bool:
-    return any(
-        (
-            ancestor is not None and declares_autoregister_meta(ancestor.node)
-            for ancestor in (
-                class_index.class_for(symbol)
-                for symbol in (
-                    indexed_class.symbol,
-                    *class_index.ancestor_symbols(indexed_class.symbol),
-                )
-            )
-        )
-    )
-
-
 def _descendant_has_intermediate_autoregister_authority(
     class_index: ClassFamilyIndex,
     *,
@@ -3175,7 +3516,12 @@ def _descendant_has_intermediate_autoregister_authority(
         if ancestor_symbol == root_symbol:
             continue
         ancestor = class_index.class_for(ancestor_symbol)
-        if ancestor is not None and declares_autoregister_meta(ancestor.node):
+        if (
+            ancestor is not None
+            and HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(
+                ancestor.node
+            )
+        ):
             return True
     return False
 
@@ -3223,29 +3569,6 @@ def _looks_like_semantic_key_attr(name: str) -> bool:
     )
 
 
-def _common_semantic_key_attr_names(
-    concrete_descendants: tuple[IndexedClass, ...],
-) -> tuple[str, ...]:
-    if not concrete_descendants:
-        return ()
-    assignment_name_sets = tuple(
-        (
-            frozenset(
-                name
-                for name, value in CLASS_NODE_AUTHORITY.direct_assignments(
-                    descendant.node
-                ).items()
-                if value is not None and _looks_like_semantic_key_attr(name)
-            )
-            for descendant in concrete_descendants
-        )
-    )
-    common_names = set(assignment_name_sets[0])
-    for assignment_names in assignment_name_sets[1:]:
-        common_names &= assignment_names
-    return sorted_tuple(common_names)
-
-
 def _semantic_inheritance_ssot_certificate(
     candidate_base_name: str,
     concrete_class_names: tuple[str, ...],
@@ -3254,7 +3577,7 @@ def _semantic_inheritance_ssot_certificate(
     suggested_key_attr_name: str,
 ) -> CompressionCertificate:
     return CompressionCertificate.from_object_family(
-        manual_object_count=semantic_inheritance_membership_object_count(
+        manual_object_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.semantic_inheritance_membership_object_count(
             concrete_class_names,
             semantic_method_names=semantic_method_names,
             abstract_method_names=abstract_method_names,
@@ -3289,18 +3612,6 @@ def _semantic_inheritance_derived_projection_count(
     return projections
 
 
-def semantic_inheritance_membership_object_count(
-    concrete_class_names: tuple[str, ...],
-    *,
-    semantic_method_names: tuple[str, ...],
-    abstract_method_names: tuple[str, ...],
-) -> int:
-    leaf_membership_objects = len(semantic_method_names) + 3
-    return len(concrete_class_names) * leaf_membership_objects + len(
-        abstract_method_names
-    )
-
-
 def _semantic_inheritance_rent_margin(certificate: CompressionCertificate) -> int:
     return certificate.certified_description_length_savings
 
@@ -3316,7 +3627,9 @@ def _semantic_inheritance_family_ssot_candidates(
     ):
         if indexed_class.simple_name.endswith("Mixin"):
             continue
-        if _family_has_autoregister_authority(class_index, indexed_class):
+        if HELPER_SUPPORT_PROJECTION_AUTHORITY.family_has_autoregister_authority(
+            class_index, indexed_class
+        ):
             continue
         concrete_descendants = tuple(
             (
@@ -3333,11 +3646,17 @@ def _semantic_inheritance_family_ssot_candidates(
             class_index, indexed_class, concrete_descendants
         ):
             continue
-        indexed_abstract_method_names = abstract_method_names(indexed_class.node)
+        indexed_abstract_method_names = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.abstract_method_names(indexed_class.node)
+        )
         semantic_method_names = _semantic_inheritance_method_names(
             indexed_class, concrete_descendants
         )
-        key_attr_names = _common_semantic_key_attr_names(concrete_descendants)
+        key_attr_names = (
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.common_semantic_key_attr_names(
+                concrete_descendants
+            )
+        )
         if not indexed_abstract_method_names and len(semantic_method_names) < 1:
             continue
         suggested_key_attr_name = (
@@ -3372,7 +3691,7 @@ def _semantic_inheritance_family_ssot_candidates(
                 abstract_method_names=indexed_abstract_method_names,
                 key_attr_names=key_attr_names,
                 suggested_key_attr_name=suggested_key_attr_name,
-                membership_object_count=semantic_inheritance_membership_object_count(
+                membership_object_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.semantic_inheritance_membership_object_count(
                     concrete_class_names,
                     semantic_method_names=semantic_method_names,
                     abstract_method_names=indexed_abstract_method_names,
@@ -3385,6 +3704,274 @@ def _semantic_inheritance_family_ssot_candidates(
                 compression_certificate=certificate,
             )
         )
+    return tuple(candidates)
+
+
+materialize_product_record(
+    product_record_spec(
+        "_LatentRosterObservation",
+        "file_path: str; roster_name: str; line: int; roster_kind: str; projection_role: str; member_names: tuple[str, ...]; line_count: int",
+    )
+)
+
+
+_LATENT_ROSTER_POLICY_TOKENS = frozenset(
+    {
+        "active",
+        "all",
+        "available",
+        "default",
+        "enabled",
+        "public",
+        "selected",
+        "supported",
+        "test",
+        "visible",
+    }
+)
+
+
+class LatentRosterProjectionAuthority:
+    def member_names(self, node: ast.AST) -> tuple[str, ...]:
+        if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return ()
+        members: set[str] = set()
+        for element in node.elts:
+            if (string_value := _constant_string(element)) is not None:
+                members.add(string_value)
+                continue
+            if isinstance(element, ast.Call):
+                if callee_name := _ast_terminal_name(element.func):
+                    members.add(callee_name)
+                continue
+            if name := _ast_terminal_name(element):
+                members.add(name)
+        return sorted_tuple(members)
+
+    def dict_member_names(self, nodes: Iterable[ast.AST | None]) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                member_name
+                for node in nodes
+                if node is not None
+                for member_name in self.member_names(
+                    ast.Tuple(elts=[node], ctx=ast.Load())
+                )
+            }
+        )
+
+    def observations(
+        self,
+        *,
+        module: ParsedModule,
+        statement: ast.stmt,
+        roster_name: str,
+        value: ast.AST,
+    ) -> tuple[_LatentRosterObservation, ...]:
+        line_count = (statement.end_lineno or statement.lineno) - statement.lineno + 1
+        if isinstance(value, ast.Dict):
+            observations: list[_LatentRosterObservation] = []
+            for projection_role, member_names in (
+                ("dict_keys", self.dict_member_names(value.keys)),
+                ("dict_values", self.dict_member_names(value.values)),
+            ):
+                if len(member_names) >= 2:
+                    observations.append(
+                        _LatentRosterObservation(
+                            file_path=str(module.path),
+                            roster_name=roster_name,
+                            line=statement.lineno,
+                            roster_kind=type(value).__name__,
+                            projection_role=projection_role,
+                            member_names=member_names,
+                            line_count=line_count,
+                        )
+                    )
+            return tuple(observations)
+        member_names = self.member_names(value)
+        if len(member_names) < 2:
+            return ()
+        return (
+            _LatentRosterObservation(
+                file_path=str(module.path),
+                roster_name=roster_name,
+                line=statement.lineno,
+                roster_kind=type(value).__name__,
+                projection_role="collection_members",
+                member_names=member_names,
+                line_count=line_count,
+            ),
+        )
+
+    def policy_hint(self, roster_name: str) -> str | None:
+        tokens = tuple(
+            token.lower()
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9]*", roster_name)
+            if token.lower()
+            not in {"by", "classes", "formats", "map", "registry", "types"}
+        )
+        policy_tokens = tuple(
+            token for token in tokens if token in _LATENT_ROSTER_POLICY_TOKENS
+        )
+        if not policy_tokens:
+            return None
+        return "_".join(policy_tokens)
+
+    def match(
+        self,
+        roster_member_names: tuple[str, ...],
+        authority_member_names: tuple[str, ...],
+        roster_name: str,
+    ) -> tuple[float, tuple[str, ...], str | None] | None:
+        roster_members = set(roster_member_names)
+        authority_members = set(authority_member_names)
+        if not roster_members <= authority_members:
+            return None
+        missing_names = sorted_tuple(authority_members - roster_members)
+        coverage_ratio = len(roster_members) / len(authority_members)
+        if not missing_names:
+            return coverage_ratio, (), None
+        policy_hint = self.policy_hint(roster_name)
+        if policy_hint is None:
+            return None
+        return coverage_ratio, missing_names, policy_hint
+
+
+LATENT_ROSTER_PROJECTION_AUTHORITY = LatentRosterProjectionAuthority()
+
+
+def _module_level_collection_rosters(
+    modules: list[ParsedModule],
+) -> tuple[_LatentRosterObservation, ...]:
+    rosters: list[_LatentRosterObservation] = []
+    for module in modules:
+        for statement in _trim_docstring_body(module.module.body):
+            target_value = HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(
+                statement
+            )
+            if target_value is None:
+                continue
+            target, value = target_value
+            roster_name = name_id(target)
+            if roster_name is None:
+                continue
+            rosters.extend(
+                LATENT_ROSTER_PROJECTION_AUTHORITY.observations(
+                    module=module,
+                    statement=statement,
+                    roster_name=roster_name,
+                    value=value,
+                )
+            )
+    return tuple(rosters)
+
+
+def _descendant_key_values(
+    concrete_descendants: tuple[IndexedClass, ...], key_attr_name: str
+) -> tuple[str, ...]:
+    return sorted_tuple(
+        {
+            value
+            for descendant in concrete_descendants
+            if (
+                value := _class_direct_constant_string_assignments(descendant.node).get(
+                    key_attr_name
+                )
+            )
+            is not None
+        }
+    )
+
+
+def _matched_latent_roster_key_attr(
+    roster_member_names: tuple[str, ...],
+    concrete_descendants: tuple[IndexedClass, ...],
+    roster_name: str,
+) -> tuple[str, tuple[float, tuple[str, ...], str | None]] | None:
+    for (
+        key_attr_name
+    ) in HELPER_SUPPORT_PROJECTION_AUTHORITY.common_semantic_key_attr_names(
+        concrete_descendants
+    ):
+        key_values = _descendant_key_values(concrete_descendants, key_attr_name)
+        if len(key_values) < 2:
+            continue
+        if (
+            match := LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+                roster_member_names, key_values, roster_name
+            )
+        ) is not None:
+            return key_attr_name, match
+    return None
+
+
+def _latent_implementation_roster_candidates(
+    modules: list[ParsedModule], config: DetectorConfig
+) -> tuple[LatentImplementationRosterCandidate, ...]:
+    class_index = build_class_family_index(modules)
+    rosters = _module_level_collection_rosters(modules)
+    candidates: list[LatentImplementationRosterCandidate] = []
+    for indexed_class in sorted(
+        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+    ):
+        if not CLASS_NODE_AUTHORITY.is_abstract(
+            indexed_class.node
+        ) or HELPER_SUPPORT_PROJECTION_AUTHORITY.family_has_autoregister_authority(
+            class_index, indexed_class
+        ):
+            continue
+        concrete_descendants = tuple(
+            (
+                descendant
+                for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
+                    class_index, indexed_class.symbol
+                )
+                if not CLASS_NODE_AUTHORITY.is_abstract(descendant.node)
+            )
+        )
+        if len(concrete_descendants) < max(2, config.min_registration_sites):
+            continue
+        concrete_class_names = CLASS_INDEX_PROJECTION.display_names(
+            concrete_descendants, class_index
+        )
+        concrete_simple_names = sorted_tuple(
+            (descendant.simple_name for descendant in concrete_descendants)
+        )
+        for roster in rosters:
+            key_attr_name: str | None = None
+            match = LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+                roster.member_names, concrete_class_names, roster.roster_name
+            ) or LATENT_ROSTER_PROJECTION_AUTHORITY.match(
+                roster.member_names, concrete_simple_names, roster.roster_name
+            )
+            if match is None:
+                key_match = _matched_latent_roster_key_attr(
+                    roster.member_names, concrete_descendants, roster.roster_name
+                )
+                if key_match is not None:
+                    key_attr_name, match = key_match
+            if match is None:
+                continue
+            coverage_ratio, missing_member_names, projection_policy_hint = match
+            candidates.append(
+                LatentImplementationRosterCandidate(
+                    file_path=roster.file_path,
+                    line=roster.line,
+                    class_name=CLASS_INDEX_PROJECTION.display_name(
+                        indexed_class, class_index
+                    ),
+                    roster_name=roster.roster_name,
+                    roster_kind=roster.roster_kind,
+                    roster_member_names=roster.member_names,
+                    concrete_class_names=concrete_class_names,
+                    key_attr_name=key_attr_name,
+                    projection_role=roster.projection_role,
+                    projection_policy_hint=projection_policy_hint,
+                    coverage_ratio=coverage_ratio,
+                    missing_member_names=missing_member_names,
+                    line_count=roster.line_count,
+                )
+            )
     return tuple(candidates)
 
 
@@ -3413,21 +4000,56 @@ def _references_dunder_registry(
     )
 
 
-def autoregister_registry_projection_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        (
-            method.name
-            for method in CLASS_NODE_AUTHORITY.methods(node)
-            if _references_dunder_registry(method)
+class HelperDispatchAlgebraAuthority:
+    def autoregister_registry_projection_names(
+        self, node: ast.ClassDef
+    ) -> tuple[str, ...]:
+        return tuple(
+            (
+                method.name
+                for method in CLASS_NODE_AUTHORITY.methods(node)
+                if _references_dunder_registry(method)
+            )
         )
-    )
+
+    def registry_materialization_kind(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
+    ) -> str | None:
+        append_args = HELPER_SUPPORT_PROJECTION_AUTHORITY.result_append_args(
+            node, result_name
+        )
+        if len(append_args) != 1:
+            return None
+        arg = append_args[0]
+        if isinstance(arg, ast.Call):
+            return "instantiate"
+        if isinstance(arg, ast.Name):
+            return _TYPE_NAME_LITERAL
+        return "projection"
+
+    def repeated_property_hook_metrics(
+        self, class_names: tuple[str, ...], property_name: str
+    ) -> RepeatedMethodMetrics:
+        return RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=len(class_names),
+            statement_count=1,
+            class_count=len(class_names),
+            method_symbols=tuple(
+                (f"{class_name}.{property_name}" for class_name in class_names)
+            ),
+        )
+
+
+HELPER_DISPATCH_ALGEBRA_AUTHORITY = HelperDispatchAlgebraAuthority()
 
 
 def _autoregister_behavior_method_names(
     indexed_class: IndexedClass, concrete_descendants: tuple[IndexedClass, ...]
 ) -> tuple[str, ...]:
     registry_projection_names = set(
-        autoregister_registry_projection_names(indexed_class.node)
+        HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
+            indexed_class.node
+        )
     )
     return sorted_tuple(
         {
@@ -3678,7 +4300,7 @@ def _autoregister_meta_rent_candidates(
         ):
             continue
         node = indexed_class.node
-        if not declares_autoregister_meta(node):
+        if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
             continue
         concrete_descendants = tuple(
             descendant
@@ -3698,7 +4320,11 @@ def _autoregister_meta_rent_candidates(
         )
         registry_key_attr_name = _autoregister_registry_key_attr_name(node)
         key_extractor_name = _autoregister_key_extractor_name(node)
-        registry_projection_names = autoregister_registry_projection_names(node)
+        registry_projection_names = (
+            HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
+                node
+            )
+        )
         consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols(
             modules,
             family_name=family_name,
@@ -3707,7 +4333,9 @@ def _autoregister_meta_rent_candidates(
         behavior_method_names = _autoregister_behavior_method_names(
             indexed_class, concrete_descendants
         )
-        node_abstract_method_names = abstract_method_names(node)
+        node_abstract_method_names = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.abstract_method_names(node)
+        )
         missing_rent_signals = _autoregister_missing_rent_signals(
             concrete_class_names=concrete_class_names,
             dynamic_factory_symbols=dynamic_factory_symbols,
@@ -3853,7 +4481,7 @@ def _registered_type_predicate_shape(
         and (not predicate.keywords)
         and (target_name is not None)
         and (call_attribute_name(predicate, owner_name=target_name) is not None)
-        and (name_id(argument) in parameter_names(method))
+        and (name_id(argument) in SUPPORT_PROJECTION_AUTHORITY.parameter_names(method))
     ):
         return None
     return cast(ast.Attribute, predicate.func).attr, cast(ast.Name, argument).id
@@ -4066,7 +4694,9 @@ def _parallel_mirrored_leaf_family_candidates(
         assignments = CLASS_NODE_AUTHORITY.direct_assignments(indexed_class.node)
         if "_registered_types" not in assignments:
             continue
-        abstract_methods = abstract_method_names(indexed_class.node)
+        abstract_methods = HELPER_SYNTAX_PROJECTION_AUTHORITY.abstract_method_names(
+            indexed_class.node
+        )
         if not abstract_methods:
             continue
         concrete_descendants = tuple(
@@ -4330,36 +4960,6 @@ def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str
     return attr_type_names
 
 
-def _method_aliases_to_self_attrs(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    changed = True
-    while changed:
-        changed = False
-        for subnode in _walk_nodes(method):
-            target: ast.AST | None = None
-            value: ast.AST | None = None
-            if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
-                target = subnode.targets[0]
-                value = subnode.value
-            elif isinstance(subnode, ast.AnnAssign):
-                target = subnode.target
-                value = subnode.value
-            if not (isinstance(target, ast.Name) and value is not None):
-                continue
-            attr_name = None
-            if isinstance(value, ast.Attribute):
-                attr_name = _self_attr_name(value)
-            elif isinstance(value, ast.Name):
-                attr_name = aliases.get(value.id)
-            if attr_name is None or aliases.get(target.id) == attr_name:
-                continue
-            aliases[target.id] = attr_name
-            changed = True
-    return aliases
-
-
 def _receiver_self_attr_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
     if isinstance(node, ast.Attribute):
         return _self_attr_name(node)
@@ -4373,7 +4973,12 @@ def _concrete_config_field_probe_candidates(
 ) -> tuple[ConcreteConfigFieldProbeCandidate, ...]:
     class_defs_by_name = _module_class_defs_by_name(module)
     config_field_names = {
-        class_name: {field_name for field_name, _ in typed_field_map(node)}
+        class_name: {
+            field_name
+            for field_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(
+                node
+            )
+        }
         for class_name, node in class_defs_by_name.items()
     }
     candidates: list[ConcreteConfigFieldProbeCandidate] = []
@@ -4382,7 +4987,7 @@ def _concrete_config_field_probe_candidates(
         if not concrete_config_attrs:
             continue
         for method in CLASS_NODE_AUTHORITY.methods(node):
-            aliases = _method_aliases_to_self_attrs(method)
+            aliases = METHOD_PROJECTION.aliases_to_self_attrs(method)
             grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
             grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
             grouped_lines: dict[tuple[str, str], int] = {}
@@ -4494,22 +5099,6 @@ def _is_declarative_class_value(node: ast.AST) -> bool:
     return False
 
 
-def metadata_only_class_assignment_names(node: ast.ClassDef) -> tuple[str, ...] | None:
-    assigned_names: list[str] = []
-    for statement in _trim_docstring_body(node.body):
-        if isinstance(statement, ast.Pass):
-            continue
-        binding = named_value_binding(statement)
-        if (
-            binding is None
-            or binding.value is None
-            or (not _is_declarative_class_value(binding.value))
-        ):
-            return None
-        assigned_names.append(binding.name)
-    return tuple(assigned_names)
-
-
 def _nominal_class_name_suffixes(class_name: str) -> tuple[str, ...]:
     tokens = re.findall(
         "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", class_name.lstrip("_")
@@ -4527,7 +5116,11 @@ def _metadata_only_class_family_candidates(
     for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef) or node.decorator_list:
             continue
-        assigned_names = metadata_only_class_assignment_names(node)
+        assigned_names = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.metadata_only_class_assignment_names(
+                node
+            )
+        )
         if not assigned_names:
             continue
         base_names = CLASS_NODE_AUTHORITY.declared_base_names(node)
@@ -4764,60 +5357,12 @@ def _module_alias_assignments(module: ParsedModule) -> dict[str, tuple[str, int,
     return aliases
 
 
-def module_string_sequence_assignments(
-    module: ParsedModule,
-) -> NamedStringSequenceSpecs:
-    assignments: MutableNamedStringSequenceSpecs = []
-    for statement in _trim_docstring_body(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                target_name = target.id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None or value is None:
-            continue
-        if not isinstance(value, (ast.Tuple, ast.List)):
-            continue
-        string_items = tuple(
-            (
-                item.value
-                for item in value.elts
-                if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            )
-        )
-        if len(string_items) != len(value.elts) or len(string_items) < 3:
-            continue
-        assignments.append((target_name, statement.lineno, string_items))
-    return tuple(assignments)
-
-
 def _is_simple_classvar_value(node: ast.AST) -> bool:
     if isinstance(node, (ast.Name, ast.Attribute, ast.Constant)):
         return True
     if isinstance(node, ast.Tuple):
         return all((_is_simple_classvar_value(item) for item in node.elts))
     return False
-
-
-def classvar_assignment_names(node: ast.ClassDef) -> tuple[str, ...] | None:
-    assigned_names: list[str] = []
-    for statement in _trim_docstring_body(node.body):
-        binding = named_value_binding(statement)
-        if (
-            binding is None
-            or binding.value is None
-            or (not _is_simple_classvar_value(binding.value))
-        ):
-            return None
-        assigned_names.append(binding.name)
-    return tuple(assigned_names)
 
 
 def _classvar_only_sibling_leaf_candidates_for_class(
@@ -4830,7 +5375,7 @@ def _classvar_only_sibling_leaf_candidates_for_class(
     )
     if not base_names:
         return
-    assigned_names = classvar_assignment_names(node)
+    assigned_names = HELPER_SYNTAX_PROJECTION_AUTHORITY.classvar_assignment_names(node)
     if assigned_names is None:
         return
     if len(assigned_names) < 1 or len(assigned_names) > 4:
@@ -4902,7 +5447,9 @@ def _type_indexed_definition_boilerplate_groups(
             (name.endswith("Definition") for name in base_names)
         ):
             continue
-        assigned_names = classvar_assignment_names(node)
+        assigned_names = HELPER_SYNTAX_PROJECTION_AUTHORITY.classvar_assignment_names(
+            node
+        )
         if assigned_names is None:
             continue
         if not set(assigned_names) & _DECLARATIVE_FAMILY_ASSIGNMENT_NAMES:
@@ -4939,31 +5486,16 @@ def _type_indexed_definition_boilerplate_groups(
     )
 
 
-def derivable_nominal_root_names(
-    shapes: Sequence[NominalAuthorityShape],
-) -> tuple[str, ...]:
-    root_counts: Counter[str] = Counter()
-    for shape in shapes:
-        root_counts.update(
-            (
-                name
-                for name in {*shape.declared_base_names, *shape.ancestor_names}
-                if name not in _IGNORED_ANCESTOR_NAMES and name != shape.class_name
-            )
-        )
-    return sorted_tuple(
-        (root_name for root_name, count in root_counts.items() if count >= 3)
-    )
-
-
 def _derived_export_surface_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedExportSurfaceCandidate, ...]:
     index = NominalAuthorityIndex((module,))
     candidates: list[DerivedExportSurfaceCandidate] = []
-    for export_symbol, line, exported_names in module_string_sequence_assignments(
-        module
-    ):
+    for (
+        export_symbol,
+        line,
+        exported_names,
+    ) in HELPER_SUPPORT_PROJECTION_AUTHORITY.module_string_sequence_assignments(module):
         local_shapes = [
             shapes[0]
             for exported_name in exported_names
@@ -4972,7 +5504,9 @@ def _derived_export_surface_candidates(
         ]
         if len(local_shapes) < 6 or len(local_shapes) * 5 < len(exported_names) * 4:
             continue
-        root_names = derivable_nominal_root_names(local_shapes)
+        root_names = HELPER_SUPPORT_PROJECTION_AUTHORITY.derivable_nominal_root_names(
+            local_shapes
+        )
         if not root_names:
             continue
         candidates.append(
@@ -5007,30 +5541,114 @@ def _module_public_source_names(module: ParsedModule) -> tuple[str, ...]:
     return sorted_tuple(names)
 
 
-def _manual_public_api_surface_candidates(
-    module: ParsedModule,
-) -> tuple[ManualPublicApiSurfaceCandidate, ...]:
-    public_source_names = set(_module_public_source_names(module))
-    candidates: list[ManualPublicApiSurfaceCandidate] = []
-    for export_symbol, line, exported_names in module_string_sequence_assignments(
-        module
-    ):
-        if export_symbol != "__all__":
-            continue
-        if len(exported_names) < 4:
-            continue
-        if not set(exported_names) <= public_source_names:
-            continue
-        candidates.append(
-            ManualPublicApiSurfaceCandidate(
-                file_path=str(module.path),
-                export_symbol=export_symbol,
-                line=line,
-                exported_names=exported_names,
-                source_name_count=len(public_source_names),
+class ManualSortedTupleBuilder:
+    def public_api_surface_candidates(
+        self, module: ParsedModule
+    ) -> tuple[ManualPublicApiSurfaceCandidate, ...]:
+        public_source_names = set(_module_public_source_names(module))
+        candidates: list[ManualPublicApiSurfaceCandidate] = []
+        for (
+            export_symbol,
+            line,
+            exported_names,
+        ) in HELPER_SUPPORT_PROJECTION_AUTHORITY.module_string_sequence_assignments(
+            module
+        ):
+            if export_symbol != "__all__":
+                continue
+            if len(exported_names) < 4:
+                continue
+            if not set(exported_names) <= public_source_names:
+                continue
+            candidates.append(
+                ManualPublicApiSurfaceCandidate(
+                    file_path=str(module.path),
+                    export_symbol=export_symbol,
+                    line=line,
+                    exported_names=exported_names,
+                    source_name_count=len(public_source_names),
+                )
             )
+        return tuple(candidates)
+
+    def return_candidates_for_function(
+        self,
+        module: ParsedModule,
+        qualname: str,
+        function: NamedFunctionNode,
+    ) -> Iterable[ManualSortedTupleReturnCandidate]:
+        for return_node in _local_return_nodes(function):
+            sorted_call = _sorted_call_in_tuple_return(return_node)
+            if sorted_call is None:
+                continue
+            yield ManualSortedTupleReturnCandidate(
+                file_path=str(module.path),
+                line=return_node.lineno,
+                qualname=qualname,
+                sorted_expression=_source_segment(module, sorted_call.args[0]),
+                key_expression=_call_keyword_expression(module, sorted_call, "key"),
+                reverse_expression=_call_keyword_expression(
+                    module, sorted_call, "reverse"
+                ),
+                line_count=(return_node.end_lineno or return_node.lineno)
+                - return_node.lineno
+                + 1,
+            )
+
+    def return_candidates(
+        self, module: ParsedModule
+    ) -> tuple[ManualSortedTupleReturnCandidate, ...]:
+        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+            module,
+            self.return_candidates_for_function,
         )
-    return tuple(candidates)
+
+    def expression_candidates(
+        self, module: ParsedModule
+    ) -> tuple[ManualSortedTupleExpressionCandidate, ...]:
+        candidates: list[ManualSortedTupleExpressionCandidate] = []
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.parent_stack: list[ast.AST] = []
+
+            def visit(self, node: ast.AST) -> None:
+                self.parent_stack.append(node)
+                super().visit(node)
+                self.parent_stack.pop()
+
+            def visit_Call(self, node: ast.Call) -> None:
+                sorted_call = _sorted_call_in_tuple_expression(node)
+                parent = self.parent_stack[-2] if len(self.parent_stack) > 1 else None
+                if sorted_call is not None and (not isinstance(parent, ast.Return)):
+                    candidates.append(
+                        ManualSortedTupleExpressionCandidate(
+                            file_path=str(module.path),
+                            line=node.lineno,
+                            qualname=self.qualname,
+                            sorted_expression=_source_segment(
+                                module, sorted_call.args[0]
+                            ),
+                            key_expression=_call_keyword_expression(
+                                module, sorted_call, "key"
+                            ),
+                            reverse_expression=_call_keyword_expression(
+                                module, sorted_call, "reverse"
+                            ),
+                            line_count=(node.end_lineno or node.lineno)
+                            - node.lineno
+                            + 1,
+                            context_kind=type(parent).__name__,
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        return tuple(candidates)
+
+
+MANUAL_SORTED_TUPLE_BUILDER = ManualSortedTupleBuilder()
 
 
 def _dict_key_kind(value: ast.AST) -> str | None:
@@ -5086,7 +5704,9 @@ def _derived_indexed_surface_candidates(
         if len(value_names) != len(value.values):
             continue
         local_shapes = [index.shapes_named(value_name)[0] for value_name in value_names]
-        shared_roots = derivable_nominal_root_names(local_shapes)
+        shared_roots = HELPER_SUPPORT_PROJECTION_AUTHORITY.derivable_nominal_root_names(
+            local_shapes
+        )
         if not shared_roots:
             continue
         candidates.append(
@@ -5248,18 +5868,6 @@ def _registered_union_surface_candidates(
     )
 
 
-def type_name_set(node: ast.AST) -> tuple[str, ...]:
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    if isinstance(node, ast.Attribute):
-        return (ast.unparse(node),)
-    if isinstance(node, ast.Tuple):
-        return sorted_tuple(
-            {type_name for element in node.elts for type_name in type_name_set(element)}
-        )
-    return ()
-
-
 def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
     body_text = "\n".join(ast.unparse(statement) for statement in node.body)
     roles: set[str] = set()
@@ -5275,7 +5883,9 @@ def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
             continue
         call_name = _ast_terminal_name(current.func)
         if call_name == "isinstance" and len(current.args) == 2:
-            type_names = set(type_name_set(current.args[1]))
+            type_names = set(
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.type_name_set(current.args[1])
+            )
             if _TYPE_NAME_LITERAL in type_names:
                 roles.add("type_only")
                 type_names.discard(_TYPE_NAME_LITERAL)
@@ -5287,7 +5897,9 @@ def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
             roles.add("callable_ok")
         elif call_name == "issubclass" and len(current.args) == 2:
             roles.add("subclass_constraint")
-            type_names = set(type_name_set(current.args[1]))
+            type_names = set(
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.type_name_set(current.args[1])
+            )
             if any((type_name.endswith("Enum") for type_name in type_names)):
                 roles.add("enum_ok")
         elif call_name == "isabstract":
@@ -5305,7 +5917,9 @@ def _export_policy_root_type_names(node: ast.FunctionDef) -> tuple[str, ...]:
         root_type_names.update(
             (
                 type_name
-                for type_name in type_name_set(current.args[1])
+                for type_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.type_name_set(
+                    current.args[1]
+                )
                 if type_name != _TYPE_NAME_LITERAL
             )
         )
@@ -5423,101 +6037,154 @@ def _returned_sequence_name(
     return None
 
 
-def subclasses_root_expression(node: ast.AST) -> str | None:
-    subclasses_call = single_named_call_argument(
-        node, call_name=_BuiltinCollectionName.LIST, argument_type=ast.Call
-    ) or as_ast(node, ast.Call)
-    if subclasses_call is None:
-        return None
-    match = attribute_call_match(
-        subclasses_call,
-        method_name="__subclasses__",
-        owner_type=ast.AST,
-        argument_count=0,
-    )
-    return None if match is None else ast.unparse(match.owner)
+class NamedSubclassFilterCallRule(AstPredicateRule[str, ast.Call, str]):
+    node_type = ast.Call
+
+    def project_ast(self, node: ast.Call, current_name: str) -> str | None:
+        if name_id(node.func) is None:
+            return None
+        if not any(name_id(argument) == current_name for argument in node.args):
+            return None
+        return name_id(node.func)
 
 
-def _subclass_traversal_seed(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, str] | None:
-    for statement in _trim_docstring_body(node.body):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        if (root_expression := subclasses_root_expression(statement.value)) is None:
-            continue
-        return statement.targets[0].id, root_expression
-    return None
+class DictBackedSubclassFilterRule(AstPredicateRule[str, ast.Call, str]):
+    node_type = ast.Call
 
-
-def queue_pop_target_name(statement: ast.stmt, queue_name: str) -> str | None:
-    assignment_node = as_ast(statement, ast.Assign)
-    assignment = named_call_assignment(assignment_node) if assignment_node else None
-    pop_call = (
-        attribute_call_match(
-            assignment.call,
-            method_name="pop",
-            owner_type=ast.Name,
-            owner_name=queue_name,
-            single_argument_required=True,
+    def project_ast(self, node: ast.Call, current_name: str) -> str | None:
+        match = attribute_call_match(
+            node,
+            method_name="get",
+            owner_type=ast.Attribute,
+            argument_count=1,
         )
-        if assignment is not None
-        else None
-    )
-    if pop_call is None or constant_value(pop_call.single_argument) != 0:
+        if match is None:
+            return None
+        if match.owner.attr != "__dict__" or name_id(match.owner.value) != current_name:
+            return None
+        attribute_name = constant_value(match.single_argument)
+        return attribute_name if isinstance(attribute_name, str) else None
+
+
+SUBCLASS_FILTER_NAME_GRAMMAR = AstPredicateGrammar[str, str](
+    (NamedSubclassFilterCallRule(), DictBackedSubclassFilterRule())
+)
+
+
+class QueueExtendingSubclassLoopRule(AstPredicateRule[str, ast.While, str]):
+    node_type = ast.While
+
+    def project_ast(self, node: ast.While, queue_name: str) -> str | None:
+        current_name: str | None = None
+        extends_queue = False
+        for body_statement in node.body:
+            current_name = (
+                current_name
+                or HELPER_SUPPORT_PROJECTION_AUTHORITY.queue_pop_target_name(
+                    body_statement, queue_name
+                )
+            )
+            if (
+                current_name is not None
+                and HELPER_SYNTAX_PROJECTION_AUTHORITY.extends_subclasses_queue(
+                    body_statement, queue_name, current_name
+                )
+            ):
+                extends_queue = True
+        return current_name if extends_queue else None
+
+
+SUBCLASS_LOOP_GRAMMAR = AstPredicateGrammar[str, str](
+    (QueueExtendingSubclassLoopRule(),)
+)
+
+
+class SubclassTraversalProfile:
+    def seed(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> tuple[str, str] | None:
+        for statement in _trim_docstring_body(node.body):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or (not isinstance(statement.targets[0], ast.Name))
+            ):
+                continue
+            if (
+                root_expression := HELPER_SYNTAX_PROJECTION_AUTHORITY.subclasses_root_expression(
+                    statement.value
+                )
+            ) is None:
+                continue
+            return statement.targets[0].id, root_expression
         return None
-    return assignment.target_name
 
-
-def extends_subclasses_queue(
-    statement: ast.stmt, queue_name: str, current_name: str
-) -> bool:
-    if (
-        not isinstance(statement, ast.Expr)
-        or not isinstance(statement.value, ast.Call)
-        or (not isinstance(statement.value.func, ast.Attribute))
-        or (statement.value.func.attr != "extend")
-        or (not isinstance(statement.value.func.value, ast.Name))
-        or (statement.value.func.value.id != queue_name)
-        or (len(statement.value.args) != 1)
-    ):
-        return False
-    return subclasses_root_expression(statement.value.args[0]) == current_name
-
-
-def result_append_args(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
-) -> tuple[ast.AST, ...]:
-    return tuple(
-        (
-            current.args[0]
-            for current in _walk_nodes(node)
-            if isinstance(current, ast.Call)
-            and isinstance(current.func, ast.Attribute)
-            and (current.func.attr == _APPEND_METHOD_NAME)
-            and isinstance(current.func.value, ast.Name)
-            and (current.func.value.id == result_name)
-            and (len(current.args) == 1)
+    def filter_names(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        current_name: str,
+    ) -> tuple[str, ...]:
+        return sorted_tuple(
+            set(SUBCLASS_FILTER_NAME_GRAMMAR.matches_anywhere(node, current_name))
         )
-    )
+
+    def loop_profile(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, queue_name: str
+    ) -> str | None:
+        return SUBCLASS_LOOP_GRAMMAR.first_match_anywhere(node, queue_name)
+
+    def materialization_kind(
+        self, node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str | None
+    ) -> str | None:
+        return (
+            Maybe.of(result_name)
+            .combine(
+                lambda name: HELPER_DISPATCH_ALGEBRA_AUTHORITY.registry_materialization_kind(
+                    node, name
+                ),
+                lambda name, materialization_kind: (
+                    materialization_kind
+                    if HELPER_SUPPORT_PROJECTION_AUTHORITY.result_append_args(
+                        node, name
+                    )
+                    else None
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def site(
+        self,
+        module: ParsedModule,
+        qualname: str,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SubclassTraversalSite | None:
+        return (
+            Maybe.of(self.seed(node))
+            .combine(
+                lambda seed: self.loop_profile(node, seed[0]),
+                lambda seed, current_name: (seed, current_name),
+            )
+            .combine(
+                lambda context: self.materialization_kind(
+                    node,
+                    _returned_sequence_name(node),
+                ),
+                lambda context, materialization_kind: SubclassTraversalSite(
+                    file_path=str(module.path),
+                    line=node.lineno,
+                    symbol=qualname,
+                    root_expression=context[0][1],
+                    materialization_kind=materialization_kind,
+                    registry_attribute_names=_registry_attribute_names(node),
+                    filter_names=self.filter_names(node, context[1]),
+                ),
+            )
+            .unwrap_or_none()
+        )
 
 
-def registry_materialization_kind(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str
-) -> str | None:
-    append_args = result_append_args(node, result_name)
-    if len(append_args) != 1:
-        return None
-    arg = append_args[0]
-    if isinstance(arg, ast.Call):
-        return "instantiate"
-    if isinstance(arg, ast.Name):
-        return _TYPE_NAME_LITERAL
-    return "projection"
+SUBCLASS_TRAVERSAL_PROFILE = SubclassTraversalProfile()
 
 
 def _registry_attribute_names(
@@ -5539,102 +6206,6 @@ def _registry_attribute_names(
     )
 
 
-def _subclass_traversal_filter_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    current_name: str,
-) -> tuple[str, ...]:
-    filter_names: set[str] = set()
-    for current in _walk_nodes(node):
-        if not isinstance(current, ast.Call):
-            continue
-        if isinstance(current.func, ast.Name) and any(
-            (
-                isinstance(subnode, ast.Name) and subnode.id == current_name
-                for subnode in current.args
-            )
-        ):
-            filter_names.add(current.func.id)
-            continue
-        if (
-            isinstance(current.func, ast.Attribute)
-            and current.func.attr == "get"
-            and isinstance(current.func.value, ast.Attribute)
-            and (current.func.value.attr == "__dict__")
-            and isinstance(current.func.value.value, ast.Name)
-            and (current.func.value.value.id == current_name)
-            and (len(current.args) == 1)
-            and ((attribute_name := _constant_string(current.args[0])) is not None)
-        ):
-            filter_names.add(attribute_name)
-    return sorted_tuple(filter_names)
-
-
-def _subclass_traversal_site(
-    module: ParsedModule,
-    qualname: str,
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> SubclassTraversalSite | None:
-    return (
-        Maybe.of(_subclass_traversal_seed(node))
-        .combine(
-            lambda seed: _subclass_traversal_loop_profile(node, seed[0]),
-            lambda seed, current_name: (seed, current_name),
-        )
-        .combine(
-            lambda context: _subclass_traversal_materialization_kind(
-                node,
-                _returned_sequence_name(node),
-            ),
-            lambda context, materialization_kind: SubclassTraversalSite(
-                file_path=str(module.path),
-                line=node.lineno,
-                symbol=qualname,
-                root_expression=context[0][1],
-                materialization_kind=materialization_kind,
-                registry_attribute_names=_registry_attribute_names(node),
-                filter_names=_subclass_traversal_filter_names(node, context[1]),
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
-def _subclass_traversal_loop_profile(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, queue_name: str
-) -> str | None:
-    current_name: str | None = None
-    extends_queue = False
-    for statement in _walk_nodes(node):
-        if not isinstance(statement, ast.While):
-            continue
-        for body_statement in statement.body:
-            current_name = current_name or queue_pop_target_name(
-                body_statement, queue_name
-            )
-            if current_name is not None and extends_subclasses_queue(
-                body_statement, queue_name, current_name
-            ):
-                extends_queue = True
-    if current_name is None or not extends_queue:
-        return None
-    return current_name
-
-
-def _subclass_traversal_materialization_kind(
-    node: ast.FunctionDef | ast.AsyncFunctionDef, result_name: str | None
-) -> str | None:
-    return (
-        Maybe.of(result_name)
-        .combine(
-            lambda name: registry_materialization_kind(node, name),
-            lambda name, materialization_kind: (
-                materialization_kind if result_append_args(node, name) else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
 def _registry_traversal_group(
     modules: Sequence[ParsedModule],
 ) -> SubclassTraversalGroup | None:
@@ -5644,7 +6215,7 @@ def _registry_traversal_group(
             for module in modules
             for qualname, function in _iter_named_functions(module)
             if (
-                site := _subclass_traversal_site(
+                site := SUBCLASS_TRAVERSAL_PROFILE.site(
                     module,
                     qualname,
                     cast(ast.FunctionDef | ast.AsyncFunctionDef, function),
@@ -5681,18 +6252,6 @@ def _declarative_family_boilerplate_groups(
     return _classvar_only_sibling_leaf_groups(module)
 
 
-def constructor_return_call(node: ast.FunctionDef) -> ast.Call | None:
-    body = _trim_docstring_body(node.body)
-    if len(body) != 1 or not isinstance(body[0], ast.Return) or body[0].value is None:
-        return None
-    returned = body[0].value
-    if not isinstance(returned, ast.Call):
-        return None
-    if not isinstance(returned.func, ast.Name) or returned.func.id != "cls":
-        return None
-    return returned
-
-
 def _source_type_name_for_constructor(node: ast.FunctionDef) -> str | None:
     if len(node.args.args) < 3:
         return None
@@ -5715,7 +6274,9 @@ def _alternate_constructor_family_groups(
                 continue
             if not statement.name.startswith("from_") or not _is_classmethod(statement):
                 continue
-            return_call = constructor_return_call(statement)
+            return_call = HELPER_SUPPORT_PROJECTION_AUTHORITY.constructor_return_call(
+                statement
+            )
             if return_call is None:
                 continue
             source_type_name = _source_type_name_for_constructor(statement)
@@ -5750,19 +6311,6 @@ def _alternate_constructor_family_groups(
             )
         )
     return tuple(groups)
-
-
-def repeated_property_hook_metrics(
-    class_names: tuple[str, ...], property_name: str
-) -> RepeatedMethodMetrics:
-    return RepeatedMethodMetrics.from_duplicate_family(
-        duplicate_site_count=len(class_names),
-        statement_count=1,
-        class_count=len(class_names),
-        method_symbols=tuple(
-            (f"{class_name}.{property_name}" for class_name in class_names)
-        ),
-    )
 
 
 _METRIC_BAG_SCHEMAS = metric_semantic_bag_descriptors()
@@ -5959,7 +6507,7 @@ def _group_repeated_methods(
             and method.statement_count >= config.min_duplicate_statements
         )
     )
-    groups = fiber_grouped_shapes(
+    groups = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
         modules,
         tuple(methods),
         ObservationKind.METHOD_SHAPE,
@@ -7333,7 +7881,7 @@ def _semantic_overlap_abc_residue_axis_catalog_candidates(
 def _abc_patch_for_methods(methods: tuple[MethodShape, ...]) -> str:
     target_file = methods[0].file_path
     base_name = (
-        shared_family_name(
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(
             sorted(
                 {
                     method.class_name
@@ -7353,7 +7901,9 @@ def _abc_family_patch(
 ) -> str:
     ordered = sorted(class_names)
     target_file = groups[0][0].file_path
-    base_name = shared_family_name(ordered) or "FamilyBase"
+    base_name = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(ordered) or "FamilyBase"
+    )
     return f"*** Begin Patch\n*** Update File: {target_file}\n@@\n+class {base_name}(ABC):\n+    def run(self, request): ...\n+\n+    @abstractmethod\n+    def hook(self, request): ...\n*** End Patch"
 
 
@@ -7381,7 +7931,10 @@ def _autoregister_patch(
     registrations: tuple[RegistrationShape, ...],
 ) -> str:
     target_file = registrations[0].file_path
-    base_name = shared_family_name(sorted(class_names)) or "RegisteredBase"
+    base_name = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(sorted(class_names))
+        or "RegisteredBase"
+    )
     ordered_class_names = sorted_tuple(class_names)
     key_values = tuple(
         (
@@ -7429,7 +7982,10 @@ def _abc_scaffold_for_methods(methods: tuple[MethodShape, ...]) -> str:
         {method.class_name for method in methods if method.class_name is not None}
     )
     hook_names = sorted({method.method_name for method in methods})
-    base_name = shared_family_name(class_names) or "ExtractedBase"
+    base_name = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(class_names)
+        or "ExtractedBase"
+    )
     hook_name = hook_names[0] if hook_names else "hook"
     return f"class {base_name}(ABC):\n    def run(self, request):\n        normalized = self._normalize(request)\n        return self.{hook_name}(normalized)\n\n    @abstractmethod\n    def {hook_name}(self, normalized): ..."
 
@@ -7438,7 +7994,9 @@ def _abc_family_scaffold(
     class_names: frozenset[str], groups: list[tuple[MethodShape, ...]]
 ) -> str:
     ordered = sorted(class_names)
-    base_name = shared_family_name(ordered) or "FamilyBase"
+    base_name = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(ordered) or "FamilyBase"
+    )
     hook_methods = sorted(
         {
             method.method_name
@@ -7481,23 +8039,16 @@ def _projection_schema_scaffold(export_shapes: tuple[ExportDictShape, ...]) -> s
 
 
 def _autoregister_scaffold(registry_name: str, class_names: set[str]) -> str:
-    base_name = shared_family_name(sorted(class_names)) or "RegisteredBase"
+    base_name = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(sorted(class_names))
+        or "RegisteredBase"
+    )
     sample = sorted(class_names)[:2]
     config_block = DISPATCH_ALGEBRA_AUTHORITY.derived_registry_key_block(sample)
     subclass_block = "\n".join(
         (f"class {name}({base_name}):\n    ..." for name in sample)
     )
     return f"from abc import ABC\nimport re\nfrom metaclass_registry import AutoRegisterMeta\n\nclass {base_name}(ABC, metaclass=AutoRegisterMeta):\n{config_block}\n\n{subclass_block}"
-
-
-def shared_family_name(class_names: list[str]) -> str | None:
-    if not class_names:
-        return None
-    prefix = class_names[0]
-    for name in class_names[1:]:
-        while prefix and (not name.startswith(prefix)):
-            prefix = prefix[:-1]
-    return prefix or None
 
 
 @lru_cache(maxsize=None)
@@ -7664,25 +8215,6 @@ def _accessor_replacement_example(candidate: AccessorWrapperCandidate) -> str:
     return f"- replace `{candidate.symbol}()` with an `@property` exposing `{candidate.target_expression}`"
 
 
-def expression_root_names(node: ast.AST) -> set[str]:
-    roots: set[str] = set()
-
-    class Visitor(ast.NodeVisitor):
-        def visit_Attribute(self, node: ast.Attribute) -> None:
-            current: ast.AST = node
-            while isinstance(current, ast.Attribute):
-                current = current.value
-            if isinstance(current, ast.Name):
-                roots.add(current.id)
-            self.generic_visit(node)
-
-        def visit_Name(self, node: ast.Name) -> None:
-            roots.add(node.id)
-
-    Visitor().visit(node)
-    return roots
-
-
 @dataclass(frozen=True)
 class _FunctionSignatureView:
     function: ast.FunctionDef | ast.AsyncFunctionDef
@@ -7760,24 +8292,9 @@ def _parameter_has_optional_variant_role(
 
 
 def _is_transport_expression(node: ast.AST, *, allowed_roots: set[str]) -> bool:
-    return expression_root_names(node) <= allowed_roots
-
-
-def wrapper_delegate_symbol(
-    node: ast.AST,
-    *,
-    class_name: str | None,
-) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and (node.value.id in {"self", "cls"})
-        and (class_name is not None)
-    ):
-        return f"{class_name}.{node.attr}"
-    return None
+    return (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(node) <= allowed_roots
+    )
 
 
 def _call_transport_values(call: ast.Call) -> tuple[ast.AST, ...]:
@@ -7793,7 +8310,11 @@ class TransportProjectionAuthority:
         allowed_roots: set[str],
     ) -> str | None:
         return (
-            Maybe.of(wrapper_delegate_symbol(call.func, class_name=class_name))
+            Maybe.of(
+                HELPER_SUPPORT_PROJECTION_AUTHORITY.wrapper_delegate_symbol(
+                    call.func, class_name=class_name
+                )
+            )
             .project(
                 lambda delegate_symbol: (
                     delegate_symbol
@@ -7826,7 +8347,9 @@ class TransportProjectionAuthority:
         class_name: str | None,
     ) -> str:
         inner = chain[-1]
-        symbol = wrapper_delegate_symbol(inner.func, class_name=class_name)
+        symbol = HELPER_SUPPORT_PROJECTION_AUTHORITY.wrapper_delegate_symbol(
+            inner.func, class_name=class_name
+        )
         if symbol is None:
             symbol = ast.unparse(inner.func)
         for call in reversed(chain[:-1]):
@@ -8007,30 +8530,6 @@ def _external_callsites_by_target_cached(
     }
 
 
-def matching_external_callsites(
-    callsites_by_target: ExternalCallsitesByTarget,
-    *,
-    target_symbol: str,
-) -> tuple[ResolvedExternalCallsite, ...]:
-    matched: set[ResolvedExternalCallsite] = set()
-    for observed_target, callsites in callsites_by_target.items():
-        if (
-            observed_target == target_symbol
-            or observed_target.endswith(f".{target_symbol}")
-            or target_symbol.endswith(f".{observed_target}")
-        ):
-            matched.update(callsites)
-    return sorted_tuple(
-        matched,
-        key=lambda item: (
-            item.location.file_path,
-            item.location.line,
-            item.location.symbol,
-            item.module_name,
-        ),
-    )
-
-
 def _trivial_forwarding_wrapper_candidate(
     module: ParsedModule,
     qualname: str,
@@ -8108,7 +8607,7 @@ def _public_api_private_delegate_shell_candidates(
             external_callsites = tuple(
                 (
                     site
-                    for site in matching_external_callsites(
+                    for site in HELPER_SUPPORT_PROJECTION_AUTHORITY.matching_external_callsites(
                         callsites_by_target, target_symbol=wrapper_symbol
                     )
                     if site.module_name != module.module_name
@@ -8171,7 +8670,7 @@ def _public_api_private_delegate_family_candidates(
             {
                 site
                 for wrapper in wrappers
-                for site in matching_external_callsites(
+                for site in HELPER_SUPPORT_PROJECTION_AUTHORITY.matching_external_callsites(
                     callsites_by_target,
                     target_symbol=f"{module_name}.{wrapper.qualname}",
                 )
@@ -8398,7 +8897,7 @@ class _DirectFunctionWrapperStep(
                 )
             )
             .map(
-                lambda delegate_symbol: function_wrapper_candidate_from_context(
+                lambda delegate_symbol: HELPER_SUPPORT_PROJECTION_AUTHORITY.function_wrapper_candidate_from_context(
                     value, delegate_symbol=delegate_symbol, wrapper_kind="direct"
                 )
             )
@@ -8434,7 +8933,7 @@ class _ProjectionFunctionWrapperStep(
                     context.projection.returned_value,
                     bound_name=context.projection.bound_name,
                 ),
-                lambda context, projected_attributes: function_wrapper_candidate_from_context(
+                lambda context, projected_attributes: HELPER_SUPPORT_PROJECTION_AUTHORITY.function_wrapper_candidate_from_context(
                     value,
                     delegate_symbol=context.delegate_symbol,
                     wrapper_kind="projection",
@@ -8487,24 +8986,6 @@ def _projection_wrapper_call(body: list[ast.stmt]) -> _ProjectionWrapperCall | N
             ),
         )
         .unwrap_or_none()
-    )
-
-
-def function_wrapper_candidate_from_context(
-    context: _FunctionWrapperContext,
-    *,
-    delegate_symbol: str,
-    wrapper_kind: str,
-    projected_attributes: tuple[str, ...] = (),
-) -> FunctionWrapperCandidate:
-    return FunctionWrapperCandidate(
-        file_path=str(context.module.path),
-        qualname=context.qualname,
-        lineno=context.function.lineno,
-        delegate_symbol=delegate_symbol,
-        wrapper_kind=wrapper_kind,
-        statement_count=len(context.body),
-        projected_attributes=projected_attributes,
     )
 
 
@@ -8725,7 +9206,9 @@ def _none_guard_binding_names(test: ast.AST) -> tuple[str, ...]:
 
 
 def _effect_stage_kind(statement: ast.stmt) -> str:
-    if isinstance(statement, ast.If) and if_returns_none_only(statement):
+    if isinstance(
+        statement, ast.If
+    ) and HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement):
         return "fail_soft_guard"
     if isinstance(statement, ast.Assign):
         return (
@@ -8886,7 +9369,7 @@ def _fail_soft_effect_pipeline_candidate(
             statement
             for statement in body
             if isinstance(statement, ast.If)
-            and if_returns_none_only(statement)
+            and HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement)
             and _none_guard_binding_names(statement.test)
         )
     )
@@ -9006,25 +9489,11 @@ def _ast_type_name(node: ast.AST) -> str | None:
     )
 
 
-def ast_type_names(node: ast.AST) -> tuple[str, ...]:
-    if ast_type_name := _ast_type_name(node):
-        return (ast_type_name,)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return tuple(
-            (
-                ast_type_name
-                for item in node.elts
-                if (ast_type_name := _ast_type_name(item)) is not None
-            )
-        )
-    return ()
-
-
 def _isinstance_ast_type_names(node: ast.AST) -> tuple[str, ...]:
     call = as_ast(node, ast.Call)
     if call is None or _call_name(call.func) != "isinstance" or len(call.args) < 2:
         return ()
-    return ast_type_names(call.args[1])
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.ast_type_names(call.args[1])
 
 
 def _len_cardinality_guard_count(node: ast.AST) -> int:
@@ -9516,33 +9985,46 @@ def _is_public_bare_support_function_name(name: str) -> bool:
     return "_" in name
 
 
-def _public_bare_support_function_family(name: str) -> tuple[str, str]:
-    if name.startswith("abc_optimizer_"):
-        return ("abc_optimizer", "ABCOptimizerAuthority")
-    if name.startswith("collect_"):
-        return ("candidate_collection", "CandidateCollectionAuthority")
-    if "call_chain" in name or "transport" in name:
-        return ("transport_projection", "TransportProjectionAuthority")
-    if any(
-        token in name
-        for token in (
-            "ast",
-            "annotation",
-            "attribute",
-            "class",
-            "method",
-            "node",
-            "self",
-            "type",
-        )
-    ):
-        return ("syntax_projection", "SyntaxProjectionAuthority")
-    if any(
-        token in name
-        for token in ("axis", "case", "comparison", "dispatch", "metrics", "registry")
-    ):
-        return ("dispatch_algebra", "DispatchAlgebraAuthority")
-    return ("support_projection", "SupportProjectionAuthority")
+class PublicBareSupportFunctionFamilyAuthority:
+    def family(self, name: str) -> tuple[str, str]:
+        if name.startswith("abc_optimizer_"):
+            return ("abc_optimizer", "ABCOptimizerAuthority")
+        if name.startswith("collect_"):
+            return ("candidate_collection", "CandidateCollectionAuthority")
+        if "call_chain" in name or "transport" in name:
+            return ("transport_projection", "TransportProjectionAuthority")
+        if any(
+            token in name
+            for token in (
+                "ast",
+                "annotation",
+                "attribute",
+                "class",
+                "method",
+                "node",
+                "self",
+                "type",
+            )
+        ):
+            return ("syntax_projection", "SyntaxProjectionAuthority")
+        if any(
+            token in name
+            for token in (
+                "axis",
+                "case",
+                "comparison",
+                "dispatch",
+                "metrics",
+                "registry",
+            )
+        ):
+            return ("dispatch_algebra", "DispatchAlgebraAuthority")
+        return ("support_projection", "SupportProjectionAuthority")
+
+
+PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY = (
+    PublicBareSupportFunctionFamilyAuthority()
+)
 
 
 def _public_bare_support_function_candidates(
@@ -9570,7 +10052,7 @@ def _public_bare_support_function_candidates(
         )
         for function in functions:
             functions_by_family[
-                _public_bare_support_function_family(function.name)
+                PUBLIC_BARE_SUPPORT_FUNCTION_FAMILY_AUTHORITY.family(function.name)
             ].append(function)
         for (semantic_family, recommended_owner), family_functions in sorted(
             functions_by_family.items()
@@ -9652,7 +10134,7 @@ def _facade_only_nominal_authority_candidate(
             and not statement.name.startswith("_")
         )
     )
-    if len(public_methods) < 2:
+    if not public_methods:
         return None
     delegates = tuple(
         (_single_private_delegate_return(method) for method in public_methods)
@@ -9793,31 +10275,6 @@ def _module_authority_reexport_catalog_candidates(
     return sorted_tuple(candidates, key=lambda item: (item.file_path, item.line))
 
 
-def _method_has_stream_materialization(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    body = _trim_docstring_body(method.body)
-    has_projection_binding = any(
-        (
-            isinstance(statement, ast.Assign)
-            and any(
-                (
-                    isinstance(target, ast.Name)
-                    and target.id in {"projected", "items", "nodes"}
-                    for target in statement.targets
-                )
-            )
-        )
-        for statement in body
-    )
-    return has_projection_binding and any(
-        (
-            RETURN_STATEMENT_AUTHORITY.uses_sort_materialization(statement)
-            for statement in body
-        )
-    )
-
-
 def _collection_authority_stream_algebra_candidate(
     module: ParsedModule, node: ast.ClassDef
 ) -> CollectionAuthorityStreamAlgebraCandidate | None:
@@ -9829,7 +10286,7 @@ def _collection_authority_stream_algebra_candidate(
             for statement in node.body
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
             and not statement.name.startswith("_")
-            and _method_has_stream_materialization(statement)
+            and METHOD_PROJECTION.has_stream_materialization(statement)
         )
     )
     if len(methods) < 2:
@@ -10153,16 +10610,6 @@ def _matched_terms(text: str, terms: frozenset[str]) -> tuple[str, ...]:
     return sorted_tuple((term for term in terms if term in lowered))
 
 
-def keyword_value_text(call: ast.Call, keyword_names: frozenset[str]) -> str:
-    return "\n".join(
-        (
-            "\n".join(_all_string_literals(keyword.value))
-            for keyword in call.keywords
-            if keyword.arg in keyword_names
-        )
-    )
-
-
 def _keyword_source_text(
     module: ParsedModule, call: ast.Call, keyword_names: frozenset[str]
 ) -> str:
@@ -10175,27 +10622,16 @@ def _keyword_source_text(
     )
 
 
-def detector_declaration_candidate_type_name(call: ast.Call) -> str | None:
-    call_name = _call_name(call.func)
-    if call_name == _DECLARE_TYPED_OBSERVATION_DETECTOR_NAME:
-        if not call.args:
-            return None
-        detector_name = constant_value(call.args[0])
-        return detector_name if isinstance(detector_name, str) else None
-    if call_name in {
-        _DECLARE_CANDIDATE_RULE_DETECTOR_NAME,
-        _DECLARE_MODULE_DETECTOR_NAME,
-    }:
-        return _source_segment_from_node(call.args[0]) if call.args else None
-    return None
-
-
 def _source_segment_from_node(node: ast.AST) -> str:
     return ast.unparse(node)
 
 
 def _detector_declaration_qualname(call: ast.Call) -> str | None:
-    candidate_type_name = detector_declaration_candidate_type_name(call)
+    candidate_type_name = (
+        HELPER_SYNTAX_PROJECTION_AUTHORITY.detector_declaration_candidate_type_name(
+            call
+        )
+    )
     if candidate_type_name is None:
         return None
     if candidate_type_name.endswith("Detector"):
@@ -10238,7 +10674,9 @@ def _is_payoff_guarded_detector_class(node: ast.ClassDef) -> bool:
 def _build_finding_action_text(node: ast.ClassDef) -> str:
     return "\n".join(
         (
-            keyword_value_text(call, _DETECTOR_ACTION_KEYWORD_NAMES)
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.keyword_value_text(
+                call, _DETECTOR_ACTION_KEYWORD_NAMES
+            )
             for call in (
                 child for child in _walk_nodes(node) if isinstance(child, ast.Call)
             )
@@ -10261,58 +10699,38 @@ def _build_finding_guard_text(module: ParsedModule, node: ast.ClassDef) -> str:
     )
 
 
-def detector_payoff_missing_guard_names(
-    action_text: str, guard_text: str
-) -> tuple[str, ...]:
-    has_structured_payoff = bool(guard_text.strip())
-    has_compression_certificate = "compression_certificate" in guard_text
-    has_backend_loc_budget = has_structured_payoff
-    has_net_reduction_action = bool(
-        _matched_terms(action_text, _NET_REDUCTION_GUARD_TERMS)
-    )
-    has_amortization_or_fanout = bool(
-        has_structured_payoff and _matched_terms(guard_text, _AMORTIZATION_GUARD_TERMS)
-    )
-    if (
-        has_compression_certificate
-        or has_amortization_or_fanout
-        or (has_backend_loc_budget and has_net_reduction_action)
-    ):
-        return ()
-    missing: list[str] = []
-    if not has_structured_payoff:
-        missing.append("structured_payoff_metrics")
-    if not has_backend_loc_budget:
-        missing.append("backend_loc_budget")
-    if not has_net_reduction_action:
-        missing.append("net_reduction_action")
-    if not has_amortization_or_fanout:
-        missing.append("amortization_or_fanout_gate")
-    if not has_compression_certificate:
-        missing.append("compression_certificate_or_explicit_fanout")
-    return tuple(missing)
-
-
 def _detector_backend_payoff_guard_call_candidate(
     module: ParsedModule, node: ast.Call
 ) -> tuple[DetectorBackendPayoffGuardCandidate, ...]:
     if _call_name(node.func) not in _DETECTOR_DECLARATION_CALL_NAMES:
         return ()
-    action_text = keyword_value_text(node, _DETECTOR_ACTION_KEYWORD_NAMES)
+    action_text = HELPER_SUPPORT_PROJECTION_AUTHORITY.keyword_value_text(
+        node, _DETECTOR_ACTION_KEYWORD_NAMES
+    )
     abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
     if not abstraction_terms:
         return ()
     guard_text = "\n".join(
         (
-            keyword_value_text(node, _DETECTOR_GUARD_KEYWORD_NAMES),
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.keyword_value_text(
+                node, _DETECTOR_GUARD_KEYWORD_NAMES
+            ),
             _keyword_source_text(module, node, _DETECTOR_GUARD_KEYWORD_NAMES),
         )
     )
-    missing_guard_names = detector_payoff_missing_guard_names(action_text, guard_text)
+    missing_guard_names = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.detector_payoff_missing_guard_names(
+            action_text, guard_text
+        )
+    )
     if not missing_guard_names:
         return ()
     qualname = _detector_declaration_qualname(node)
-    candidate_type_name = detector_declaration_candidate_type_name(node)
+    candidate_type_name = (
+        HELPER_SYNTAX_PROJECTION_AUTHORITY.detector_declaration_candidate_type_name(
+            node
+        )
+    )
     if qualname is None or candidate_type_name is None:
         return ()
     declaration_line_count = (node.end_lineno or node.lineno) - node.lineno + 1
@@ -10338,8 +10756,10 @@ def _detector_backend_payoff_guard_class_candidate(
     abstraction_terms = _matched_terms(action_text, _ABSTRACTION_RENT_TRIGGER_TERMS)
     if not abstraction_terms:
         return ()
-    missing_guard_names = detector_payoff_missing_guard_names(
-        action_text, _build_finding_guard_text(module, node)
+    missing_guard_names = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.detector_payoff_missing_guard_names(
+            action_text, _build_finding_guard_text(module, node)
+        )
     )
     if not missing_guard_names:
         return ()
@@ -10377,10 +10797,6 @@ def _detector_backend_payoff_guard_candidates(
         ),
         key=lambda item: (item.file_path, item.line),
     )
-
-
-def _renderer_keyword_names(call: ast.Call) -> tuple[str, ...]:
-    return tuple((keyword.arg for keyword in call.keywords if keyword.arg is not None))
 
 
 def _is_candidate_finding_renderer_call(node: ast.AST) -> bool:
@@ -10427,7 +10843,9 @@ def _inline_candidate_renderer_declaration_candidate(
             line=node.lineno,
             qualname=f"{_DECLARE_MODULE_DETECTOR_NAME}[{candidate_type_name}]",
             candidate_type_name=candidate_type_name,
-            renderer_keyword_names=_renderer_keyword_names(renderer_call),
+            renderer_keyword_names=(
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.renderer_keyword_names(renderer_call)
+            ),
             detector_keyword_names=tuple(
                 (keyword.arg for keyword in node.keywords if keyword.arg is not None)
             ),
@@ -10809,7 +11227,7 @@ def _candidate_detector_scope_kind(node: ast.ClassDef) -> str | None:
         )
     ):
         return None
-    base_names = set(class_base_names(node))
+    base_names = set(HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node))
     if "CandidateFindingDetector" in base_names:
         return "module"
     if "CrossModuleCandidateDetector" in base_names:
@@ -10898,25 +11316,6 @@ _TYPED_CANDIDATE_DETECTOR_BASE_NAMES = frozenset(
 )
 
 
-def concrete_detector_base_name(node: ast.ClassDef) -> str | None:
-    if not any(
-        (
-            isinstance(statement, ast.Assign)
-            and any((name_id(target) == "detector_id" for target in statement.targets))
-            for statement in node.body
-        )
-    ):
-        return None
-    base_names = tuple(
-        (
-            base_name
-            for base_name in class_base_names(node)
-            if base_name in _TYPED_CANDIDATE_DETECTOR_BASE_NAMES
-        )
-    )
-    return single_item(base_names) if len(base_names) == 1 else None
-
-
 def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     positional = (*method.args.posonlyargs, *method.args.args)
     payload_names = tuple(
@@ -10978,7 +11377,9 @@ def _typed_candidate_cast_boilerplate_candidates(
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        detector_base_name = concrete_detector_base_name(node)
+        detector_base_name = (
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.concrete_detector_base_name(node)
+        )
         if detector_base_name is None:
             continue
         for statement in node.body:
@@ -11186,7 +11587,9 @@ def _direct_build_finding_renderer_candidates(
     for node in module.module.body:
         if not isinstance(node, ast.ClassDef):
             continue
-        base_name = concrete_detector_base_name(node)
+        base_name = HELPER_SUPPORT_PROJECTION_AUTHORITY.concrete_detector_base_name(
+            node
+        )
         if base_name is None:
             continue
         for statement in node.body:
@@ -11230,16 +11633,6 @@ def _class_detector_id_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
     return None
 
 
-def class_declares_finding_spec(node: ast.ClassDef) -> bool:
-    return any(
-        (
-            isinstance(statement, ast.Assign)
-            and any((name_id(target) == "finding_spec" for target in statement.targets))
-            for statement in node.body
-        )
-    )
-
-
 def _class_candidate_collector_assignment(node: ast.ClassDef) -> tuple[int, str] | None:
     for statement in node.body:
         targets: list[ast.AST]
@@ -11265,34 +11658,10 @@ ClassAssignmentReader = Callable[[ast.ClassDef], tuple[int, str] | None]
 ClassExpectedValue = Callable[[str], str | None]
 
 
-def derivable_class_assignment_candidates(
-    module: ParsedModule,
-    assignment_reader: ClassAssignmentReader,
-    expected_value: ClassExpectedValue,
-    candidate_factory: Callable[[str, int, str, str], DerivableClassCandidateT],
-) -> tuple[DerivableClassCandidateT, ...]:
-    candidates: list[DerivableClassCandidateT] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        assignment = assignment_reader(node)
-        if assignment is None:
-            continue
-        line, assigned_value = assignment
-        if not class_declares_finding_spec(node):
-            continue
-        if assigned_value != expected_value(node.name):
-            continue
-        candidates.append(
-            candidate_factory(str(module.path), line, node.name, assigned_value)
-        )
-    return tuple(candidates)
-
-
 def _derivable_detector_id_candidates(
     module: ParsedModule,
 ) -> tuple[DerivableDetectorIdCandidate, ...]:
-    return derivable_class_assignment_candidates(
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.derivable_class_assignment_candidates(
         module,
         _class_detector_id_assignment,
         _detector_id_value_from_class_name,
@@ -11303,7 +11672,7 @@ def _derivable_detector_id_candidates(
 def _derivable_candidate_collector_candidates(
     module: ParsedModule,
 ) -> tuple[DerivableCandidateCollectorCandidate, ...]:
-    return derivable_class_assignment_candidates(
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.derivable_class_assignment_candidates(
         module,
         _class_candidate_collector_assignment,
         _candidate_collector_name_from_class_name,
@@ -11447,78 +11816,6 @@ def _call_keyword_expression(
     return None if keyword is None else _source_segment(module, keyword.value)
 
 
-def _manual_sorted_tuple_return_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-) -> Iterable[ManualSortedTupleReturnCandidate]:
-    for return_node in _local_return_nodes(function):
-        sorted_call = _sorted_call_in_tuple_return(return_node)
-        if sorted_call is None:
-            continue
-        yield ManualSortedTupleReturnCandidate(
-            file_path=str(module.path),
-            line=return_node.lineno,
-            qualname=qualname,
-            sorted_expression=_source_segment(module, sorted_call.args[0]),
-            key_expression=_call_keyword_expression(module, sorted_call, "key"),
-            reverse_expression=_call_keyword_expression(module, sorted_call, "reverse"),
-            line_count=(return_node.end_lineno or return_node.lineno)
-            - return_node.lineno
-            + 1,
-        )
-
-
-def _manual_sorted_tuple_return_candidates(
-    module: ParsedModule,
-) -> tuple[ManualSortedTupleReturnCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _manual_sorted_tuple_return_candidates_for_function,
-    )
-
-
-def _manual_sorted_tuple_expression_candidates(
-    module: ParsedModule,
-) -> tuple[ManualSortedTupleExpressionCandidate, ...]:
-    candidates: list[ManualSortedTupleExpressionCandidate] = []
-
-    class Visitor(ClassFunctionStackNodeVisitor):
-        def __init__(self) -> None:
-            super().__init__()
-            self.parent_stack: list[ast.AST] = []
-
-        def visit(self, node: ast.AST) -> None:
-            self.parent_stack.append(node)
-            super().visit(node)
-            self.parent_stack.pop()
-
-        def visit_Call(self, node: ast.Call) -> None:
-            sorted_call = _sorted_call_in_tuple_expression(node)
-            parent = self.parent_stack[-2] if len(self.parent_stack) > 1 else None
-            if sorted_call is not None and (not isinstance(parent, ast.Return)):
-                candidates.append(
-                    ManualSortedTupleExpressionCandidate(
-                        file_path=str(module.path),
-                        line=node.lineno,
-                        qualname=self.qualname,
-                        sorted_expression=_source_segment(module, sorted_call.args[0]),
-                        key_expression=_call_keyword_expression(
-                            module, sorted_call, "key"
-                        ),
-                        reverse_expression=_call_keyword_expression(
-                            module, sorted_call, "reverse"
-                        ),
-                        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-                        context_kind=type(parent).__name__,
-                    )
-                )
-            self.generic_visit(node)
-
-    Visitor().visit(module.module)
-    return tuple(candidates)
-
-
 def _decorator_terminal_names(node: ast.FunctionDef) -> tuple[str, ...]:
     return tuple(
         (
@@ -11642,20 +11939,362 @@ ClassShapeCandidateFactory = Callable[
 ]
 
 
-def class_shape_candidates(
-    module: ParsedModule,
-    shape_projector: ClassShapeProjector[ClassShapeT],
-    candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
-) -> tuple[BuiltCandidateT, ...]:
-    candidates: list[BuiltCandidateT] = []
-    for node in _walk_nodes(module.module):
-        if not isinstance(node, ast.ClassDef):
-            continue
-        shape = shape_projector(node)
-        if shape is None:
-            continue
-        candidates.append(candidate_factory(module, node, shape))
-    return tuple(candidates)
+class HelperSyntaxProjectionAuthority:
+    def assignment_target_value(
+        self, statement: ast.stmt
+    ) -> tuple[ast.AST, ast.AST] | None:
+        assignment = as_ast(statement, ast.Assign)
+        if assignment is not None:
+            target = single_assign_target(assignment)
+            return None if target is None else (target, assignment.value)
+        annotated_assignment = as_ast(statement, ast.AnnAssign)
+        if annotated_assignment is None or annotated_assignment.value is None:
+            return None
+        return annotated_assignment.target, annotated_assignment.value
+
+    def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
+        return sorted_tuple(
+            (
+                method.name
+                for method in CLASS_NODE_AUTHORITY.methods(node)
+                if _is_abstract_method(method)
+            )
+        )
+
+    def direct_source_attribute_name(
+        self, node: ast.AST, source_name: str
+    ) -> str | None:
+        attribute = as_ast(node, ast.Attribute)
+        if attribute is None or name_id(attribute.value) != source_name:
+            return None
+        return attribute.attr
+
+    def classvar_assignment_names(self, node: ast.ClassDef) -> tuple[str, ...] | None:
+        assigned_names: list[str] = []
+        for statement in _trim_docstring_body(node.body):
+            binding = named_value_binding(statement)
+            if (
+                binding is None
+                or binding.value is None
+                or (not _is_simple_classvar_value(binding.value))
+            ):
+                return None
+            assigned_names.append(binding.name)
+        return tuple(assigned_names)
+
+    def ast_type_names(self, node: ast.AST) -> tuple[str, ...]:
+        if ast_type_name := _ast_type_name(node):
+            return (ast_type_name,)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(
+                (
+                    ast_type_name
+                    for item in node.elts
+                    if (ast_type_name := _ast_type_name(item)) is not None
+                )
+            )
+        return ()
+
+    def detector_declaration_candidate_type_name(self, call: ast.Call) -> str | None:
+        call_name = _call_name(call.func)
+        if call_name == _DECLARE_TYPED_OBSERVATION_DETECTOR_NAME:
+            if not call.args:
+                return None
+            detector_name = constant_value(call.args[0])
+            return detector_name if isinstance(detector_name, str) else None
+        if call_name in {
+            _DECLARE_CANDIDATE_RULE_DETECTOR_NAME,
+            _DECLARE_MODULE_DETECTOR_NAME,
+        }:
+            return _source_segment_from_node(call.args[0]) if call.args else None
+        return None
+
+    def class_declares_finding_spec(self, node: ast.ClassDef) -> bool:
+        return any(
+            (
+                isinstance(statement, ast.Assign)
+                and any(
+                    (name_id(target) == "finding_spec" for target in statement.targets)
+                )
+                for statement in node.body
+            )
+        )
+
+    def derivable_class_assignment_candidates(
+        self,
+        module: ParsedModule,
+        assignment_reader: ClassAssignmentReader,
+        expected_value: ClassExpectedValue,
+        candidate_factory: Callable[[str, int, str, str], DerivableClassCandidateT],
+    ) -> tuple[DerivableClassCandidateT, ...]:
+        candidates: list[DerivableClassCandidateT] = []
+        for node in module.module.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            assignment = assignment_reader(node)
+            if assignment is None:
+                continue
+            line, assigned_value = assignment
+            if not self.class_declares_finding_spec(node):
+                continue
+            if assigned_value != expected_value(node.name):
+                continue
+            candidates.append(
+                candidate_factory(str(module.path), line, node.name, assigned_value)
+            )
+        return tuple(candidates)
+
+    def class_shape_candidates(
+        self,
+        module: ParsedModule,
+        shape_projector: ClassShapeProjector[ClassShapeT],
+        candidate_factory: ClassShapeCandidateFactory[ClassShapeT, BuiltCandidateT],
+    ) -> tuple[BuiltCandidateT, ...]:
+        candidates: list[BuiltCandidateT] = []
+        for node in _walk_nodes(module.module):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            shape = shape_projector(node)
+            if shape is None:
+                continue
+            candidates.append(candidate_factory(module, node, shape))
+        return tuple(candidates)
+
+    def annotation_root_name(self, node: ast.AST) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        if isinstance(node, ast.Subscript):
+            return self.annotation_root_name(node.value)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return self.annotation_root_name(node.left) or self.annotation_root_name(
+                node.right
+            )
+        return None
+
+    def class_base_names(self, node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            (
+                base_name
+                for base in node.bases
+                if (base_name := _call_name(base)) is not None
+            )
+        )
+
+    def suggest_dataclass_name(self, owner_symbol: str, suffix: str) -> str:
+        semantic_owner = owner_symbol.split(":", maxsplit=1)[0]
+        parts = [
+            _camel_case(part)
+            for part in re.split(r"[^A-Za-z0-9]+", semantic_owner)
+            if part and part not in {"module", "record", "metrics", "return"}
+        ]
+        if suffix == "Result" and len(parts) >= 2 and parts[-1] != suffix:
+            prefix = "".join(parts[-2:])
+        else:
+            prefix = parts[-1] if parts else "Semantic"
+        if prefix.endswith(suffix):
+            return prefix
+        return f"{prefix}{suffix}"
+
+    def is_classvar_annotation(self, node: ast.AST) -> bool:
+        if isinstance(node, ast.Name):
+            return node.id == "ClassVar"
+        if isinstance(node, ast.Attribute):
+            return node.attr == "ClassVar"
+        if isinstance(node, ast.Subscript):
+            return self.is_classvar_annotation(node.value)
+        return False
+
+    def typed_field_map(self, node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
+        typed_fields: dict[str, str] = {}
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                if self.is_classvar_annotation(statement.annotation):
+                    continue
+                typed_fields.setdefault(
+                    statement.target.id, ast.unparse(statement.annotation)
+                )
+                continue
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if statement.name != "__init__":
+                continue
+            parameter_annotations = _function_parameter_annotation_map(statement)
+            for inner in statement.body:
+                target: ast.AST | None = None
+                value: ast.AST | None = None
+                if isinstance(inner, ast.Assign) and len(inner.targets) == 1:
+                    target = inner.targets[0]
+                    value = inner.value
+                elif isinstance(inner, ast.AnnAssign):
+                    target = inner.target
+                    value = inner.value
+                if not (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and (target.value.id == "self")
+                    and isinstance(value, ast.Name)
+                    and (value.id in parameter_annotations)
+                ):
+                    continue
+                typed_fields.setdefault(target.attr, parameter_annotations[value.id])
+        return sorted_tuple(typed_fields.items())
+
+    def shared_typed_field_names(
+        self, concrete: NominalAuthorityShape, authority: NominalAuthorityShape
+    ) -> tuple[str, ...]:
+        concrete_types = dict(concrete.field_type_map)
+        return tuple(
+            (
+                name
+                for name, annotation_text in authority.field_type_map
+                if concrete_types.get(name) == annotation_text
+            )
+        )
+
+    def simple_attribute_accesses(self, node: ast.AST) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (
+                (current.value.id, current.attr)
+                for current in _walk_nodes(node)
+                if isinstance(current, ast.Attribute)
+                and isinstance(current.value, ast.Name)
+                and (current.value.id not in {"self", "cls"})
+            )
+        )
+
+    def metadata_only_class_assignment_names(
+        self, node: ast.ClassDef
+    ) -> tuple[str, ...] | None:
+        assigned_names: list[str] = []
+        for statement in _trim_docstring_body(node.body):
+            if isinstance(statement, ast.Pass):
+                continue
+            binding = named_value_binding(statement)
+            if (
+                binding is None
+                or binding.value is None
+                or (not _is_declarative_class_value(binding.value))
+            ):
+                return None
+            assigned_names.append(binding.name)
+        return tuple(assigned_names)
+
+    def type_name_set(self, node: ast.AST) -> tuple[str, ...]:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (ast.unparse(node),)
+        if isinstance(node, ast.Tuple):
+            return sorted_tuple(
+                {
+                    type_name
+                    for element in node.elts
+                    for type_name in self.type_name_set(element)
+                }
+            )
+        return ()
+
+    def subclasses_root_expression(self, node: ast.AST) -> str | None:
+        subclasses_call = single_named_call_argument(
+            node, call_name=_BuiltinCollectionName.LIST, argument_type=ast.Call
+        ) or as_ast(node, ast.Call)
+        if subclasses_call is None:
+            return None
+        match = attribute_call_match(
+            subclasses_call,
+            method_name="__subclasses__",
+            owner_type=ast.AST,
+            argument_count=0,
+        )
+        return None if match is None else ast.unparse(match.owner)
+
+    def extends_subclasses_queue(
+        self, statement: ast.stmt, queue_name: str, current_name: str
+    ) -> bool:
+        if (
+            not isinstance(statement, ast.Expr)
+            or not isinstance(statement.value, ast.Call)
+            or (not isinstance(statement.value.func, ast.Attribute))
+            or (statement.value.func.attr != "extend")
+            or (not isinstance(statement.value.func.value, ast.Name))
+            or (statement.value.func.value.id != queue_name)
+            or (len(statement.value.args) != 1)
+        ):
+            return False
+        return self.subclasses_root_expression(statement.value.args[0]) == current_name
+
+    def parameter_receiver_attribute_names(
+        self, function: ast.FunctionDef | ast.AsyncFunctionDef, parameter_name: str
+    ) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                item.attr
+                for item in _walk_nodes(function)
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == parameter_name
+            }
+        )
+
+    def renderer_keyword_names(self, call: ast.Call) -> tuple[str, ...]:
+        return tuple(
+            (keyword.arg for keyword in call.keywords if keyword.arg is not None)
+        )
+
+    def direct_forwarded_parameter_names(
+        self,
+        call: ast.Call,
+        *,
+        parameter_names: set[str],
+    ) -> tuple[str, ...] | None:
+        forwarded: list[str] = []
+        seen: set[str] = set()
+        for argument in call.args:
+            if isinstance(argument, ast.Name) and argument.id in parameter_names:
+                if argument.id not in seen:
+                    seen.add(argument.id)
+                    forwarded.append(argument.id)
+                continue
+            return None
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return None
+            if (
+                isinstance(keyword.value, ast.Name)
+                and keyword.value.id in parameter_names
+            ):
+                if keyword.value.id not in seen:
+                    seen.add(keyword.value.id)
+                    forwarded.append(keyword.value.id)
+                continue
+            return None
+        return tuple(forwarded)
+
+    def identity_forwarded_keyword_names(self, call: ast.Call) -> tuple[str, ...]:
+        forwarded: list[str] = []
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return ()
+            if isinstance(keyword.value, ast.Name):
+                if keyword.arg != keyword.value.id:
+                    return ()
+                forwarded.append(keyword.arg)
+                continue
+            nested_call = as_ast(keyword.value, ast.Call)
+            if nested_call is None or nested_call.args:
+                return ()
+            nested_forwarded = self.identity_forwarded_keyword_names(nested_call)
+            if not nested_forwarded:
+                return ()
+            forwarded.extend(nested_forwarded)
+        return tuple(forwarded)
+
+
+HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 
 
 def _simple_property_alias_class_candidate(
@@ -11677,7 +12316,7 @@ def _simple_property_alias_class_candidate(
 def _simple_property_alias_class_candidates(
     module: ParsedModule,
 ) -> tuple[SimplePropertyAliasClassCandidate, ...]:
-    return class_shape_candidates(
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.class_shape_candidates(
         module,
         _simple_property_alias_class_shape,
         _simple_property_alias_class_candidate,
@@ -12274,7 +12913,7 @@ def _field_only_frozen_dataclass_candidate(
 def _field_only_frozen_dataclass_candidates(
     module: ParsedModule,
 ) -> tuple[FieldOnlyFrozenDataclassCandidate, ...]:
-    return class_shape_candidates(
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.class_shape_candidates(
         module,
         _field_only_frozen_dataclass_shape,
         _field_only_frozen_dataclass_candidate,
@@ -12438,18 +13077,6 @@ _STRUCTURAL_ALIAS_LEAF_NAMES = frozenset(
 )
 
 
-def annotation_root_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    if isinstance(node, ast.Subscript):
-        return annotation_root_name(node.value)
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return annotation_root_name(node.left) or annotation_root_name(node.right)
-    return None
-
-
 def _structural_annotation_complexity(node: ast.AST) -> int:
     if isinstance(node, ast.Subscript):
         return (
@@ -12518,12 +13145,15 @@ def _semantic_alias_name(annotation: ast.AST, owner_symbols: Sequence[str]) -> s
         return "_" + "".join(domain_names[:2]) + "Shape"
     if len(domain_names) == 1:
         return f"_{domain_names[0]}Shape"
-    root_name = annotation_root_name(annotation) or "Semantic"
+    root_name = (
+        HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(annotation)
+        or "Semantic"
+    )
     return f"_{root_name.removesuffix('s').title()}Shape"
 
 
 def _annotation_is_alias_worthy(annotation: ast.AST) -> bool:
-    root_name = annotation_root_name(annotation)
+    root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(annotation)
     if root_name not in _STRUCTURAL_ALIAS_ROOTS:
         return False
     complexity = _structural_annotation_complexity(annotation)
@@ -13491,8 +14121,9 @@ class _EffectStepLeakPolicy:
         none_return_count: int,
         raw_guard_count: int,
     ) -> bool:
-        if self.ignore_when_calling_template_hook and _method_calls_template_hook(
-            method
+        if (
+            self.ignore_when_calling_template_hook
+            and METHOD_PROJECTION.calls_template_hook(method)
         ):
             return False
         if self.requires_optional_exit and none_return_count == 0:
@@ -13543,19 +14174,10 @@ _EFFECT_STEP_LEAK_POLICY_BY_METHOD = {
 }
 
 
-def class_base_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        (
-            base_name
-            for base in node.bases
-            if (base_name := _call_name(base)) is not None
-        )
-    )
-
-
 def _looks_like_effect_step_class(node: ast.ClassDef) -> bool:
     return node.name.endswith("Step") or bool(
-        set(class_base_names(node)) & _EFFECT_STEP_BASE_NAMES
+        set(HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node))
+        & _EFFECT_STEP_BASE_NAMES
     )
 
 
@@ -13585,56 +14207,13 @@ def _has_abstract_effect_step_hooks(node: ast.ClassDef) -> bool:
     )
 
 
-def _method_calls_template_hook(method: ast.FunctionDef) -> bool:
-    return any(
-        (
-            isinstance(item, ast.Call)
-            and isinstance(item.func, ast.Attribute)
-            and isinstance(item.func.value, ast.Name)
-            and (item.func.value.id == "self")
-            and (item.func.attr in _EFFECT_STEP_TEMPLATE_HOOK_NAMES)
-            for item in _walk_nodes(method)
-        )
-    )
-
-
-def raw_effect_step_guard_count(method: ast.FunctionDef) -> int:
-    raw_guard_count = sum(
-        (
-            1
-            for item in _walk_nodes(method)
-            if isinstance(item, ast.Call)
-            and (
-                _call_name(item.func) in {"as_ast", "isinstance", "single_item"}
-                or (
-                    isinstance(item.func, ast.Attribute)
-                    and item.func.attr in {"args", "keywords"}
-                )
-            )
-            or (
-                isinstance(item, ast.Compare)
-                and any(
-                    (
-                        isinstance(value, ast.Call) and _call_name(value.func) == "len"
-                        for value in (item.left, *item.comparators)
-                    )
-                )
-            )
-        )
-    )
-    boolean_clause_count = sum(
-        (
-            max(0, len(item.values) - 1)
-            for item in _walk_nodes(method)
-            if isinstance(item, ast.BoolOp)
-        )
-    )
-    return raw_guard_count + boolean_clause_count
-
-
 def _effect_step_method_leaks(method: ast.FunctionDef) -> bool:
-    method_none_return_count = none_return_count(method)
-    raw_guard_count = raw_effect_step_guard_count(method)
+    method_none_return_count = HELPER_SUPPORT_PROJECTION_AUTHORITY.none_return_count(
+        method
+    )
+    raw_guard_count = HELPER_SUPPORT_PROJECTION_AUTHORITY.raw_effect_step_guard_count(
+        method
+    )
     policy = _EFFECT_STEP_LEAK_POLICY_BY_METHOD.get(method.name)
     return (
         False
@@ -13643,18 +14222,6 @@ def _effect_step_method_leaks(method: ast.FunctionDef) -> bool:
             method,
             none_return_count=method_none_return_count,
             raw_guard_count=raw_guard_count,
-        )
-    )
-
-
-def none_return_count(node: ast.AST) -> int:
-    return sum(
-        (
-            1
-            for item in _walk_nodes(node)
-            if isinstance(item, ast.Return)
-            and isinstance(item.value, ast.Constant)
-            and (item.value.value is None)
         )
     )
 
@@ -13669,7 +14236,9 @@ def _suggested_effect_step_base(method: ast.FunctionDef) -> str:
                 isinstance(item, ast.Call)
                 and _call_name(item.func) == "as_ast"
                 and (len(item.args) >= 2)
-                and bool(ast_type_names(item.args[1]))
+                and bool(
+                    HELPER_SYNTAX_PROJECTION_AUTHORITY.ast_type_names(item.args[1])
+                )
             )
         )
     )
@@ -13691,8 +14260,12 @@ def _effect_step_implementation_leak_candidates_for_class(
             class_name=node.name,
             method_name=method.name,
             line=method.lineno,
-            none_return_count=none_return_count(method),
-            raw_guard_count=raw_effect_step_guard_count(method),
+            none_return_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.none_return_count(
+                method
+            ),
+            raw_guard_count=HELPER_SUPPORT_PROJECTION_AUTHORITY.raw_effect_step_guard_count(
+                method
+            ),
             suggested_base_name=_suggested_effect_step_base(method),
         )
 
@@ -13827,32 +14400,6 @@ def _repeated_result_assembly_pipeline_candidates(
     return tuple(filtered_candidates)
 
 
-def _direct_forwarded_parameter_names(
-    call: ast.Call,
-    *,
-    parameter_names: set[str],
-) -> tuple[str, ...] | None:
-    forwarded: list[str] = []
-    seen: set[str] = set()
-    for argument in call.args:
-        if isinstance(argument, ast.Name) and argument.id in parameter_names:
-            if argument.id not in seen:
-                seen.add(argument.id)
-                forwarded.append(argument.id)
-            continue
-        return None
-    for keyword in call.keywords:
-        if keyword.arg is None:
-            return None
-        if isinstance(keyword.value, ast.Name) and keyword.value.id in parameter_names:
-            if keyword.value.id not in seen:
-                seen.add(keyword.value.id)
-                forwarded.append(keyword.value.id)
-            continue
-        return None
-    return tuple(forwarded)
-
-
 def _qualified_call_display_name(node: ast.Call) -> str:
     return ast.unparse(node.func)
 
@@ -13885,7 +14432,7 @@ def _nested_builder_shell_candidates_for_function(
             or _call_name(keyword.value.func) == outer_callee_name
         ):
             continue
-        forwarded = _direct_forwarded_parameter_names(
+        forwarded = HELPER_SYNTAX_PROJECTION_AUTHORITY.direct_forwarded_parameter_names(
             keyword.value, parameter_names=parameter_names
         )
         if forwarded is None:
@@ -13907,7 +14454,9 @@ def _nested_builder_shell_candidates_for_function(
         {
             root_name
             for keyword in residue_keywords
-            for root_name in expression_root_names(keyword.value)
+            for root_name in HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(
+                keyword.value
+            )
             if root_name in parameter_names - set(forwarded_parameter_names)
         }
     )
@@ -13947,8 +14496,6 @@ def _identity_keyword_forwarding_shell_candidate(
 ) -> Iterable[IdentityKeywordForwardingShellCandidate]:
     if function.name.startswith("__") and function.name.endswith("__"):
         return
-    if _FunctionSignatureView(function).has_parameter_defaults:
-        return
     body = _trim_docstring_body(list(function.body))
     if len(body) != 1 or not isinstance(body[0], ast.Return):
         return
@@ -13962,18 +14509,10 @@ def _identity_keyword_forwarding_shell_candidate(
         (keyword.arg is None for keyword in returned.keywords)
     ):
         return
-    forwarded_keyword_names = tuple(
-        keyword.arg
-        for keyword in returned.keywords
-        if (
-            keyword.arg is not None
-            and isinstance(keyword.value, ast.Name)
-            and keyword.arg == keyword.value.id
-        )
+    forwarded_keyword_names = (
+        HELPER_SYNTAX_PROJECTION_AUTHORITY.identity_forwarded_keyword_names(returned)
     )
     if set(forwarded_keyword_names) != parameter_names:
-        return
-    if len(forwarded_keyword_names) != len(returned.keywords):
         return
     yield IdentityKeywordForwardingShellCandidate(
         file_path=str(module.path),
@@ -14004,6 +14543,135 @@ def _call_targets_nominal_owner(node: ast.AST) -> bool:
         parts = _ast_attribute_chain(node)
         return parts is not None and parts[0] in {"self", "cls"}
     return False
+
+
+def _empty_dict_value_name(target_value: tuple[ast.AST, ast.AST]) -> str | None:
+    target, value = target_value
+    target_name = name_id(target)
+    if isinstance(value, ast.Dict) and not value.keys:
+        return target_name
+    call = as_ast(value, ast.Call)
+    if call is None or call.args or call.keywords:
+        return None
+    return target_name if _call_name(call.func) == "dict" else None
+
+
+def _empty_dict_assignment_name(statement: ast.stmt) -> str | None:
+    return (
+        Maybe.of(HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(statement))
+        .project(_empty_dict_value_name)
+        .unwrap_or_none()
+    )
+
+
+def _is_not_none_test_parameter_name(test: ast.AST) -> str | None:
+    compare = as_ast(test, ast.Compare)
+    if compare is None or len(compare.ops) != 1 or len(compare.comparators) != 1:
+        return None
+    left, right = compare.left, compare.comparators[0]
+    if not isinstance(compare.ops[0], ast.IsNot):
+        return None
+    if (
+        isinstance(left, ast.Name)
+        and isinstance(right, ast.Constant)
+        and right.value is None
+    ):
+        return left.id
+    if (
+        isinstance(right, ast.Name)
+        and isinstance(left, ast.Constant)
+        and left.value is None
+    ):
+        return right.id
+    return None
+
+
+def _optional_keyword_bag_write(
+    statement: ast.stmt, bag_name: str
+) -> tuple[str, str] | None:
+    return (
+        Maybe.of(as_ast(statement, ast.If))
+        .filter(lambda branch: not branch.orelse and len(branch.body) == 1)
+        .combine(
+            lambda branch: _is_not_none_test_parameter_name(branch.test),
+            lambda branch, parameter_name: (branch, parameter_name),
+        )
+        .combine(
+            lambda context: as_ast(context[0].body[0], ast.Assign),
+            lambda context, assignment: (context[1], assignment),
+        )
+        .combine(
+            lambda context: as_ast(single_assign_target(context[1]), ast.Subscript),
+            lambda context, target: (context[0], context[1], target),
+        )
+        .filter(
+            lambda context: name_id(context[2].value) == bag_name
+            and name_id(context[1].value) == context[0]
+        )
+        .combine(
+            lambda context: _constant_string(context[2].slice),
+            lambda context, keyword_name: (context[0], keyword_name),
+        )
+        .unwrap_or_none()
+    )
+
+
+def _call_unpacking_keyword_bag(node: ast.AST, bag_name: str) -> ast.Call | None:
+    for call in _typed_ast_nodes(node, ast.Call):
+        if any(
+            (
+                keyword.arg is None
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == bag_name
+                for keyword in call.keywords
+            )
+        ):
+            return call
+    return None
+
+
+def _optional_keyword_bag_assembly_candidate(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+) -> Iterable[OptionalKeywordBagAssemblyCandidate]:
+    body = _trim_docstring_body(list(function.body))
+    for index, statement in enumerate(body):
+        bag_name = _empty_dict_assignment_name(statement)
+        if bag_name is None:
+            continue
+        writes = tuple(
+            write
+            for following in body[index + 1 :]
+            if (write := _optional_keyword_bag_write(following, bag_name)) is not None
+        )
+        if len(writes) < 2:
+            continue
+        unpack_call = _call_unpacking_keyword_bag(function, bag_name)
+        if unpack_call is None:
+            continue
+        yield OptionalKeywordBagAssemblyCandidate(
+            file_path=str(module.path),
+            line=statement.lineno,
+            function_name=qualname,
+            bag_name=bag_name,
+            parameter_names=tuple((parameter for parameter, _ in writes)),
+            target_keyword_names=tuple((keyword for _, keyword in writes)),
+            call_name=_qualified_call_display_name(unpack_call),
+            line_count=max(
+                1, (function.end_lineno or function.lineno) - statement.lineno + 1
+            ),
+        )
+
+
+def _optional_keyword_bag_assembly_candidates(
+    module: ParsedModule,
+) -> tuple[OptionalKeywordBagAssemblyCandidate, ...]:
+    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        module,
+        _optional_keyword_bag_assembly_candidate,
+        sort_key=lambda item: (item.file_path, item.line, item.function_name),
+    )
 
 
 def _none_check_matches_name(node: ast.Compare, parameter_name: str) -> bool:
@@ -14043,20 +14711,6 @@ def _direct_none_check_count(
     )
 
 
-def parameter_receiver_attribute_names(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, parameter_name: str
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            item.attr
-            for item in _walk_nodes(function)
-            if isinstance(item, ast.Attribute)
-            and isinstance(item.value, ast.Name)
-            and item.value.id == parameter_name
-        }
-    )
-
-
 def _optional_parameter_branch_candidates_for_function(
     module: ParsedModule,
     qualname: str,
@@ -14070,8 +14724,10 @@ def _optional_parameter_branch_candidates_for_function(
         none_check_count = _direct_none_check_count(function, argument.arg)
         if none_check_count == 0:
             continue
-        observed_attribute_names = parameter_receiver_attribute_names(
-            function, argument.arg
+        observed_attribute_names = (
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
+                function, argument.arg
+            )
         )
         yield OptionalParameterBranchCandidate(
             file_path=str(module.path),
@@ -14094,22 +14750,6 @@ def _optional_parameter_branch_candidates(
         module,
         _optional_parameter_branch_candidates_for_function,
         sort_key=lambda item: (item.file_path, item.line, item.parameter_name),
-    )
-
-
-def module_level_subject_parameter_name(
-    qualname: str, function: NamedFunctionNode
-) -> str | None:
-    if "." in qualname or function.name.startswith("__"):
-        return None
-    if function.decorator_list:
-        return None
-    arguments = _FunctionSignatureView(function).arguments
-    if not arguments:
-        return None
-    parameter_name = arguments[0].arg
-    return (
-        None if parameter_name in _IMPLICIT_METHOD_PARAMETER_NAMES else parameter_name
     )
 
 
@@ -14142,7 +14782,11 @@ def _bare_function_method_family_candidates(
 ) -> tuple[BareFunctionMethodFamilyCandidate, ...]:
     grouped: dict[tuple[str, str, str], list[NamedFunctionNode]] = defaultdict(list)
     for qualname, function in _iter_named_functions(module):
-        owner_parameter_name = module_level_subject_parameter_name(qualname, function)
+        owner_parameter_name = (
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.module_level_subject_parameter_name(
+                qualname, function
+            )
+        )
         if owner_parameter_name is None:
             continue
         tokens = _bare_function_name_tokens(function.name)
@@ -14170,7 +14814,7 @@ def _bare_function_method_family_candidates(
             set.intersection(
                 *(
                     set(
-                        parameter_receiver_attribute_names(
+                        HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
                             function, owner_parameter_name
                         )
                     )
@@ -14236,7 +14880,10 @@ def _latent_function_shared_call_names(
     functions: tuple[NamedFunctionNode, ...],
 ) -> tuple[str, ...]:
     call_sets = tuple(
-        (set(function_call_stage_sequence(function)) - _NON_LIFECYCLE_STAGE_CALL_NAMES)
+        (
+            set(SUPPORT_PROJECTION_AUTHORITY.function_call_stage_sequence(function))
+            - _NON_LIFECYCLE_STAGE_CALL_NAMES
+        )
         for function in functions
     )
     if not call_sets:
@@ -14296,13 +14943,15 @@ def _latent_nominal_function_family_certificate(
     line_count: int,
     semantic_axes: tuple[object, ...],
 ) -> CompressionCertificate:
-    return object_family_compression_certificate(
+    return CompressionCertificate.from_object_family(
         manual_object_count=max(
             line_count, function_count * max(len(semantic_axes), 1)
         ),
-        shared_objects=("latent_owner_abc", "method_family_template"),
-        per_axis_objects=("owner_attribute",),
-        per_source_objects=("operation_hook",),
+        replacement_shape=ObjectFamilyShape.from_roles(
+            ("latent_owner_abc", "method_family_template"),
+            axis=("owner_attribute",),
+            source=("operation_hook",),
+        ),
         semantic_axes=semantic_axes,
         residual_object_count=function_count,
     )
@@ -14313,12 +14962,18 @@ def _latent_nominal_function_family_candidates(
 ) -> tuple[LatentNominalFunctionFamilyCandidate, ...]:
     grouped: dict[str, list[NamedFunctionNode]] = defaultdict(list)
     for qualname, function in _iter_named_functions(module):
-        owner_parameter_name = module_level_subject_parameter_name(qualname, function)
+        owner_parameter_name = (
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.module_level_subject_parameter_name(
+                qualname, function
+            )
+        )
         if owner_parameter_name is None:
             continue
         owner_attribute_names = (
             frozenset(
-                parameter_receiver_attribute_names(function, owner_parameter_name)
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
+                    function, owner_parameter_name
+                )
             )
             - _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES
         )
@@ -14335,7 +14990,7 @@ def _latent_nominal_function_family_candidates(
             set.intersection(
                 *(
                     set(
-                        parameter_receiver_attribute_names(
+                        HELPER_SYNTAX_PROJECTION_AUTHORITY.parameter_receiver_attribute_names(
                             function, owner_parameter_name
                         )
                     )

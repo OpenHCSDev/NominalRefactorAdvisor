@@ -450,6 +450,20 @@ class ObjectFamilyShape:
     per_axis_objects: tuple[str, ...] = ()
     per_source_objects: tuple[str, ...] = ()
 
+    @classmethod
+    def from_roles(
+        cls,
+        shared: tuple[str, ...],
+        *,
+        axis: tuple[str, ...] = (),
+        source: tuple[str, ...] = (),
+    ) -> "ObjectFamilyShape":
+        return cls(
+            shared_objects=shared,
+            per_axis_objects=axis,
+            per_source_objects=source,
+        )
+
     def replacement_object_count(
         self, *, axis_count: int = 0, independent_source_count: int = 1
     ) -> int:

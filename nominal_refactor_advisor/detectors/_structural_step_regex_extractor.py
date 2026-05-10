@@ -36,7 +36,7 @@ from ._base import (
     _dataclass_field_names,
     _is_classmethod,
 )
-from ._helpers import constructor_return_call
+from ._helpers import HELPER_SUPPORT_PROJECTION_AUTHORITY
 from ._substrate_support import (
     _ast_terminal_name,
     _is_dataclass_class,
@@ -628,7 +628,9 @@ def _sparse_constructor_variant_family_candidates(
                 statement
             ):
                 continue
-            call = constructor_return_call(statement)
+            call = HELPER_SUPPORT_PROJECTION_AUTHORITY.constructor_return_call(
+                statement
+            )
             if call is None or call.args:
                 continue
             keyword_names = tuple(

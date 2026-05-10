@@ -857,7 +857,7 @@ class RepeatedPropertyAliasHookDetector(
             codemod_patch=(
                 f"# Move `{hook_group.property_name}` <- `self.{hook_group.returned_attribute}` into one shared mixin or intermediate base for `{hook_group.base_name}`."
             ),
-            metrics=repeated_property_hook_metrics(
+            metrics=HELPER_DISPATCH_ALGEBRA_AUTHORITY.repeated_property_hook_metrics(
                 hook_group.class_names, hook_group.property_name
             ),
         )
@@ -912,7 +912,7 @@ class ConstantPropertyHookDetector(
             evidence,
             scaffold=scaffold,
             codemod_patch=patch,
-            metrics=repeated_property_hook_metrics(
+            metrics=HELPER_DISPATCH_ALGEBRA_AUTHORITY.repeated_property_hook_metrics(
                 hook_group.class_names, hook_group.property_name
             ),
         )
@@ -1304,7 +1304,9 @@ def _autoregister_family_nodes(
     )
     children_by_base_name: dict[str, list[ast.ClassDef]] = defaultdict(list)
     for class_node in class_nodes:
-        for base_name in class_base_names(class_node):
+        for base_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(
+            class_node
+        ):
             children_by_base_name[base_name].append(class_node)
     family_nodes: list[ast.ClassDef] = []
     queue = [root_node]
@@ -1324,7 +1326,10 @@ def _autoregister_family_is_metadata_only(
 ) -> bool:
     return all(
         (
-            metadata_only_class_assignment_names(class_node) is not None
+            HELPER_SYNTAX_PROJECTION_AUTHORITY.metadata_only_class_assignment_names(
+                class_node
+            )
+            is not None
             for class_node in _autoregister_family_nodes(module, root_node)
         )
     )
@@ -1357,7 +1362,11 @@ class AutoRegisterMetaMisuseDetector(EvidenceOnlyPerModuleDetector):
                 continue
             if not _uses_autoregister_meta(node):
                 continue
-            assigned_names = metadata_only_class_assignment_names(node)
+            assigned_names = (
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.metadata_only_class_assignment_names(
+                    node
+                )
+            )
             if assigned_names is None:
                 continue
             if not _autoregister_family_is_metadata_only(module, node):
@@ -1561,7 +1570,7 @@ declare_candidate_rule_detector(
         mapping_name=api_candidate.export_symbol,
         field_names=("module_public_bindings",),
     ),
-    candidate_collector=_manual_public_api_surface_candidates,
+    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.public_api_surface_candidates,
 )
 
 

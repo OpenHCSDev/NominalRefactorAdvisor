@@ -19,6 +19,7 @@ from metaclass_registry import AutoRegisterMeta
 T = TypeVar("T")
 U = TypeVar("U")
 V = TypeVar("V")
+ContextT = TypeVar("ContextT")
 AstT = TypeVar("AstT", bound=ast.AST)
 AstA = TypeVar("AstA", bound=ast.AST)
 AstB = TypeVar("AstB", bound=ast.AST)
@@ -130,6 +131,39 @@ class AstTypedEffectStep(RegisteredEffectStep, Generic[AstT, U]):
     @abstractmethod
     def project_ast(self, value: AstT) -> U | None:
         raise NotImplementedError
+
+
+class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
+    """Declarative AST matcher rule with shared type narrowing semantics."""
+
+    node_type: ClassVar[type[AstT]]
+
+    def apply(self, node: ast.AST, context: ContextT) -> U | None:
+        narrowed = as_ast(node, self.node_type)
+        return None if narrowed is None else self.project_ast(narrowed, context)
+
+    @abstractmethod
+    def project_ast(self, node: AstT, context: ContextT) -> U | None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class AstPredicateGrammar(Generic[ContextT, U]):
+    """Reusable traversal runner for nominal AST predicate rules."""
+
+    rules: Sequence[AstPredicateRule[ContextT, Any, U]]
+
+    def matches_anywhere(self, root: ast.AST, context: ContextT) -> tuple[U, ...]:
+        matches: list[U] = []
+        for node in ast.walk(root):
+            for rule in self.rules:
+                if (match := rule.apply(node, context)) is not None:
+                    matches.append(match)
+                    break
+        return tuple(matches)
+
+    def first_match_anywhere(self, root: ast.AST, context: ContextT) -> U | None:
+        return single_item(self.matches_anywhere(root, context))
 
 
 # fmt: off
@@ -362,7 +396,7 @@ def named_call_assignment(node: ast.Assign) -> NamedCallAssignment | None:
     return NamedCallAssignment(target.id, call)
 
 
-def named_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+def named_assign_value_binding(node: ast.AST) -> NamedValueBinding | None:
     return (
         Maybe.of(as_ast(node, ast.Assign))
         .project(
@@ -377,7 +411,7 @@ def named_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
     )
 
 
-def named_ann_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+def named_ann_assign_value_binding(node: ast.AST) -> NamedValueBinding | None:
     return (
         Maybe.of(as_ast(node, ast.AnnAssign))
         .project(lambda assignment: name_id(assignment.target))
@@ -392,7 +426,7 @@ def named_ann_assign_value_binding(node: ast.stmt) -> NamedValueBinding | None:
     )
 
 
-def named_value_binding(node: ast.stmt) -> NamedValueBinding | None:
+def named_value_binding(node: ast.AST) -> NamedValueBinding | None:
     return named_assign_value_binding(node) or named_ann_assign_value_binding(node)
 
 
