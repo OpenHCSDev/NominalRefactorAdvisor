@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import cast
 
+import pytest
+
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
@@ -35,6 +37,7 @@ from nominal_refactor_advisor.ast_tools import (
     TypedLiteralObservationSpec,
     collect_family_items,
     collect_scoped_observations,
+    parse_python_module_roots,
     parse_python_modules,
 )
 from nominal_refactor_advisor.calibration import (
@@ -46,7 +49,9 @@ from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import _proof_exit_code
+from nominal_refactor_advisor.cli import _require_single_root_mode
 from nominal_refactor_advisor.cli import analyze_path
+from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
@@ -1931,6 +1936,40 @@ def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
     modules = parse_python_modules(tmp_path / "pkg/mod.py")
     assert len(modules) == 1
     assert modules[0].module_name == "mod"
+
+
+def test_parse_python_module_roots_combines_files_and_dedupes(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "other/beta.py", "\nclass Beta:\n    pass\n")
+
+    modules = parse_python_module_roots(
+        (
+            tmp_path / "pkg/alpha.py",
+            tmp_path / "other",
+            tmp_path / "pkg/alpha.py",
+        )
+    )
+
+    assert [module.path.name for module in modules] == ["alpha.py", "beta.py"]
+
+
+def test_analyze_paths_combines_cross_file_detector_evidence(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "left.py",
+        "\nclass Alpha:\n    def _build(self, item):\n        prepared = self.normalize(item)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n",
+    )
+    _write_module(
+        tmp_path,
+        "right.py",
+        "\nclass Beta:\n    def _assemble(self, value):\n        prepared = self.normalize(value)\n        checked = self.validate(prepared)\n        return self.finish(checked)\n",
+    )
+
+    findings = analyze_paths((tmp_path / "left.py", tmp_path / "right.py"))
+
+    assert any((finding.pattern_id == 5 for finding in findings))
 
 
 def test_parse_python_modules_prunes_environment_directories(tmp_path: Path) -> None:
@@ -4762,14 +4801,15 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--include-plans",
             "--prove-economics",
             "--fail-on-proof-regression",
-            "--calibrate",
-            "calibration.json",
-            "--fail-on-calibration-regression",
-            "--exclude-pattern",
-            "14",
-            "nominal_refactor_advisor",
-        ]
-    )
+                "--calibrate",
+                "calibration.json",
+                "--fail-on-calibration-regression",
+                "--exclude-pattern",
+                "14",
+                "nominal_refactor_advisor",
+                "tests",
+            ]
+        )
 
     assert args.json is True
     assert args.include_plans is True
@@ -4778,7 +4818,17 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.calibrate == Path("calibration.json")
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
-    assert args.path == "nominal_refactor_advisor"
+    assert args.paths == ["nominal_refactor_advisor", "tests"]
+
+
+def test_single_root_modes_reject_multiple_paths() -> None:
+    parser = argparse.ArgumentParser()
+    with pytest.raises(SystemExit):
+        _require_single_root_mode(
+            parser,
+            (Path("nominal_refactor_advisor"), Path("tests")),
+            option_name="--prove-economics",
+        )
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
@@ -4946,6 +4996,20 @@ def test_ignores_semantic_inheritance_family_with_autoregister_meta(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_inherited_registry_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom framework import RegisteredEffectStep\n\n\nclass ProjectionStep(RegisteredEffectStep):\n    pass\n\n\nclass AlphaProjectionStep(ProjectionStep):\n    step_id = "alpha"\n\n    def project(self, value):\n        return value\n\n\nclass BetaProjectionStep(ProjectionStep):\n    step_id = "beta"\n\n    def project(self, value):\n        return value\n',
+    )
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_autoregister_meta_family_without_rent_proof(
     tmp_path: Path,
 ) -> None:
@@ -4978,6 +5042,20 @@ def test_ignores_autoregister_meta_family_with_computed_rent_proof(
     assert not any(
         finding.detector_id == "autoregister_meta_under_rented"
         for finding in analyze_path(tmp_path)
+    )
+
+
+def test_ignores_partial_scan_autoregister_root_with_projection_rent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass PluginRoot(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "kind"\n\n    @classmethod\n    def registered_plugins(cls):\n        return tuple(cls.__registry__.values())\n\n    @abstractmethod\n    def run(self, value): ...\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path / "pkg/base.py")
     )
 
 
@@ -5079,6 +5157,61 @@ def test_detects_latent_implementation_string_roster(tmp_path: Path) -> None:
     assert "format" in finding.summary
     assert "AutoRegisterMeta" in (finding.scaffold or "")
     assert "Exporter.__registry__.keys()" in (finding.scaffold or "")
+
+
+def test_detects_class_level_latent_implementation_roster(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    SUPPORTED_FORMATS = ("csv", "json")\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "latent_implementation_roster"
+        )
+    )
+    assert "Exporter.SUPPORTED_FORMATS" in finding.summary
+    assert "format" in finding.summary
+    assert "Exporter.__registry__.keys()" in (finding.scaffold or "")
+
+
+def test_analyze_paths_detects_latent_roster_across_explicit_files(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        "\nfrom abc import ABC, abstractmethod\n\n\nclass Exporter(ABC):\n    @abstractmethod\n    def emit(self, rows): ...\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/impl.py",
+        '\nfrom pkg.base import Exporter\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/catalog.py",
+        '\nSUPPORTED_EXPORT_FORMATS = ("csv", "json")\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_paths(
+                (
+                    tmp_path / "pkg/base.py",
+                    tmp_path / "pkg/impl.py",
+                    tmp_path / "pkg/catalog.py",
+                )
+            )
+            if finding.detector_id == "latent_implementation_roster"
+        )
+    )
+
+    assert "SUPPORTED_EXPORT_FORMATS" in finding.summary
+    assert "Exporter" in finding.summary
 
 
 def test_detects_latent_implementation_class_roster(tmp_path: Path) -> None:

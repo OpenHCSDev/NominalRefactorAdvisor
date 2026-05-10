@@ -560,11 +560,22 @@ def _python_source_paths(root: Path) -> tuple[Path, ...]:
     return tuple(paths)
 
 
-def parse_python_modules(root: Path) -> list[ParsedModule]:
-    analysis_root = root.parent if root.is_file() else root
+@dataclass(frozen=True)
+class PythonModuleRootParser:
+    root: Path
+    analysis_root: Path
 
-    def module_name_for_path(path: Path) -> tuple[str, bool]:
-        relative = path.relative_to(analysis_root)
+    @classmethod
+    def for_root(cls, root: Path) -> PythonModuleRootParser:
+        return cls(root=root, analysis_root=root.parent if root.is_file() else root)
+
+    @classmethod
+    def parse(cls, root: Path) -> list[ParsedModule]:
+        parser = cls.for_root(root)
+        return parser.parsed_modules()
+
+    def module_name_for_path(self, path: Path) -> tuple[str, bool]:
+        relative = path.relative_to(self.analysis_root)
         module_parts = list(relative.with_suffix("").parts)
         is_package_init = bool(module_parts and module_parts[-1] == "__init__")
         if is_package_init:
@@ -573,19 +584,37 @@ def parse_python_modules(root: Path) -> list[ParsedModule]:
             return ("__init__", is_package_init)
         return (".".join(module_parts), is_package_init)
 
-    modules: list[ParsedModule] = []
-    for path in _python_source_paths(root):
-        source = path.read_text(encoding="utf-8")
-        module_name, is_package_init = module_name_for_path(path)
-        modules.append(
-            ParsedModule(
-                path=path,
-                module_name=module_name,
-                is_package_init=is_package_init,
-                module=ast.parse(source),
-                source=source,
+    def parsed_modules(self) -> list[ParsedModule]:
+        modules: list[ParsedModule] = []
+        for path in _python_source_paths(self.root):
+            source = path.read_text(encoding="utf-8")
+            module_name, is_package_init = self.module_name_for_path(path)
+            modules.append(
+                ParsedModule(
+                    path=path,
+                    module_name=module_name,
+                    is_package_init=is_package_init,
+                    module=ast.parse(source),
+                    source=source,
+                )
             )
-        )
+        return modules
+
+
+parse_python_modules = PythonModuleRootParser.parse
+
+
+def parse_python_module_roots(roots: tuple[Path, ...]) -> list[ParsedModule]:
+    """Parse multiple file or directory roots into one de-duplicated module set."""
+    modules: list[ParsedModule] = []
+    seen_paths: set[Path] = set()
+    for root in roots:
+        for module in PythonModuleRootParser.for_root(root).parsed_modules():
+            normalized_path = module.path.resolve()
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            modules.append(module)
     return modules
 
 

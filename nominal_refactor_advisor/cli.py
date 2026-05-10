@@ -14,8 +14,15 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
 
-from .analysis import analyze_lean_export, analyze_modules, analyze_path, plan_path
-from .ast_tools import parse_python_modules
+from .analysis import (
+    analyze_lean_export,
+    analyze_modules,
+    analyze_path,
+    analyze_paths,
+    plan_path,
+    plan_paths,
+)
+from .ast_tools import parse_python_module_roots
 from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
@@ -98,10 +105,13 @@ def _config_argument_specs() -> tuple[CliArgumentSpec, ...]:
 _CLI_ARGUMENT_SPECS = (
     (
         CliArgumentSpec(
-            flags=("path",),
-            nargs="?",
-            default="nominal_refactor_advisor",
-            help="Root path to analyze (defaults to nominal_refactor_advisor).",
+            flags=("paths",),
+            nargs="*",
+            default=["nominal_refactor_advisor"],
+            help=(
+                "File or directory paths to analyze "
+                "(defaults to nominal_refactor_advisor)."
+            ),
         ),
         CliArgumentSpec(
             flags=("--json",),
@@ -544,6 +554,13 @@ def _calibration_exit_code(
     return 0
 
 
+def _require_single_root_mode(
+    parser: argparse.ArgumentParser, roots: tuple[Path, ...], *, option_name: str
+) -> None:
+    if len(roots) > 1:
+        parser.error(f"{option_name} accepts exactly one path root")
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -565,8 +582,10 @@ def main() -> int:
             fail_on_calibration_regression=args.fail_on_calibration_regression,
         )
 
-    root = Path(args.path)
+    roots = tuple(Path(path) for path in args.paths)
+    root = roots[0]
     if args.predict_scan:
+        _require_single_root_mode(parser, roots, option_name="--predict-scan")
         prediction_report = build_scan_prediction_report(
             root,
             config=config,
@@ -579,6 +598,7 @@ def main() -> int:
         return 0
 
     if args.prove_economics:
+        _require_single_root_mode(parser, roots, option_name="--prove-economics")
         proof_report = build_economics_proof_report(
             root,
             config=config,
@@ -596,7 +616,7 @@ def main() -> int:
 
     if args.import_lean_export is None:
         started = perf_counter()
-        modules = parse_python_modules(root)
+        modules = parse_python_module_roots(roots)
         parse_seconds = round(perf_counter() - started, 3)
         started = perf_counter()
         findings = analyze_modules(modules, config)

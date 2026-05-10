@@ -12,8 +12,10 @@ from typing import Any
 
 _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "analyze_path": ("nominal_refactor_advisor.cli", "analyze_path"),
+    "analyze_paths": ("nominal_refactor_advisor.cli", "analyze_paths"),
     "analyze_lean_export": ("nominal_refactor_advisor.analysis", "analyze_lean_export"),
     "plan_path": ("nominal_refactor_advisor.cli", "plan_path"),
+    "plan_paths": ("nominal_refactor_advisor.cli", "plan_paths"),
     "AnalysisReport": ("nominal_refactor_advisor.models", "AnalysisReport"),
     "ImpactDelta": ("nominal_refactor_advisor.models", "ImpactDelta"),
     "OutcomeEstimate": ("nominal_refactor_advisor.models", "OutcomeEstimate"),

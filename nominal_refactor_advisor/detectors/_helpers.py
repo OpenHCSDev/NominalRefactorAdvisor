@@ -527,12 +527,29 @@ class HelperSupportProjectionAuthority:
             )
         )
 
+    def inherits_named_registration_authority(self, node: ast.ClassDef) -> bool:
+        return any(
+            (
+                (base_name := _ast_terminal_name(base)) is not None
+                and (
+                    "AutoRegister" in base_name
+                    or base_name.startswith("Registered")
+                    or base_name.endswith("Registered")
+                )
+                for base in node.bases
+            )
+        )
+
     def family_has_autoregister_authority(
         self, class_index: ClassFamilyIndex, indexed_class: IndexedClass
     ) -> bool:
         return any(
             (
-                ancestor is not None and self.declares_autoregister_meta(ancestor.node)
+                ancestor is not None
+                and (
+                    self.declares_autoregister_meta(ancestor.node)
+                    or self.inherits_named_registration_authority(ancestor.node)
+                )
                 for ancestor in (
                     class_index.class_for(symbol)
                     for symbol in (
@@ -3840,29 +3857,46 @@ class LatentRosterProjectionAuthority:
 LATENT_ROSTER_PROJECTION_AUTHORITY = LatentRosterProjectionAuthority()
 
 
-def _module_level_collection_rosters(
+def _collection_rosters_for_statement(
+    module: ParsedModule,
+    statement: ast.stmt,
+    *,
+    roster_prefix: str | None = None,
+) -> tuple[_LatentRosterObservation, ...]:
+    target_value = HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(statement)
+    if target_value is None:
+        return ()
+    target, value = target_value
+    target_name = name_id(target)
+    if target_name is None:
+        return ()
+    roster_name = (
+        f"{roster_prefix}.{target_name}" if roster_prefix is not None else target_name
+    )
+    return LATENT_ROSTER_PROJECTION_AUTHORITY.observations(
+        module=module,
+        statement=statement,
+        roster_name=roster_name,
+        value=value,
+    )
+
+
+def _implementation_collection_rosters(
     modules: list[ParsedModule],
 ) -> tuple[_LatentRosterObservation, ...]:
     rosters: list[_LatentRosterObservation] = []
     for module in modules:
         for statement in _trim_docstring_body(module.module.body):
-            target_value = HELPER_SYNTAX_PROJECTION_AUTHORITY.assignment_target_value(
-                statement
-            )
-            if target_value is None:
-                continue
-            target, value = target_value
-            roster_name = name_id(target)
-            if roster_name is None:
-                continue
-            rosters.extend(
-                LATENT_ROSTER_PROJECTION_AUTHORITY.observations(
-                    module=module,
-                    statement=statement,
-                    roster_name=roster_name,
-                    value=value,
-                )
-            )
+            rosters.extend(_collection_rosters_for_statement(module, statement))
+            if isinstance(statement, ast.ClassDef):
+                for class_statement in _trim_docstring_body(statement.body):
+                    rosters.extend(
+                        _collection_rosters_for_statement(
+                            module,
+                            class_statement,
+                            roster_prefix=statement.name,
+                        )
+                    )
     return tuple(rosters)
 
 
@@ -3909,7 +3943,7 @@ def _latent_implementation_roster_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[LatentImplementationRosterCandidate, ...]:
     class_index = build_class_family_index(modules)
-    rosters = _module_level_collection_rosters(modules)
+    rosters = _implementation_collection_rosters(modules)
     candidates: list[LatentImplementationRosterCandidate] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
@@ -4347,6 +4381,13 @@ def _autoregister_meta_rent_candidates(
             consumer_symbols=consumer_symbols,
             min_leaf_count=min_leaf_count,
         )
+        if missing_rent_signals == ("registered_leaf_axis",) and (
+            behavior_method_names
+            or node_abstract_method_names
+            or registry_projection_names
+            or consumer_symbols
+        ):
+            continue
         if not missing_rent_signals:
             continue
         membership_object_count = _autoregister_membership_object_count(

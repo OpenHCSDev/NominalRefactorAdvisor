@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .ast_tools import parse_python_modules
+from .ast_tools import parse_python_module_roots, parse_python_modules
 from .detectors import DetectorConfig, default_detectors
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
@@ -32,6 +32,13 @@ def analyze_path(
     return analyze_modules(parse_python_modules(root), config)
 
 
+def analyze_paths(
+    roots: tuple[Path, ...], config: DetectorConfig | None = None
+) -> list[RefactorFinding]:
+    """Parse multiple filesystem roots and return sorted refactor findings."""
+    return analyze_modules(parse_python_module_roots(roots), config)
+
+
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:
     """Load a Lean advisor export and return sorted refactor findings."""
     return findings_from_lean_export_path(path)
@@ -40,3 +47,10 @@ def analyze_lean_export(path: Path) -> list[RefactorFinding]:
 def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
     """Analyze a path and synthesize subsystem-level refactor plans."""
     return build_refactor_plans(analyze_path(root, config), root)
+
+
+def plan_paths(
+    roots: tuple[Path, ...], config: DetectorConfig | None = None
+) -> list[RefactorPlan]:
+    """Analyze multiple paths and synthesize subsystem-level refactor plans."""
+    return build_refactor_plans(analyze_paths(roots, config), roots[0])
