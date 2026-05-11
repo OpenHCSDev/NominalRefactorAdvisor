@@ -20,64 +20,6 @@ from ..semantic_description_length import (
 from ._base import *
 from ._helpers import *
 
-_SORTED_TUPLE_REPLACEMENT_SHAPE = ObjectFamilyShape(
-    shared_objects=("sorted_tuple_projection",)
-)
-_PRODUCT_RECORD_REPLACEMENT_SHAPE = ObjectFamilyShape(
-    shared_objects=("product_record_schema",),
-    per_axis_objects=("field_spec",),
-)
-
-
-def _sorted_tuple_candidate_axes(
-    candidate: ManualSortedTupleReturnCandidate,
-) -> tuple[str, ...]:
-    return tuple(
-        (
-            name
-            for name, value in (
-                ("items", candidate.sorted_expression),
-                ("key", candidate.key_expression),
-                ("reverse", candidate.reverse_expression),
-            )
-            if value is not None
-        )
-    )
-
-
-def _sorted_tuple_compression_certificate(
-    candidate: ManualSortedTupleReturnCandidate,
-) -> CompressionCertificate:
-    semantic_axes = _sorted_tuple_candidate_axes(candidate)
-    return CompressionCertificate.from_object_family(
-        manual_object_count=max(2 + len(semantic_axes), candidate.line_count + 2),
-        replacement_shape=_SORTED_TUPLE_REPLACEMENT_SHAPE,
-        semantic_axes=semantic_axes,
-    )
-
-
-def _field_only_frozen_dataclass_compression_certificate(
-    candidate: FieldOnlyFrozenDataclassCandidate,
-) -> CompressionCertificate:
-    residual_object_count = sum(
-        (
-            len(candidate.base_names),
-            len(candidate.default_specs),
-            int(candidate.docstring is not None),
-            int(candidate.kw_only),
-        )
-    )
-    return CompressionCertificate.from_object_family(
-        manual_object_count=max(
-            candidate.line_count,
-            len(candidate.field_specs) + residual_object_count + 2,
-        ),
-        replacement_shape=_PRODUCT_RECORD_REPLACEMENT_SHAPE,
-        semantic_axes=tuple((field_name for field_name, _ in candidate.field_specs)),
-        residual_object_count=residual_object_count,
-    )
-
-
 def _closed_axis_conversion_matrix_compression_certificate(
     candidate: ClosedAxisConversionMatrixCandidate,
 ) -> CompressionCertificate:
@@ -3537,7 +3479,11 @@ declare_candidate_rule_detector(
         f"{candidate.carrier_call_names}."
     ),
     scaffold=lambda candidate: (
-        "PipelineContext = product_record('PipelineContext', 'source: Source; projection: Projection')\n"
+        "from dataclasses import dataclass\n\n"
+        "@dataclass(frozen=True)\n"
+        "class PipelineContext:\n"
+        "    source: Source\n"
+        "    projection: Projection\n"
         "# Replace `pair[0]`/`pair[1]` with named fields derived once by the carrier stage."
     ),
     codemod_patch=lambda candidate: (
@@ -3903,50 +3849,50 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
-    ManualSortedTupleReturnCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Manual sorted tuple finalization should use collection algebra",
-        "A return value shaped as `tuple(sorted(...))` is a standard immutable ordering projection. Spelling the constructor nesting at each site repeats collection mechanics instead of naming the algebraic operation once.",
-        "typed sorted_tuple collection algebra reused across finalization sites",
-        "function manually nests tuple construction around sorted ordering",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+    SortedTupleWrapperUseCandidate,
+    high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "sorted_tuple wrapper should collapse to standard Python",
+        "`sorted_tuple(...)` is only `tuple(sorted(...))` behind an extra project-local function. It hides ordinary Python collection semantics behind a nominal surface without adding type safety, registry authority, or an invariant.",
+        "direct tuple(sorted(...)) expression instead of a project-local collection wrapper",
+        "call site delegates ordinary sorted tuple construction to sorted_tuple",
+        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
-    summary=lambda candidate: f"`{candidate.qualname}` returns a manual `tuple(sorted(...))` finalizer over `{candidate.sorted_expression}` spanning {candidate.line_count} line(s).",
-    scaffold=lambda candidate: "from nominal_refactor_advisor.collection_algebra import sorted_tuple\n\nreturn sorted_tuple(items, key=key_function)",
-    codemod_patch=lambda candidate: "# Replace `return tuple(sorted(...))` with `return sorted_tuple(...)` so tuple immutability and ordering are one named collection algebra.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
+    summary=lambda candidate: f"`{candidate.qualname}` calls `sorted_tuple` with {candidate.argument_count} positional argument(s) and keywords {candidate.keyword_names}; use standard `tuple(sorted(...))` so the ordering operation remains AST-visible.",
+    scaffold=lambda candidate: "value = tuple(sorted(items, key=key_function))",
+    codemod_patch=lambda candidate: "# Replace `sorted_tuple(items, key=...)` with `tuple(sorted(items, key=...))` and delete the project-local wrapper once callers are gone.",
+    metrics=lambda candidate: MappingMetrics(
         mapping_site_count=1,
-        mapping_name=candidate.qualname,
-        field_names=_sorted_tuple_candidate_axes(candidate),
+        field_count=candidate.argument_count + len(candidate.keyword_names),
+        mapping_name="sorted_tuple",
+        field_names=("items", *candidate.keyword_names),
     ),
-    compression_certificate=_sorted_tuple_compression_certificate,
-    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.return_candidates,
+    candidate_collector=_sorted_tuple_wrapper_use_candidates,
 )
 
 
 declare_candidate_rule_detector(
-    ManualSortedTupleExpressionCandidate,
-    high_confidence_certified_spec(
-        PatternId.LOCAL_VALUE_AUTHORITY,
-        "Manual sorted tuple expression should use collection algebra",
-        "A nested `tuple(sorted(...))` expression is a standard immutable ordering projection. When it appears inside assignments, constructor payloads, or comprehensions, it is still collection mechanics that should be named once by the shared algebra.",
-        "typed sorted_tuple collection algebra reused inside expression payloads",
-        "expression manually nests tuple construction around sorted ordering",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+    RuntimeProductRecordSchemaCandidate,
+    high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Runtime product_record schemas should become AST-visible dataclasses",
+        "`product_record` and `product_record_spec` create classes through runtime calls, which hides the class body, fields, inheritance, and docs from AST-level refactoring analysis. Field-only records should be explicit `@dataclass(frozen=True)` classes unless there is a stronger metaprogramming payoff proof.",
+        "explicit frozen dataclass declaration visible to AST analysis",
+        "runtime product_record schema hides an otherwise ordinary class declaration",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
-    summary=lambda candidate: f"`{candidate.qualname}` contains a manual `tuple(sorted(...))` {candidate.context_kind} expression over `{candidate.sorted_expression}` spanning {candidate.line_count} line(s).",
-    scaffold=lambda candidate: "from nominal_refactor_advisor.collection_algebra import sorted_tuple\n\nvalue = sorted_tuple(items, key=key_function)",
-    codemod_patch=lambda candidate: "# Replace nested `tuple(sorted(...))` with `sorted_tuple(...)` so expression payloads use the shared collection algebra.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
+    summary=lambda candidate: f"`{candidate.callee_name}` in `{candidate.context_qualname}` materializes product record(s) {candidate.declared_names or ('<dynamic>',)} over {candidate.line_count} line(s); spell these as explicit frozen dataclasses.",
+    scaffold=lambda candidate: "from dataclasses import dataclass\n\n@dataclass(frozen=True)\nclass RecordName:\n    field_name: FieldType",
+    codemod_patch=lambda candidate: "# Replace runtime `product_record` / `product_record_spec` materialization with explicit `@dataclass(frozen=True)` classes so NRA and other AST tooling can see the nominal structure.",
+    metrics=lambda candidate: MappingMetrics(
         mapping_site_count=1,
-        mapping_name=candidate.qualname,
-        field_names=_sorted_tuple_candidate_axes(candidate),
+        field_count=max(1, len(candidate.declared_names)),
+        mapping_name=candidate.callee_name,
+        field_names=candidate.declared_names or ("dynamic_product_record",),
     ),
-    compression_certificate=_sorted_tuple_compression_certificate,
-    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.expression_candidates,
+    candidate_collector=_runtime_product_record_schema_candidates,
 )
 
 
@@ -4112,30 +4058,6 @@ declare_candidate_rule_detector(
     detector_base=CrossModuleCollectorCandidateDetector,
     detector_name="PrivateHelperShadowDetector",
     candidate_collector=_private_helper_shadow_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    FieldOnlyFrozenDataclassCandidate,
-    high_confidence_certified_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Field-only frozen dataclass should use product-record algebra",
-        "A frozen dataclass whose body contains only field annotations is a nominal product. Spelling the decorator, class shell, and one field declaration per line repeats record mechanics that can be derived from a compact product schema.",
-        "frozen nominal product class derived from one product-record schema",
-        "field-only frozen dataclass repeats product-record declaration mechanics",
-        _SHARED_ALGORITHM_AUTHORITY_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.class_name}` is a {len(candidate.field_specs)}-field frozen product record spanning {candidate.line_count} line(s).",
-    scaffold=lambda candidate: f'from nominal_refactor_advisor.record_algebra import product_record\n\n{candidate.class_name} = product_record(\n    "{candidate.class_name}",\n    "field_name: FieldType; other_field: OtherType",\n)',
-    codemod_patch=lambda candidate: "# Replace the field-only `@dataclass(frozen=True)` class shell with `product_record(...)`, preserving bases, field annotations, defaults, docstring, and dataclass keyword-only semantics.",
-    metrics=lambda candidate: MappingMetrics.from_field_names(
-        mapping_site_count=1,
-        mapping_name=candidate.class_name,
-        field_names=tuple((name for name, _ in candidate.field_specs)),
-    ),
-    compression_certificate=_field_only_frozen_dataclass_compression_certificate,
-    candidate_collector=_field_only_frozen_dataclass_candidates,
 )
 
 

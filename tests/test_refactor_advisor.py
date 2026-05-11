@@ -3687,11 +3687,7 @@ def test_detects_manual_sorted_tuple_return(tmp_path: Path) -> None:
         for item in analyze_path(tmp_path)
         if item.detector_id == "manual_sorted_tuple_return"
     ]
-    assert len(findings) == 1
-    assert "ordered_names" in findings[0].summary
-    assert "sorted_tuple" in (findings[0].codemod_patch or "")
-    assert findings[0].compression_certificate is not None
-    assert findings[0].compression_certificate.pays_rent
+    assert not findings
 
 
 def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
@@ -3705,11 +3701,40 @@ def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
         for item in analyze_path(tmp_path)
         if item.detector_id == "manual_sorted_tuple_expression"
     ]
+    assert not findings
+
+
+def test_detects_sorted_tuple_wrapper_use(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef ordered_payload(items):\n    return sorted_tuple({item.name for item in items}, key=str.lower)\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "sorted_tuple_wrapper_use"
+    ]
     assert len(findings) == 1
     assert "ordered_payload" in findings[0].summary
-    assert "expression payloads" in (findings[0].codemod_patch or "")
-    assert findings[0].compression_certificate is not None
-    assert findings[0].compression_certificate.pays_rent
+    assert "tuple(sorted" in (findings[0].codemod_patch or "")
+
+
+def test_detects_runtime_product_record_schema(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom nominal_refactor_advisor.record_algebra import product_record, product_record_spec, materialize_product_record\n\nLocalRecord = product_record("LocalRecord", "name: str; value: int")\nmaterialize_product_record(product_record_spec("GeneratedRecord", "path: str"))\n',
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "runtime_product_record_schema"
+    ]
+    assert len(findings) == 3
+    assert any("LocalRecord" in finding.summary for finding in findings)
+    assert any("GeneratedRecord" in finding.summary for finding in findings)
+    assert all("dataclass" in (finding.codemod_patch or "") for finding in findings)
 
 
 def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
@@ -3808,11 +3833,7 @@ def test_detects_field_only_frozen_dataclass(tmp_path: Path) -> None:
         for item in analyze_path(tmp_path)
         if item.detector_id == "field_only_frozen_dataclass"
     ]
-    assert len(findings) == 1
-    assert "LocalProduct" in findings[0].summary
-    assert "product_record" in (findings[0].codemod_patch or "")
-    assert findings[0].compression_certificate is not None
-    assert findings[0].compression_certificate.pays_rent
+    assert not findings
 
 
 def test_detects_node_visitor_stack_boilerplate(tmp_path: Path) -> None:
@@ -8352,4 +8373,4 @@ def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
         )
     )
     assert "pair[0][1]" in finding.summary
-    assert "product_record" in (finding.scaffold or "")
+    assert "@dataclass(frozen=True)" in (finding.scaffold or "")

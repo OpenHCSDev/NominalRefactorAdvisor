@@ -28,7 +28,8 @@ from ..semantic_description_length import (
 import io
 import re
 import tokenize
-from typing import Callable, TypeAlias, TypeVar
+from abc import ABC, abstractmethod
+from typing import Callable, ClassVar, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
@@ -5639,57 +5640,140 @@ class ManualSortedTupleBuilder:
     def return_candidates(
         self, module: ParsedModule
     ) -> tuple[ManualSortedTupleReturnCandidate, ...]:
-        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-            module,
-            self.return_candidates_for_function,
-        )
+        del module
+        return ()
 
     def expression_candidates(
         self, module: ParsedModule
     ) -> tuple[ManualSortedTupleExpressionCandidate, ...]:
-        candidates: list[ManualSortedTupleExpressionCandidate] = []
-
-        class Visitor(ClassFunctionStackNodeVisitor):
-            def __init__(self) -> None:
-                super().__init__()
-                self.parent_stack: list[ast.AST] = []
-
-            def visit(self, node: ast.AST) -> None:
-                self.parent_stack.append(node)
-                super().visit(node)
-                self.parent_stack.pop()
-
-            def visit_Call(self, node: ast.Call) -> None:
-                sorted_call = _sorted_call_in_tuple_expression(node)
-                parent = self.parent_stack[-2] if len(self.parent_stack) > 1 else None
-                if sorted_call is not None and (not isinstance(parent, ast.Return)):
-                    candidates.append(
-                        ManualSortedTupleExpressionCandidate(
-                            file_path=str(module.path),
-                            line=node.lineno,
-                            qualname=self.qualname,
-                            sorted_expression=_source_segment(
-                                module, sorted_call.args[0]
-                            ),
-                            key_expression=_call_keyword_expression(
-                                module, sorted_call, "key"
-                            ),
-                            reverse_expression=_call_keyword_expression(
-                                module, sorted_call, "reverse"
-                            ),
-                            line_count=(node.end_lineno or node.lineno)
-                            - node.lineno
-                            + 1,
-                            context_kind=type(parent).__name__,
-                        )
-                    )
-                self.generic_visit(node)
-
-        Visitor().visit(module.module)
-        return tuple(candidates)
+        del module
+        return ()
 
 
 MANUAL_SORTED_TUPLE_BUILDER = ManualSortedTupleBuilder()
+
+
+def _sorted_tuple_wrapper_use_candidates(
+    module: ParsedModule,
+) -> tuple[SortedTupleWrapperUseCandidate, ...]:
+    candidates: list[SortedTupleWrapperUseCandidate] = []
+
+    class Visitor(ClassFunctionStackNodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            if _call_name(node.func) == "sorted_tuple":
+                candidates.append(
+                    SortedTupleWrapperUseCandidate(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        qualname=self.qualname,
+                        argument_count=len(node.args),
+                        keyword_names=tuple(
+                            keyword.arg
+                            for keyword in node.keywords
+                            if keyword.arg is not None
+                        ),
+                    )
+                )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+class ProductRecordDeclaredNameExtractor(ABC, metaclass=AutoRegisterMeta):
+    __registry_key__ = "call_name"
+    __skip_if_no_key__ = True
+
+    call_name: ClassVar[str | None] = None
+
+    @classmethod
+    def declared_names_for(cls, node: ast.AST) -> tuple[str, ...]:
+        call = as_ast(node, ast.Call)
+        if call is None:
+            return ()
+        extractor_type = cls.__registry__.get(_call_name(call.func))
+        if extractor_type is None:
+            return ()
+        return extractor_type().declared_names(call)
+
+    @abstractmethod
+    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+class FirstArgumentProductRecordNameExtractor(ProductRecordDeclaredNameExtractor):
+    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
+        declared_name = _constant_string(call.args[0] if call.args else None)
+        return () if declared_name is None else (declared_name,)
+
+
+class ProductRecordNameExtractor(FirstArgumentProductRecordNameExtractor):
+    call_name = "product_record"
+
+
+class ProductRecordSpecNameExtractor(FirstArgumentProductRecordNameExtractor):
+    call_name = "product_record_spec"
+
+
+class MaterializeProductRecordNameExtractor(ProductRecordDeclaredNameExtractor):
+    call_name = "materialize_product_record"
+
+    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
+        return tuple(
+            declared_name
+            for argument in call.args
+            for declared_name in ProductRecordDeclaredNameExtractor.declared_names_for(
+                argument
+            )
+        )
+
+
+class MaterializeProductRecordsNameExtractor(ProductRecordDeclaredNameExtractor):
+    call_name = "materialize_product_records"
+
+    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
+        tuple_node = as_ast(call.args[0] if call.args else None, ast.Tuple)
+        if tuple_node is None:
+            return ()
+        return tuple(
+            declared_name
+            for item in tuple_node.elts
+            for declared_name in ProductRecordDeclaredNameExtractor.declared_names_for(
+                item
+            )
+        )
+
+
+_PRODUCT_RECORD_SCHEMA_CALL_NAMES = frozenset(
+    ProductRecordDeclaredNameExtractor.__registry__
+)
+
+
+def _runtime_product_record_schema_candidates(
+    module: ParsedModule,
+) -> tuple[RuntimeProductRecordSchemaCandidate, ...]:
+    candidates: list[RuntimeProductRecordSchemaCandidate] = []
+
+    class Visitor(ClassFunctionStackNodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            call_name = _call_name(node.func)
+            if call_name in _PRODUCT_RECORD_SCHEMA_CALL_NAMES:
+                candidates.append(
+                    RuntimeProductRecordSchemaCandidate(
+                        file_path=str(module.path),
+                        line=node.lineno,
+                        callee_name=call_name,
+                        declared_names=ProductRecordDeclaredNameExtractor.declared_names_for(
+                            node
+                        ),
+                        context_qualname=self.qualname,
+                        line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
+                    )
+                )
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
 
 
 def _dict_key_kind(value: ast.AST) -> str | None:
