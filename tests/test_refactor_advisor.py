@@ -5066,6 +5066,20 @@ def test_ignores_autoregister_meta_family_with_computed_rent_proof(
     )
 
 
+def test_ignores_autoregister_meta_family_with_registry_family_axis(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta, RegistryFamily, RegistryKeyAttribute\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_family__ = RegistryFamily(RegistryKeyAttribute.STRATEGY_LABEL)\n\n    @classmethod\n    def for_strategy(cls, strategy_label):\n        return cls.__registry__[strategy_label]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    strategy_label = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    strategy_label = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_ignores_partial_scan_autoregister_root_with_projection_rent(
     tmp_path: Path,
 ) -> None:

@@ -4011,9 +4011,37 @@ def _latent_implementation_roster_candidates(
 
 
 def _autoregister_registry_key_attr_name(node: ast.ClassDef) -> str | None:
-    return _constant_string(
+    explicit_key = _constant_string(
         CLASS_NODE_AUTHORITY.direct_assignments(node).get("__registry_key__")
     )
+    if explicit_key is not None:
+        return explicit_key
+    registry_family = CLASS_NODE_AUTHORITY.direct_assignments(node).get(
+        "__registry_family__"
+    )
+    return _registry_family_key_attr_name(registry_family)
+
+
+def _registry_family_key_attr_name(node: ast.AST | None) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if not (
+        (isinstance(node.func, ast.Name) and node.func.id == "RegistryFamily")
+        or (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "RegistryFamily"
+        )
+    ):
+        return None
+    if not node.args:
+        return None
+    key_arg = node.args[0]
+    key_literal = _constant_string(key_arg)
+    if key_literal is not None:
+        return key_literal
+    if isinstance(key_arg, ast.Attribute):
+        return key_arg.attr.lower()
+    return None
 
 
 def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
