@@ -6580,25 +6580,42 @@ def _keyed_type_registry_injectivity_proof(
 class RegistryConsumerSymbolProjection:
     def symbols(
         self,
-        modules: Sequence[ParsedModule],
+        modules_or_references: Sequence[object],
         *,
         family_name: str,
         lookup_method_names: tuple[str, ...],
     ) -> tuple[str, ...]:
+        lookup_method_name_set = set(lookup_method_names)
         consumer_symbols: set[str] = set()
-        for module in modules:
-            file_path = str(module.path)
-            if file_path.startswith("tests/") or "/tests/" in file_path:
-                continue
-            for qualname, function in _iter_named_functions(module):
+        if modules_or_references and hasattr(modules_or_references[0], "module"):
+            for module in modules_or_references:
+                file_path = str(getattr(module, "path"))
+                if file_path.startswith("tests/") or "/tests/" in file_path:
+                    continue
+                for qualname, function in _iter_named_functions(module):
+                    if qualname.startswith(f"{family_name}."):
+                        continue
+                    for node in _walk_nodes(function):
+                        attribute = as_ast(node, ast.Attribute)
+                        if (
+                            attribute is None
+                            or attribute.attr not in lookup_method_name_set
+                        ):
+                            continue
+                        if name_id(attribute.value) == family_name:
+                            consumer_symbols.add(qualname)
+        else:
+            for reference in modules_or_references:
+                qualname = getattr(reference, "qualname")
                 if qualname.startswith(f"{family_name}."):
                     continue
-                for node in _walk_nodes(function):
-                    attribute = as_ast(node, ast.Attribute)
-                    if attribute is None or attribute.attr not in lookup_method_names:
-                        continue
-                    if name_id(attribute.value) == family_name:
-                        consumer_symbols.add(qualname)
+                receiver_attribute_refs = getattr(reference, "receiver_attribute_refs")
+                if any(
+                    receiver_name == family_name
+                    and attr_name in lookup_method_name_set
+                    for receiver_name, attr_name in receiver_attribute_refs
+                ):
+                    consumer_symbols.add(qualname)
         return sorted_tuple(consumer_symbols)
 
 

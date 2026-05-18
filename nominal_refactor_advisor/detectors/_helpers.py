@@ -2286,22 +2286,19 @@ class MethodProjection:
         self, method: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> dict[str, str]:
         aliases: dict[str, str] = {}
-        changed = True
-        while changed:
-            changed = False
-            for subnode in _walk_nodes(method):
-                binding = named_value_binding(subnode)
-                if binding is None or binding.value is None:
-                    continue
-                attr_name = None
-                if (value_attr_name := _self_attr_name(binding.value)) is not None:
-                    attr_name = value_attr_name
-                elif (value_name := name_id(binding.value)) is not None:
-                    attr_name = aliases.get(value_name)
-                if attr_name is None or aliases.get(binding.name) == attr_name:
-                    continue
-                aliases[binding.name] = attr_name
-                changed = True
+        for subnode in _walk_nodes(method):
+            binding = named_value_binding(subnode)
+            if binding is None or binding.value is None:
+                continue
+            attr_name = None
+            if (value_attr_name := _self_attr_name(binding.value)) is not None:
+                attr_name = value_attr_name
+            elif (value_name := name_id(binding.value)) is not None:
+                attr_name = aliases.get(value_name)
+            if attr_name is None:
+                aliases.pop(binding.name, None)
+                continue
+            aliases[binding.name] = attr_name
         return aliases
 
     def has_stream_materialization(
@@ -4226,8 +4223,58 @@ def _node_mentions_any_symbol(node: ast.AST, symbol_names: frozenset[str]) -> bo
     return False
 
 
+@dataclass(frozen=True)
+class AutoRegisterFunctionReference:
+    """Precomputed function-level facts used by AutoRegister rent analysis."""
+
+    qualname: str
+    referenced_symbols: frozenset[str]
+    calls_autoregister_meta: bool
+    receiver_attribute_refs: tuple[tuple[str, str], ...]
+
+
+def _autoregister_function_references(
+    modules: Sequence[ParsedModule],
+) -> tuple[AutoRegisterFunctionReference, ...]:
+    references: list[AutoRegisterFunctionReference] = []
+    for module in modules:
+        file_path = str(module.path)
+        if file_path.startswith("tests/") or "/tests/" in file_path:
+            continue
+        for qualname, function in _iter_named_functions(module):
+            nodes = _walk_nodes(function)
+            referenced_symbols: set[str] = set()
+            receiver_attribute_refs: set[tuple[str, str]] = set()
+            calls_autoregister_meta = False
+            for node in nodes:
+                if isinstance(node, ast.Name):
+                    referenced_symbols.add(node.id)
+                    continue
+                if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                    referenced_symbols.add(node.value)
+                    continue
+                if isinstance(node, ast.Attribute):
+                    referenced_symbols.add(node.attr)
+                    if isinstance(node.value, ast.Name):
+                        receiver_attribute_refs.add((node.value.id, node.attr))
+                    continue
+                if isinstance(node, ast.Call):
+                    terminal_name = _ast_terminal_name(node.func)
+                    if terminal_name == "AutoRegisterMeta":
+                        calls_autoregister_meta = True
+            references.append(
+                AutoRegisterFunctionReference(
+                    qualname=qualname,
+                    referenced_symbols=frozenset(referenced_symbols),
+                    calls_autoregister_meta=calls_autoregister_meta,
+                    receiver_attribute_refs=sorted_tuple(receiver_attribute_refs),
+                )
+            )
+    return tuple(references)
+
+
 def _autoregister_dynamic_factory_symbols(
-    modules: list[ParsedModule],
+    references: Sequence[AutoRegisterFunctionReference],
     *,
     family_name: str,
     concrete_class_names: tuple[str, ...],
@@ -4235,11 +4282,10 @@ def _autoregister_dynamic_factory_symbols(
     symbol_names = frozenset((family_name, *concrete_class_names))
     return sorted_tuple(
         {
-            qualname
-            for module in modules
-            for qualname, function in _iter_named_functions(module)
-            if _function_calls_autoregister_meta(function)
-            and _node_mentions_any_symbol(function, symbol_names)
+            reference.qualname
+            for reference in references
+            if reference.calls_autoregister_meta
+            and not reference.referenced_symbols.isdisjoint(symbol_names)
         }
     )
 
@@ -4353,6 +4399,7 @@ def _autoregister_meta_rent_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[AutoRegisterMetaRentCandidate, ...]:
     class_index = build_class_family_index(modules)
+    function_references = _autoregister_function_references(modules)
     min_leaf_count = max(2, config.min_registration_sites)
     candidates: list[AutoRegisterMetaRentCandidate] = []
     for indexed_class in sorted(
@@ -4377,7 +4424,7 @@ def _autoregister_meta_rent_candidates(
         )
         family_name = CLASS_INDEX_PROJECTION.display_name(indexed_class, class_index)
         dynamic_factory_symbols = _autoregister_dynamic_factory_symbols(
-            modules,
+            function_references,
             family_name=family_name,
             concrete_class_names=concrete_class_names,
         )
@@ -4389,7 +4436,7 @@ def _autoregister_meta_rent_candidates(
             )
         )
         consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols(
-            modules,
+            function_references,
             family_name=family_name,
             lookup_method_names=registry_projection_names,
         )
