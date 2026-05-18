@@ -7522,6 +7522,25 @@ def test_helper_backed_observation_spec_requires_shared_entrypoint(
     )
 
 
+def test_helper_backed_observation_spec_preserves_strategy_domain_methods(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC\n\n\nclass ShapeStrategy(ABC):\n    pass\n\n\nclass RectangleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.filled_labels()\n\n\nclass ForcedCircleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.forced_circle_labels(request.radius)\n\n\nclass NaturalCircleStrategy(ShapeStrategy):\n    def labels(self, request):\n        return request.grid.labels_from_filtered_guides(request.guides)\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (
+            finding.detector_id == "helper_backed_observation_spec"
+            for finding in findings
+        )
+    )
+
+
 def test_detects_abc_base_dispatch_over_child_helper_sentinel(
     tmp_path: Path,
 ) -> None:

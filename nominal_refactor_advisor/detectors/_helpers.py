@@ -2905,68 +2905,102 @@ _NON_HELPER_CALL_NAMES = frozenset(
 )
 
 
-def _looks_like_helper_call_name(helper_name: str) -> bool:
-    terminal = helper_name.rsplit(".", 1)[-1]
-    return bool(
-        terminal and terminal[0].islower() and (terminal not in _NON_HELPER_CALL_NAMES)
-    )
+class HelperBackedWrapperShapeAuthority:
+    """Classify thin helper wrappers without mistaking strategy methods for boilerplate."""
 
-
-def _helper_call_from_returned_value(node: ast.AST) -> tuple[str, bool] | None:
-    tuple_wrapped_call = single_named_call_argument(
-        node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
-    )
-    helper_call = tuple_wrapped_call or as_ast(node, ast.Call)
-    helper_name = _call_display_name(helper_call) if helper_call is not None else None
-    if helper_name is None or not _looks_like_helper_call_name(helper_name):
-        return None
-    return (helper_name, tuple_wrapped_call is not None)
-
-
-def _helper_backed_wrapper_kind(
-    returned_value: ast.AST,
-) -> str | None:
-    helper_call = returned_value
-    tuple_wrapped = False
-    if (
-        isinstance(returned_value, ast.Call)
-        and isinstance(returned_value.func, ast.Name)
-        and returned_value.func.id == "tuple"
-        and len(returned_value.args) == 1
-        and isinstance(returned_value.args[0], ast.Call)
-    ):
-        helper_call = returned_value.args[0]
-        tuple_wrapped = True
-    if not isinstance(helper_call, ast.Call):
-        return None
-    arguments = [ast.unparse(arg) for arg in helper_call.args]
-    arguments.extend(
-        (
-            f"{keyword.arg}={ast.unparse(keyword.value)}"
-            for keyword in helper_call.keywords
-            if keyword.arg is not None
+    def helper_call_from_returned_value(
+        self, node: ast.AST
+    ) -> tuple[str, bool] | None:
+        tuple_wrapped_call = single_named_call_argument(
+            node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
         )
-    )
-    wrapper_prefix = "tuple_wrapped" if tuple_wrapped else "direct"
-    if not arguments:
-        return wrapper_prefix
-    return f"{wrapper_prefix}({', '.join(arguments)})"
+        helper_call = tuple_wrapped_call or as_ast(node, ast.Call)
+        helper_name = (
+            _call_display_name(helper_call) if helper_call is not None else None
+        )
+        if helper_name is None or not self.helper_call_name(helper_name):
+            return None
+        return (helper_name, tuple_wrapped_call is not None)
 
-
-def _is_helper_wrapper_prelude(statement: ast.stmt) -> bool:
-    if isinstance(statement, ast.Assert):
-        return True
-    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        target = statement.targets[0]
+    def helper_call_name(self, helper_name: str) -> bool:
+        terminal = helper_name.rsplit(".", 1)[-1]
         return bool(
-            isinstance(target, ast.Name)
-            and isinstance(statement.value, ast.Attribute)
-            and isinstance(statement.value.value, ast.Name)
-            and (statement.value.value.id == "observation")
+            terminal
+            and terminal[0].islower()
+            and (terminal not in _NON_HELPER_CALL_NAMES)
         )
-    if isinstance(statement, ast.If):
-        return HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement)
-    return False
+
+    def returned_call(self, node: ast.AST) -> ast.Call | None:
+        tuple_wrapped_call = single_named_call_argument(
+            node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
+        )
+        return tuple_wrapped_call or as_ast(node, ast.Call)
+
+    def wrapper_kind(self, returned_value: ast.AST) -> str | None:
+        helper_call = returned_value
+        tuple_wrapped = False
+        if (
+            isinstance(returned_value, ast.Call)
+            and isinstance(returned_value.func, ast.Name)
+            and returned_value.func.id == "tuple"
+            and len(returned_value.args) == 1
+            and isinstance(returned_value.args[0], ast.Call)
+        ):
+            helper_call = returned_value.args[0]
+            tuple_wrapped = True
+        if not isinstance(helper_call, ast.Call):
+            return None
+        arguments = [ast.unparse(arg) for arg in helper_call.args]
+        arguments.extend(
+            (
+                f"{keyword.arg}={ast.unparse(keyword.value)}"
+                for keyword in helper_call.keywords
+                if keyword.arg is not None
+            )
+        )
+        wrapper_prefix = "tuple_wrapped" if tuple_wrapped else "direct"
+        if not arguments:
+            return wrapper_prefix
+        return f"{wrapper_prefix}({', '.join(arguments)})"
+
+    def accepts_prelude(self, statement: ast.stmt) -> bool:
+        if isinstance(statement, ast.Assert):
+            return True
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            return bool(
+                isinstance(target, ast.Name)
+                and isinstance(statement.value, ast.Attribute)
+                and isinstance(statement.value.value, ast.Name)
+                and (statement.value.value.id == "observation")
+            )
+        if isinstance(statement, ast.If):
+            return HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(statement)
+        return False
+
+    def is_domain_method_strategy_return(
+        self, returned_value: ast.AST, method: ast.FunctionDef
+    ) -> bool:
+        helper_call = self.returned_call(returned_value)
+        if helper_call is None or not isinstance(helper_call.func, ast.Attribute):
+            return False
+        root_name = self.attribute_root_name(helper_call.func.value)
+        if root_name is None:
+            return False
+        parameter_names = set(SUPPORT_PROJECTION_AUTHORITY.parameter_names(method))
+        parameter_names.difference_update(("self", "cls"))
+        return root_name in parameter_names
+
+    def attribute_root_name(self, node: ast.AST) -> str | None:
+        current = node
+        while isinstance(current, ast.Attribute):
+            current = current.value
+        if isinstance(current, ast.Name):
+            return current.id
+        return None
+
+
+HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY = HelperBackedWrapperShapeAuthority()
 
 
 def _helper_backed_observation_spec_candidates_for_class(
@@ -2983,16 +3017,29 @@ def _helper_backed_observation_spec_candidates_for_class(
         body = _trim_docstring_body(method.body)
         if not body or len(body) > 4:
             continue
-        if not all((_is_helper_wrapper_prelude(statement) for statement in body[:-1])):
+        if not all(
+            (
+                HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.accepts_prelude(statement)
+                for statement in body[:-1]
+            )
+        ):
             continue
         tail = body[-1]
         if not isinstance(tail, ast.Return) or tail.value is None:
             continue
-        helper_result = _helper_call_from_returned_value(tail.value)
+        if HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.is_domain_method_strategy_return(
+            tail.value, method
+        ):
+            continue
+        helper_result = (
+            HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.helper_call_from_returned_value(
+                tail.value
+            )
+        )
         if helper_result is None:
             continue
         helper_name, _ = helper_result
-        wrapper_kind = _helper_backed_wrapper_kind(tail.value)
+        wrapper_kind = HELPER_BACKED_WRAPPER_SHAPE_AUTHORITY.wrapper_kind(tail.value)
         if wrapper_kind is None:
             continue
         yield HelperBackedObservationSpecCandidate(
