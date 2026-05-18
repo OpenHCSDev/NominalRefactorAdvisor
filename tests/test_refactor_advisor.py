@@ -2293,6 +2293,29 @@ def test_detects_enum_strategy_dispatch_with_abc_guidance(tmp_path: Path) -> Non
     assert "runner = ModeRunner.for_mode(mode)" in strategy_finding.codemod_patch
 
 
+def test_detects_enum_strategy_dispatch_inside_enum_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom enum import Enum\n\n\nclass Scope(Enum):\n    CX5 = "EDDU_CX5"\n    METAXPRESS = "EDDU_metaxpress"\n\n    def read_results(self, workbook):\n        if self is Scope.CX5:\n            return read_cx5(workbook)\n        if self is Scope.METAXPRESS:\n            return read_metaxpress(workbook)\n        raise AssertionError(self)\n\n    def features(self, raw_df):\n        if self is Scope.CX5:\n            return cx5_features(raw_df)\n        if self is Scope.METAXPRESS:\n            return metaxpress_features(raw_df)\n        raise AssertionError(self)\n',
+    )
+
+    findings = analyze_path(tmp_path)
+    enum_dispatch_summaries = [
+        finding.summary
+        for finding in findings
+        if finding.detector_id == "enum_strategy_dispatch"
+    ]
+    assert any("Scope.read_results" in summary for summary in enum_dispatch_summaries)
+    assert any("Scope.features" in summary for summary in enum_dispatch_summaries)
+    assert any(
+        finding.detector_id == "repeated_enum_strategy_dispatch"
+        and "Scope.read_results" in finding.summary
+        and "Scope.features" in finding.summary
+        for finding in findings
+    )
+
+
 def test_detects_literal_match_dispatch_with_autoregistermeta_guidance(
     tmp_path: Path,
 ) -> None:
