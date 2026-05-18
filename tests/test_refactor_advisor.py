@@ -7498,6 +7498,9 @@ def test_detects_helper_backed_observation_spec_wrappers(tmp_path: Path) -> None
     assert "ClassTaskAdapter" in finding.summary
     assert "HelperBackedTaskAdapter" in finding.summary
     assert "HelperBackedTemplate" in (finding.scaffold or "")
+    assert "Forbidden shape" in (finding.scaffold or "")
+    assert "if self.helper" in (finding.scaffold or "")
+    assert "base-class sentinel dispatch" in (finding.codemod_patch or "")
 
 
 def test_helper_backed_observation_spec_requires_shared_entrypoint(
@@ -7516,6 +7519,39 @@ def test_helper_backed_observation_spec_requires_shared_entrypoint(
             finding.detector_id == "helper_backed_observation_spec"
             for finding in findings
         )
+    )
+
+
+def test_detects_abc_base_dispatch_over_child_helper_sentinel(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass ShapeStrategy(ABC):\n    helper = ""\n\n    def labels(self, request):\n        if self.helper == "filled_labels":\n            return request.grid.filled_labels()\n        if self.helper == "forced_circle_labels":\n            return request.grid.forced_circle_labels(request.radius)\n        if self.helper == "labels_from_filtered_guides":\n            return request.grid.labels_from_filtered_guides(request.guides)\n        raise ValueError(self.helper)\n\n\nclass RectangleStrategy(ShapeStrategy):\n    helper = "filled_labels"\n\n\nclass CircleStrategy(ShapeStrategy):\n    helper = "forced_circle_labels"\n\n\nclass NaturalStrategy(ShapeStrategy):\n    helper = "labels_from_filtered_guides"\n',
+    )
+
+    findings = analyze_path(tmp_path)
+    matching = [
+        finding
+        for finding in findings
+        if finding.detector_id
+        in {"sentinel_attribute_simulation", "inline_literal_dispatch"}
+    ]
+
+    assert any(
+        (
+            finding.detector_id == "sentinel_attribute_simulation"
+            and "helper" in finding.summary
+        )
+        for finding in matching
+    )
+    assert any(
+        (
+            finding.detector_id == "inline_literal_dispatch"
+            and "self.helper" in finding.summary
+        )
+        for finding in matching
     )
 
 

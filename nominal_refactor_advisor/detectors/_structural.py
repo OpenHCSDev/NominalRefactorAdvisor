@@ -1144,8 +1144,8 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Helper-backed wrapper classes should use a declarative substrate",
-        "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. That helper metadata should live in classvars on a shared substrate rather than in repeated wrapper methods.",
-        "one declarative helper-backed wrapper family with class-level registration",
+        "Several sibling wrapper classes do nothing except forward one entrypoint to one helper. That helper metadata can move to a declarative substrate only when the base calls the declared helper directly; the base must not inspect a child sentinel and branch over child identities.",
+        "one declarative helper-backed wrapper family with class-level registration and no base-class sentinel dispatch",
         "same helper-backed wrapper shape repeats across sibling classes",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CLASS_LEVEL_REGISTRATION_CAPABILITY_TAGS,
     )
@@ -1174,12 +1174,21 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
                 ),
                 evidence[:8],
                 scaffold=(
-                    "class HelperBackedTemplate(ABC):\n    helper: ClassVar[Callable[..., object | None]]\n\n    def build(self, *args, **kwargs):\n        return type(self).helper(*args, **kwargs)\n\nclass TupleResultMixin(ABC):\n    @staticmethod\n    def wrap_result(value):\n        return tuple(value) if value is not None else None"
+                    "class HelperBackedTemplate(ABC):\n"
+                    "    helper: ClassVar[Callable[..., object | None]]\n\n"
+                    "    def build(self, *args, **kwargs):\n"
+                    "        return type(self).helper(*args, **kwargs)\n\n"
+                    "# Forbidden shape:\n"
+                    "# def build(self, request):\n"
+                    "#     if self.helper == 'case_a': ...\n"
+                    "#     if self.helper == 'case_b': ...\n"
+                    "# Child variants must remain opaque to the ABC; use direct callable dispatch or keep explicit overrides."
                 ),
                 codemod_patch=(
                     "# Keep the concrete subclasses explicit; move only the repeated forwarding method into the shared base.\n"
-                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins.\n"
-                    "# Do not replace readable strategy subclasses with dynamic class materialization."
+                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins only when the base can call the helper directly.\n"
+                    "# Do not replace readable strategy subclasses with dynamic class materialization.\n"
+                    "# Do not collapse child behavior into `if self.helper == ...` or other base-class sentinel dispatch; that defeats ABC opacity and should remain a finding."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.class_names),
