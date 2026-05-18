@@ -7638,9 +7638,29 @@ def test_detects_metadata_only_class_family_with_varying_bases(
         )
     )
     assert "RuleSpec" in finding.summary
-    assert "metadata-only class shells" in finding.summary
+    assert "classvar-only nominal declarations" in finding.summary
     assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
-    assert "typed declaration table" in (finding.codemod_patch or "")
+    assert "Keep explicit subclasses" in (finding.codemod_patch or "")
+    assert "dynamic `type(...)`" in (finding.codemod_patch or "")
+
+
+def test_detects_dynamic_class_materialization_regression(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\nclass CenterStrategy:\n    helper = None\n\n\n@dataclass(frozen=True)\nclass CenterStrategyDeclaration:\n    class_name: str\n    helper: object\n\n    def materialize(self):\n        return type(self.class_name, (CenterStrategy,), {'helper': staticmethod(self.helper)})\n\n\nDECLARATIONS = (\n    CenterStrategyDeclaration('MeanCenterStrategy', mean),\n    CenterStrategyDeclaration('MedianCenterStrategy', median),\n)\n\n(\n    MeanCenterStrategy,\n    MedianCenterStrategy,\n) = (declaration.materialize() for declaration in DECLARATIONS)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "dynamic_class_materialization"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "dynamically materialized" in finding.summary
+    assert "explicit subclasses" in (finding.codemod_patch or "")
 
 
 def test_detects_autoregister_meta_misuse_for_metadata_only_family(

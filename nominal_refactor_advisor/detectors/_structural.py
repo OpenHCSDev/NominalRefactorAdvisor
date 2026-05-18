@@ -1177,7 +1177,9 @@ class HelperBackedObservationSpecDetector(PerModuleIssueDetector):
                     "class HelperBackedTemplate(ABC):\n    helper: ClassVar[Callable[..., object | None]]\n\n    def build(self, *args, **kwargs):\n        return type(self).helper(*args, **kwargs)\n\nclass TupleResultMixin(ABC):\n    @staticmethod\n    def wrap_result(value):\n        return tuple(value) if value is not None else None"
                 ),
                 codemod_patch=(
-                    "# Collapse helper-backed wrappers into declarative helper classes.\n# Put helper identity, result wrapping, and guard policy on classvars/mixins, and let class creation discover the family."
+                    "# Keep the concrete subclasses explicit; move only the repeated forwarding method into the shared base.\n"
+                    "# Put helper identity, result wrapping, and guard policy on classvars/mixins.\n"
+                    "# Do not replace readable strategy subclasses with dynamic class materialization."
                 ),
                 metrics=RepeatedMethodMetrics.from_duplicate_family(
                     duplicate_site_count=len(group.class_names),
@@ -1246,26 +1248,29 @@ declare_candidate_rule_detector(
     MetadataOnlyClassFamilyCandidate,
     high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Metadata-only class families should be materialized from typed declarations",
-        "A repeated nominal class family whose bodies contain only declarative class-level data is a relation table wearing class syntax. The class shells should be derived from typed rows, while behavior stays on shared bases, mixins, and metaclasses.",
-        "one typed class-family declaration table plus a materializer for the nominal shells",
+        "Metadata-only class families should choose an explicit authority",
+        "A repeated nominal class family whose bodies contain only declarative class-level data may be a real registered strategy family or a relation table wearing class syntax. Keep explicit subclasses when class identity, inheritance, registry membership, or debugger navigation is the authority. Collapse to a typed declaration table or enum only when no nominal class identity is consumed. Do not replace clear nominal subclasses with dynamic `type(...)` materialization.",
+        "explicit nominal subclasses for behavioral/registered families, or one typed table/enum for pure data families",
         "same semantic class family repeats class declarations whose bodies are only metadata",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     ),
-    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat {candidate.line_count} lines of metadata-only class shells over classvars {candidate.assigned_names}.",
+    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat {candidate.line_count} lines of classvar-only nominal declarations over classvars {candidate.assigned_names}.",
     evidence=lambda candidate: candidate.evidence,
     scaffold=lambda candidate: (
         "@dataclass(frozen=True)\n"
-        "class ClassFamilyDeclaration:\n"
-        "    name: str\n"
-        "    bases: tuple[type[object], ...]\n"
-        "    namespace: Mapping[str, object]\n\n"
-        "def materialize_class_family(declaration: ClassFamilyDeclaration) -> type[object]:\n"
-        "    return type(declaration.name, declaration.bases, dict(declaration.namespace))"
+        "class FamilyRow:\n"
+        "    key: object\n"
+        "    payload: object\n\n"
+        "# If subclasses are behavioral/registered, keep explicit subclasses and move\n"
+        "# repeated mechanics to the base class. If they are pure data, replace the\n"
+        "# classes with a table/enum that consumers read directly. Do not generate\n"
+        "# public classes dynamically with `type(...)`."
     ),
     codemod_patch=lambda candidate: (
-        f"# Replace the repeated `{candidate.family_suffix}` metadata-only classes with one typed declaration table.\n"
-        "# Derive class names, bases, and classvars from the rows; keep real behavior in shared bases or orthogonal mixins."
+        f"# Audit the repeated `{candidate.family_suffix}` classvar-only family.\n"
+        "# Keep explicit subclasses if nominal class identity, inheritance, registration, or debugger navigation is part of the design.\n"
+        "# Collapse to a typed table/enum only when consumers need data rows, not class objects.\n"
+        "# Do not replace explicit subclasses with dynamic `type(...)` materialization."
     ),
     metrics=lambda candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(candidate.class_names),
@@ -1277,6 +1282,120 @@ declare_candidate_rule_detector(
     detector_name="MetadataOnlyClassFamilyDetector",
     candidate_collector=_metadata_only_class_family_candidates,
 )
+
+
+def _call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _contains_type_call(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Call) and _call_name(child.func) == "type"
+        for child in ast.walk(node)
+    )
+
+
+def _materializes_class_with_type(node: ast.AST) -> bool:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return "materialize" in node.name.lower() and _contains_type_call(node)
+    if isinstance(node, ast.ClassDef):
+        return any(
+            isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and "materialize" in child.name.lower()
+            and _contains_type_call(child)
+            for child in node.body
+        )
+    return False
+
+
+def _assignment_targets_public_classes(node: ast.Assign | ast.AnnAssign) -> bool:
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    for target in targets:
+        names: list[str] = []
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            names.extend(
+                element.id for element in target.elts if isinstance(element, ast.Name)
+            )
+        if any(name[:1].isupper() and not name.startswith("_") for name in names):
+            return True
+    return False
+
+
+def _value_calls_materialize(node: ast.AST) -> bool:
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call) and _call_name(child.func) in {
+            "materialize",
+            "materialize_class_family",
+        }:
+            return True
+    return False
+
+
+class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
+    """Detector for generated class shells that hide nominal strategy families."""
+
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Dynamic class materialization hides nominal class families",
+        "Dynamic `type(...)` materialization for public strategy or policy classes hides inheritance, class identity, navigation, and debugger affordances. If consumers need class objects, keep explicit subclasses and move repeated behavior into a base class. Use tables/enums only when consumers need data rows rather than nominal classes.",
+        "explicit nominal subclasses with shared base behavior, or pure data rows with no generated public classes",
+        "public class-like names are generated through `type(...)` materialization instead of declared as nominal subclasses",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+    )
+    detector_id = "dynamic_class_materialization"
+
+    def _minimum_evidence(self, config: DetectorConfig) -> int:
+        del config
+        return 1
+
+    def _module_evidence(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[SourceLocation, ...]:
+        del config
+        evidence: list[SourceLocation] = []
+        for node in _walk_nodes(module.module):
+            if _materializes_class_with_type(node):
+                evidence.append(SourceLocation(str(module.path), node.lineno, getattr(node, "name", "type")))
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                if _assignment_targets_public_classes(node) and _value_calls_materialize(
+                    node.value
+                ):
+                    evidence.append(
+                        SourceLocation(str(module.path), node.lineno, "class-materialization-assignment")
+                    )
+        return tuple(evidence)
+
+    def _build_finding(
+        self,
+        module: ParsedModule,
+        evidence: tuple[SourceLocation, ...],
+        config: DetectorConfig,
+    ) -> RefactorFinding:
+        del module, config
+        return self.build_finding(
+            "Public class-family shells are dynamically materialized; prefer explicit nominal subclasses or direct data rows.",
+            evidence[:8],
+            scaffold=(
+                "class BaseStrategy(ABC):\n"
+                "    helper: ClassVar[Callable[..., object]]\n"
+                "    def run(self, value):\n"
+                "        return type(self).helper(value)\n\n"
+                "class ConcreteStrategy(BaseStrategy):\n"
+                "    helper = staticmethod(concrete_helper)\n\n"
+                "# If no class identity is needed, delete the classes entirely and use\n"
+                "# `FAMILY_ROWS` directly; do not generate public classes with `type(...)`."
+            ),
+            codemod_patch=(
+                "# Replace dynamic `type(...)` class-family materialization with explicit subclasses when class identity is consumed.\n"
+                "# If only metadata is consumed, replace the generated classes with a plain typed table/enum and update consumers to use rows directly."
+            ),
+        )
 
 
 def _uses_autoregister_meta(node: ast.ClassDef) -> bool:
