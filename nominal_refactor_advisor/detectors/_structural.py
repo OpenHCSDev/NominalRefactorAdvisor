@@ -1327,7 +1327,9 @@ def _assignment_targets_public_classes(node: ast.Assign | ast.AnnAssign) -> bool
     return False
 
 
-def _value_calls_materialize(node: ast.AST) -> bool:
+def _value_calls_materialize(node: ast.AST | None) -> bool:
+    if node is None:
+        return False
     for child in ast.walk(node):
         if isinstance(child, ast.Call) and _call_name(child.func) in {
             "materialize",
