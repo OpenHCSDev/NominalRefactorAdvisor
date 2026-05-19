@@ -1315,6 +1315,33 @@ def _callee_name(node: ast.Call) -> str | None:
     return None
 
 
+def _decorator_terminal_names(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, ...]:
+    return tuple(
+        (
+            name
+            for name in (
+                _ast_terminal_name(
+                    decorator.func if isinstance(decorator, ast.Call) else decorator
+                )
+                for decorator in node.decorator_list
+            )
+            if name is not None
+        )
+    )
+
+
+_SEMANTIC_PUBLIC_BOUNDARY_DECORATORS = frozenset(
+    {
+        "numpy",
+        "numpy_decorator",
+        "special_inputs",
+        "special_outputs",
+    }
+)
+
+
 @lru_cache(maxsize=None)
 def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
     profiles: list[FunctionProfile] = []
@@ -1357,6 +1384,7 @@ def _function_profiles(module: ParsedModule) -> tuple[FunctionProfile, ...]:
                     call_count=call_count,
                     callee_names=sorted_tuple(callee_name_set),
                     parameter_names=SUPPORT_PROJECTION_AUTHORITY.parameter_names(node),
+                    decorator_names=_decorator_terminal_names(node),
                 )
             )
             self.generic_visit(node)
@@ -1741,6 +1769,7 @@ def _parameter_thread_family_candidates(
             profile
             for profile in _function_profiles(module)
             if len(profile.semantic_parameter_names) >= config.min_shared_parameters
+            and not profile.is_semantic_public_boundary
         )
     )
     candidate_map: dict[(tuple[str, ...], tuple[FunctionProfile, ...])] = {}
@@ -10021,10 +10050,18 @@ class FunctionProfile:
     call_count: int
     callee_names: tuple[str, ...]
     parameter_names: tuple[str, ...]
+    decorator_names: tuple[str, ...] = ()
 
     @property
     def callee_family_count(self) -> int:
         return len(self.callee_names)
+
+    @property
+    def is_semantic_public_boundary(self) -> bool:
+        return any(
+            name in _SEMANTIC_PUBLIC_BOUNDARY_DECORATORS
+            for name in self.decorator_names
+        )
 
     @property
     def semantic_parameter_names(self) -> tuple[str, ...]:

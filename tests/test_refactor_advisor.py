@@ -4466,6 +4466,24 @@ def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
     )
 
 
+def test_parameter_thread_detector_ignores_semantic_decorated_entrypoints(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef numpy_decorator(*args, **kwargs):\n    def decorate(func):\n        return func\n    return decorate\n\n\ndef helper(value):\n    return value\n\n\n@numpy_decorator(contract="PURE_2D")\ndef resize_objects(image, labels, method, factor_x, factor_y, factor_z, width, height, planes):\n    total = 0\n    total += helper(factor_x)\n    total += helper(factor_y)\n    total += helper(factor_z)\n    total += helper(width)\n    total += helper(height)\n    total += helper(planes)\n    total += helper(len(labels))\n    total += helper(len(image))\n    total += helper(1)\n    total += helper(2)\n    total += helper(3)\n    total += helper(4)\n    total += helper(5)\n    total += helper(6)\n    total += helper(7)\n    total += helper(8)\n    total += helper(9)\n    total += helper(10)\n    total += helper(11)\n    total += helper(12)\n    total += helper(13)\n    total += helper(14)\n    total += helper(15)\n    total += helper(16)\n    total += helper(17)\n    total += helper(18)\n    total += helper(19)\n    total += helper(20)\n    total += helper(21)\n    total += helper(22)\n    total += helper(23)\n    total += helper(24)\n    total += helper(25)\n    total += helper(26)\n    total += helper(27)\n    total += helper(28)\n    total += helper(29)\n    total += helper(30)\n    return image, labels, total, method\n\n\n@numpy_decorator(contract="PURE_3D")\ndef resize_objects_3d(image, labels, method, factor_x, factor_y, factor_z, width, height, planes):\n    total = 0\n    total += helper(factor_x)\n    total += helper(factor_y)\n    total += helper(factor_z)\n    total += helper(width)\n    total += helper(height)\n    total += helper(planes)\n    total += helper(len(labels))\n    total += helper(len(image))\n    total += helper(1)\n    total += helper(2)\n    total += helper(3)\n    total += helper(4)\n    total += helper(5)\n    total += helper(6)\n    total += helper(7)\n    total += helper(8)\n    total += helper(9)\n    total += helper(10)\n    total += helper(11)\n    total += helper(12)\n    total += helper(13)\n    total += helper(14)\n    total += helper(15)\n    total += helper(16)\n    total += helper(17)\n    total += helper(18)\n    total += helper(19)\n    total += helper(20)\n    total += helper(21)\n    total += helper(22)\n    total += helper(23)\n    total += helper(24)\n    total += helper(25)\n    total += helper(26)\n    total += helper(27)\n    total += helper(28)\n    total += helper(29)\n    total += helper(30)\n    return image, labels, total, method\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.title == "Repeated threaded semantic parameter family"
+        and "resize_objects" in finding.summary
+        for finding in findings
+    )
+
+
 def test_detects_generated_type_lineage(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
