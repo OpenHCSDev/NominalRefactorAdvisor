@@ -1253,6 +1253,55 @@ class ClassvarOnlySiblingLeafDetector(
         )
 
 
+def _metadata_only_class_family_is_declaration_indirection(
+    candidate: MetadataOnlyClassFamilyCandidate,
+) -> bool:
+    return all(
+        (
+            name.endswith("_declaration")
+            or name.endswith("_declarations")
+            or name == "declaration"
+            or name == "declarations"
+        )
+        for name in candidate.assigned_names
+    )
+
+
+def _metadata_only_class_family_summary(
+    candidate: MetadataOnlyClassFamilyCandidate,
+) -> str:
+    base_summary = (
+        f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat "
+        f"{candidate.line_count} lines of classvar-only nominal declarations over "
+        f"classvars {candidate.assigned_names}."
+    )
+    if not _metadata_only_class_family_is_declaration_indirection(candidate):
+        return base_summary
+    return (
+        f"{base_summary} The only residue is per-leaf declaration object assignment, "
+        "so this is declaration-indirection churn unless that declaration is consumed "
+        "as the sole authority outside the class family."
+    )
+
+
+def _metadata_only_class_family_patch(
+    candidate: MetadataOnlyClassFamilyCandidate,
+) -> str:
+    if _metadata_only_class_family_is_declaration_indirection(candidate):
+        return (
+            f"# Audit the repeated `{candidate.family_suffix}` declaration-indirection family.\n"
+            "# Moving repeated classvars into per-leaf `*_declaration = Declaration(...)` assignments is no-op churn when each explicit subclass still only carries that declaration.\n"
+            "# Either keep explicit behavioral/registered subclasses with real leaf behavior or move the declarations to one authoritative typed table consumed directly.\n"
+            "# Do not hide the same repeated metadata one level deeper in per-class declaration objects."
+        )
+    return (
+        f"# Audit the repeated `{candidate.family_suffix}` classvar-only family.\n"
+        "# Keep explicit subclasses if nominal class identity, inheritance, registration, or debugger navigation is part of the design.\n"
+        "# Collapse to a typed table/enum only when consumers need data rows, not class objects.\n"
+        "# Do not replace explicit subclasses with dynamic `type(...)` materialization."
+    )
+
+
 declare_candidate_rule_detector(
     MetadataOnlyClassFamilyCandidate,
     high_confidence_spec(
@@ -1263,7 +1312,7 @@ declare_candidate_rule_detector(
         "same semantic class family repeats class declarations whose bodies are only metadata",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     ),
-    summary=lambda candidate: f"{len(candidate.class_names)} `{candidate.family_suffix}` classes repeat {candidate.line_count} lines of classvar-only nominal declarations over classvars {candidate.assigned_names}.",
+    summary=_metadata_only_class_family_summary,
     evidence=lambda candidate: candidate.evidence,
     scaffold=lambda candidate: (
         "@dataclass(frozen=True)\n"
@@ -1275,12 +1324,7 @@ declare_candidate_rule_detector(
         "# classes with a table/enum that consumers read directly. Do not generate\n"
         "# public classes dynamically with `type(...)`."
     ),
-    codemod_patch=lambda candidate: (
-        f"# Audit the repeated `{candidate.family_suffix}` classvar-only family.\n"
-        "# Keep explicit subclasses if nominal class identity, inheritance, registration, or debugger navigation is part of the design.\n"
-        "# Collapse to a typed table/enum only when consumers need data rows, not class objects.\n"
-        "# Do not replace explicit subclasses with dynamic `type(...)` materialization."
-    ),
+    codemod_patch=_metadata_only_class_family_patch,
     metrics=lambda candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(candidate.class_names),
         registry_name=candidate.family_suffix,

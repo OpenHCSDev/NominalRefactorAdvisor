@@ -7722,6 +7722,27 @@ def test_detects_metadata_only_class_family_with_varying_bases(
     assert "dynamic `type(...)`" in (finding.codemod_patch or "")
 
 
+def test_detects_metadata_only_declaration_indirection_churn(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass CenterDeclaration:\n    key: object\n    helper: object\n\n\nclass CenterStrategy:\n    center_declaration = None\n\n\nclass MeanCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MEAN, mean)\n\n\nclass MedianCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MEDIAN, median)\n\n\nclass ModeCenterStrategy(CenterStrategy):\n    center_declaration = CenterDeclaration(MODE, mode)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "metadata_only_class_family"
+        )
+    )
+    assert "declaration-indirection churn" in finding.summary
+    assert "no-op churn" in (finding.codemod_patch or "")
+    assert "per-class declaration objects" in (finding.codemod_patch or "")
+
+
 def test_detects_dynamic_class_materialization_regression(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
