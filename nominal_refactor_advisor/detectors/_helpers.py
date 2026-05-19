@@ -10177,15 +10177,19 @@ def _under_amortized_infrastructure_candidates(
             continue
         module_path = str(module.path)
         public_names = frozenset(declarations)
-        external_consumers = {
+        external_consumer_sites = {
             name: frozenset(
                 (
-                    site.symbol
+                    site
                     for site in reference_sites.get(name, set())
                     if site.file_path != module_path
                 )
             )
             for name in public_names
+        }
+        external_consumers = {
+            name: frozenset(site.symbol for site in sites)
+            for name, sites in external_consumer_sites.items()
         }
         declaration_refs = {
             name: _public_declaration_reference_names(node, public_names)
@@ -10195,7 +10199,7 @@ def _under_amortized_infrastructure_candidates(
             (
                 support_name
                 for name, refs in declaration_refs.items()
-                if len(external_consumers[name]) > 1
+                if len(external_consumer_sites[name]) > 1
                 for support_name in refs
             )
         )
@@ -10203,7 +10207,7 @@ def _under_amortized_infrastructure_candidates(
             (
                 name
                 for name in public_names
-                if len(external_consumers[name]) == 1
+                if len(external_consumer_sites[name]) == 1
                 and _looks_like_infrastructure_declaration_name(name)
                 and name not in amortized_support_names
             )
@@ -10219,7 +10223,7 @@ def _under_amortized_infrastructure_candidates(
                 ref_name
                 for name in names
                 for ref_name in declaration_refs[name]
-                if not external_consumers[ref_name]
+                if not external_consumer_sites[ref_name]
                 and internal_consumers[ref_name] <= {name}
             )
         )
