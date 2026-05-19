@@ -2546,6 +2546,21 @@ def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) 
     )
 
 
+def test_ignores_explicit_public_measurement_companion_dataclass(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass TextureMeasurement:\n    scale: int\n    direction: int\n    contrast: float\n    entropy: float\n\n\n@dataclass\nclass ObjectTextureMeasurement:\n    object_label: int\n    scale: int\n    direction: int\n    contrast: float\n    entropy: float\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "manual_companion_dataclass_surface"
+        for finding in findings
+    )
+
+
 def test_detects_module_keyed_selection_helper(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

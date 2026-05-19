@@ -4986,6 +4986,18 @@ def _dataclass_companion_surface_role(
     )
 
 
+_GENERATED_COMPANION_SURFACE_ROLE_NAMES = frozenset({"lazy"})
+
+
+def _is_generated_companion_surface_role(
+    surface_role_name: str, companion_fields: dict[str, str]
+) -> bool:
+    return (
+        surface_role_name in _GENERATED_COMPANION_SURFACE_ROLE_NAMES
+        or "inherited_fields" in companion_fields
+    )
+
+
 def _manual_companion_dataclass_surface_certificate(
     *,
     authority_fields: dict[str, str],
@@ -5060,6 +5072,8 @@ def _companion_dataclass_surface_projection(
     if surface_role_name is None or field_projection is None:
         return None
     authority_fields, companion_fields, shared_field_names = field_projection
+    if not _is_generated_companion_surface_role(surface_role_name, companion_fields):
+        return None
     return surface_role_name, authority_fields, companion_fields, shared_field_names
 
 
