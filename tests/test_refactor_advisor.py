@@ -5089,6 +5089,20 @@ def test_ignores_autoregister_meta_family_with_computed_rent_proof(
     )
 
 
+def test_ignores_autoregister_meta_family_with_module_constant_registry_key(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nEXPORTER_REGISTRY_KEY = "format"\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = EXPORTER_REGISTRY_KEY\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_ignores_autoregister_meta_family_with_registry_family_axis(
     tmp_path: Path,
 ) -> None:

@@ -4054,9 +4054,48 @@ def _latent_implementation_roster_candidates(
     return tuple(candidates)
 
 
-def _autoregister_registry_key_attr_name(node: ast.ClassDef) -> str | None:
-    explicit_key = _constant_string(
-        CLASS_NODE_AUTHORITY.direct_assignments(node).get("__registry_key__")
+def _module_string_constant_assignments(module: ParsedModule) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    for statement in _trim_docstring_body(module.module.body):
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        ):
+            target_name = statement.targets[0].id
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is None or value is None:
+            continue
+        if (string_value := _constant_string(value)) is not None:
+            constants[target_name] = string_value
+    return constants
+
+
+def _constant_string_or_module_constant(
+    node: ast.AST | None,
+    module_string_constants: dict[str, str],
+) -> str | None:
+    if (string_value := _constant_string(node)) is not None:
+        return string_value
+    if isinstance(node, ast.Name):
+        return module_string_constants.get(node.id)
+    return None
+
+
+def _autoregister_registry_key_attr_name(
+    module: ParsedModule,
+    node: ast.ClassDef,
+) -> str | None:
+    explicit_key = _constant_string_or_module_constant(
+        CLASS_NODE_AUTHORITY.direct_assignments(node).get("__registry_key__"),
+        _module_string_constant_assignments(module),
     )
     if explicit_key is not None:
         return explicit_key
@@ -4446,6 +4485,7 @@ def _autoregister_meta_rent_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[AutoRegisterMetaRentCandidate, ...]:
     class_index = build_class_family_index(modules)
+    modules_by_path = {str(module.path): module for module in modules}
     function_references = _autoregister_function_references(modules)
     min_leaf_count = max(2, config.min_registration_sites)
     candidates: list[AutoRegisterMetaRentCandidate] = []
@@ -4475,7 +4515,10 @@ def _autoregister_meta_rent_candidates(
             family_name=family_name,
             concrete_class_names=concrete_class_names,
         )
-        registry_key_attr_name = _autoregister_registry_key_attr_name(node)
+        module = modules_by_path.get(indexed_class.file_path)
+        if module is None:
+            continue
+        registry_key_attr_name = _autoregister_registry_key_attr_name(module, node)
         key_extractor_name = _autoregister_key_extractor_name(node)
         registry_projection_names = (
             HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
