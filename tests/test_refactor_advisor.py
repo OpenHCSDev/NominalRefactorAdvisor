@@ -7218,6 +7218,22 @@ def test_detects_trivial_forwarding_wrapper(tmp_path: Path) -> None:
     )
 
 
+def test_ignores_abstract_hook_forwarding_implementations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\n\n\nclass HelperBackedStrategy(ABC):\n    def run(self, request):\n        return self._run_with_helper(request)\n\n    @abstractmethod\n    def _run_with_helper(self, request):\n        raise NotImplementedError\n\n\nclass ConcreteStrategy(HelperBackedStrategy):\n    def _run_with_helper(self, request):\n        return Helper.for_mode(request.mode).run(request.value)\n',
+    )
+
+    assert not any(
+        finding.detector_id == "trivial_forwarding_wrapper"
+        and "ConcreteStrategy._run_with_helper" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_public_api_private_delegate_shell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

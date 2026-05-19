@@ -8949,6 +8949,8 @@ def _trivial_forwarding_wrapper_candidate(
         return None
     if _has_semantic_forwarding_decorator(function):
         return None
+    if _implements_abstract_hook(module, qualname, function.name):
+        return None
     chain_match = TRANSPORT_PROJECTION_AUTHORITY.call_chain_match(function)
     if chain_match is None:
         return None
@@ -8976,6 +8978,33 @@ def _trivial_forwarding_wrapper_candidate(
         forwarded_parameter_names=forwarded_parameter_names,
         transported_value_sources=transported_value_sources,
     )
+
+
+def _implements_abstract_hook(
+    module: ParsedModule, qualname: str, method_name: str
+) -> bool:
+    if "." not in qualname:
+        return False
+    class_qualname = qualname.rsplit(".", maxsplit=1)[0]
+    class_index = build_class_family_index([module])
+    class_symbol = class_index.symbol_for(
+        file_path=str(module.path),
+        qualname=class_qualname,
+    )
+    if class_symbol is None:
+        return False
+    for ancestor_symbol in class_index.ancestor_symbols(class_symbol):
+        ancestor = class_index.class_for(ancestor_symbol)
+        if ancestor is None:
+            continue
+        for statement in ancestor.node.body:
+            if (
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name == method_name
+                and _is_abstract_method(statement)
+            ):
+                return True
+    return False
 
 
 @lru_cache(maxsize=None)
