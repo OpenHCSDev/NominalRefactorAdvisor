@@ -19,6 +19,7 @@ from ..record_algebra import (
 
 from ._base import *
 from ._helpers import *
+from ._helpers import _semantic_inheritance_family_ssot_candidates
 
 
 class _ReplacementShapeRole:

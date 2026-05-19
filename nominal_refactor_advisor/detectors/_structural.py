@@ -33,6 +33,7 @@ from ..semantic_match import (
 )
 from ._base import *
 from ._helpers import *
+from ._helpers import _property_alias_hook_groups
 from ._structural_step_regex_extractor import *
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
