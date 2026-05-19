@@ -2165,6 +2165,107 @@ class CallableMethodAxisRegistryDetector(IssueDetector):
         return None
 
 
+class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
+    detector_id = "inherited_autoregister_config_boilerplate"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "AutoRegister root repeats inherited registry configuration",
+        "An AutoRegisterMeta root that directly repeats registry protocol fields already declared by a base is carrying boilerplate instead of relying on inheritance. The registry key, skip policy, and related protocol fields should be inherited from the shared nominal base. If AutoRegisterMeta cannot honor inherited registry config, fix the metaclass package rather than repeating the fields on every root.",
+        "inherited AutoRegister registry protocol configuration",
+        "AutoRegisterMeta class repeats registry protocol assignments from an inherited base",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        class_index = build_class_family_index(modules)
+        findings: list[RefactorFinding] = []
+        for indexed_class in sorted(
+            class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+        ):
+            node = indexed_class.node
+            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(
+                node
+            ):
+                continue
+            repeated_fields = self._repeated_inherited_fields(
+                class_index, indexed_class
+            )
+            if not repeated_fields:
+                continue
+            field_list = ", ".join(repeated_fields)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{indexed_class.simple_name}` repeats inherited AutoRegister "
+                        f"registry field(s) {field_list}."
+                    ),
+                    (
+                        SourceLocation(
+                            indexed_class.file_path,
+                            indexed_class.line,
+                            indexed_class.simple_name,
+                        ),
+                    ),
+                    scaffold=(
+                        "class RegisteredFamilyBase(ABC):\n"
+                        '    __registry_key__ = "method"\n'
+                        "    __skip_if_no_key__ = True\n\n"
+                        "class ConcreteFamilyRoot(RegisteredFamilyBase, metaclass=AutoRegisterMeta):\n"
+                        "    # declare behavior contract only; inherit registry config\n"
+                        "    ..."
+                    ),
+                    codemod_patch=(
+                        f"# Delete repeated registry protocol fields {field_list} from `{indexed_class.simple_name}`.\n"
+                        "# Keep those fields on the inherited shared base. If the runtime registry does not honor inherited config, fix AutoRegisterMeta inheritance semantics instead of copying boilerplate."
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(repeated_fields),
+                        field_count=len(repeated_fields),
+                        mapping_name=indexed_class.simple_name,
+                        field_names=repeated_fields,
+                    ),
+                )
+            )
+        return findings
+
+    @staticmethod
+    def _repeated_inherited_fields(
+        class_index: ClassFamilyIndex,
+        indexed_class: IndexedClass,
+    ) -> tuple[str, ...]:
+        protocol_fields = (
+            "__key_extractor__",
+            "__registry_key__",
+            "__skip_if_no_key__",
+        )
+        direct_assignments = CLASS_NODE_AUTHORITY.direct_assignments(
+            indexed_class.node
+        )
+        repeated: list[str] = []
+        for field_name in protocol_fields:
+            current_value = direct_assignments.get(field_name)
+            if current_value is None:
+                continue
+            current_text = ast.unparse(current_value)
+            for ancestor_symbol in class_index.ancestor_symbols(indexed_class.symbol):
+                ancestor = class_index.class_for(ancestor_symbol)
+                if ancestor is None:
+                    continue
+                ancestor_value = CLASS_NODE_AUTHORITY.direct_assignments(
+                    ancestor.node
+                ).get(field_name)
+                if ancestor_value is None:
+                    continue
+                if ast.unparse(ancestor_value) == current_text:
+                    repeated.append(field_name)
+                    break
+        return tuple(repeated)
+
+
 class EnumKeyedTableClassAxisShadowDetector(
     ModuleCollectorCandidateDetector[EnumKeyedTableClassAxisShadowCandidate]
 ):

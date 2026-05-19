@@ -4108,6 +4108,29 @@ def _autoregister_registry_key_attr_name(
     return _registry_family_key_attr_name(registry_family)
 
 
+def _inherited_autoregister_registry_key_attr_name(
+    class_index: ClassFamilyIndex,
+    modules_by_path: dict[str, ParsedModule],
+    indexed_class: IndexedClass,
+) -> str | None:
+    for symbol in (
+        indexed_class.symbol,
+        *class_index.ancestor_symbols(indexed_class.symbol),
+    ):
+        current_class = class_index.class_for(symbol)
+        if current_class is None:
+            continue
+        module = modules_by_path.get(current_class.file_path)
+        if module is None:
+            continue
+        key_attr_name = _autoregister_registry_key_attr_name(
+            module, current_class.node
+        )
+        if key_attr_name is not None:
+            return key_attr_name
+    return None
+
+
 def _registry_family_key_attr_name(node: ast.AST | None) -> str | None:
     if not isinstance(node, ast.Call):
         return None
@@ -4135,6 +4158,22 @@ def _autoregister_key_extractor_name(node: ast.ClassDef) -> str | None:
     if extractor is None:
         return None
     return ast.unparse(extractor)
+
+
+def _inherited_autoregister_key_extractor_name(
+    class_index: ClassFamilyIndex, indexed_class: IndexedClass
+) -> str | None:
+    for symbol in (
+        indexed_class.symbol,
+        *class_index.ancestor_symbols(indexed_class.symbol),
+    ):
+        current_class = class_index.class_for(symbol)
+        if current_class is None:
+            continue
+        key_extractor_name = _autoregister_key_extractor_name(current_class.node)
+        if key_extractor_name is not None:
+            return key_extractor_name
+    return None
 
 
 def _references_dunder_registry(
@@ -4521,8 +4560,12 @@ def _autoregister_meta_rent_candidates(
         module = modules_by_path.get(indexed_class.file_path)
         if module is None:
             continue
-        registry_key_attr_name = _autoregister_registry_key_attr_name(module, node)
-        key_extractor_name = _autoregister_key_extractor_name(node)
+        registry_key_attr_name = _inherited_autoregister_registry_key_attr_name(
+            class_index, modules_by_path, indexed_class
+        )
+        key_extractor_name = _inherited_autoregister_key_extractor_name(
+            class_index, indexed_class
+        )
         registry_projection_names = (
             HELPER_DISPATCH_ALGEBRA_AUTHORITY.autoregister_registry_projection_names(
                 node

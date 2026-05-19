@@ -5147,6 +5147,71 @@ def test_detects_semantic_inheritance_family_missing_membership_ssot(
     assert finding.compression_certificate.pays_rent
 
 
+def test_detects_inherited_autoregister_config_boilerplate(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        '\nfrom abc import ABC\n\nPROCESSOR_METHOD_REGISTRY_KEY = "method"\n\n\nclass RegisteredMethodStrategy(ABC):\n    __registry_key__ = PROCESSOR_METHOD_REGISTRY_KEY\n    __skip_if_no_key__ = True\n    method = None\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/processors.py",
+        '\nfrom abc import abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .base import PROCESSOR_METHOD_REGISTRY_KEY, RegisteredMethodStrategy\n\n\nclass SpatialBinStrategy(RegisteredMethodStrategy, metaclass=AutoRegisterMeta):\n    __registry_key__ = PROCESSOR_METHOD_REGISTRY_KEY\n    __skip_if_no_key__ = True\n\n    @abstractmethod\n    def apply(self, array):\n        raise NotImplementedError\n\n\nclass MeanSpatialBinStrategy(SpatialBinStrategy):\n    method = "mean"\n\n    def apply(self, array):\n        return array\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "inherited_autoregister_config_boilerplate"
+    )
+
+    assert "SpatialBinStrategy" in finding.summary
+    assert "__registry_key__" in finding.summary
+    assert "__skip_if_no_key__" in finding.summary
+    assert "inherit registry config" in (finding.scaffold or "")
+    assert "fix AutoRegisterMeta inheritance semantics" in (
+        finding.codemod_patch or ""
+    )
+
+
+def test_autoregister_rent_counts_inherited_registry_config(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        '\nfrom abc import ABC\n\nPROCESSOR_METHOD_REGISTRY_KEY = "method"\n\n\nclass RegisteredMethodStrategy(ABC):\n    __registry_key__ = PROCESSOR_METHOD_REGISTRY_KEY\n    __skip_if_no_key__ = True\n    method = None\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/processors.py",
+        '\nfrom abc import abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .base import RegisteredMethodStrategy\n\n\nclass SpatialBinStrategy(RegisteredMethodStrategy, metaclass=AutoRegisterMeta):\n    @abstractmethod\n    def apply(self, array):\n        raise NotImplementedError\n\n\nclass MeanSpatialBinStrategy(SpatialBinStrategy):\n    method = "mean"\n\n    def apply(self, array):\n        return array\n\n\nclass MaxSpatialBinStrategy(SpatialBinStrategy):\n    method = "max"\n\n    def apply(self, array):\n        return array\n',
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        and "SpatialBinStrategy" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_ignores_autoregister_root_owning_registry_config(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass SpatialBinStrategy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "method"\n    __skip_if_no_key__ = True\n\n    @abstractmethod\n    def apply(self, array):\n        raise NotImplementedError\n\n\nclass MeanSpatialBinStrategy(SpatialBinStrategy):\n    method = "mean"\n\n    def apply(self, array):\n        return array\n',
+    )
+
+    assert not any(
+        finding.detector_id == "inherited_autoregister_config_boilerplate"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_semantic_inheritance_membership_does_not_target_enum_axis_roots(
     tmp_path: Path,
 ) -> None:
