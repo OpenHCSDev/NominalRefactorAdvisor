@@ -3792,6 +3792,21 @@ def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
     assert "AliasProperty" in (findings[0].scaffold or "")
 
 
+def test_ignores_enum_member_metadata_property_aliases(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom enum import Enum\n\nclass LocalEnum(Enum):\n    ITEM = ('item', True)\n\n    def __init__(self, label: str, enabled: bool) -> None:\n        self._value_ = label\n        self._enabled = enabled\n\n    @property\n    def enabled(self) -> bool:\n        return self._enabled\n",
+    )
+    findings = [
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id
+        in {"simple_property_alias_class", "simple_property_alias_method"}
+    ]
+    assert findings == []
+
+
 def test_detects_source_location_evidence_property(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

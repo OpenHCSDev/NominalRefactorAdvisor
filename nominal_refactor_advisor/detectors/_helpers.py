@@ -12225,9 +12225,19 @@ def _simple_property_alias_pair(node: ast.FunctionDef) -> tuple[str, str] | None
     )
 
 
+def _class_directly_inherits_enum(node: ast.ClassDef) -> bool:
+    return any(
+        base_name == "Enum" or base_name.endswith(".Enum")
+        for base_name in HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node)
+    )
+
+
 def _simple_property_alias_class_shape(
     node: ast.ClassDef,
 ) -> tuple[tuple[tuple[str, str], ...], tuple[str, ...]] | None:
+    if _class_directly_inherits_enum(node):
+        return None
+
     alias_pairs: list[tuple[str, str]] = []
     declared_field_names: list[str] = []
     for statement in _trim_docstring_body(node.body):
@@ -12657,27 +12667,28 @@ def _simple_property_alias_method_candidates(
 
         def visit_ClassDef(self, node: ast.ClassDef) -> None:
             self.class_stack.append(node.name)
-            for statement in _trim_docstring_body(node.body):
-                if not isinstance(statement, ast.FunctionDef):
-                    continue
-                alias_pair = _simple_property_alias_pair(statement)
-                if alias_pair is None:
-                    continue
-                method_name, source_name = alias_pair
-                candidates.append(
-                    SimplePropertyAliasMethodCandidate(
-                        file_path=str(module.path),
-                        line=statement.lineno,
-                        class_name=self.class_name,
-                        method_name=method_name,
-                        source_name=source_name,
-                        return_annotation=(
-                            ast.unparse(statement.returns)
-                            if statement.returns is not None
-                            else None
-                        ),
+            if not _class_directly_inherits_enum(node):
+                for statement in _trim_docstring_body(node.body):
+                    if not isinstance(statement, ast.FunctionDef):
+                        continue
+                    alias_pair = _simple_property_alias_pair(statement)
+                    if alias_pair is None:
+                        continue
+                    method_name, source_name = alias_pair
+                    candidates.append(
+                        SimplePropertyAliasMethodCandidate(
+                            file_path=str(module.path),
+                            line=statement.lineno,
+                            class_name=self.class_name,
+                            method_name=method_name,
+                            source_name=source_name,
+                            return_annotation=(
+                                ast.unparse(statement.returns)
+                                if statement.returns is not None
+                                else None
+                            ),
+                        )
                     )
-                )
             self.generic_visit(node)
             self.class_stack.pop()
 
