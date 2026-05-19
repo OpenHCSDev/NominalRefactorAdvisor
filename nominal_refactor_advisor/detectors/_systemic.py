@@ -233,6 +233,9 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
         class_names = {method.class_name for method in methods}
         if len(methods) < 2 or len(class_names) < 2:
             return None
+        method_names = {method.method_name for method in methods}
+        if not methods[0].is_private and len(method_names) > 1:
+            return None
         evidence = tuple(
             (
                 SourceLocation(method.file_path, method.lineno, method.symbol)

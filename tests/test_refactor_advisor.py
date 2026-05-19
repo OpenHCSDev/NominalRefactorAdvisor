@@ -1827,6 +1827,39 @@ def _write_module(root: Path, relative_path: str, source: str) -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def test_ignores_cross_domain_public_methods_with_same_shape(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "domain_shapes.py",
+        """
+class CropShapeMaskStrategy:
+    def for_shape(self, request):
+        normalized = self.normalize(request)
+        mask = self.build(normalized)
+        result = self.package(mask)
+        return result
+
+
+class PerObjectAssignmentStrategy:
+    def for_assignment(self, request):
+        normalized = self.normalize(request)
+        mask = self.build(normalized)
+        result = self.package(mask)
+        return result
+""",
+    )
+
+    findings = analyze_modules(parse_python_modules(tmp_path))
+
+    assert not any(
+        finding.detector_id == "repeated_private_methods"
+        and "normalized AST shape" in finding.summary
+        for finding in findings
+    )
+
+
 _REPEATED_BUILDER_SOURCE = """
 def main(builder):
     builder.register("--json", action="store_true", help="Emit JSON output")
