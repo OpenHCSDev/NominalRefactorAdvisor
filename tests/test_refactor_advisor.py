@@ -7804,6 +7804,20 @@ def test_detects_classvar_only_sibling_leaf(tmp_path: Path) -> None:
     assert "declarative family-definition table" in (finding.codemod_patch or "")
 
 
+def test_ignores_registered_classvar_only_strategy_leaves(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum\nfrom typing import ClassVar\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass Scheme(Enum):\n    RGB = "RGB"\n    CMYK = "CMYK"\n    STACK = "Stack"\n\n\nclass EnumKeyedStrategyMixin:\n    pass\n\n\nclass SchemeBindingStrategy(EnumKeyedStrategyMixin, ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "scheme_literal"\n    __skip_if_no_key__ = True\n    scheme_literal: ClassVar[str | None] = None\n    __enum_member_attr__ = "scheme"\n    __enum_label_attr__ = "scheme_literal"\n\n    @abstractmethod\n    def bind(self, module):\n        raise NotImplementedError\n\n\nclass IndexedSchemeBindingStrategy(SchemeBindingStrategy):\n    image_settings: ClassVar[tuple[str, ...]] = ()\n    weight_settings: ClassVar[tuple[str, ...]] = ()\n\n    def bind(self, module):\n        return tuple(type(self).image_settings), tuple(type(self).weight_settings)\n\n\nclass RgbBindingStrategy(IndexedSchemeBindingStrategy):\n    scheme = Scheme.RGB\n    image_settings = ("red", "green", "blue")\n    weight_settings = ("red_weight", "green_weight", "blue_weight")\n\n\nclass CmykBindingStrategy(IndexedSchemeBindingStrategy):\n    scheme = Scheme.CMYK\n    image_settings = ("cyan", "magenta", "yellow", "gray")\n    weight_settings = ("cyan_weight", "magenta_weight", "yellow_weight", "gray_weight")\n\n\nclass StackBindingStrategy(SchemeBindingStrategy):\n    scheme = Scheme.STACK\n',
+    )
+    findings = analyze_path(tmp_path)
+    detector_ids = {finding.detector_id for finding in findings}
+    assert "metadata_only_class_family" not in detector_ids
+    assert "classvar_only_sibling_leaf" not in detector_ids
+
+
 def test_detects_metadata_only_class_family_with_varying_bases(
     tmp_path: Path,
 ) -> None:

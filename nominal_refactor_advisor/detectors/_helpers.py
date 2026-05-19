@@ -5313,15 +5313,81 @@ def _nominal_class_name_suffixes(class_name: str) -> tuple[str, ...]:
     return tuple(("".join(tokens[index:]) for index in range(len(tokens) - 1)))
 
 
+_REGISTERED_NOMINAL_AUTHORITY_ASSIGNMENTS = frozenset(
+    {
+        "__registry_key__",
+        "__enum_member_attr__",
+        "__enum_label_attr__",
+    }
+)
+
+
+def _module_class_nodes(module: ParsedModule) -> dict[str, ast.ClassDef]:
+    return {
+        node.name: node
+        for node in _walk_nodes(module.module)
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _class_family_nodes_in_module(
+    class_nodes: Mapping[str, ast.ClassDef],
+    node: ast.ClassDef,
+) -> tuple[ast.ClassDef, ...]:
+    """Return the class and same-module ancestors known to static analysis."""
+    family_nodes: list[ast.ClassDef] = []
+    seen: set[str] = set()
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if current.name in seen:
+            continue
+        seen.add(current.name)
+        family_nodes.append(current)
+        stack.extend(
+            (
+                class_nodes[base_name]
+                for base_name in CLASS_NODE_AUTHORITY.declared_base_names(current)
+                if base_name in class_nodes and base_name not in seen
+            )
+        )
+    return tuple(family_nodes)
+
+
+def _is_registered_nominal_authority_node(node: ast.ClassDef) -> bool:
+    assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
+    return (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node)
+        or bool(_REGISTERED_NOMINAL_AUTHORITY_ASSIGNMENTS & set(assignments))
+    )
+
+
+def _has_registered_nominal_authority_ancestor(
+    class_nodes: Mapping[str, ast.ClassDef],
+    node: ast.ClassDef,
+) -> bool:
+    """Return True when classvar leaves are backed by a real registry family."""
+    return any(
+        (
+            family_node is not node
+            and _is_registered_nominal_authority_node(family_node)
+        )
+        for family_node in _class_family_nodes_in_module(class_nodes, node)
+    )
+
+
 def _metadata_only_class_family_candidates(
     module: ParsedModule,
 ) -> tuple[MetadataOnlyClassFamilyCandidate, ...]:
+    class_nodes = _module_class_nodes(module)
     grouped: dict[
         str,
         list[tuple[ast.ClassDef, tuple[str, ...], tuple[str, ...], int]],
     ] = defaultdict(list)
     for node in _walk_nodes(module.module):
         if not isinstance(node, ast.ClassDef) or node.decorator_list:
+            continue
+        if _has_registered_nominal_authority_ancestor(class_nodes, node):
             continue
         assigned_names = (
             HELPER_SYNTAX_PROJECTION_AUTHORITY.metadata_only_class_assignment_names(
@@ -5602,11 +5668,14 @@ def _classvar_only_sibling_leaf_candidates_for_class(
 def _classvar_only_sibling_leaf_candidates(
     module: ParsedModule,
 ) -> tuple[DeclarativeFamilyLeafCandidate, ...]:
+    class_nodes = _module_class_nodes(module)
     return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
         module,
         module.module,
         ast.ClassDef,
-        _classvar_only_sibling_leaf_candidates_for_class,
+        lambda parsed_module, node: ()
+        if _has_registered_nominal_authority_ancestor(class_nodes, node)
+        else _classvar_only_sibling_leaf_candidates_for_class(parsed_module, node),
     )
 
 
