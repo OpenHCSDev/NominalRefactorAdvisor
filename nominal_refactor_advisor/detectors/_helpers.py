@@ -3678,6 +3678,34 @@ def _semantic_inheritance_rent_margin(certificate: CompressionCertificate) -> in
     return certificate.certified_description_length_savings
 
 
+def _is_dataclass_class(node: ast.ClassDef) -> bool:
+    for decorator in node.decorator_list:
+        if name_id(decorator) == "dataclass":
+            return True
+        call = as_ast(decorator, ast.Call)
+        if call is not None and name_id(call.func) == "dataclass":
+            return True
+    return False
+
+
+def _is_direct_dataclass_product_family(
+    indexed_class: IndexedClass,
+    concrete_descendants: tuple[IndexedClass, ...],
+    *,
+    abstract_method_names: tuple[str, ...],
+    key_attr_names: tuple[str, ...],
+) -> bool:
+    return bool(
+        _is_dataclass_class(indexed_class.node)
+        and not abstract_method_names
+        and not key_attr_names
+        and all(
+            _is_dataclass_class(descendant.node)
+            for descendant in concrete_descendants
+        )
+    )
+
+
 def _semantic_inheritance_family_ssot_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
@@ -3722,6 +3750,13 @@ def _semantic_inheritance_family_ssot_candidates(
                 concrete_descendants
             )
         )
+        if _is_direct_dataclass_product_family(
+            indexed_class,
+            concrete_descendants,
+            abstract_method_names=indexed_abstract_method_names,
+            key_attr_names=key_attr_names,
+        ):
+            continue
         if not indexed_abstract_method_names and len(semantic_method_names) < 1:
             continue
         suggested_key_attr_name = (

@@ -5180,6 +5180,24 @@ def test_detects_semantic_inheritance_family_missing_membership_ssot(
     assert finding.compression_certificate.pays_rent
 
 
+def test_ignores_direct_dataclass_product_family_for_membership_ssot(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedFilterRequest(ABC):\n    pixels: object\n    mask: object | None\n\n    @property\n    def resolved_mask(self):\n        return self.mask\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedLinearFilterRequest(MaskedFilterRequest):\n    operation: object\n\n    def apply(self):\n        return self.operation\n\n\n@dataclass(frozen=True, slots=True)\nclass OpenCVMaskedGaussianFilterRequest(MaskedFilterRequest):\n    sigma: float\n\n    @property\n    def image_array(self):\n        return self.pixels\n\n    @property\n    def mask_array(self):\n        return self.mask\n\n    def apply(self):\n        return self.sigma\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        and "MaskedFilterRequest" in finding.summary
+        for finding in findings
+    )
+
+
 def test_detects_inherited_autoregister_config_boilerplate(
     tmp_path: Path,
 ) -> None:
