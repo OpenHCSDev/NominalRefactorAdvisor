@@ -2946,7 +2946,37 @@ def test_detects_parallel_keyed_table_axis(tmp_path: Path) -> None:
     assert "Mode" in finding.summary
     assert "MODE_SPECS" in finding.summary
     assert "MODE_PLANNING_SPECS" in finding.summary
-    assert "AxisRow" in (finding.scaffold or "")
+    assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
+    assert "from metaclass_registry import AutoRegisterMeta" in (
+        finding.scaffold or ""
+    )
+    assert "__registry__[method].run" in (finding.scaffold or "")
+    assert "AutoRegisterMeta-backed semantic family" in (
+        finding.codemod_patch or ""
+    )
+
+
+def test_detects_callable_method_axis_registry_as_strategy_family(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom enum import Enum\n\n\nclass MethodOperationRegistry:\n    @classmethod\n    def from_member_names(cls, axis, **operations):\n        return cls()\n\n\nclass SpatialBinMethod(Enum):\n    MEAN = "mean"\n    SUM = "sum"\n    MAX = "max"\n\n\ndef mean(values):\n    return values\n\n\ndef sum_values(values):\n    return values\n\n\ndef max_values(values):\n    return values\n\n\nSPATIAL_BIN_OPERATIONS = MethodOperationRegistry.from_member_names(\n    SpatialBinMethod,\n    mean=mean,\n    sum=sum_values,\n    max=max_values,\n)\n',
+    )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "callable_method_axis_registry"
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
+    assert "SPATIAL_BIN_OPERATIONS" in finding.summary
+    assert "SpatialBinMethod" in finding.summary
+    assert "hardcoded strategy family" in finding.summary
+    assert "from metaclass_registry import AutoRegisterMeta" in (
+        finding.scaffold or ""
+    )
+    assert "__registry__[method].run" in (finding.scaffold or "")
 
 
 def test_detects_derived_query_index_surface(tmp_path: Path) -> None:
@@ -5115,6 +5145,20 @@ def test_detects_semantic_inheritance_family_missing_membership_ssot(
     assert "__registry__" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
+
+
+def test_semantic_inheritance_membership_does_not_target_enum_axis_roots(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom enum import Enum\n\n\nclass ProcessorMethodAxis(str, Enum):\n    @classmethod\n    def choices_text(cls):\n        return ", ".join(member.value for member in cls)\n\n    @classmethod\n    def from_value(cls, value):\n        return cls(value)\n\n\nclass SpatialBinMethod(ProcessorMethodAxis):\n    MEAN = "mean"\n    MAX = "max"\n\n\nclass StackProjectionMethod(ProcessorMethodAxis):\n    MAX = "max_projection"\n    MEAN = "mean_projection"\n\n\nclass EdgeMagnitudeMethod(ProcessorMethodAxis):\n    SLICE_2D = "2d"\n    VOLUME_3D = "3d"\n',
+    )
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
 
 
 def test_ignores_semantic_inheritance_family_with_autoregister_meta(

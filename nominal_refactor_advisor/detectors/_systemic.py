@@ -1993,18 +1993,19 @@ class ParallelKeyedAxisFamilyDetector(
 declare_candidate_rule_detector(
     ParallelKeyedTableAxisCandidate,
     high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "Parallel enum-keyed tables across modules should collapse into one axis record",
-        "The docs require one authoritative writable owner per closed semantic axis. When multiple modules maintain separate enum-keyed tables over the same cases, the axis is split across parallel metadata maps.",
-        "single authoritative enum-keyed row family with derived module-local projections",
+        PatternId.NOMINAL_STRATEGY_FAMILY,
+        "Parallel keyed tables should collapse into one auto-registered semantic family",
+        "The docs require one authoritative owner per closed semantic axis. When multiple modules maintain keyed tables over the same cases, those tables are usually shadow registries for one semantic family. The stronger default normal form is an ABC plus `AutoRegisterMeta`, with table-like views derived from `Family.__registry__` only when callers still need projections.",
+        "single AutoRegisterMeta-backed semantic family with derived module-local projections",
         "same closed enum/key axis is encoded by multiple keyed tables across modules",
-        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
         _PROJECTION_DICT_DATAFLOW_ROOT_BUILDER_CALL_OBSERVATION_TAGS,
     ),
     summary=lambda table_candidate: f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}.",
     evidence=lambda table_candidate: table_candidate.evidence,
-    scaffold=lambda table_candidate: "@dataclass(frozen=True)\nclass AxisRow:\n    key: AxisEnum\n    primary: object\n    secondary: object | None = None\n\nAXIS_ROWS = (\n    AxisRow(key=AxisEnum.ALPHA, primary=..., secondary=...),\n)\nAXIS_ROW_BY_KEY = {row.key: row for row in AXIS_ROWS}\n",
-    codemod_patch=lambda table_candidate: f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one authoritative row family.\n# Keep one writable axis table and derive any module-local indexes or views from it.",
+    scaffold=lambda table_candidate: _axis_policy_registry_scaffold("run(self, request)")
+    + f"\n\ndef run_{table_candidate.key_type_name.lower()}(method, request):\n    return {_AXIS_POLICY_ROOT_NAME}.__registry__[method].run(request)\n\n# Derive table-like projections from {_AXIS_POLICY_ROOT_NAME}.__registry__ only if legacy callers need them.\n",
+    codemod_patch=lambda table_candidate: f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one AutoRegisterMeta-backed semantic family.\n# Replace hardcoded keyed tables with registered subclasses and route behavior through `Family.__registry__[key].run(...)`.\n# Keep any table-like surface as a derived read-only projection from the registry, not as a writable authority.",
     metrics=lambda table_candidate: MappingMetrics(
         mapping_site_count=2,
         field_count=max(len(table_candidate.shared_case_names), 1),
@@ -2059,6 +2060,109 @@ class ParallelKeyedTableAndFamilyDetector(
                 table_candidate.key_type_name,
             ),
         )
+
+
+class CallableMethodAxisRegistryDetector(IssueDetector):
+    detector_id = "callable_method_axis_registry"
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_STRATEGY_FAMILY,
+        "Callable method-axis registry should become an auto-registered strategy family",
+        "A builder call that maps method-axis member names to callable behavior is a hardcoded strategy family in registry-table form. The canonical shape is an ABC plus `AutoRegisterMeta`, with each method implementation declared as a subclass and dispatch routed through `Family.__registry__[method].run(...)`.",
+        "AutoRegisterMeta-backed strategy family instead of callable method-axis registry",
+        "module-level registry builder maps closed method-axis cases to callable behavior",
+        _AUTHORITATIVE_DISPATCH_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _BUILDER_CALL_DATAFLOW_ROOT_CLASS_FAMILY_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for module in modules:
+            for statement in module.module.body:
+                assignment = self._assignment_target_name(statement)
+                value = self._assignment_value(statement)
+                if assignment is None or not isinstance(value, ast.Call):
+                    continue
+                if not self._is_method_axis_registry_call(value):
+                    continue
+                axis_name = ast.unparse(value.args[0]) if value.args else "Axis"
+                operation_names = tuple(
+                    keyword.arg
+                    for keyword in value.keywords
+                    if keyword.arg is not None
+                    and isinstance(keyword.value, (ast.Name, ast.Attribute))
+                )
+                if len(operation_names) < 2:
+                    continue
+                operations = ", ".join(operation_names[:4])
+                findings.append(
+                    self.build_finding(
+                        (
+                            f"`{assignment}` maps `{axis_name}` member names to callable operations "
+                            f"{operations}; this is a hardcoded strategy family."
+                        ),
+                        (
+                            SourceLocation(
+                                str(module.path), statement.lineno, assignment
+                            ),
+                        ),
+                        scaffold=(
+                            "from abc import ABC, abstractmethod\n"
+                            "from typing import ClassVar\n"
+                            "from metaclass_registry import AutoRegisterMeta\n\n"
+                            "class MethodStrategy(ABC, metaclass=AutoRegisterMeta):\n"
+                            '    __registry_key__ = "method"\n'
+                            "    __skip_if_no_key__ = True\n"
+                            "    method: ClassVar[object | None] = None\n\n"
+                            "    @abstractmethod\n"
+                            "    def run(self, request): ...\n\n"
+                            "def run_method(method, request):\n"
+                            "    return MethodStrategy.__registry__[method].run(request)\n"
+                        ),
+                        codemod_patch=(
+                            f"# Replace callable registry `{assignment}` with an AutoRegisterMeta-backed strategy family.\n"
+                            "# Move each callable into a registered subclass and dispatch with `Family.__registry__[method].run(...)`."
+                        ),
+                        metrics=DispatchCountMetrics.from_literal_family(
+                            dispatch_axis=axis_name,
+                            literal_cases=operation_names,
+                        ),
+                    )
+                )
+        return findings
+
+    @staticmethod
+    def _is_method_axis_registry_call(call: ast.Call) -> bool:
+        if len(call.args) != 1 or len(call.keywords) < 2:
+            return False
+        func_name = ast.unparse(call.func)
+        if not (
+            func_name.endswith(".from_member_names")
+            or func_name.endswith("from_member_names")
+        ):
+            return False
+        axis_name = ast.unparse(call.args[0])
+        return axis_name.endswith("Method") or axis_name.endswith("Axis")
+
+    @staticmethod
+    def _assignment_target_name(statement: ast.stmt) -> str | None:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target = statement.targets[0]
+            if isinstance(target, ast.Name):
+                return target.id
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            return statement.target.id
+        return None
+
+    @staticmethod
+    def _assignment_value(statement: ast.stmt) -> ast.AST | None:
+        if isinstance(statement, ast.Assign):
+            return statement.value
+        if isinstance(statement, ast.AnnAssign):
+            return statement.value
+        return None
 
 
 class EnumKeyedTableClassAxisShadowDetector(

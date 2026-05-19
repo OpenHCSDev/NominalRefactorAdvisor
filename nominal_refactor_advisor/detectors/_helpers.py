@@ -3683,11 +3683,14 @@ def _semantic_inheritance_family_ssot_candidates(
 ) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
     class_index = build_class_family_index(modules)
     minimum_leaf_count = max(2, config.min_registration_sites)
+    enum_base_names = {"Enum", "IntEnum", "StrEnum", "Flag", "IntFlag"}
     candidates: list[SemanticInheritanceFamilySSOTCandidate] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
         if indexed_class.simple_name.endswith("Mixin"):
+            continue
+        if enum_base_names & set(CLASS_NODE_AUTHORITY.declared_base_names(indexed_class.node)):
             continue
         if HELPER_SUPPORT_PROJECTION_AUTHORITY.family_has_autoregister_authority(
             class_index, indexed_class
