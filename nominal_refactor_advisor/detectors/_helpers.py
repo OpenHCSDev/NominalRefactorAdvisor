@@ -8832,6 +8832,8 @@ def _trivial_forwarding_wrapper_candidate(
         return None
     if function.name == _CANDIDATE_COLLECTOR_METHOD_NAME:
         return None
+    if _has_semantic_forwarding_decorator(function):
+        return None
     chain_match = TRANSPORT_PROJECTION_AUTHORITY.call_chain_match(function)
     if chain_match is None:
         return None
@@ -12118,10 +12120,30 @@ def _decorator_terminal_names(node: ast.FunctionDef) -> tuple[str, ...]:
         (
             name
             for name in (
-                _ast_terminal_name(decorator) for decorator in node.decorator_list
+                _ast_terminal_name(
+                    decorator.func if isinstance(decorator, ast.Call) else decorator
+                )
+                for decorator in node.decorator_list
             )
             if name is not None
         )
+    )
+
+
+_SEMANTIC_FORWARDING_DECORATORS = frozenset(
+    {
+        "numpy",
+        "numpy_decorator",
+        "special_inputs",
+        "special_outputs",
+    }
+)
+
+
+def _has_semantic_forwarding_decorator(node: NamedFunctionNode) -> bool:
+    return any(
+        name in _SEMANTIC_FORWARDING_DECORATORS
+        for name in _decorator_terminal_names(node)
     )
 
 
@@ -14792,6 +14814,8 @@ def _identity_keyword_forwarding_shell_candidate(
     function: NamedFunctionNode,
 ) -> Iterable[IdentityKeywordForwardingShellCandidate]:
     if function.name.startswith("__") and function.name.endswith("__"):
+        return
+    if _has_semantic_forwarding_decorator(function):
         return
     body = _trim_docstring_body(list(function.body))
     if len(body) != 1 or not isinstance(body[0], ast.Return):

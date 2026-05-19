@@ -4443,6 +4443,29 @@ def test_ignores_single_generic_name_sentinel_branch(tmp_path: Path) -> None:
     assert not any((finding.pattern_id == 1 for finding in findings))
 
 
+def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef numpy_decorator(*args, **kwargs):\n    def decorate(func):\n        return func\n    return decorate\n\n\nclass Policy:\n    def __init__(self, diameter, volumetric):\n        pass\n\n    def apply(self, image):\n        return image\n\n\ndef apply_morph_operation(**kwargs):\n    return kwargs["image"]\n\n\n@numpy_decorator(contract="PURE_2D")\ndef remove_holes(image, diameter=1.0):\n    return Policy(diameter=diameter, volumetric=False).apply(image)\n\n\n@numpy_decorator(contract="PURE_2D")\ndef morph(image, operation, repeat_mode, custom_repeats, rescale_values, line_length, morphology_backend_provider):\n    return apply_morph_operation(\n        image=image,\n        operation=operation,\n        repeat_mode=repeat_mode,\n        custom_repeats=custom_repeats,\n        rescale_values=rescale_values,\n        line_length=line_length,\n        morphology_backend_provider=morphology_backend_provider,\n    )\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        finding.title == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
+        and "remove_holes" in finding.summary
+        for finding in findings
+    )
+    assert not any(
+        finding.title == "Identity keyword forwarding shell should collapse into the semantic authority"
+        and "morph" in finding.summary
+        for finding in findings
+    )
+
+
 def test_detects_generated_type_lineage(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
