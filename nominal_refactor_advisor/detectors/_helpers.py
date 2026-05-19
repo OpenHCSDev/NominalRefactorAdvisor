@@ -8388,12 +8388,15 @@ def _looks_like_dispatch_dict(node: ast.Dict, min_string_cases: int) -> bool:
         return False
     if all((isinstance(value, ast.Constant) for value in node.values)):
         return False
-    return any(
-        (
-            isinstance(value, (ast.Name, ast.Attribute, ast.Lambda, ast.Call))
-            for value in node.values
-        )
-    )
+    return any(_looks_like_behavioral_dispatch_value(value) for value in node.values)
+
+
+def _looks_like_behavioral_dispatch_value(value: ast.AST) -> bool:
+    if isinstance(value, (ast.Lambda, ast.Call, ast.Attribute, ast.Subscript)):
+        return True
+    if isinstance(value, ast.Name):
+        return not value.id.isupper()
+    return False
 
 
 @lru_cache(maxsize=None)

@@ -4738,6 +4738,30 @@ def test_detects_string_dispatch(tmp_path: Path) -> None:
     assert finding.certification == "certified"
 
 
+def test_string_dispatch_ignores_literal_fallback_tables(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nDEFAULT_PIXEL_SIZE = 0.65\n\n\nclass MetadataHandler:\n    FALLBACK_VALUES = {\n        "pixel_size": DEFAULT_PIXEL_SIZE,\n        "grid_dimensions": (1, 1),\n    }\n\n    def get(self, key):\n        return self.FALLBACK_VALUES[key]\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
+    )
+
+
+def test_string_dispatch_detects_behavioral_string_key_tables(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef alpha(value):\n    return value\n\n\ndef beta(value):\n    return value\n\n\ndef gamma(value):\n    return value\n\nHANDLERS = {\n    "alpha": alpha,\n    "beta": beta,\n    "gamma": gamma,\n}\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == STRING_DISPATCH_DETECTOR_ID for finding in findings
+    )
+
+
 def test_detects_inline_literal_dispatch_registry_smell(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
