@@ -3775,7 +3775,7 @@ def test_detects_runtime_product_record_schema(tmp_path: Path) -> None:
     assert all("dataclass" in (finding.codemod_patch or "") for finding in findings)
 
 
-def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
+def test_ignores_simple_property_alias_class_noise(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -3786,12 +3786,10 @@ def test_detects_simple_property_alias_class(tmp_path: Path) -> None:
         for item in analyze_path(tmp_path)
         if item.detector_id == "simple_property_alias_class"
     ]
-    assert len(findings) == 1
-    assert "public_name -> source_name" in findings[0].summary
-    assert "AliasProperty" in (findings[0].codemod_patch or "")
+    assert not findings
 
 
-def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
+def test_ignores_simple_property_alias_method_noise(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -3802,9 +3800,7 @@ def test_detects_simple_property_alias_method(tmp_path: Path) -> None:
         for item in analyze_path(tmp_path)
         if item.detector_id == "simple_property_alias_method"
     ]
-    assert len(findings) == 1
-    assert "LocalRecord.public_name" in findings[0].summary
-    assert "AliasProperty" in (findings[0].scaffold or "")
+    assert not findings
 
 
 def test_ignores_enum_member_metadata_property_aliases(tmp_path: Path) -> None:
