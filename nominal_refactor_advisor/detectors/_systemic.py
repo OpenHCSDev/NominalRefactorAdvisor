@@ -2269,6 +2269,139 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
         return tuple(repeated)
 
 
+class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
+    detector_id = "autoregister_explicit_priority_ordering"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "AutoRegister family uses explicit priority ordering instead of MRO",
+        "An AutoRegisterMeta family whose registered leaves carry a `priority` class attribute is maintaining a second ordering authority beside the inheritance graph. If ordering is semantic, the nominal hierarchy and MRO should carry it; if ordering is only presentation, it should be a derived view outside the registered family.",
+        "MRO-owned ordering for registered semantic families",
+        "AutoRegisterMeta family declares or consumes a class-level priority axis to sort registered implementations",
+        _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        class_index = build_class_family_index(modules)
+        findings: list[RefactorFinding] = []
+        for indexed_class in sorted(
+            class_index.classes_by_symbol.values(), key=lambda item: item.symbol
+        ):
+            node = indexed_class.node
+            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(
+                node
+            ):
+                continue
+            priority_sites = self._priority_sites(class_index, indexed_class)
+            if not priority_sites:
+                continue
+            if not self._sorts_registry_by_priority(node):
+                continue
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{indexed_class.simple_name}` orders registered implementations "
+                        "through explicit class-level `priority` values."
+                    ),
+                    (
+                        SourceLocation(
+                            indexed_class.file_path,
+                            indexed_class.line,
+                            indexed_class.simple_name,
+                        ),
+                        *priority_sites[:5],
+                    ),
+                    scaffold=(
+                        "class RegisteredPolicy(ABC, metaclass=AutoRegisterMeta):\n"
+                        "    @classmethod\n"
+                        "    def ordered(cls):\n"
+                        "        return tuple(cls.__subclasses__())\n\n"
+                        "# Encode ordering by inheritance/MRO, not by a parallel priority field."
+                    ),
+                    codemod_patch=(
+                        f"# Delete the `priority` class axis from `{indexed_class.simple_name}` and its leaves.\n"
+                        "# Replace `sorted(..., key=lambda item: item.priority)` registry traversal with an MRO/subclass traversal owned by the nominal hierarchy."
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(priority_sites),
+                        field_count=len(priority_sites),
+                        mapping_name=indexed_class.simple_name,
+                        field_names=("priority",),
+                    ),
+                )
+            )
+        return findings
+
+    def _priority_sites(
+        self,
+        class_index: ClassFamilyIndex,
+        indexed_class: IndexedClass,
+    ) -> tuple[SourceLocation, ...]:
+        symbols = (
+            indexed_class.symbol,
+            *class_index.descendant_symbols(indexed_class.symbol),
+        )
+        sites: list[SourceLocation] = []
+        for symbol in symbols:
+            candidate = class_index.class_for(symbol)
+            if candidate is None:
+                continue
+            line = _class_level_assignment_line(candidate.node, "priority")
+            if line is None:
+                continue
+            sites.append(SourceLocation(candidate.file_path, line, candidate.simple_name))
+        return tuple(sites)
+
+    @staticmethod
+    def _sorts_registry_by_priority(node: ast.ClassDef) -> bool:
+        return any(
+            _call_sorts_registry_by_priority(child)
+            for child in _walk_nodes(node)
+            if isinstance(child, ast.Call)
+        )
+
+
+def _class_level_assignment_line(node: ast.ClassDef, name: str) -> int | None:
+    for statement in node.body:
+        if isinstance(statement, ast.AnnAssign) and name_id(statement.target) == name:
+            return statement.lineno
+        if isinstance(statement, ast.Assign) and any(
+            name_id(target) == name for target in statement.targets
+        ):
+            return statement.lineno
+    return None
+
+
+def _call_sorts_registry_by_priority(call: ast.Call) -> bool:
+    if name_id(call.func) != "sorted":
+        return False
+    if not any(_node_mentions_registry(node) for node in call.args):
+        return False
+    return any(
+        keyword.arg == "key"
+        and keyword.value is not None
+        and _node_mentions_priority_attribute(keyword.value)
+        for keyword in call.keywords
+    )
+
+
+def _node_mentions_registry(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Attribute) and child.attr == "__registry__"
+        for child in _walk_nodes(node)
+    )
+
+
+def _node_mentions_priority_attribute(node: ast.AST) -> bool:
+    return any(
+        isinstance(child, ast.Attribute) and child.attr == "priority"
+        for child in _walk_nodes(node)
+    )
+
+
 class EnumKeyedTableClassAxisShadowDetector(
     ModuleCollectorCandidateDetector[EnumKeyedTableClassAxisShadowCandidate]
 ):

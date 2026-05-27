@@ -5248,6 +5248,28 @@ def test_autoregister_rent_counts_inherited_registry_config(
     )
 
 
+def test_detects_autoregister_family_priority_axis_ordering(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass SourcePathExclusion(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "policy_key"\n    __skip_if_no_key__ = True\n    policy_key: ClassVar[str | None] = None\n    priority: ClassVar[int]\n\n    @classmethod\n    def ordered(cls):\n        return tuple(\n            sorted(\n                cls.__registry__.values(),\n                key=lambda policy_type: policy_type.priority,\n            )\n        )\n\n    @abstractmethod\n    def excludes(self, path):\n        raise NotImplementedError\n\n\nclass ControlDirectoryExclusion(SourcePathExclusion):\n    policy_key = "control_directory"\n    priority = 10\n\n    def excludes(self, path):\n        return False\n\n\nclass NestedPipelineRootExclusion(SourcePathExclusion):\n    policy_key = "nested_pipeline_root"\n    priority = 20\n\n    def excludes(self, path):\n        return False\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "autoregister_explicit_priority_ordering"
+    )
+
+    assert "SourcePathExclusion" in finding.summary
+    assert "priority" in finding.summary
+    assert "MRO" in finding.title
+    assert "__subclasses__" in (finding.scaffold or "")
+    assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
+
+
 def test_ignores_autoregister_root_owning_registry_config(
     tmp_path: Path,
 ) -> None:
