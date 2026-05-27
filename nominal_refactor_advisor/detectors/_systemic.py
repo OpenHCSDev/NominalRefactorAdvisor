@@ -2298,7 +2298,11 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
             priority_sites = self._priority_sites(class_index, indexed_class)
             if not priority_sites:
                 continue
-            if not self._sorts_registry_by_priority(node):
+            if not self._sorts_registry_by_priority(
+                indexed_class.simple_name,
+                node,
+                modules,
+            ):
                 continue
             findings.append(
                 self.build_finding(
@@ -2356,10 +2360,19 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
         return tuple(sites)
 
     @staticmethod
-    def _sorts_registry_by_priority(node: ast.ClassDef) -> bool:
+    def _sorts_registry_by_priority(
+        root_name: str,
+        node: ast.ClassDef,
+        modules: list[ParsedModule],
+    ) -> bool:
         return any(
-            _call_sorts_registry_by_priority(child)
+            _call_sorts_registry_by_priority(child, root_name)
             for child in _walk_nodes(node)
+            if isinstance(child, ast.Call)
+        ) or any(
+            _call_sorts_registry_by_priority(child, root_name)
+            for module in modules
+            for child in _walk_nodes(module.module)
             if isinstance(child, ast.Call)
         )
 
@@ -2375,10 +2388,10 @@ def _class_level_assignment_line(node: ast.ClassDef, name: str) -> int | None:
     return None
 
 
-def _call_sorts_registry_by_priority(call: ast.Call) -> bool:
+def _call_sorts_registry_by_priority(call: ast.Call, root_name: str) -> bool:
     if name_id(call.func) != "sorted":
         return False
-    if not any(_node_mentions_registry(node) for node in call.args):
+    if not any(_node_mentions_registry(node, root_name) for node in call.args):
         return False
     return any(
         keyword.arg == "key"
@@ -2388,11 +2401,13 @@ def _call_sorts_registry_by_priority(call: ast.Call) -> bool:
     )
 
 
-def _node_mentions_registry(node: ast.AST) -> bool:
-    return any(
-        isinstance(child, ast.Attribute) and child.attr == "__registry__"
-        for child in _walk_nodes(node)
-    )
+def _node_mentions_registry(node: ast.AST, root_name: str) -> bool:
+    for child in _walk_nodes(node):
+        if not isinstance(child, ast.Attribute) or child.attr != "__registry__":
+            continue
+        if isinstance(child.value, ast.Name) and child.value.id in {"cls", root_name}:
+            return True
+    return False
 
 
 def _node_mentions_priority_attribute(node: ast.AST) -> bool:

@@ -5270,6 +5270,25 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
 
 
+def test_detects_external_autoregister_registry_priority_sort(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass CandidateProvider(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "provider_key"\n    __skip_if_no_key__ = True\n    provider_key: ClassVar[str | None] = None\n    priority: ClassVar[int]\n\n    @abstractmethod\n    def available(self, request):\n        raise NotImplementedError\n\n\nclass ProviderDiscovery:\n    def provider(self, request):\n        for provider_type in sorted(\n            CandidateProvider.__registry__.values(),\n            key=lambda registered_type: registered_type.priority,\n        ):\n            provider = provider_type()\n            if provider.available(request):\n                return provider\n        raise RuntimeError\n\n\nclass MetadataProvider(CandidateProvider):\n    provider_key = "metadata"\n    priority = 10\n\n    def available(self, request):\n        return False\n\n\nclass LocalProvider(CandidateProvider):\n    provider_key = "local"\n    priority = 100\n\n    def available(self, request):\n        return True\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "autoregister_explicit_priority_ordering"
+    )
+
+    assert "CandidateProvider" in finding.summary
+    assert "priority" in finding.summary
+
+
 def test_ignores_autoregister_root_owning_registry_config(
     tmp_path: Path,
 ) -> None:
