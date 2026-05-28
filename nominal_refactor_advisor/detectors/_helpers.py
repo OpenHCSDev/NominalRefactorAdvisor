@@ -2598,7 +2598,12 @@ def _mirrored_registry_candidates(
             continue
         dict_attrs = _collect_dict_attrs(node)
         mirrored_pairs = _collect_mirrored_assignments(node)
-        if len(dict_attrs) < 2 or not mirrored_pairs:
+        mirrored_attr_names = {label for _, label in mirrored_pairs}
+        if (
+            len(dict_attrs) < 2
+            or len(mirrored_attr_names) < 2
+            or not mirrored_attr_names <= dict_attrs
+        ):
             continue
         candidates.append((str(module.path), node.name, tuple(mirrored_pairs)))
     return tuple(candidates)
@@ -3706,6 +3711,23 @@ def _is_direct_dataclass_product_family(
     )
 
 
+def _has_imported_keyed_registration_base(
+    indexed_class: IndexedClass,
+    *,
+    key_attr_names: tuple[str, ...],
+) -> bool:
+    if not any((name.startswith("_") for name in key_attr_names)):
+        return False
+    nominal_base_names = tuple(
+        (
+            base_name
+            for base_name in CLASS_NODE_AUTHORITY.declared_base_names(indexed_class.node)
+            if base_name not in _IGNORED_BASE_NAMES
+        )
+    )
+    return bool(nominal_base_names and not indexed_class.resolved_base_symbols)
+
+
 def _semantic_inheritance_family_ssot_candidates(
     modules: list[ParsedModule], config: DetectorConfig
 ) -> tuple[SemanticInheritanceFamilySSOTCandidate, ...]:
@@ -3750,6 +3772,10 @@ def _semantic_inheritance_family_ssot_candidates(
                 concrete_descendants
             )
         )
+        if _has_imported_keyed_registration_base(
+            indexed_class, key_attr_names=key_attr_names
+        ):
+            continue
         if _is_direct_dataclass_product_family(
             indexed_class,
             concrete_descendants,

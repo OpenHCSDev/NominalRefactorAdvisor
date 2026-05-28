@@ -1941,6 +1941,214 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         return findings
 
 
+_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS = (
+    CapabilityTag.FAIL_LOUD_CONTRACTS,
+    CapabilityTag.PROVENANCE,
+)
+_PARTIAL_VIEW_BRANCH_DISPATCH_OBSERVATION_TAGS = (
+    ObservationTag.PARTIAL_VIEW,
+    ObservationTag.BRANCH_DISPATCH,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class FailSoftFallbackCandidate:
+    file_path: str
+    line: int
+    symbol: str
+    fallback_kind: str
+    expression: str
+
+
+class _FailSoftFallbackVisitor(ast.NodeVisitor):
+    def __init__(self, file_path: str) -> None:
+        self.file_path = file_path
+        self.symbol_stack: list[str] = []
+        self.candidates: list[FailSoftFallbackCandidate] = []
+
+    @property
+    def symbol(self) -> str:
+        return ".".join(self.symbol_stack) if self.symbol_stack else "<module>"
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.symbol_stack.append(node.name)
+        self._visit_statement_sequence(node.body)
+        self.symbol_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self.visit_FunctionDef(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.symbol_stack.append(node.name)
+        self._visit_statement_sequence(node.body)
+        self.symbol_stack.pop()
+
+    def _visit_statement_sequence(self, statements: list[ast.stmt]) -> None:
+        for index, statement in enumerate(statements):
+            if isinstance(statement, ast.If):
+                self._record_guarded_broadening_return(statement, statements[index + 1 :])
+            self.visit(statement)
+
+    def visit_If(self, node: ast.If) -> None:
+        self._visit_statement_sequence(node.body)
+        self._visit_statement_sequence(node.orelse)
+        self.visit(node.test)
+
+    def visit_Try(self, node: ast.Try) -> None:
+        for handler in node.handlers:
+            if self._handler_returns_soft_fallback(handler):
+                self._record(
+                    handler,
+                    "exception-handler fallback",
+                    self._statement_text(handler.body[0]) if handler.body else "",
+                )
+        self._visit_statement_sequence(node.body)
+        for handler in node.handlers:
+            self._visit_statement_sequence(handler.body)
+        self._visit_statement_sequence(node.orelse)
+        self._visit_statement_sequence(node.finalbody)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        if isinstance(node.value, ast.BoolOp) and isinstance(node.value.op, ast.Or):
+            values = node.value.values
+            if len(values) >= 2 and self._looks_like_fallback_expr(values[-1]):
+                self._record(node, "or-expression fallback", ast.unparse(node.value))
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        if isinstance(node.value, ast.BoolOp) and isinstance(node.value.op, ast.Or):
+            values = node.value.values
+            if len(values) >= 2 and self._looks_like_fallback_expr(values[-1]):
+                self._record(node, "or-assignment fallback", ast.unparse(node.value))
+        self.generic_visit(node)
+
+    def _record_guarded_broadening_return(
+        self, node: ast.If, following: list[ast.stmt]
+    ) -> None:
+        narrowed_returns = tuple(
+            name
+            for statement in node.body
+            for name in (self._returned_name(statement),)
+            if name and self._looks_narrow_name(name)
+        )
+        if not narrowed_returns:
+            return
+        broad_returns = tuple(
+            name
+            for statement in following[:2]
+            for name in (self._returned_name(statement),)
+            if name and not self._looks_narrow_name(name)
+        )
+        if broad_returns:
+            self._record(
+                node,
+                "guarded narrow return followed by broad return",
+                f"{narrowed_returns[0]} -> {broad_returns[0]}",
+            )
+
+    def _handler_returns_soft_fallback(self, handler: ast.ExceptHandler) -> bool:
+        if handler.type is None:
+            return False
+        handled_names = set(self._exception_type_names(handler.type))
+        if not handled_names & {"TypeError", "RuntimeError", "ValueError", "KeyError"}:
+            return False
+        return any(
+            isinstance(statement, ast.Return) and statement.value is not None
+            for statement in handler.body
+        )
+
+    def _exception_type_names(self, node: ast.AST) -> tuple[str, ...]:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (node.attr,)
+        if isinstance(node, ast.Tuple):
+            return tuple(
+                name
+                for element in node.elts
+                for name in self._exception_type_names(element)
+            )
+        return ()
+
+    def _returned_name(self, statement: ast.stmt) -> str | None:
+        if not isinstance(statement, ast.Return):
+            return None
+        return self._expr_name(statement.value)
+
+    def _expr_name(self, node: ast.AST | None) -> str | None:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            return node.attr
+        return None
+
+    def _looks_narrow_name(self, name: str) -> bool:
+        lowered = name.lower()
+        return any(
+            token in lowered
+            for token in ("scoped", "selected", "filtered", "resolved", "narrow")
+        )
+
+    def _looks_like_fallback_expr(self, node: ast.AST) -> bool:
+        text = ast.unparse(node).lower()
+        return any(
+            token in text
+            for token in ("fallback", "default", "records", "tables", "input_plan")
+        )
+
+    def _statement_text(self, statement: ast.stmt) -> str:
+        return ast.unparse(statement)
+
+    def _record(self, node: ast.AST, fallback_kind: str, expression: str) -> None:
+        self.candidates.append(
+            FailSoftFallbackCandidate(
+                file_path=self.file_path,
+                line=getattr(node, "lineno", 0),
+                symbol=self.symbol,
+                fallback_kind=fallback_kind,
+                expression=expression,
+            )
+        )
+
+
+class FailSoftFallbackDetector(PerModuleIssueDetector):
+    detector_id = "fail_soft_fallback"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Fail-soft fallback should become a fail-loud resolution contract",
+        "A scoped or compatibility-specific resolution path falls back to a broader path after the code has already observed missing, conflicting, or unhandled evidence. That hides contract mismatches and lets stale or unscoped values stand in for authoritative resolution.",
+        "explicit fail-loud resolution contract with provenance-bearing miss/conflict cases",
+        "same local resolution path accepts a narrow candidate and then silently broadens to fallback data",
+        _FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+        _PARTIAL_VIEW_BRANCH_DISPATCH_OBSERVATION_TAGS,
+    )
+    detector_priority = 5
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        visitor = _FailSoftFallbackVisitor(str(module.path))
+        visitor.visit(module.module)
+        findings: list[RefactorFinding] = []
+        for candidate in visitor.candidates:
+            findings.append(
+                self.build_finding(
+                    (
+                        f"{candidate.symbol} uses {candidate.fallback_kind}: "
+                        f"{candidate.expression}"
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.file_path,
+                            candidate.line,
+                            candidate.symbol,
+                        ),
+                    ),
+                )
+            )
+        return findings
+
+
 declare_typed_observation_detector(
     "ManualVirtualMembershipDetector",
     finding_spec_template(
