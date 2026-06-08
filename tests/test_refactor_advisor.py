@@ -6480,6 +6480,81 @@ def test_ignores_nonmirrored_import_fallback(tmp_path: Path) -> None:
     )
 
 
+def test_detects_mirrored_constructor_validation(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/execution_args.py",
+        '\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ExecutionArgs:\n    start_limit: int | None\n    constraint_start: int\n    constraint_limit: int | None\n    objective_start: int\n    objective_limit: int | None\n\n\nclass ExecutionArgumentAuthority:\n    @staticmethod\n    def optional_nonnegative_int(name, value):\n        return value\n\n    @staticmethod\n    def required_nonnegative_int(name, value):\n        return value\n\n    @classmethod\n    def resolve(\n        cls,\n        start_limit,\n        constraint_start,\n        constraint_limit,\n        objective_start,\n        objective_limit,\n    ):\n        return ExecutionArgs(\n            start_limit=cls.optional_nonnegative_int("start_limit", start_limit),\n            constraint_start=cls.required_nonnegative_int("constraint_start", constraint_start),\n            constraint_limit=cls.optional_nonnegative_int("constraint_limit", constraint_limit),\n            objective_start=cls.required_nonnegative_int("objective_start", objective_start),\n            objective_limit=cls.optional_nonnegative_int("objective_limit", objective_limit),\n        )\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "mirrored_constructor_validation"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "ExecutionArgs" in finding.summary
+    assert "source names and validators" in finding.summary
+    assert "dataclass field metadata" in (finding.codemod_patch or "")
+
+
+def test_detects_unclassified_runtime_fallbacks(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        "\nclass Runtime:\n    def resolve(self, payload, source):\n        first = payload.get('first', 0)\n        second = getattr(source, 'second', None)\n        third = first if first is not None else 0\n        fourth = source.value or False\n        return first, second, third, fourth\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "unclassified_runtime_fallback"
+        )
+    )
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "Runtime.resolve" in finding.summary
+    assert "mapping_get_default" in finding.summary
+    assert "getattr_default" in finding.summary
+    assert "fail_loud" in (finding.codemod_patch or "")
+
+
+def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef materialize(runtime_policy_action, materialization_requests):\n    if "materialize_post_repair_local_cover" in materialization_requests:\n        return runtime_policy_action.local_cover()\n    if "materialize_uncovered_domain" in materialization_requests:\n        return runtime_policy_action.uncovered_domain()\n    if runtime_policy_action.frontier_repair_enabled:\n        return runtime_policy_action.frontier_repair()\n    return runtime_policy_action.default_result()\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "runtime_semantic_branch_chain"
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "materialize" in finding.summary
+    assert "materialization_requests" in finding.summary
+    assert "formal policy/profile authority" in (finding.codemod_patch or "")
+
+
+def test_runtime_semantic_branch_chain_ignores_validation_guards(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/validation.py",
+        "\ndef validate(value):\n    if value is None:\n        return None\n    if value < 0:\n        raise ValueError(value)\n    return value\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        (
+            finding.detector_id == "runtime_semantic_branch_chain"
+            for finding in findings
+        )
+    )
+
+
 def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

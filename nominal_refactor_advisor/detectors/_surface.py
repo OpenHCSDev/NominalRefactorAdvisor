@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from ._base import *
 from ._helpers import *
-from ._helpers import _derived_query_index_candidates
+from ._helpers import (
+    _derived_query_index_candidates,
+    _keyword_bag_adapter_candidates,
+)
 
 
 class ManualFamilyRosterDetector(IssueDetector):

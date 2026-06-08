@@ -6,6 +6,7 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 
 from __future__ import annotations
 
+import ast
 import copy
 
 from ..semantic_algebra import ObjectFamilyShape
@@ -19,7 +20,10 @@ from ..record_algebra import (
 
 from ._base import *
 from ._helpers import *
-from ._helpers import _semantic_inheritance_family_ssot_candidates
+from ._helpers import (
+    _autoregister_meta_rent_candidates,
+    _semantic_inheritance_family_ssot_candidates,
+)
 
 
 class _ReplacementShapeRole:
@@ -230,6 +234,517 @@ class LiteralDispatchFindingFactory:
 
 
 LITERAL_DISPATCH_FINDING_FACTORY = LiteralDispatchFindingFactory()
+
+
+def _mirrored_validation_call(value: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(value, ast.Call) or len(value.args) < 2:
+        return None
+    literal = value.args[0]
+    source = value.args[1]
+    if not isinstance(literal, ast.Constant) or not isinstance(literal.value, str):
+        return None
+    if not isinstance(source, ast.Name):
+        return None
+    if literal.value != source.id:
+        return None
+    return literal.value, ast.unparse(value.func)
+
+
+def _constructor_name(value: ast.AST) -> str:
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        owner = _constructor_name(value.value)
+        return f"{owner}.{value.attr}" if owner else value.attr
+    return ""
+
+
+def _literal_default_kind(value: ast.AST) -> str | None:
+    if isinstance(value, ast.Constant):
+        if value.value is None:
+            return "none"
+        if isinstance(value.value, bool):
+            return "bool"
+        if isinstance(value.value, (int, float, complex, str, bytes)):
+            return type(value.value).__name__
+    if isinstance(value, ast.List) and not value.elts:
+        return "empty_list"
+    if isinstance(value, ast.Tuple) and not value.elts:
+        return "empty_tuple"
+    if isinstance(value, ast.Dict) and not value.keys:
+        return "empty_dict"
+    if isinstance(value, ast.Set) and not value.elts:
+        return "empty_set"
+    return None
+
+
+def _call_fallback_kind(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Name):
+        if node.func.id == "getattr" and len(node.args) >= 3:
+            return "getattr_default"
+        if node.func.id == "next" and len(node.args) >= 2:
+            return "next_default"
+    if isinstance(node.func, ast.Attribute):
+        if node.func.attr == "get" and len(node.args) >= 2:
+            return "mapping_get_default"
+        if node.func.attr == "setdefault":
+            return "mapping_setdefault"
+    if any((keyword.arg == "default" for keyword in node.keywords)):
+        return "keyword_default"
+    return None
+
+
+def _default_ifexp_kind(node: ast.IfExp) -> str | None:
+    if (kind := _literal_default_kind(node.orelse)) is not None:
+        return f"ifexp_else_{kind}"
+    if (kind := _literal_default_kind(node.body)) is not None:
+        return f"ifexp_body_{kind}"
+    return None
+
+
+def _boolop_default_kind(node: ast.BoolOp) -> str | None:
+    if not isinstance(node.op, ast.Or):
+        return None
+    literal_kinds = tuple(
+        kind
+        for value in node.values[1:]
+        for kind in (_literal_default_kind(value),)
+        if kind is not None
+    )
+    if not literal_kinds:
+        return None
+    return "or_default_" + "_".join(sorted_tuple(set(literal_kinds)))
+
+
+def _fallback_owner(
+    class_stack: Sequence[str],
+    function_stack: Sequence[str],
+) -> str:
+    owner_parts = (*tuple(class_stack), *tuple(function_stack))
+    return ".".join(owner_parts) if owner_parts else "module"
+
+
+class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
+    detector_id = "unclassified_runtime_fallback"
+    finding_spec = high_confidence_spec(
+        PatternId.LOCAL_VALUE_AUTHORITY,
+        "Runtime fallback/default sites should be classified at the formal boundary",
+        "Fallback/default operators in runtime code can silently choose behavior when required semantics are missing. They should either be Lean-declared defaults, explicit cache-miss semantics, diagnostic-only behavior, or fail-loud errors.",
+        "each runtime fallback is classified as theorem-backed default, cache miss, diagnostic-only, or hard failure",
+        "owner contains fallback/default operators that hide missing values locally",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        minimum = max(3, config.min_builder_keywords)
+        sites_by_owner: dict[str, list[tuple[int, str]]] = {}
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            traverse_class_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+            traverse_function_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+
+            def _record(self, node: ast.AST, fallback_kind: str) -> None:
+                owner = _fallback_owner(self.class_stack, self.function_stack)
+                sites_by_owner.setdefault(owner, []).append(
+                    (int(getattr(node, "lineno", 1)), fallback_kind)
+                )
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if (fallback_kind := _call_fallback_kind(node)) is not None:
+                    self._record(node, fallback_kind)
+                self.generic_visit(node)
+
+            def visit_IfExp(self, node: ast.IfExp) -> None:
+                if (fallback_kind := _default_ifexp_kind(node)) is not None:
+                    self._record(node, fallback_kind)
+                self.generic_visit(node)
+
+            def visit_BoolOp(self, node: ast.BoolOp) -> None:
+                if (fallback_kind := _boolop_default_kind(node)) is not None:
+                    self._record(node, fallback_kind)
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        findings: list[RefactorFinding] = []
+        for owner, sites in sorted(sites_by_owner.items()):
+            if len(sites) < minimum:
+                continue
+            fallback_kinds = sorted_tuple({kind for _line, kind in sites})
+            evidence = tuple(
+                SourceLocation(str(module.path), line, f"{owner}:{kind}")
+                for line, kind in sites[: min(len(sites), 12)]
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{owner}` has {len(sites)} unclassified runtime "
+                        f"fallback/default sites: {', '.join(fallback_kinds)}."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        "class RuntimeFallbackClassification:\n"
+                        "    source: str\n"
+                        "    kind: Literal['lean_default', 'cache_miss', "
+                        "'diagnostic_only', 'fail_loud']\n"
+                        "    theorem: str | None = None"
+                    ),
+                    codemod_patch=(
+                        f"# Classify fallback/default sites in `{owner}`.\n"
+                        "# Replace unclassified fallback operators with a "
+                        "Lean-declared default lookup, explicit cache miss branch, "
+                        "diagnostic-only path, or a fail_loud hard error."
+                    ),
+                    metrics=DispatchCountMetrics(dispatch_site_count=len(sites)),
+                    capability_gap=(
+                        "no unclassified runtime fallback/default operator remains"
+                    ),
+                )
+            )
+        return findings
+
+
+_RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
+    (
+        "action",
+        "basis",
+        "budget",
+        "certified",
+        "contact",
+        "family",
+        "frontier",
+        "kind",
+        "lean",
+        "materialization",
+        "mode",
+        "policy",
+        "profile",
+        "projection",
+        "repair",
+        "request",
+        "residual",
+        "runtime",
+        "selection",
+        "semantic",
+        "source",
+        "theorem",
+    )
+)
+
+
+def _runtime_semantic_identifier_tokens(text: str) -> tuple[str, ...]:
+    normalized = "".join(
+        (character.lower() if character.isalnum() else "_")
+        for character in text
+    )
+    return tuple((token for token in normalized.split("_") if token))
+
+
+def _runtime_semantic_axis_is_interesting(axis_expression: str) -> bool:
+    tokens = set(_runtime_semantic_identifier_tokens(axis_expression))
+    return bool(tokens & _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
+
+
+def _runtime_semantic_branch_test(
+    test: ast.AST,
+) -> tuple[str, str] | None:
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        inner = _runtime_semantic_branch_test(test.operand)
+        if inner is None:
+            return None
+        axis_expression, case_expression = inner
+        return axis_expression, f"not {case_expression}"
+
+    if isinstance(test, ast.Compare) and len(test.ops) == 1 and test.comparators:
+        operator = test.ops[0]
+        comparator = test.comparators[0]
+        if isinstance(operator, (ast.In, ast.NotIn)):
+            axis_expression = ast.unparse(comparator)
+            case_expression = ast.unparse(test.left)
+            if _runtime_semantic_axis_is_interesting(axis_expression):
+                return axis_expression, case_expression
+        if isinstance(operator, (ast.Eq, ast.Is)):
+            left_expression = ast.unparse(test.left)
+            comparator_expression = ast.unparse(comparator)
+            if _literal_default_kind(comparator) is not None:
+                if _runtime_semantic_axis_is_interesting(left_expression):
+                    return left_expression, comparator_expression
+            if _literal_default_kind(test.left) is not None:
+                if _runtime_semantic_axis_is_interesting(comparator_expression):
+                    return comparator_expression, left_expression
+            if _runtime_semantic_axis_is_interesting(left_expression):
+                return left_expression, comparator_expression
+
+    if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
+        axis_expression = ast.unparse(test)
+        if _runtime_semantic_axis_is_interesting(axis_expression):
+            return axis_expression, "truthy"
+
+    if isinstance(test, ast.BoolOp):
+        for value in test.values:
+            branch_test = _runtime_semantic_branch_test(value)
+            if branch_test is not None:
+                return branch_test
+
+    return None
+
+
+def _runtime_semantic_elif_chain(
+    statement: ast.stmt,
+) -> tuple[tuple[int, str, str], ...]:
+    if not isinstance(statement, ast.If):
+        return ()
+    chain: list[tuple[int, str, str]] = []
+    current: ast.If | None = statement
+    while current is not None:
+        branch_test = _runtime_semantic_branch_test(current.test)
+        if branch_test is None:
+            return ()
+        axis_expression, case_expression = branch_test
+        chain.append((current.lineno, axis_expression, case_expression))
+        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+            current = current.orelse[0]
+            continue
+        current = None
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+def _runtime_semantic_sequential_guard_chain(
+    body: Sequence[ast.stmt],
+    start: int,
+) -> tuple[tuple[int, str, str], ...]:
+    chain: list[tuple[int, str, str]] = []
+    index = start
+    while index < len(body):
+        statement = body[index]
+        if not isinstance(statement, ast.If) or statement.orelse:
+            break
+        branch_test = _runtime_semantic_branch_test(statement.test)
+        if branch_test is None:
+            break
+        axis_expression, case_expression = branch_test
+        chain.append((statement.lineno, axis_expression, case_expression))
+        index += 1
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+def _runtime_semantic_branch_chains_from_body(
+    body: Sequence[ast.stmt],
+) -> tuple[tuple[tuple[int, str, str], ...], ...]:
+    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    chains: list[tuple[tuple[int, str, str], ...]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for index, statement in enumerate(trimmed_body):
+        for chain in (
+            _runtime_semantic_elif_chain(statement),
+            _runtime_semantic_sequential_guard_chain(trimmed_body, index),
+        ):
+            if not chain:
+                continue
+            line_key = tuple((line for line, _axis, _case in chain))
+            if line_key in seen:
+                continue
+            seen.add(line_key)
+            chains.append(chain)
+
+        nested_bodies: list[Sequence[ast.stmt]] = []
+        for attr_name in ("body", "orelse", "finalbody"):
+            nested = getattr(statement, attr_name, None)
+            if isinstance(nested, list):
+                nested_bodies.append(nested)
+        if isinstance(statement, ast.Try):
+            nested_bodies.extend(handler.body for handler in statement.handlers)
+        if isinstance(statement, ast.Match):
+            nested_bodies.extend(match_case.body for match_case in statement.cases)
+        for nested_body in nested_bodies:
+            chains.extend(_runtime_semantic_branch_chains_from_body(nested_body))
+
+    return tuple(chains)
+
+
+class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
+    detector_id = "runtime_semantic_branch_chain"
+    finding_spec = high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Runtime semantic if-chain should move behind a formal policy authority",
+        "Branch chains over runtime policy, source, projection, materialization, theorem, or repair axes encode operational semantics in local Python control flow. The formal boundary should own those cases and expose one declared policy/profile result.",
+        "single formal policy authority owns each runtime semantic branch axis",
+        "same runtime semantic axis is selected through a local if/elif or guard chain",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        minimum = max(2, min(config.min_builder_keywords, 3))
+        findings: list[RefactorFinding] = []
+        for qualname, function in _iter_named_functions(module):
+            for chain in _runtime_semantic_branch_chains_from_body(function.body):
+                if len(chain) < minimum:
+                    continue
+                axis_names = sorted_tuple({axis for _line, axis, _case in chain})
+                case_names = tuple((case for _line, _axis, case in chain))
+                axis_summary = ", ".join(axis_names[:3])
+                case_summary = ", ".join(case_names[:4])
+                evidence = tuple(
+                    SourceLocation(
+                        str(module.path),
+                        line,
+                        f"{qualname}:{axis_expression}:{case_expression}",
+                    )
+                    for line, axis_expression, case_expression in chain[:6]
+                )
+                findings.append(
+                    self.build_finding(
+                        (
+                            f"`{qualname}` keeps a {len(chain)}-branch runtime "
+                            f"semantic if-chain over {axis_summary} with cases "
+                            f"{case_summary}."
+                        ),
+                        evidence,
+                        scaffold=(
+                            "class RuntimeSemanticPolicy(ABC):\n"
+                            "    @abstractmethod\n"
+                            "    def materialize(self, source): ...\n\n"
+                            "# Generate or load the concrete policy from the formal runtime profile;\n"
+                            "# Python should consume the selected policy result, not branch on the cases."
+                        ),
+                        codemod_patch=(
+                            f"# Replace the runtime semantic branch chain in `{qualname}` with one "
+                            "formal policy/profile authority.\n"
+                            "# Move case membership, precedence, and default behavior into the Lean-backed "
+                            "runtime profile and make this Python site consume the declared result."
+                        ),
+                        metrics=BranchCountMetrics(branch_site_count=len(chain)),
+                        capability_gap=(
+                            "runtime semantic branch cases are declared by the formal policy boundary"
+                        ),
+                    )
+                )
+        return findings
+
+
+class MirroredConstructorValidationDetector(PerModuleIssueDetector):
+    detector_id = "mirrored_constructor_validation"
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Mirrored constructor validators should move into the record schema",
+        "A constructor call that fills several fields by calling validators with a string literal copy of the source variable keeps field identity in multiple places. The schema/record field declaration should own the source name and materializer once.",
+        "single authoritative record-field schema with source and validator metadata",
+        "constructor keyword fields mirror validation source names at the callsite",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        minimum = max(config.min_builder_keywords, 4)
+        findings: list[RefactorFinding] = []
+        detector = self
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            traverse_class_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+            traverse_function_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+
+            def visit_Call(self, node: ast.Call) -> None:
+                mirrored = tuple(
+                    (
+                        keyword.arg,
+                        validation_source,
+                        validator_name,
+                    )
+                    for keyword in node.keywords
+                    if keyword.arg is not None
+                    for validation_source, validator_name in (
+                        (_mirrored_validation_call(keyword.value) or (None, None)),
+                    )
+                    if validation_source is not None and validator_name is not None
+                )
+                if len(mirrored) >= minimum:
+                    constructor = _constructor_name(node.func)
+                    owner = ".".join(
+                        (
+                            *tuple(self.class_stack),
+                            *tuple(self.function_stack),
+                            constructor or "constructor",
+                        )
+                    ) or (constructor or "constructor")
+                    output_fields = tuple(str(item[0]) for item in mirrored)
+                    source_fields = tuple(str(item[1]) for item in mirrored)
+                    validators = sorted_tuple({str(item[2]) for item in mirrored})
+                    findings.append(
+                        detector.build_finding(
+                            (
+                                f"`{owner}` mirrors {len(mirrored)} constructor "
+                                f"validation sources for `{constructor}`; move "
+                                "source names and validators onto the record schema."
+                            ),
+                            (
+                                SourceLocation(
+                                    str(module.path),
+                                    int(getattr(node, "lineno", 1)),
+                                    owner,
+                                ),
+                            ),
+                            relation_context=(
+                                "one constructor call repeats source-name literals "
+                                "beside same-named source variables"
+                            ),
+                            scaffold=(
+                                "@dataclass(frozen=True)\n"
+                                "class Record:\n"
+                                "    field_name: object = field(\n"
+                                "        metadata={'source': 'source_name', "
+                                "'materializer': validate_source}\n"
+                                "    )\n\n"
+                                "def materialize_record(source):\n"
+                                "    return Record(**{\n"
+                                "        field.name: field.metadata['materializer'](\n"
+                                "            field.metadata['source'], "
+                                "source[field.metadata['source']]\n"
+                                "        )\n"
+                                "        for field in dataclasses.fields(Record)\n"
+                                "    })"
+                            ),
+                            codemod_patch=(
+                                f"# Collapse mirrored constructor validation for "
+                                f"`{constructor}` into dataclass field metadata or "
+                                "one authoritative spec row per output field.\n"
+                                "# Delete callsite pairs of "
+                                "`validator('source_name', source_name)` once the "
+                                "record schema materializes itself from a source map."
+                            ),
+                            metrics=MappingMetrics.from_field_names(
+                                mapping_site_count=len(mirrored),
+                                mapping_name=constructor,
+                                field_names=output_fields,
+                                source_name=owner,
+                                identity_field_names=source_fields,
+                            ),
+                            capability_gap=(
+                                "one schema-owned source/materializer declaration "
+                                "per output field"
+                            ),
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        return findings
 
 
 class RepeatedBuilderCallDetector(IssueDetector):
