@@ -189,6 +189,7 @@ EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
+PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
 UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
@@ -3406,6 +3407,27 @@ def test_detects_fail_soft_effect_pipeline(tmp_path: Path) -> None:
     assert "Maybe" in (finding.scaffold or "")
     assert "EffectStep" in (finding.scaffold or "")
     assert "nominal `EffectStep` subclasses" in (finding.codemod_patch or "")
+
+
+def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass UnsafeRequest:\n    _handler_impl: object\n    payload: object\n\n\n@dataclass(frozen=True)\nclass SafeRequest:\n    handler_runtime: HandlerRuntime\n",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID
+        )
+    )
+
+    assert "UnsafeRequest" in finding.summary
+    assert "_handler_impl" in finding.summary
+    assert "SafeRequest" not in finding.summary
 
 
 def test_detects_short_fail_soft_effect_pipeline(tmp_path: Path) -> None:

@@ -324,6 +324,138 @@ def _fallback_owner(
     return ".".join(owner_parts) if owner_parts else "module"
 
 
+_PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS = frozenset(
+    (
+        "callback",
+        "callable",
+        "executor",
+        "function",
+        "handler",
+        "impl",
+        "materializer",
+        "predicate",
+        "provider",
+        "resolver",
+        "runtime",
+    )
+)
+
+
+def _private_boundary_identifier_tokens(text: str) -> tuple[str, ...]:
+    normalized = "".join(
+        (character.lower() if character.isalnum() else "_")
+        for character in text
+    )
+    return tuple((token for token in normalized.split("_") if token))
+
+
+def _is_exact_object_annotation(annotation: ast.AST) -> bool:
+    return (
+        isinstance(annotation, ast.Name)
+        and annotation.id == "object"
+    ) or (
+        isinstance(annotation, ast.Attribute)
+        and annotation.attr == "object"
+    )
+
+
+def _is_dataclass_declaration(node: ast.ClassDef) -> bool:
+    return any(
+        (
+            SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator)
+            or (
+                isinstance(decorator, ast.Call)
+                and SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(
+                    decorator.func
+                )
+            )
+        )
+        for decorator in node.decorator_list
+    )
+
+
+def _private_object_boundary_fields(
+    module: ParsedModule,
+) -> dict[str, list[tuple[int, str]]]:
+    fields_by_class: dict[str, list[tuple[int, str]]] = {}
+    for node in module.module.body:
+        if not isinstance(node, ast.ClassDef) or not _is_dataclass_declaration(node):
+            continue
+        for statement in node.body:
+            if not isinstance(statement, ast.AnnAssign) or not isinstance(
+                statement.target,
+                ast.Name,
+            ):
+                continue
+            field_name = statement.target.id
+            if not field_name.startswith("_"):
+                continue
+            if not _is_exact_object_annotation(statement.annotation):
+                continue
+            field_tokens = frozenset(_private_boundary_identifier_tokens(field_name))
+            if not (field_tokens & _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS):
+                continue
+            fields_by_class.setdefault(node.name, []).append(
+                (int(getattr(statement, "lineno", node.lineno)), field_name)
+            )
+    return fields_by_class
+
+
+class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
+    detector_id = "private_object_boundary_field"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Private object-typed boundary field should become a typed authority",
+        "A private dataclass field annotated as `object` and named like an executable/runtime boundary hides both ownership and callable shape. That lets local Python closures cross request boundaries without static evidence.",
+        "nominal typed authority or protocol field for each executable/runtime boundary",
+        "dataclass request boundary stores a private executable/runtime field as `object`",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for class_name, fields in sorted(_private_object_boundary_fields(module).items()):
+            field_names = tuple(field_name for _line, field_name in fields)
+            evidence = tuple(
+                SourceLocation(str(module.path), line, f"{class_name}.{field_name}")
+                for line, field_name in fields
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{class_name}` stores private runtime boundary field(s) "
+                        f"{field_names} as untyped `object`."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        "class BoundaryRuntime:\n"
+                        "    def execute(self, request: BoundaryRequest) -> BoundaryResult: ...\n\n"
+                        "@dataclass(frozen=True)\n"
+                        "class Request:\n"
+                        "    boundary_runtime: BoundaryRuntime"
+                    ),
+                    codemod_patch=(
+                        f"# Replace private object boundary fields on `{class_name}` "
+                        "with a named typed authority/protocol field. Do not pass "
+                        "private closures through request dataclasses."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=len(field_names),
+                        mapping_name=class_name,
+                        field_names=field_names,
+                    ),
+                )
+            )
+        return findings
+
+
 class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
     detector_id = "unclassified_runtime_fallback"
     finding_spec = high_confidence_spec(
