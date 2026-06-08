@@ -585,7 +585,7 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        minimum = max(2, min(config.min_builder_keywords, 3))
+        minimum = 2
         findings: list[RefactorFinding] = []
         for qualname, function in _iter_named_functions(module):
             for chain in _runtime_semantic_branch_chains_from_body(function.body):

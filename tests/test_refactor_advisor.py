@@ -6538,6 +6538,27 @@ def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
     assert "formal policy/profile authority" in (finding.codemod_patch or "")
 
 
+def test_detects_two_case_runtime_semantic_branch_chain_at_builder_threshold(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef materialize(materialization_request, runtime_policy_action):\n    if materialization_request == "local_cover":\n        return runtime_policy_action.local_cover()\n    if materialization_request == "frontier":\n        return runtime_policy_action.frontier()\n    return runtime_policy_action.default_result()\n',
+    )
+    findings = analyze_path(tmp_path, DetectorConfig(min_builder_keywords=3))
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "runtime_semantic_branch_chain"
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "2-branch runtime semantic if-chain" in finding.summary
+    assert "formal policy/profile authority" in (finding.codemod_patch or "")
+
+
 def test_runtime_semantic_branch_chain_ignores_validation_guards(
     tmp_path: Path,
 ) -> None:
