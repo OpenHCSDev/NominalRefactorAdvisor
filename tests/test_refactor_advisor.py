@@ -6576,6 +6576,24 @@ def test_runtime_semantic_branch_chain_ignores_validation_guards(
     )
 
 
+def test_detects_runtime_authority_branch_semantics(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        "\nclass CompositeRigidLocalCoverSourceIndicesAuthority:\n    @staticmethod\n    def indices(output_indices, coords):\n        if output_indices is not None:\n            return tuple(output_indices)\n        if coords is None:\n            return None\n        return range(len(coords))\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path, DetectorConfig(min_builder_keywords=3))
+            if finding.detector_id == "runtime_authority_branch_semantics"
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "CompositeRigidLocalCoverSourceIndicesAuthority.indices" in finding.summary
+    assert "formal policy/profile authority" in (finding.codemod_patch or "")
+
+
 def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

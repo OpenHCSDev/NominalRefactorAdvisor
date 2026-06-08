@@ -633,6 +633,190 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
         return findings
 
 
+def _direct_terminal_return(
+    body: Sequence[ast.stmt],
+) -> ast.Return | None:
+    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    if not trimmed_body:
+        return None
+    statement = trimmed_body[-1]
+    if not isinstance(statement, ast.Return):
+        return None
+    return statement
+
+
+def _return_expression_is_literal_default(statement: ast.Return) -> bool:
+    return statement.value is not None and _literal_default_kind(statement.value) is not None
+
+
+def _runtime_authority_return_guard_chain_from_elif(
+    statement: ast.stmt,
+) -> tuple[tuple[int, str, str, bool], ...]:
+    if not isinstance(statement, ast.If):
+        return ()
+    chain: list[tuple[int, str, str, bool]] = []
+    current: ast.If | None = statement
+    while current is not None:
+        branch_return = _direct_terminal_return(current.body)
+        if branch_return is None:
+            return ()
+        chain.append(
+            (
+                current.lineno,
+                ast.unparse(current.test),
+                ast.unparse(branch_return.value) if branch_return.value is not None else "None",
+                _return_expression_is_literal_default(branch_return),
+            )
+        )
+        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+            current = current.orelse[0]
+            continue
+        current = None
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+def _runtime_authority_return_guard_chain_from_sequence(
+    body: Sequence[ast.stmt],
+    start: int,
+) -> tuple[tuple[int, str, str, bool], ...]:
+    chain: list[tuple[int, str, str, bool]] = []
+    index = start
+    while index < len(body):
+        statement = body[index]
+        if not isinstance(statement, ast.If) or statement.orelse:
+            break
+        branch_return = _direct_terminal_return(statement.body)
+        if branch_return is None:
+            break
+        chain.append(
+            (
+                statement.lineno,
+                ast.unparse(statement.test),
+                ast.unparse(branch_return.value) if branch_return.value is not None else "None",
+                _return_expression_is_literal_default(branch_return),
+            )
+        )
+        index += 1
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+def _runtime_authority_return_guard_chains_from_body(
+    body: Sequence[ast.stmt],
+) -> tuple[tuple[tuple[int, str, str, bool], ...], ...]:
+    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    chains: list[tuple[tuple[int, str, str, bool], ...]] = []
+    seen: set[tuple[int, ...]] = set()
+
+    for index, statement in enumerate(trimmed_body):
+        for chain in (
+            _runtime_authority_return_guard_chain_from_elif(statement),
+            _runtime_authority_return_guard_chain_from_sequence(trimmed_body, index),
+        ):
+            if not chain:
+                continue
+            if not any(is_literal_default for _line, _test, _result, is_literal_default in chain):
+                continue
+            line_key = tuple((line for line, _test, _result, _default in chain))
+            if line_key in seen:
+                continue
+            seen.add(line_key)
+            chains.append(chain)
+
+        nested_bodies: list[Sequence[ast.stmt]] = []
+        for attr_name in ("body", "orelse", "finalbody"):
+            nested = getattr(statement, attr_name, None)
+            if isinstance(nested, list):
+                nested_bodies.append(nested)
+        if isinstance(statement, ast.Try):
+            nested_bodies.extend(handler.body for handler in statement.handlers)
+        if isinstance(statement, ast.Match):
+            nested_bodies.extend(match_case.body for match_case in statement.cases)
+        for nested_body in nested_bodies:
+            chains.extend(_runtime_authority_return_guard_chains_from_body(nested_body))
+
+    return tuple(chains)
+
+
+def _runtime_authority_name_is_interesting(text: str) -> bool:
+    if _runtime_semantic_axis_is_interesting(text):
+        return True
+    normalized = text.lower()
+    return any(
+        (token in normalized for token in _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
+    )
+
+
+class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
+    detector_id = "runtime_authority_branch_semantics"
+    finding_spec = high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Runtime authority return guards should move behind a formal policy authority",
+        "An Authority method that chooses between runtime values and missing/default returns is still encoding operational semantics in Python. The formal boundary should own the branch cases and expose one declared policy/profile result.",
+        "runtime authority return-guard choices are declared by the formal policy boundary",
+        "an Authority method contains return guards with local missing/default semantics",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for qualname, function in _iter_named_functions(module):
+            if "." not in qualname:
+                continue
+            owner_name = qualname.rsplit(".", 1)[0]
+            if "Authority" not in owner_name:
+                continue
+            if not _runtime_authority_name_is_interesting(
+                f"{owner_name}.{function.name}"
+            ):
+                continue
+            for chain in _runtime_authority_return_guard_chains_from_body(function.body):
+                test_summary = ", ".join(
+                    (test_expression for _line, test_expression, _result, _default in chain[:3])
+                )
+                result_summary = ", ".join(
+                    (result_expression for _line, _test, result_expression, _default in chain[:3])
+                )
+                evidence = tuple(
+                    SourceLocation(
+                        str(module.path),
+                        line,
+                        f"{qualname}:{test_expression}->{result_expression}",
+                    )
+                    for line, test_expression, result_expression, _default in chain[:6]
+                )
+                findings.append(
+                    self.build_finding(
+                        (
+                            f"`{qualname}` keeps {len(chain)} runtime authority "
+                            f"return guards ({test_summary}) selecting "
+                            f"{result_summary}."
+                        ),
+                        evidence,
+                        scaffold=(
+                            "class RuntimeAuthorityPolicy(ABC):\n"
+                            "    @abstractmethod\n"
+                            "    def select(self, source): ...\n\n"
+                            "# Generate or load the concrete selector from the formal runtime profile;\n"
+                            "# Python should consume the selected value, not branch on missing/default cases."
+                        ),
+                        codemod_patch=(
+                            f"# Replace return guards in `{qualname}` with one formal "
+                            "policy/profile authority.\n"
+                            "# Move case precedence and missing/default behavior into the Lean-backed "
+                            "runtime profile and make this authority a thin adapter over that result."
+                        ),
+                        metrics=BranchCountMetrics(branch_site_count=len(chain)),
+                        capability_gap=(
+                            "Authority method missing/default branch semantics are formal-boundary owned"
+                        ),
+                    )
+                )
+        return findings
+
+
 class MirroredConstructorValidationDetector(PerModuleIssueDetector):
     detector_id = "mirrored_constructor_validation"
     finding_spec = high_confidence_certified_spec(
