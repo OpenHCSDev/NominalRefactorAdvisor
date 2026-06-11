@@ -188,6 +188,7 @@ def _function_local_semantic_dict_bag_candidates(
     assignments: dict[str, tuple[int, dict[str, ast.AST]]] = {}
     local_annotations: dict[str, str] = {}
     accessed_keys: dict[str, set[str]] = defaultdict(set)
+    first_access_lines: dict[str, int] = {}
     serialization_boundary_names: set[str] = set()
     candidates: list[SemanticDictBagCandidate] = []
 
@@ -228,6 +229,7 @@ def _function_local_semantic_dict_bag_candidates(
                 key_name = _string_slice_name(node.slice)
                 if key_name is not None:
                     accessed_keys[node.value.id].add(key_name)
+                    first_access_lines.setdefault(node.value.id, node.lineno)
             self.generic_visit(node)
 
         def visit_Call(self, node: ast.Call) -> None:
@@ -244,6 +246,7 @@ def _function_local_semantic_dict_bag_candidates(
                 key_name = _constant_string(node.args[0])
                 if key_name is not None:
                     accessed_keys[node.func.value.id].add(key_name)
+                    first_access_lines.setdefault(node.func.value.id, node.lineno)
             self.generic_visit(node)
 
         def visit_Return(self, node: ast.Return) -> None:
@@ -298,6 +301,29 @@ def _function_local_semantic_dict_bag_candidates(
                 symbol=f"{owner_symbol}:{name}",
                 key_names=sorted_tuple(touched_keys),
                 context_kind="local_string_key_bag",
+                recommendation=recommendation,
+            )
+        )
+    if _function_name_marks_serialization_boundary(function_node.name):
+        return candidates
+    parameter_names = _FunctionSignatureView(function_node).explicit_parameter_names
+    for name in sorted(parameter_names & accessed_keys.keys()):
+        if name in serialization_boundary_names or name in assignments:
+            continue
+        touched_keys = sorted_tuple(accessed_keys[name])
+        if len(touched_keys) < 2:
+            continue
+        recommendation = _recommend_string_key_carrier_record(
+            touched_keys,
+            owner_symbol=owner_symbol,
+            variable_name=name,
+        )
+        candidates.append(
+            SemanticDictBagCandidate(
+                line=first_access_lines.get(name, function_node.lineno),
+                symbol=f"{owner_symbol}:{name}",
+                key_names=touched_keys,
+                context_kind="parameter_string_key_contract",
                 recommendation=recommendation,
             )
         )
@@ -453,6 +479,33 @@ def _recommend_return_record_dataclass(
         field_type_overrides=_field_type_overrides_from_local_annotations(
             key_names, value_nodes, local_annotations or {}
         ),
+    )
+    return SemanticDataclassRecommendation.proposed_schema(
+        class_name,
+        "object",
+        None,
+        rationale,
+        scaffold,
+    )
+
+
+def _recommend_string_key_carrier_record(
+    key_names: tuple[str, ...],
+    owner_symbol: str,
+    variable_name: str,
+) -> SemanticDataclassRecommendation:
+    class_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.suggest_dataclass_name(
+        f"{owner_symbol}:{variable_name}", "Payload"
+    )
+    rationale = (
+        f"Create `{class_name}` because `{variable_name}` is treated as a fixed "
+        "semantic payload through repeated string-key access."
+    )
+    scaffold = HELPER_SUPPORT_PROJECTION_AUTHORITY.declaration_scaffold(
+        class_name,
+        "object",
+        key_names,
+        {},
     )
     return SemanticDataclassRecommendation.proposed_schema(
         class_name,

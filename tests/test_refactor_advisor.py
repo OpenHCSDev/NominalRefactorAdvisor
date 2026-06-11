@@ -7384,6 +7384,45 @@ def test_return_dict_record_scaffold_uses_local_annotations(tmp_path: Path) -> N
     assert "skipped_files: List[Path]" in (finding.scaffold or "")
 
 
+def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef render_layer(payload):\n    layer_name = payload["layer_name"]\n    image_data = payload.get("image_data")\n    display = payload.get("display_type")\n    return (layer_name, image_data, display)\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "semantic_dict_bag"
+        )
+    )
+
+    assert "parameter string key contract" in finding.relation_context
+    assert "display_type" in finding.summary
+    assert "image_data" in finding.summary
+    assert "layer_name" in finding.summary
+    assert "Payload" in (finding.scaffold or "")
+
+
+def test_parameter_string_key_payload_requires_multiple_fields(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef read_optional(payload):\n    return payload.get("layer_name")\n',
+    )
+
+    assert not any(
+        (
+            finding.detector_id == "semantic_dict_bag"
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_ignores_to_dict_return_dict_serialization_boundary(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
