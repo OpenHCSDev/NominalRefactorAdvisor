@@ -387,6 +387,53 @@ class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
     )
 
 
+class BranchClusterUnderAbstractionDetector(
+    CandidateFindingDetector[FunctionProfile]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.STAGED_ORCHESTRATION,
+        "Branch cluster should be split into nominal stages",
+        "A function can be under-abstracted even when it is not a full orchestration hub: many local branches mean multiple semantic cases or phases are being owned by one procedural surface. The normal form is named stages, nominal authorities, or strategy variants that each own one case family.",
+        "nominal stage or authority boundaries instead of one branch-heavy owner",
+        "one function concentrates many branch sites even without satisfying the larger orchestration-hub shape",
+        _SHARED_ALGORITHM_AUTHORITY_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return tuple(
+            (
+                profile
+                for profile in _function_profiles(module)
+                if profile.line_count >= config.min_branch_cluster_function_lines
+                and profile.branch_count >= config.min_branch_cluster_branches
+            )
+        )
+
+    finding_renderer = CandidateFindingRenderer[FunctionProfile](
+        summary=lambda profile: f"`{profile.qualname}` has {profile.branch_count} branch sites over {profile.line_count} lines; split the case/phase surface behind nominal authorities before adding more conditions.",
+        evidence=lambda profile: (profile.evidence,),
+        scaffold=lambda profile: (
+            f"class {profile.qualname.split('.')[-1].title().replace('_', '')}Stage(ABC):\n"
+            "    @abstractmethod\n"
+            "    def run(self, context): ...\n\n"
+            "# Move each branch family into a named stage/authority; callers compose stages instead of branching inline."
+        ),
+        codemod_patch=lambda profile: (
+            f"# Extract branch families from `{profile.qualname}` into named stage or authority classes.\n"
+            "# Keep the original function as a thin coordinator that delegates through typed contracts."
+        ),
+        metrics=lambda profile: OrchestrationMetrics(
+            function_line_count=profile.line_count,
+            branch_site_count=profile.branch_count,
+            call_site_count=profile.call_count,
+            parameter_count=len(profile.parameter_names),
+            callee_family_count=profile.callee_family_count,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ClassRoleQuotientCandidate(ClassLineWitnessCandidate):
     method_count: int

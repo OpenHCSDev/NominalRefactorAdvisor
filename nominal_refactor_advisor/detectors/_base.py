@@ -455,6 +455,14 @@ class DetectorConfig:
         8,
         "Minimum AST matcher/effect-stage score before surfacing an EffectStep amortization finding.",
     )
+    min_branch_cluster_function_lines: int = detector_config_option(
+        80,
+        "Minimum function length before surfacing a branch-cluster under-abstraction finding.",
+    )
+    min_branch_cluster_branches: int = detector_config_option(
+        8,
+        "Minimum branch count before surfacing a branch-cluster under-abstraction finding.",
+    )
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
