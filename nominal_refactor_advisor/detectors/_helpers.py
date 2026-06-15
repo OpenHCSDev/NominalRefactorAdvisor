@@ -638,6 +638,7 @@ class HelperSupportProjectionAuthority:
                 and (
                     "AutoRegister" in base_name
                     or "Registered" in base_name
+                    or "StableKeyAxis" in base_name
                     or base_name.endswith("KeyFamily")
                 )
                 for base in node.bases
@@ -655,6 +656,9 @@ class HelperSupportProjectionAuthority:
         assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
         return "__registry__" in assignments and "__registry_key__" in assignments
 
+    def declares_stable_registry_axis_authority(self, node: ast.ClassDef) -> bool:
+        return "stable_key_axis" in CLASS_NODE_AUTHORITY.direct_assignments(node)
+
     def family_has_autoregister_authority(
         self, class_index: ClassFamilyIndex, indexed_class: IndexedClass
     ) -> bool:
@@ -666,6 +670,7 @@ class HelperSupportProjectionAuthority:
                     or self.declares_named_registration_authority(ancestor.node)
                     or self.inherits_named_registration_authority(ancestor.node)
                     or self.declares_registry_protocol_authority(ancestor.node)
+                    or self.declares_stable_registry_axis_authority(ancestor.node)
                 )
                 for ancestor in (
                     class_index.class_for(symbol)

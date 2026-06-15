@@ -5733,6 +5733,36 @@ def test_ignores_semantic_inheritance_family_with_inherited_registry_authority(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_stable_key_axis_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom framework import StableKeyAxisBase\n\n\nclass RuntimeOp(StableKeyAxisBase):\n    __registry_key__ = "kind"\n    stable_key_axis = __registry_key__\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeOp(RuntimeOp):\n    kind = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeOp(RuntimeOp):\n    kind = "beta"\n\n    def run(self, value):\n        return value\n',
+    )
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_ignores_semantic_inheritance_family_with_inherited_stable_axis_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass RuntimeOp:\n    __registry_key__ = "kind"\n    stable_key_axis = __registry_key__\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass NumericRuntimeOp(RuntimeOp):\n    def run(self, value):\n        return self.project(value)\n\n\nclass MinRuntimeOp(NumericRuntimeOp):\n    kind = "min"\n\n    def project(self, value):\n        return value\n\n\nclass MaxRuntimeOp(NumericRuntimeOp):\n    kind = "max"\n\n    def project(self, value):\n        return value\n',
+    )
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_ignores_semantic_inheritance_family_with_custom_registered_family_base(
     tmp_path: Path,
 ) -> None:
