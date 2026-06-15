@@ -5733,6 +5733,20 @@ def test_ignores_semantic_inheritance_family_with_inherited_registry_authority(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_custom_registered_family_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass DerivedRegisteredFamilyMeta(AutoRegisterMeta):\n    pass\n\n\nclass DerivedRegisteredFamily(ABC, metaclass=DerivedRegisteredFamilyMeta):\n    __registry_key__ = "derived_key"\n    __skip_if_no_key__ = True\n\n\nclass PayloadCarrier(DerivedRegisteredFamily):\n    def mapping(self):\n        return {}\n\n\nclass AlphaPayload(PayloadCarrier):\n    def mapping(self):\n        return {"case": "alpha"}\n\n\nclass BetaPayload(PayloadCarrier):\n    def mapping(self):\n        return {"case": "beta"}\n',
+    )
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_autoregister_meta_family_without_rent_proof(
     tmp_path: Path,
 ) -> None:

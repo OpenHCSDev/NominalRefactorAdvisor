@@ -617,7 +617,15 @@ class HelperSupportProjectionAuthority:
     def declares_autoregister_meta(self, node: ast.ClassDef) -> bool:
         return any(
             (
-                _ast_terminal_name(keyword.value) == "AutoRegisterMeta"
+                (metaclass_name := _ast_terminal_name(keyword.value)) is not None
+                and (
+                    metaclass_name == "AutoRegisterMeta"
+                    or metaclass_name.endswith("AutoRegisterMeta")
+                    or (
+                        "Registered" in metaclass_name
+                        and metaclass_name.endswith("Meta")
+                    )
+                )
                 for keyword in node.keywords
                 if keyword.arg == "metaclass"
             )
@@ -629,8 +637,7 @@ class HelperSupportProjectionAuthority:
                 (base_name := _ast_terminal_name(base)) is not None
                 and (
                     "AutoRegister" in base_name
-                    or base_name.startswith("Registered")
-                    or base_name.endswith("Registered")
+                    or "Registered" in base_name
                 )
                 for base in node.bases
             )
