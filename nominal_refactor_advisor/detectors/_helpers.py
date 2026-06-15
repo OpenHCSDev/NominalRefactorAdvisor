@@ -594,6 +594,10 @@ class HelperSupportProjectionAuthority:
             )
         )
 
+    def declares_registry_protocol_authority(self, node: ast.ClassDef) -> bool:
+        assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
+        return "__registry__" in assignments and "__registry_key__" in assignments
+
     def family_has_autoregister_authority(
         self, class_index: ClassFamilyIndex, indexed_class: IndexedClass
     ) -> bool:
@@ -603,6 +607,7 @@ class HelperSupportProjectionAuthority:
                 and (
                     self.declares_autoregister_meta(ancestor.node)
                     or self.inherits_named_registration_authority(ancestor.node)
+                    or self.declares_registry_protocol_authority(ancestor.node)
                 )
                 for ancestor in (
                     class_index.class_for(symbol)
@@ -4202,7 +4207,9 @@ def _constant_string_or_module_constant(
     if (string_value := _constant_string(node)) is not None:
         return string_value
     if isinstance(node, ast.Name):
-        return module_string_constants.get(node.id)
+        return module_string_constants.get(node.id) or node.id
+    if isinstance(node, ast.Attribute) and node.attr == "__registry_key__":
+        return node.attr
     return None
 
 
@@ -4210,15 +4217,23 @@ def _autoregister_registry_key_attr_name(
     module: ParsedModule,
     node: ast.ClassDef,
 ) -> str | None:
+    assignments = CLASS_NODE_AUTHORITY.direct_assignments(node)
     explicit_key = _constant_string_or_module_constant(
-        CLASS_NODE_AUTHORITY.direct_assignments(node).get("__registry_key__"),
+        assignments.get("__registry_key__"),
         _module_string_constant_assignments(module),
     )
     if explicit_key is not None:
         return explicit_key
-    registry_family = CLASS_NODE_AUTHORITY.direct_assignments(node).get(
-        "__registry_family__"
+    stable_key_axis = assignments.get("stable_key_axis")
+    if isinstance(stable_key_axis, ast.Name) and stable_key_axis.id == "__registry_key__":
+        return stable_key_axis.id
+    stable_key_name = _constant_string_or_module_constant(
+        stable_key_axis,
+        _module_string_constant_assignments(module),
     )
+    if stable_key_name is not None:
+        return stable_key_name
+    registry_family = assignments.get("__registry_family__")
     return _registry_family_key_attr_name(registry_family)
 
 
@@ -7059,6 +7074,12 @@ _ABCOptimizerLatticeEdgesByFamily: TypeAlias = dict[
 ]
 _ABCOptimizerClassItemsByBase: TypeAlias = dict[tuple[str, str], list[IndexedClass]]
 _ABCOptimizerMethodPlanKey: TypeAlias = tuple[str, tuple[str, ...]]
+_ABCOptimizerClassDeclarationFamiliesBySignature: TypeAlias = dict[
+    str, dict[str, tuple[IndexedClass, "_ABCOptimizerClassLevelDeclaration"]]
+]
+_ABCOptimizerClassDeclarationSignaturesByFamily: TypeAlias = dict[
+    tuple[str, ...], set[str]
+]
 
 
 # fmt: off
@@ -7069,6 +7090,7 @@ materialize_product_records((
     product_record_spec('_ABCOptimizerMethodPlan', 'base_symbol: str; base_name: str; method_name: str; class_methods: _ABCOptimizerClassMethods; profile: _ABCOptimizerMethodGroupProfile; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int'),
     product_record_spec('_ABCOptimizerResiduePlacement', 'abc_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; residue_count: int; shared_to_residue_ratio: float'),
     product_record_spec('_ABCOptimizerFamilyPlan', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; subclass_residue_count: int; shared_to_residue_ratio: float; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int'),
+    product_record_spec('_ABCOptimizerClassLevelDeclaration', 'name: str; signature: str; source: str; line: int; line_count: int'),
 ))
 # fmt: on
 
@@ -7433,8 +7455,253 @@ class ABCOptimizerAuthority:
             candidate.method_names,
         )
 
+    def class_level_declaration_candidates(
+        self, modules: Sequence[ParsedModule]
+    ) -> tuple[ClassLevelInheritanceOptimizationCandidate, ...]:
+        return _abc_optimizer_class_level_declaration_candidates(modules)
+
 
 ABC_OPTIMIZER_AUTHORITY = ABCOptimizerAuthority()
+
+
+def _abc_optimizer_class_declaration_line_count(statement: ast.stmt) -> int:
+    return max(1, (statement.end_lineno or statement.lineno) - statement.lineno + 1)
+
+
+def _abc_optimizer_class_declaration_metadata_name(
+    statement: ast.stmt,
+) -> tuple[str, ast.AST | None] | None:
+    if isinstance(statement, ast.Assign):
+        if len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+            return None
+        return statement.targets[0].id, None
+    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        return statement.target.id, statement.annotation
+    return None
+
+
+def _abc_optimizer_class_declaration_is_inheritable_metadata(
+    name: str, annotation: ast.AST | None
+) -> bool:
+    return (
+        (name.startswith("__") and name.endswith("__") and len(name) > 4)
+        or name.isupper()
+        or (
+            annotation is not None
+            and HELPER_SYNTAX_PROJECTION_AUTHORITY.is_classvar_annotation(annotation)
+        )
+    )
+
+
+def _abc_optimizer_class_declaration_signature(statement: ast.stmt) -> str | None:
+    metadata = _abc_optimizer_class_declaration_metadata_name(statement)
+    if metadata is None:
+        return None
+    name, annotation = metadata
+    if not _abc_optimizer_class_declaration_is_inheritable_metadata(name, annotation):
+        return None
+    if isinstance(statement, ast.Assign):
+        value_signature = ast.dump(statement.value, include_attributes=False)
+        return f"assign:{name}:{value_signature}"
+    if not isinstance(statement, ast.AnnAssign):
+        return None
+    annotation_signature = ast.dump(statement.annotation, include_attributes=False)
+    value_signature = (
+        ""
+        if statement.value is None
+        else ast.dump(statement.value, include_attributes=False)
+    )
+    return f"annassign:{name}:{annotation_signature}:{value_signature}"
+
+
+def _abc_optimizer_class_level_declaration(
+    statement: ast.stmt,
+) -> _ABCOptimizerClassLevelDeclaration | None:
+    metadata = _abc_optimizer_class_declaration_metadata_name(statement)
+    signature = _abc_optimizer_class_declaration_signature(statement)
+    if metadata is None or signature is None:
+        return None
+    name, _ = metadata
+    return _ABCOptimizerClassLevelDeclaration(
+        name=name,
+        signature=signature,
+        source=ast.unparse(statement),
+        line=statement.lineno,
+        line_count=_abc_optimizer_class_declaration_line_count(statement),
+    )
+
+
+def _abc_optimizer_class_level_declarations(
+    indexed_class: IndexedClass,
+) -> tuple[_ABCOptimizerClassLevelDeclaration, ...]:
+    declarations: list[_ABCOptimizerClassLevelDeclaration] = []
+    seen_signatures: set[str] = set()
+    for statement in _trim_docstring_body(indexed_class.node.body):
+        declaration = _abc_optimizer_class_level_declaration(statement)
+        if declaration is None or declaration.signature in seen_signatures:
+            continue
+        seen_signatures.add(declaration.signature)
+        declarations.append(declaration)
+    return tuple(declarations)
+
+
+def _abc_optimizer_class_declaration_families_by_signature(
+    class_index: ClassFamilyIndex,
+) -> _ABCOptimizerClassDeclarationFamiliesBySignature:
+    families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature = (
+        defaultdict(dict)
+    )
+    ordered_classes = sorted_tuple(
+        class_index.classes_by_symbol.values(),
+        key=lambda item: (item.file_path, item.line, item.symbol),
+    )
+    for indexed_class in ordered_classes:
+        for declaration in _abc_optimizer_class_level_declarations(indexed_class):
+            families_by_signature[declaration.signature][indexed_class.symbol] = (
+                indexed_class,
+                declaration,
+            )
+    return dict(families_by_signature)
+
+
+def _abc_optimizer_class_declaration_signatures_by_family(
+    families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature,
+) -> _ABCOptimizerClassDeclarationSignaturesByFamily:
+    signatures_by_family: _ABCOptimizerClassDeclarationSignaturesByFamily = (
+        defaultdict(set)
+    )
+    for signature, family in families_by_signature.items():
+        if len(family) < 2:
+            continue
+        class_symbols = sorted_tuple(family)
+        signatures_by_family[class_symbols].add(signature)
+    return dict(signatures_by_family)
+
+
+def _abc_optimizer_class_declaration_candidate_base_name(
+    class_names: tuple[str, ...], declaration_names: tuple[str, ...]
+) -> str:
+    family_prefix = (
+        HELPER_SUPPORT_PROJECTION_AUTHORITY.shared_family_name(class_names) or "Shared"
+    )
+    semantic_names = tuple(
+        name.strip("_")
+        for name in declaration_names
+        if name.strip("_") and not name.startswith("__")
+    )
+    semantic_suffix = (
+        "".join((_camel_case(name) for name in semantic_names[:2]))
+        if semantic_names
+        else "ClassDeclaration"
+    )
+    return f"{family_prefix}{semantic_suffix}Base"
+
+
+def _abc_optimizer_class_declaration_certificate(
+    *,
+    class_names: tuple[str, ...],
+    declaration_names: tuple[str, ...],
+    file_paths: tuple[str, ...],
+) -> CompressionCertificate | None:
+    certificate = CompressionCertificate.from_object_family(
+        manual_object_count=len(class_names) * len(declaration_names),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("inherited_base", "class_declaration_surface"),
+        ),
+        semantic_axes=(*class_names, *declaration_names),
+        independent_source_count=len(frozenset(file_paths)),
+    )
+    return certificate if certificate.pays_rent else None
+
+
+def _abc_optimizer_class_level_declaration_candidate(
+    class_symbols: tuple[str, ...],
+    declaration_signatures: tuple[str, ...],
+    families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature,
+) -> ClassLevelInheritanceOptimizationCandidate | None:
+    if len(class_symbols) < 2 or len(declaration_signatures) < 2:
+        return None
+    indexed_classes = tuple(
+        families_by_signature[declaration_signatures[0]][symbol][0]
+        for symbol in class_symbols
+    )
+    declarations = tuple(
+        families_by_signature[signature][class_symbols[0]][1]
+        for signature in declaration_signatures
+    )
+    class_names = tuple((indexed_class.simple_name for indexed_class in indexed_classes))
+    file_paths = tuple((indexed_class.file_path for indexed_class in indexed_classes))
+    line_numbers = tuple((indexed_class.line for indexed_class in indexed_classes))
+    declaration_names = tuple((declaration.name for declaration in declarations))
+    certificate = _abc_optimizer_class_declaration_certificate(
+        class_names=class_names,
+        declaration_names=declaration_names,
+        file_paths=file_paths,
+    )
+    if certificate is None:
+        return None
+    return ClassLevelInheritanceOptimizationCandidate(
+        file_path=file_paths[0],
+        line=min(line_numbers),
+        base_name=_abc_optimizer_class_declaration_candidate_base_name(
+            class_names, declaration_names
+        ),
+        class_names=class_names,
+        file_paths=file_paths,
+        line_numbers=line_numbers,
+        declaration_names=declaration_names,
+        declaration_signatures=declaration_signatures,
+        declaration_sources=tuple((declaration.source for declaration in declarations)),
+        line_count=sum((declaration.line_count for declaration in declarations))
+        * len(class_names),
+        compression_certificate=certificate,
+    )
+
+
+def _abc_optimizer_class_level_declaration_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[ClassLevelInheritanceOptimizationCandidate, ...]:
+    class_index = build_class_family_index(list(modules))
+    families_by_signature = _abc_optimizer_class_declaration_families_by_signature(
+        class_index
+    )
+    signatures_by_family = _abc_optimizer_class_declaration_signatures_by_family(
+        families_by_signature
+    )
+    candidates = tuple(
+        (
+            candidate
+            for class_symbols, signatures in signatures_by_family.items()
+            if (
+                candidate := _abc_optimizer_class_level_declaration_candidate(
+                    class_symbols,
+                    sorted_tuple(
+                        signatures,
+                        key=lambda signature: families_by_signature[signature][
+                            class_symbols[0]
+                        ][1].line,
+                    ),
+                    families_by_signature,
+                )
+            )
+            is not None
+        )
+    )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_name,
+            candidate.class_names,
+        ),
+    )
+
+
+def _class_level_inheritance_optimization_candidates_from_modules(
+    modules: Sequence[ParsedModule],
+) -> tuple[ClassLevelInheritanceOptimizationCandidate, ...]:
+    return ABC_OPTIMIZER_AUTHORITY.class_level_declaration_candidates(modules)
 
 
 def _abc_optimizer_family_certificate(
@@ -10432,6 +10699,7 @@ def _public_declaration_reference_names(
 def _under_amortized_infrastructure_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[UnderAmortizedInfrastructureCandidate, ...]:
+    class_index = build_class_family_index(list(modules))
     reference_sites = LOCAL_SYMBOL_REFERENCE_SITES.reference_sites(modules)
     candidates: list[UnderAmortizedInfrastructureCandidate] = []
     for module in modules:
@@ -10466,6 +10734,20 @@ def _under_amortized_infrastructure_candidates(
                 for support_name in refs
             )
         )
+
+        def declaration_descendant_fanout(name: str) -> int:
+            symbol = class_index.symbol_for(file_path=module_path, qualname=name)
+            if symbol is None:
+                return 0
+            return sum(
+                1
+                for descendant_symbol in class_index.descendant_symbols(symbol)
+                if (
+                    descendant := class_index.class_for(descendant_symbol)
+                ) is not None
+                and not CLASS_NODE_AUTHORITY.is_abstract(descendant.node)
+            )
+
         names = sorted_tuple(
             (
                 name
@@ -10473,6 +10755,7 @@ def _under_amortized_infrastructure_candidates(
                 if len(external_consumer_sites[name]) == 1
                 and _looks_like_infrastructure_declaration_name(name)
                 and name not in amortized_support_names
+                and declaration_descendant_fanout(name) < 2
             )
         )
         if not names:

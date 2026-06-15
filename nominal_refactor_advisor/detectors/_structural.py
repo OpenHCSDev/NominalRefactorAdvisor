@@ -33,7 +33,12 @@ from ..semantic_match import (
 )
 from ._base import *
 from ._helpers import *
-from ._helpers import _constant_property_hook_groups, _property_alias_hook_groups
+from ._helpers import (
+    _class_level_inheritance_optimization_candidates_from_modules,
+    _constant_property_hook_groups,
+    _property_alias_hook_groups,
+    _semantic_overlap_abc_optimization_candidates_from_modules,
+)
 from ._structural_step_regex_extractor import *
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
@@ -202,6 +207,38 @@ def _semantic_overlap_abc_residue_axis_scaffold(
         (f"    ResidueAxisRow(kind={kind!r})," for kind in candidate.residue_kind_names)
     )
     return f"ResidueAxisCatalog(\n{rows}\n)"
+
+
+def _class_level_inheritance_declaration_block(
+    candidate: ClassLevelInheritanceOptimizationCandidate,
+) -> str:
+    return "\n".join(
+        (
+            "    " + source.replace("\n", "\n    ")
+            for source in candidate.declaration_sources
+        )
+    )
+
+
+def _class_level_inheritance_optimization_scaffold(
+    candidate: ClassLevelInheritanceOptimizationCandidate,
+) -> str:
+    return (
+        f"class {candidate.base_name}(ABC):\n"
+        f"{_class_level_inheritance_declaration_block(candidate)}\n\n"
+        f"# Then make {', '.join(candidate.class_names)} inherit `{candidate.base_name}`\n"
+        "# and delete those declarations from the concrete classes."
+    )
+
+
+def _class_level_inheritance_optimization_patch(
+    candidate: ClassLevelInheritanceOptimizationCandidate,
+) -> str:
+    return (
+        f"# Extract repeated class-level declarations {candidate.declaration_names} "
+        f"from {candidate.class_names} into `{candidate.base_name}`.\n"
+        "# Leaves should inherit the shared declaration surface and keep only irreducible class-specific residue."
+    )
 
 
 from ._substrate_support import *
@@ -723,8 +760,8 @@ def _shared_field_base_name(class_names: tuple[str, ...]) -> str:
 class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]):
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
-        "Shared field family across sibling classes should move to an ABC base",
-        "The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative base rather than being duplicated in each leaf class.",
+        "Repeated field family indicates underleveraged inheritance",
+        "The docs treat repeated shared state components the same way as repeated shared algorithms: when the same field family is declared across sibling classes at the same structural execution level, the shared component should move to one authoritative inherited base rather than being duplicated in each leaf class.",
         "single authoritative state component for a nominal class family",
         "same field family repeats across sibling classes at one structural execution level",
         _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
@@ -753,7 +790,7 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]
             )
         )
         return self.build_finding(
-            f"Classes {', '.join(field_candidate.class_names)} repeat fields {field_candidate.field_names} at `{field_candidate.execution_level}`.",
+            f"Classes {', '.join(field_candidate.class_names)} underleverage inheritance by repeating fields {field_candidate.field_names} at `{field_candidate.execution_level}`.",
             evidence,
             relation_context=f"same field family repeats across sibling classes at `{field_candidate.execution_level}`",
             scaffold=_field_family_scaffold(field_candidate),
@@ -917,6 +954,38 @@ class ConstantPropertyHookDetector(
                 hook_group.class_names, hook_group.property_name
             ),
         )
+
+
+declare_candidate_rule_detector(
+    ClassLevelInheritanceOptimizationCandidate,
+    high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Repeated class declarations should move to an inherited base",
+        "Several classes repeat the same inheritable class-level declarations. That is class metadata surface area expressed at every leaf or sibling instead of being owned once by a nominal base in the MRO.",
+        "one inherited base owns the shared class declaration surface",
+        "same class-level declarations repeat across multiple nominal classes",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"Classes {candidate.class_names} repeat class-level declarations "
+        f"{candidate.declaration_names}; introduce `{candidate.base_name}` so the MRO owns "
+        f"the shared declaration surface once ({candidate.line_count} repeated line(s))."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=_class_level_inheritance_optimization_scaffold,
+    codemod_patch=_class_level_inheritance_optimization_patch,
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.class_names),
+        mapping_name=candidate.base_name,
+        field_names=candidate.declaration_names,
+    ),
+    detector_priority=-9,
+    detector_name="ClassLevelInheritanceOptimizationDetector",
+    detector_base=CrossModuleCollectorCandidateDetector,
+    candidate_collector=_class_level_inheritance_optimization_candidates_from_modules,
+)
 
 
 declare_candidate_rule_detector(

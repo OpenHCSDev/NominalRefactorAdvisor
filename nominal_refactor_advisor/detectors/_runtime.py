@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import ast
 import copy
+import os
+import re
+from dataclasses import dataclass
+from typing import Callable, Generic, TypeAlias, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
@@ -22,6 +26,7 @@ from ._base import *
 from ._helpers import *
 from ._helpers import (
     _autoregister_meta_rent_candidates,
+    _projection_helper_groups,
     _semantic_inheritance_family_ssot_candidates,
 )
 
@@ -30,6 +35,106 @@ class _ReplacementShapeRole:
     PROCESS_STAGE_PLAN = object()
     TEXT_REWRITE_PLAN = object()
     BLOCK_ALGEBRA = object()
+
+
+SemanticBranchObservation: TypeAlias = tuple[int, str, str]
+SemanticBranchChain: TypeAlias = tuple[SemanticBranchObservation, ...]
+SemanticBranchChains: TypeAlias = tuple[SemanticBranchChain, ...]
+ReturnGuardBranchObservation: TypeAlias = tuple[int, str, str, bool]
+ReturnGuardBranchChain: TypeAlias = tuple[ReturnGuardBranchObservation, ...]
+ReturnGuardBranchChains: TypeAlias = tuple[ReturnGuardBranchChain, ...]
+BranchObservationT = TypeVar("BranchObservationT")
+BranchChainPredicate: TypeAlias = Callable[[tuple[BranchObservationT, ...]], bool]
+BranchLineNumber: TypeAlias = Callable[[BranchObservationT], int]
+ElifBranchCollector: TypeAlias = Callable[
+    [ast.stmt],
+    tuple[BranchObservationT, ...],
+]
+SequentialBranchCollector: TypeAlias = Callable[
+    [Sequence[ast.stmt], int],
+    tuple[BranchObservationT, ...],
+]
+
+
+@dataclass(frozen=True)
+class BranchChainCollectionSpec(Generic[BranchObservationT]):
+    elif_chain: ElifBranchCollector[BranchObservationT]
+    sequential_guard_chain: SequentialBranchCollector[BranchObservationT]
+    branch_line_number: BranchLineNumber[BranchObservationT]
+    chain_is_active: BranchChainPredicate[BranchObservationT]
+
+
+def iter_nested_statement_bodies(statement: ast.stmt) -> tuple[Sequence[ast.stmt], ...]:
+    nested_bodies: list[Sequence[ast.stmt]] = []
+    if isinstance(
+        statement,
+        (
+            ast.AsyncFor,
+            ast.AsyncFunctionDef,
+            ast.AsyncWith,
+            ast.ClassDef,
+            ast.For,
+            ast.FunctionDef,
+            ast.If,
+            ast.While,
+            ast.With,
+        ),
+    ):
+        nested_bodies.append(statement.body)
+    if isinstance(statement, (ast.AsyncFor, ast.For, ast.If, ast.While)):
+        nested_bodies.append(statement.orelse)
+    if isinstance(statement, ast.Try):
+        nested_bodies.append(statement.body)
+        nested_bodies.append(statement.orelse)
+        nested_bodies.append(statement.finalbody)
+        nested_bodies.extend(handler.body for handler in statement.handlers)
+    if isinstance(statement, ast.Match):
+        nested_bodies.extend(match_case.body for match_case in statement.cases)
+    return tuple(nested_bodies)
+
+
+def branch_observation_first_line(observation: Sequence[object]) -> int:
+    line_number = observation[0]
+    if not isinstance(line_number, int):
+        raise TypeError("branch observation line number must be an int")
+    return line_number
+
+
+def all_branch_chains_active(chain: tuple[BranchObservationT, ...]) -> bool:
+    return True
+
+
+def return_guard_chain_has_literal_default(chain: ReturnGuardBranchChain) -> bool:
+    return any(
+        (is_literal_default for _line, _test, _result, is_literal_default in chain)
+    )
+
+
+def collect_nested_branch_chains_from_body(
+    body: Sequence[ast.stmt],
+    spec: BranchChainCollectionSpec[BranchObservationT],
+) -> tuple[tuple[BranchObservationT, ...], ...]:
+    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
+    chains: list[tuple[BranchObservationT, ...]] = []
+    seen: set[tuple[int, ...]] = set()
+    for index, statement in enumerate(trimmed_body):
+        for chain in (
+            spec.elif_chain(statement),
+            spec.sequential_guard_chain(trimmed_body, index),
+        ):
+            if not chain or not spec.chain_is_active(chain):
+                continue
+            line_key = tuple(
+                (spec.branch_line_number(observation) for observation in chain)
+            )
+            if line_key in seen:
+                continue
+            seen.add(line_key)
+            chains.append(chain)
+
+        for nested_body in iter_nested_statement_bodies(statement):
+            chains.extend(collect_nested_branch_chains_from_body(nested_body, spec))
+    return tuple(chains)
 
 
 _REPLACEMENT_SHAPE_ROWS = (
@@ -343,20 +448,72 @@ _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS = frozenset(
 
 def _private_boundary_identifier_tokens(text: str) -> tuple[str, ...]:
     normalized = "".join(
-        (character.lower() if character.isalnum() else "_")
-        for character in text
+        (character.lower() if character.isalnum() else "_") for character in text
     )
     return tuple((token for token in normalized.split("_") if token))
 
 
 def _is_exact_object_annotation(annotation: ast.AST) -> bool:
-    return (
-        isinstance(annotation, ast.Name)
-        and annotation.id == "object"
-    ) or (
-        isinstance(annotation, ast.Attribute)
-        and annotation.attr == "object"
+    return (isinstance(annotation, ast.Name) and annotation.id == "object") or (
+        isinstance(annotation, ast.Attribute) and annotation.attr == "object"
     )
+
+
+_OPAQUE_OBJECT_ANNOTATION_NAMES = frozenset(("Any", "object"))
+
+
+def _opaque_object_annotation_names(annotation: ast.AST) -> tuple[str, ...]:
+    names: list[str] = []
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            if node.id in _OPAQUE_OBJECT_ANNOTATION_NAMES:
+                names.append(node.id)
+            return
+        if isinstance(node, ast.Attribute):
+            if node.attr in _OPAQUE_OBJECT_ANNOTATION_NAMES:
+                names.append(node.attr)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(annotation)
+    return tuple(dict.fromkeys(names))
+
+
+def _has_opaque_object_annotation(annotation: ast.AST) -> bool:
+    return bool(_opaque_object_annotation_names(annotation))
+
+
+def _is_annotation_like_expression(node: ast.AST) -> bool:
+    if isinstance(node, (ast.Name, ast.Attribute)):
+        return True
+    if isinstance(node, ast.Constant):
+        return node.value in (None, Ellipsis)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_is_annotation_like_expression(element) for element in node.elts)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _is_annotation_like_expression(
+            node.left
+        ) and _is_annotation_like_expression(node.right)
+    if isinstance(node, ast.Subscript):
+        return _is_annotation_like_expression(
+            node.value
+        ) and _is_annotation_like_expression(node.slice)
+    if isinstance(node, ast.Slice):
+        return all(
+            (
+                bound is None or _is_annotation_like_expression(bound)
+                for bound in (node.lower, node.upper, node.step)
+            )
+        )
+    return False
+
+
+def _is_cast_call(node: ast.Call) -> bool:
+    if isinstance(node.func, ast.Name):
+        return node.func.id == "cast"
+    return isinstance(node.func, ast.Attribute) and node.func.attr == "cast"
 
 
 def _is_dataclass_declaration(node: ast.ClassDef) -> bool:
@@ -365,9 +522,7 @@ def _is_dataclass_declaration(node: ast.ClassDef) -> bool:
             SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator)
             or (
                 isinstance(decorator, ast.Call)
-                and SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(
-                    decorator.func
-                )
+                and SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator.func)
             )
         )
         for decorator in node.decorator_list
@@ -420,7 +575,9 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
     ) -> list[RefactorFinding]:
         del config
         findings: list[RefactorFinding] = []
-        for class_name, fields in sorted(_private_object_boundary_fields(module).items()):
+        for class_name, fields in sorted(
+            _private_object_boundary_fields(module).items()
+        ):
             field_names = tuple(field_name for _line, field_name in fields)
             evidence = tuple(
                 SourceLocation(str(module.path), line, f"{class_name}.{field_name}")
@@ -456,12 +613,1533 @@ class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
         return findings
 
 
+@dataclass(frozen=True)
+class OpaqueObjectAnnotationSite:
+    owner_name: str
+    member_name: str
+    role_name: str
+    line: int
+
+    @property
+    def symbol(self) -> str:
+        return f"{self.owner_name}.{self.member_name}"
+
+
+def _opaque_object_annotation_owner(
+    class_stack: Sequence[str],
+    function_stack: Sequence[str],
+) -> str:
+    owner_parts = (*tuple(class_stack), *tuple(function_stack))
+    return ".".join(owner_parts) if owner_parts else "module"
+
+
+def _opaque_object_annotation_sites(
+    module: ParsedModule,
+) -> dict[str, list[OpaqueObjectAnnotationSite]]:
+    sites_by_owner: dict[str, list[OpaqueObjectAnnotationSite]] = defaultdict(list)
+    class_stack: list[str] = []
+    function_stack: list[str] = []
+
+    def add_site(
+        owner_name: str,
+        member_name: str,
+        role_name: str,
+        line: int,
+    ) -> None:
+        sites_by_owner.setdefault(owner_name, []).append(
+            OpaqueObjectAnnotationSite(
+                owner_name=owner_name,
+                member_name=member_name,
+                role_name=role_name,
+                line=line,
+            )
+        )
+
+    def inspect_argument(
+        owner_name: str,
+        argument: ast.arg | None,
+        role_name: str,
+    ) -> None:
+        if argument is None or argument.arg in {"self", "cls"}:
+            return
+        if argument.annotation is None or not _has_opaque_object_annotation(
+            argument.annotation
+        ):
+            return
+        add_site(owner_name, argument.arg, role_name, int(argument.lineno))
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            class_stack.append(node.name)
+            self.generic_visit(node)
+            class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
+            function_owner_name = (
+                f"{owner_name}.{node.name}" if owner_name != "module" else node.name
+            )
+            if node.returns is not None and _has_opaque_object_annotation(node.returns):
+                add_site(function_owner_name, "return", "return", int(node.lineno))
+            for argument in (
+                *tuple(node.args.posonlyargs),
+                *tuple(node.args.args),
+                *tuple(node.args.kwonlyargs),
+            ):
+                inspect_argument(function_owner_name, argument, "parameter")
+            inspect_argument(function_owner_name, node.args.vararg, "vararg")
+            inspect_argument(function_owner_name, node.args.kwarg, "kwarg")
+            function_stack.append(node.name)
+            self.generic_visit(node)
+            function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if (
+                function_stack
+                or not isinstance(node.target, ast.Name)
+                or not _has_opaque_object_annotation(node.annotation)
+            ):
+                return
+            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
+            add_site(owner_name, node.target.id, "field", int(node.lineno))
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if function_stack:
+                self.generic_visit(node)
+                return
+            if not _is_annotation_like_expression(node.value):
+                self.generic_visit(node)
+                return
+            if not _has_opaque_object_annotation(node.value):
+                self.generic_visit(node)
+                return
+            owner_name = _opaque_object_annotation_owner(class_stack, function_stack)
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    add_site(owner_name, target.id, "type_alias", int(node.lineno))
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                _is_cast_call(node)
+                and node.args
+                and _has_opaque_object_annotation(node.args[0])
+            ):
+                owner_name = _opaque_object_annotation_owner(
+                    class_stack,
+                    function_stack,
+                )
+                add_site(owner_name, "cast", "cast", int(node.lineno))
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return sites_by_owner
+
+
+class OpaqueObjectAnnotationDetector(PerModuleIssueDetector):
+    detector_id = "opaque_object_annotation"
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Opaque object-like annotations should become nominal typed contracts",
+        "`object` or `Any` inside a boundary annotation gives the same operational permission as an untyped value: callers can pass any shape and failures move to late runtime paths. Boundary code should name the carrier, ABC, or authority it requires.",
+        "nominal dataclass/ABC/authority types at every boundary instead of opaque object-like annotations",
+        "field, parameter, return, alias, or cast annotations contain `object` or `Any`",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for owner_name, sites in sorted(
+            _opaque_object_annotation_sites(module).items()
+        ):
+            site_names = tuple(site.member_name for site in sites)
+            role_names = tuple(sorted_tuple({site.role_name for site in sites}))
+            evidence = tuple(
+                SourceLocation(str(module.path), site.line, site.symbol)
+                for site in sites[:8]
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{owner_name}` exposes opaque object-like annotations for "
+                        f"{site_names}; roles={role_names}."
+                    ),
+                    evidence,
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        "class BoundaryCarrier:\n"
+                        "    value: TypedPayload\n\n"
+                        "class BoundaryRuntime(ABC):\n"
+                        "    @abstractmethod\n"
+                        "    def execute(self, request: BoundaryCarrier) -> BoundaryResult:\n"
+                        "        raise NotImplementedError"
+                    ),
+                    codemod_patch=(
+                        f"# Replace opaque object-like annotations on `{owner_name}` "
+                        "with nominal carrier/ABC/authority types. If the value "
+                        "is polymorphic, make the abstract operation explicit on "
+                        "a nominal base class."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=len(sites),
+                        mapping_name=owner_name,
+                        field_names=site_names,
+                    ),
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class LiteralSchemaFieldAccess:
+    source_expression: str
+    key_name: str
+    line: int
+    access_kind: str
+
+
+@dataclass(frozen=True)
+class LiteralSchemaDispatchOwner:
+    qualname: str
+    source_expression: str
+    key_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    access_count: int
+
+
+@dataclass(frozen=True)
+class LiteralSchemaDispatchCandidate(LineWitnessCandidate):
+    function_names: tuple[str, ...]
+    source_expressions: tuple[str, ...]
+    key_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    access_count: int
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(
+            SourceLocation(self.file_path, line, function_name)
+            for line, function_name in zip(
+                self.line_numbers,
+                self.function_names,
+                strict=True,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class StringKeyedFormulaSubclassFamilyCandidate(LineWitnessCandidate):
+    base_class_name: str
+    key_attr_name: str
+    subclass_names: tuple[str, ...]
+    key_values: tuple[str, ...]
+    method_names: tuple[str, ...]
+    expression_snippets: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.base_class_name
+
+
+_STRING_KEYED_FORMULA_ATTR_RE = re.compile(r"^(?:kind|mode|.+_(?:kind|mode))$")
+_FORMULA_CALLEE_NAMES = frozenset(
+    (
+        "abs",
+        "all",
+        "any",
+        "argmax",
+        "argmin",
+        "array",
+        "asarray",
+        "clip",
+        "concatenate",
+        "count_nonzero",
+        "flatnonzero",
+        "max",
+        "mean",
+        "min",
+        "ones",
+        "prod",
+        "sum",
+        "where",
+        "zeros",
+    )
+)
+
+
+def _literal_string_key_assignments(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    for statement in node.body:
+        targets: tuple[ast.expr, ...]
+        value: ast.expr | None
+        if isinstance(statement, ast.Assign):
+            targets = tuple(statement.targets)
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = (statement.target,)
+            value = statement.value
+        else:
+            continue
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if _STRING_KEYED_FORMULA_ATTR_RE.match(target.id) is None:
+                continue
+            rows.append((target.id, value.value))
+    return tuple(rows)
+
+
+def _formula_callee_name(call: ast.Call) -> str | None:
+    name = _ast_terminal_name(call.func)
+    if name is not None:
+        return name
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _function_contains_formula_semantics(function: ast.FunctionDef) -> bool:
+    for node in ast.walk(function):
+        if isinstance(node, (ast.BinOp, ast.BoolOp, ast.Compare)):
+            return True
+        if isinstance(node, ast.Call):
+            callee_name = _formula_callee_name(node)
+            if callee_name in _FORMULA_CALLEE_NAMES:
+                return True
+    return False
+
+
+def _string_keyed_formula_methods(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, str], ...]:
+    rows: list[tuple[str, str]] = []
+    for statement in node.body:
+        if not isinstance(statement, ast.FunctionDef):
+            continue
+        if statement.name.startswith("__"):
+            continue
+        if not _function_contains_formula_semantics(statement):
+            continue
+        rows.append((statement.name, ast.unparse(statement)))
+    return tuple(rows)
+
+
+def _string_keyed_formula_subclass_family_candidates(
+    module: ParsedModule,
+) -> tuple[StringKeyedFormulaSubclassFamilyCandidate, ...]:
+    classes = {
+        node.name: node
+        for node in ast.walk(module.module)
+        if isinstance(node, ast.ClassDef)
+    }
+    grouped: dict[
+        tuple[str, str],
+        list[tuple[ast.ClassDef, str, tuple[tuple[str, str], ...]]],
+    ] = defaultdict(list)
+    for class_node in classes.values():
+        key_assignments = _literal_string_key_assignments(class_node)
+        method_rows = _string_keyed_formula_methods(class_node)
+        if not key_assignments or not method_rows:
+            continue
+        for base in class_node.bases:
+            base_name = _ast_terminal_name(base)
+            if base_name is None:
+                continue
+            for key_attr_name, key_value in key_assignments:
+                grouped[(base_name, key_attr_name)].append(
+                    (class_node, key_value, method_rows)
+                )
+    candidates: list[StringKeyedFormulaSubclassFamilyCandidate] = []
+    for (base_name, key_attr_name), rows in grouped.items():
+        if len(rows) < 2:
+            continue
+        method_names = sorted_tuple(
+            {
+                method_name
+                for _class_node, _key_value, method_rows in rows
+                for method_name, _method_source in method_rows
+            }
+        )
+        if method_names == ("eval",):
+            continue
+        base_line = classes.get(base_name).lineno if base_name in classes else rows[0][0].lineno
+        candidates.append(
+            StringKeyedFormulaSubclassFamilyCandidate(
+                file_path=str(module.path),
+                line=base_line,
+                base_class_name=base_name,
+                key_attr_name=key_attr_name,
+                subclass_names=tuple(class_node.name for class_node, _key, _methods in rows),
+                key_values=tuple(key_value for _class_node, key_value, _methods in rows),
+                method_names=method_names,
+                expression_snippets=tuple(
+                    method_source
+                    for _class_node, _key_value, method_rows in rows
+                    for _method_name, method_source in method_rows
+                )[:4],
+            )
+        )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.base_class_name,
+            candidate.key_attr_name,
+        ),
+    )
+
+
+_SCHEMA_FIELD_ACCESS_HELPER_TOKENS = frozenset(
+    (
+        "field",
+        "key",
+        "schema",
+    )
+)
+_SCHEMA_FIELD_ACCESS_INTENT_TOKENS = frozenset(
+    (
+        "extract",
+        "optional",
+        "read",
+        "required",
+        "resolve",
+        "validate",
+    )
+)
+_SCHEMA_MAPPING_METHOD_NAMES = frozenset(("get", "pop", "setdefault"))
+
+
+def _literal_schema_mapping_expression(node: ast.AST) -> str | None:
+    if isinstance(node, (ast.Name, ast.Attribute, ast.Subscript)):
+        return ast.unparse(node)
+    return None
+
+
+def _literal_schema_helper_call_looks_like_field_access(call_name: str) -> bool:
+    tokens = frozenset(_runtime_semantic_identifier_tokens(call_name))
+    return bool(tokens & _SCHEMA_FIELD_ACCESS_HELPER_TOKENS) and bool(
+        tokens & _SCHEMA_FIELD_ACCESS_INTENT_TOKENS
+    )
+
+
+def _literal_schema_field_access_from_call(
+    node: ast.Call,
+) -> LiteralSchemaFieldAccess | None:
+    if isinstance(node.func, ast.Attribute) and node.func.attr in (
+        _SCHEMA_MAPPING_METHOD_NAMES
+    ):
+        if not node.args:
+            return None
+        key_name = _constant_string(node.args[0])
+        source_expression = _literal_schema_mapping_expression(node.func.value)
+        if key_name is None or source_expression is None:
+            return None
+        return LiteralSchemaFieldAccess(
+            source_expression=source_expression,
+            key_name=key_name,
+            line=node.lineno,
+            access_kind=f"mapping_{node.func.attr}",
+        )
+
+    call_name = _call_name(node.func)
+    if (
+        call_name is None
+        or len(node.args) < 2
+        or not _literal_schema_helper_call_looks_like_field_access(call_name)
+    ):
+        return None
+    source_expression = _literal_schema_mapping_expression(node.args[0])
+    key_name = _constant_string(node.args[1])
+    if source_expression is None or key_name is None:
+        return None
+    return LiteralSchemaFieldAccess(
+        source_expression=source_expression,
+        key_name=key_name,
+        line=node.lineno,
+        access_kind="field_helper",
+    )
+
+
+def _literal_schema_field_access_from_subscript(
+    node: ast.Subscript,
+) -> LiteralSchemaFieldAccess | None:
+    key_name = _constant_string(node.slice)
+    source_expression = _literal_schema_mapping_expression(node.value)
+    if key_name is None or source_expression is None:
+        return None
+    return LiteralSchemaFieldAccess(
+        source_expression=source_expression,
+        key_name=key_name,
+        line=node.lineno,
+        access_kind="subscript",
+    )
+
+
+def _literal_schema_field_access_from_membership(
+    node: ast.Compare,
+) -> LiteralSchemaFieldAccess | None:
+    if len(node.ops) != 1 or len(node.comparators) != 1:
+        return None
+    if not isinstance(node.ops[0], (ast.In, ast.NotIn)):
+        return None
+    key_name = _constant_string(node.left)
+    source_expression = _literal_schema_mapping_expression(node.comparators[0])
+    if key_name is None or source_expression is None:
+        return None
+    return LiteralSchemaFieldAccess(
+        source_expression=source_expression,
+        key_name=key_name,
+        line=node.lineno,
+        access_kind="membership",
+    )
+
+
+def _literal_schema_dispatch_owners_for_function(
+    qualname: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    config: DetectorConfig,
+) -> tuple[LiteralSchemaDispatchOwner, ...]:
+    accesses_by_source: dict[str, list[LiteralSchemaFieldAccess]] = defaultdict(list)
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return None
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Call(self, node: ast.Call) -> None:
+            access = _literal_schema_field_access_from_call(node)
+            if access is not None:
+                accesses_by_source[access.source_expression].append(access)
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> None:
+            access = _literal_schema_field_access_from_subscript(node)
+            if access is not None:
+                accesses_by_source[access.source_expression].append(access)
+            self.generic_visit(node)
+
+        def visit_Compare(self, node: ast.Compare) -> None:
+            access = _literal_schema_field_access_from_membership(node)
+            if access is not None:
+                accesses_by_source[access.source_expression].append(access)
+            self.generic_visit(node)
+
+    visitor = Visitor()
+    for statement in function.body:
+        visitor.visit(statement)
+
+    owners: list[LiteralSchemaDispatchOwner] = []
+    for source_expression, accesses in sorted(accesses_by_source.items()):
+        key_names = sorted_tuple({access.key_name for access in accesses})
+        if len(key_names) < config.min_literal_schema_field_count:
+            continue
+        line_numbers = tuple(access.line for access in accesses[: len(key_names)])
+        owners.append(
+            LiteralSchemaDispatchOwner(
+                qualname=qualname,
+                source_expression=source_expression,
+                key_names=key_names,
+                line_numbers=line_numbers,
+                access_count=len(accesses),
+            )
+        )
+    return tuple(owners)
+
+
+def _literal_schema_dispatch_candidates(
+    module: ParsedModule,
+    config: DetectorConfig,
+) -> tuple[LiteralSchemaDispatchCandidate, ...]:
+    owners_by_signature: dict[
+        tuple[str, ...],
+        list[LiteralSchemaDispatchOwner],
+    ] = defaultdict(list)
+    for qualname, function in _iter_named_functions(module):
+        for owner in _literal_schema_dispatch_owners_for_function(
+            qualname,
+            function,
+            config,
+        ):
+            owners_by_signature[owner.key_names].append(owner)
+
+    candidates: list[LiteralSchemaDispatchCandidate] = []
+    for key_names, owners in sorted(owners_by_signature.items()):
+        if len(owners) < config.min_literal_schema_owner_count:
+            continue
+        ordered = sorted_tuple(
+            owners, key=lambda item: (item.line_numbers[0], item.qualname)
+        )
+        candidates.append(
+            LiteralSchemaDispatchCandidate(
+                file_path=str(module.path),
+                line=ordered[0].line_numbers[0],
+                function_names=tuple(owner.qualname for owner in ordered),
+                source_expressions=tuple(owner.source_expression for owner in ordered),
+                key_names=key_names,
+                line_numbers=tuple(owner.line_numbers[0] for owner in ordered),
+                access_count=sum(owner.access_count for owner in ordered),
+            )
+        )
+    return tuple(candidates)
+
+
+class LiteralSchemaDispatchDetector(
+    ConfiguredModuleCollectorCandidateDetector[LiteralSchemaDispatchCandidate]
+):
+    detector_id = "literal_schema_dispatch"
+    candidate_collector = _literal_schema_dispatch_candidates
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Repeated literal schema dispatch should move behind one nominal authority",
+        "Multiple owners that read the same mapping schema through string-literal field selectors duplicate the schema boundary. That makes adding or changing a field require coordinated edits and lets operational semantics leak into consumers.",
+        "one nominal schema authority owns literal field validation, dependencies, and projection",
+        "same mapping-field signature is manually walked by multiple owners",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _finding_for_candidate(
+        self,
+        candidate: LiteralSchemaDispatchCandidate,
+    ) -> RefactorFinding:
+        key_summary = ", ".join(candidate.key_names[:6])
+        owner_summary = ", ".join(candidate.function_names[:4])
+        return self.build_finding(
+            (
+                f"{len(candidate.function_names)} owners manually read the same "
+                f"literal schema fields ({key_summary}) from mapping-like sources: "
+                f"{owner_summary}."
+            ),
+            candidate.evidence,
+            scaffold=(
+                "@dataclass(frozen=True)\n"
+                "class SchemaFieldSpec:\n"
+                "    name: str\n"
+                "    required: bool\n\n"
+                "class SchemaFieldAuthority:\n"
+                "    fields: ClassVar[tuple[SchemaFieldSpec, ...]]\n"
+                "    @classmethod\n"
+                "    def required_value(cls, payload, field_name): ..."
+            ),
+            codemod_patch=(
+                "# Replace repeated literal mapping-field extraction with one "
+                "nominal schema authority.\n"
+                "# Consumers should ask the authority for validated values, "
+                "dependency fields, and projection coordinates instead of "
+                "walking the same string keys locally."
+            ),
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=len(candidate.function_names),
+                field_names=candidate.key_names,
+                mapping_name="literal_schema",
+                source_name=", ".join(
+                    sorted_tuple(set(candidate.source_expressions))[:4]
+                ),
+            ),
+        )
+
+
+_FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
+    {
+        "artifact",
+        "default",
+        "formal",
+        "kernel",
+        "lean",
+        "manifest",
+        "policy",
+        "profile",
+        "schema",
+        "theorem",
+    }
+)
+_FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS = 3
+_FORMAL_BOUNDARY_STRING_ID_TOKENS = frozenset(
+    {
+        "field",
+        "fields",
+        "id",
+        "ids",
+        "key",
+        "keys",
+        "name",
+        "names",
+        "source",
+        "sources",
+    }
+)
+
+
+@dataclass(frozen=True)
+class FormalBoundaryStringRegistryConstant:
+    target_name: str
+    value: str
+    line: int
+
+
+def _literal_string_registry_fields(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Dict):
+        items = _string_dict_items(node)
+        if items is None:
+            return ()
+        return tuple(items)
+    if isinstance(node, (ast.List, ast.Set, ast.Tuple)):
+        values: list[str] = []
+        for element in node.elts:
+            if not isinstance(element, ast.Constant) or not isinstance(
+                element.value,
+                str,
+            ):
+                return ()
+            values.append(element.value)
+        return tuple(values)
+    return ()
+
+
+def _formal_boundary_call_name(node: ast.Call) -> str:
+    return ast.unparse(node.func)
+
+
+def _call_leaf_name(node: ast.Call) -> str:
+    return _formal_boundary_call_name(node).rsplit(".", 1)[-1]
+
+
+_FORMAL_BOUNDARY_SOURCE_SCOPE_CALL_TOKENS = frozenset(
+    {
+        "boundary",
+        "carrier",
+        "default",
+        "formal",
+        "kernel",
+        "lean",
+        "materialization",
+        "payload",
+        "policy",
+        "profile",
+        "scope",
+        "source",
+    }
+)
+_FORMAL_BOUNDARY_SOURCE_SCOPE_FUNCTION_TOKENS = frozenset(
+    {
+        "boundary",
+        "carrier",
+        "formal",
+        "lean",
+        "payload",
+        "policy",
+        "scope",
+        "source",
+    }
+)
+_FORMAL_BOUNDARY_SOURCE_SCOPE_MIN_FIELDS = 2
+
+
+def _is_nominal_source_scope_carrier_constructor_call(node: ast.Call) -> bool:
+    leaf_name = _call_leaf_name(node)
+    if not leaf_name[:1].isupper():
+        return False
+    tokens = frozenset(_runtime_semantic_identifier_tokens(leaf_name))
+    return bool(tokens & {"carrier", "domain", "payload", "request", "scope"})
+
+
+def _is_formal_boundary_source_scope_call(node: ast.Call) -> bool:
+    if _is_nominal_source_scope_carrier_constructor_call(node):
+        return False
+    call_tokens = frozenset(_runtime_semantic_identifier_tokens(_call_leaf_name(node)))
+    return bool(call_tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_CALL_TOKENS) and bool(
+        {"scope", "source", "payload"} & call_tokens
+    )
+
+
+def _function_name_tokens(function_stack: Sequence[str]) -> frozenset[str]:
+    if not function_stack:
+        return frozenset()
+    return frozenset(_runtime_semantic_identifier_tokens(function_stack[-1]))
+
+
+def _function_is_formal_boundary_source_scope(
+    function_stack: Sequence[str],
+) -> bool:
+    tokens = _function_name_tokens(function_stack)
+    return bool(tokens & _FORMAL_BOUNDARY_SOURCE_SCOPE_FUNCTION_TOKENS) and bool(
+        {"scope", "source", "payload"} & tokens
+    )
+
+
+def _explicit_source_scope_keyword_fields(node: ast.Call) -> tuple[str, ...]:
+    fields = tuple(
+        keyword.arg
+        for keyword in node.keywords
+        if keyword.arg is not None and keyword.arg not in {"source_scope"}
+    )
+    return tuple(field for field in fields if field is not None)
+
+
+def _is_formal_boundary_literal_registry_call(node: ast.Call) -> bool:
+    call_name = _formal_boundary_call_name(node).lower()
+    return any(
+        token in call_name for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+    )
+
+
+def _formal_boundary_registry_target_names(target: ast.AST) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return tuple(
+            element.id for element in target.elts if isinstance(element, ast.Name)
+        )
+    return ()
+
+
+def _formal_boundary_registry_target_tokens(target_name: str) -> frozenset[str]:
+    return frozenset(_runtime_semantic_identifier_tokens(target_name))
+
+
+def _formal_boundary_registry_value_tokens(value: str) -> frozenset[str]:
+    return frozenset(_runtime_semantic_identifier_tokens(value))
+
+
+def _is_formal_boundary_string_registry_constant(
+    target_name: str,
+    value: str,
+) -> bool:
+    target_tokens = _formal_boundary_registry_target_tokens(target_name)
+    value_tokens = _formal_boundary_registry_value_tokens(value)
+    boundary_tokens = target_tokens | value_tokens
+    return bool(
+        boundary_tokens & _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+    ) and bool((target_tokens | value_tokens) & _FORMAL_BOUNDARY_STRING_ID_TOKENS)
+
+
+class FormalBoundaryStringRegistryAuthority:
+    @staticmethod
+    def module_constants(
+        module: ParsedModule,
+    ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
+        constants: list[FormalBoundaryStringRegistryConstant] = []
+        for statement in module.module.body:
+            assignment_targets: tuple[ast.AST, ...]
+            assignment_value: ast.AST | None
+            if isinstance(statement, ast.Assign):
+                assignment_targets = tuple(statement.targets)
+                assignment_value = statement.value
+            elif isinstance(statement, ast.AnnAssign):
+                assignment_targets = (statement.target,)
+                assignment_value = statement.value
+            else:
+                continue
+            if assignment_value is None:
+                continue
+            value = _constant_string(assignment_value)
+            if value is None:
+                continue
+            for target in assignment_targets:
+                for target_name in _formal_boundary_registry_target_names(target):
+                    if _is_formal_boundary_string_registry_constant(target_name, value):
+                        constants.append(
+                            FormalBoundaryStringRegistryConstant(
+                                target_name=target_name,
+                                value=value,
+                                line=statement.lineno,
+                            )
+                        )
+        return tuple(constants)
+
+
+class FormalBoundaryLiteralRegistryCallVisitor(ClassFunctionStackNodeVisitor):
+    traverse_class_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+    traverse_function_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+
+    def __init__(
+        self,
+        detector: PerModuleIssueDetector,
+        module: ParsedModule,
+        findings: list[RefactorFinding],
+    ) -> None:
+        super().__init__()
+        self.detector = detector
+        self.module = module
+        self.findings = findings
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if not _is_formal_boundary_literal_registry_call(node):
+            self.generic_visit(node)
+            return
+        rows: list[tuple[ast.AST, tuple[str, ...], str]] = []
+        for arg in node.args:
+            fields = _literal_string_registry_fields(arg)
+            if len(fields) >= _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+                rows.append((arg, fields, "positional"))
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                continue
+            fields = _literal_string_registry_fields(keyword.value)
+            if len(fields) >= _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+                rows.append((keyword.value, fields, keyword.arg))
+        if not rows:
+            self.generic_visit(node)
+            return
+        call_name = _formal_boundary_call_name(node)
+        owner = _owner_symbol(
+            tuple(self.class_stack),
+            tuple(self.function_stack),
+            "formal_boundary_literal_registry",
+        )
+        for literal_node, fields, argument_role in rows:
+            self.findings.append(
+                self.detector.build_finding(
+                    self.summary(owner, fields, argument_role, call_name),
+                    (
+                        SourceLocation(
+                            str(self.module.path),
+                            literal_node.lineno,
+                            owner,
+                        ),
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        field_names=fields,
+                        mapping_name="formal_boundary_literal_registry",
+                        source_name=call_name,
+                    ),
+                    scaffold=(
+                        "class FormalBoundarySourceAuthority:\n"
+                        "    @classmethod\n"
+                        "    def source_fields(cls):\n"
+                        "        return ExportedFormalProfile.source_fields()\n\n"
+                        "    @classmethod\n"
+                        "    def source_object(cls, carrier):\n"
+                        "        return carrier.project(cls.source_fields())"
+                    ),
+                    codemod_patch=(
+                        "# Replace the local literal field registry with a "
+                        "projection derived from the exported formal/profile "
+                        "authority. The runtime boundary should receive a "
+                        "source object produced by that authority, not a "
+                        "handwritten dict/list of field names."
+                    ),
+                )
+            )
+        self.generic_visit(node)
+
+    @staticmethod
+    def summary(
+        owner: str,
+        fields: tuple[str, ...],
+        argument_role: str,
+        call_name: str,
+    ) -> str:
+        field_summary = ", ".join(fields[:6])
+        return (
+            f"`{owner}` passes a {len(fields)}-field literal string registry "
+            f"({field_summary}) as {argument_role} data to formal-boundary call "
+            f"`{call_name}`."
+        )
+
+
+class FormalBoundaryLiteralRegistryMirrorDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Formal-boundary literal registries should be derived",
+        "A runtime call into a formal/default/profile/schema/policy boundary should not construct a local string-key registry, and a runtime module should not keep a local catalog of formal-boundary string ids. The field set and ids are proof-relevant boundary data and should be read from the exported formal authority, nominal schema, or typed source carrier.",
+        "formal-boundary source/schema fields are derived from one exported authority",
+        "literal string registry is passed into or mirrored beside a formal/runtime boundary",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _module_string_registry_findings(
+        self,
+        module: ParsedModule,
+    ) -> list[RefactorFinding]:
+        constants = FormalBoundaryStringRegistryAuthority.module_constants(module)
+        if len(constants) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+            return []
+        names = tuple(constant.target_name for constant in constants)
+        values = tuple(constant.value for constant in constants)
+        name_summary = ", ".join(names[:6])
+        value_summary = ", ".join(values[:6])
+        return [
+            self.build_finding(
+                (
+                    f"`{module.path}` declares {len(constants)} local "
+                    f"formal-boundary string ids ({name_summary}) with values "
+                    f"({value_summary})."
+                ),
+                tuple(
+                    SourceLocation(
+                        str(module.path), constant.line, constant.target_name
+                    )
+                    for constant in constants
+                ),
+                metrics=MappingMetrics.from_field_names(
+                    mapping_site_count=1,
+                    field_names=values,
+                    mapping_name="formal_boundary_string_id_catalog",
+                    source_name=str(module.path),
+                ),
+                scaffold=(
+                    "class FormalBoundaryIdAuthority:\n"
+                    "    @classmethod\n"
+                    "    def profile_id(cls, symbolic_name):\n"
+                    "        return ExportedFormalProfileCatalog.id_for(symbolic_name)"
+                ),
+                codemod_patch=(
+                    "# Delete the local formal-boundary string-id catalog and "
+                    "derive ids from the exported formal/profile/schema catalog. "
+                    "The runtime module should name a nominal profile binding, "
+                    "not mirror the external string registry."
+                ),
+            )
+        ]
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        findings = self._module_string_registry_findings(module)
+        FormalBoundaryLiteralRegistryCallVisitor(self, module, findings).visit(
+            module.module
+        )
+        return findings
+
+
+class FormalBoundaryStringlySourceScopeVisitor(ClassFunctionStackNodeVisitor):
+    traverse_class_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+    traverse_function_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+
+    def __init__(
+        self,
+        detector: PerModuleIssueDetector,
+        module: ParsedModule,
+        findings: list[RefactorFinding],
+    ) -> None:
+        super().__init__()
+        self.detector = detector
+        self.module = module
+        self.findings = findings
+
+    def visit_Call(self, node: ast.Call) -> None:
+        owner = _owner_symbol(
+            tuple(self.class_stack),
+            tuple(self.function_stack),
+            "formal_boundary_stringly_source_scope",
+        )
+        call_name = _formal_boundary_call_name(node)
+        is_source_scope_call = _is_formal_boundary_source_scope_call(node)
+        for literal_node, fields, argument_role in self.literal_mapping_rows(node):
+            if (
+                len(fields) >= _FORMAL_BOUNDARY_SOURCE_SCOPE_MIN_FIELDS
+                and is_source_scope_call
+            ):
+                self.findings.append(
+                    self.detector.build_finding(
+                        self.literal_mapping_summary(
+                            owner,
+                            fields,
+                            argument_role,
+                            call_name,
+                        ),
+                        (
+                            SourceLocation(
+                                str(self.module.path),
+                                literal_node.lineno,
+                                owner,
+                            ),
+                        ),
+                        metrics=MappingMetrics.from_field_names(
+                            mapping_site_count=1,
+                            field_names=fields,
+                            mapping_name="formal_boundary_source_scope_literal_mapping",
+                            source_name=call_name,
+                        ),
+                        scaffold=self.scaffold(),
+                        codemod_patch=self.codemod_patch(),
+                    )
+                )
+        fields = _explicit_source_scope_keyword_fields(node)
+        if (
+            len(fields) >= _FORMAL_BOUNDARY_SOURCE_SCOPE_MIN_FIELDS
+            and is_source_scope_call
+        ):
+            self.findings.append(
+                self.detector.build_finding(
+                    self.call_summary(
+                        owner,
+                        fields,
+                        call_name,
+                    ),
+                    (
+                        SourceLocation(
+                            str(self.module.path),
+                            node.lineno,
+                            owner,
+                        ),
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        field_names=fields,
+                        mapping_name="formal_boundary_source_scope_kwargs",
+                        source_name=call_name,
+                    ),
+                    scaffold=self.scaffold(),
+                    codemod_patch=self.codemod_patch(),
+                )
+            )
+        self.generic_visit(node)
+
+    @staticmethod
+    def literal_mapping_rows(
+        node: ast.Call,
+    ) -> tuple[tuple[ast.AST, tuple[str, ...], str], ...]:
+        rows: list[tuple[ast.AST, tuple[str, ...], str]] = []
+        for index, arg in enumerate(node.args):
+            fields = _literal_string_registry_fields(arg)
+            if fields:
+                rows.append((arg, fields, f"positional argument {index}"))
+        for keyword in node.keywords:
+            if keyword.arg is None:
+                continue
+            fields = _literal_string_registry_fields(keyword.value)
+            if fields:
+                rows.append((keyword.value, fields, keyword.arg))
+        return tuple(rows)
+
+    def visit_Return(self, node: ast.Return) -> None:
+        fields = _literal_string_registry_fields(node.value) if node.value else ()
+        if len(
+            fields
+        ) >= _FORMAL_BOUNDARY_SOURCE_SCOPE_MIN_FIELDS and _function_is_formal_boundary_source_scope(
+            tuple(self.function_stack)
+        ):
+            owner = _owner_symbol(
+                tuple(self.class_stack),
+                tuple(self.function_stack),
+                "formal_boundary_stringly_source_scope",
+            )
+            self.findings.append(
+                self.detector.build_finding(
+                    self.return_summary(owner, fields),
+                    (SourceLocation(str(self.module.path), node.lineno, owner),),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        field_names=fields,
+                        mapping_name="formal_boundary_source_scope_return_dict",
+                        source_name=owner,
+                    ),
+                    scaffold=self.scaffold(),
+                    codemod_patch=self.codemod_patch(),
+                )
+            )
+        self.generic_visit(node)
+
+    @staticmethod
+    def call_summary(owner: str, fields: tuple[str, ...], call_name: str) -> str:
+        preview = ", ".join(fields[:6])
+        return (
+            f"`{owner}` assembles a formal/source-scope boundary with "
+            f"{len(fields)} explicit string-key fields ({preview}) via "
+            f"`{call_name}`."
+        )
+
+    @staticmethod
+    def literal_mapping_summary(
+        owner: str,
+        fields: tuple[str, ...],
+        argument_role: str,
+        call_name: str,
+    ) -> str:
+        preview = ", ".join(fields[:6])
+        return (
+            f"`{owner}` passes a formal/source-scope boundary as a "
+            f"{len(fields)}-field string-key mapping ({preview}) in "
+            f"{argument_role} to `{call_name}`."
+        )
+
+    @staticmethod
+    def return_summary(owner: str, fields: tuple[str, ...]) -> str:
+        preview = ", ".join(fields[:6])
+        return (
+            f"`{owner}` returns a formal/source-scope boundary as a "
+            f"{len(fields)}-field string-key mapping ({preview})."
+        )
+
+    @staticmethod
+    def scaffold() -> str:
+        return (
+            "@dataclass(frozen=True)\n"
+            "class FormalBoundarySourcePayload:\n"
+            "    declared_field: object\n\n"
+            "class FormalBoundarySourceScopeAuthority:\n"
+            "    @classmethod\n"
+            "    def source_object(cls, payload: FormalBoundarySourcePayload):\n"
+            "        return DeclaredDataclassFieldValuesAuthority.values(payload)"
+        )
+
+    @staticmethod
+    def codemod_patch() -> str:
+        return (
+            "# Replace explicit string-key source-scope assembly with a declared "
+            "dataclass/nominal carrier. Keep exactly one adapter that converts "
+            "declared fields into the formal boundary API; runtime code should "
+            "construct the carrier, not spell boundary field names."
+        )
+
+
+class FormalBoundaryStringlySourceScopeDetector(PerModuleIssueDetector):
+    detector_id = "formal_boundary_stringly_source_scope"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Formal-boundary source scopes should use nominal carriers",
+        "Runtime code should not assemble proof-relevant source scopes by spelling string-key fields at the call site. The formal boundary should receive a source object projected from a declared dataclass, generated carrier, or exported schema authority so Python cannot drift from the formal field contract.",
+        "formal-boundary source scopes are assembled from nominal carriers",
+        "source-scope boundary is constructed by explicit string-key mapping fields",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        FormalBoundaryStringlySourceScopeVisitor(self, module, findings).visit(
+            module.module
+        )
+        return findings
+
+
+_FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES = frozenset(
+    {".json", ".lean", ".toml", ".yaml", ".yml"}
+)
+_FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS = frozenset(
+    {
+        "artifact",
+        "bundle",
+        "formal",
+        "kernel",
+        "lean",
+        "manifest",
+        "policy",
+        "profile",
+        "schema",
+        "theorem",
+    }
+)
+_FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES = frozenset(
+    {
+        ".git",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".pytest-tmp",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "benchmark_results",
+        "build",
+        "diagnostics",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "site-packages",
+        "venv",
+    }
+)
+_FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES = 32 * 1024 * 1024
+_FORMAL_BOUNDARY_EXTERNAL_MAX_FILES = 256
+
+
+@dataclass(frozen=True)
+class FormalBoundaryExternalStringSite(FormalBoundaryStringRegistryConstant):
+    path: Path
+
+
+FormalBoundaryStringConstantRecord: TypeAlias = tuple[
+    ParsedModule,
+    FormalBoundaryStringRegistryConstant,
+]
+FormalBoundaryStringConstantRecords: TypeAlias = tuple[
+    FormalBoundaryStringConstantRecord,
+    ...,
+]
+FormalBoundaryStringConstantsByValue: TypeAlias = dict[
+    str,
+    list[FormalBoundaryStringConstantRecord],
+]
+FormalBoundaryExternalSitesByValue: TypeAlias = dict[
+    str,
+    list[FormalBoundaryExternalStringSite],
+]
+
+
+def _module_formal_boundary_string_constants(
+    modules: list[ParsedModule],
+) -> FormalBoundaryStringConstantRecords:
+    constants: list[FormalBoundaryStringConstantRecord] = []
+    for module in modules:
+        constants.extend(
+            (module, constant)
+            for constant in FormalBoundaryStringRegistryAuthority.module_constants(
+                module
+            )
+        )
+    return tuple(constants)
+
+
+def _formal_boundary_python_constants_by_value(
+    constants: FormalBoundaryStringConstantRecords,
+) -> FormalBoundaryStringConstantsByValue:
+    grouped: FormalBoundaryStringConstantsByValue = defaultdict(list)
+    for module, constant in constants:
+        grouped[constant.value].append((module, constant))
+    return grouped
+
+
+def _formal_boundary_nearest_repository_root(path: Path) -> Path:
+    current = path if path.is_dir() else path.parent
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
+            return candidate
+    return current.parent if current.parent != current else current
+
+
+def _formal_boundary_scan_root(modules: list[ParsedModule]) -> Path | None:
+    if not modules:
+        return None
+    resolved_paths = tuple(str(module.path.resolve()) for module in modules)
+    common_path = Path(os.path.commonpath(resolved_paths))
+    if common_path.is_file():
+        common_path = common_path.parent
+    return _formal_boundary_nearest_repository_root(common_path)
+
+
+def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
+    path_tokens = frozenset(
+        token
+        for part in path.with_suffix("").parts
+        for token in _runtime_semantic_identifier_tokens(part)
+    )
+    return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
+
+
+def _formal_boundary_external_file_paths(root: Path) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for directory, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(
+            (
+                dirname
+                for dirname in dirnames
+                if dirname not in _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES
+                and not dirname.startswith(".")
+                and not dirname.startswith("benchmark_results")
+                and not dirname.endswith((".egg-info", ".dist-info"))
+            )
+        )
+        directory_path = Path(directory)
+        for filename in sorted(filenames):
+            path = directory_path / filename
+            if path.suffix not in _FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES:
+                continue
+            if not _formal_boundary_external_path_has_authority_hint(path):
+                continue
+            try:
+                if path.stat().st_size > _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES:
+                    continue
+            except OSError:
+                continue
+            paths.append(path)
+            if len(paths) >= _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES:
+                return tuple(paths)
+    return tuple(paths)
+
+
+def _formal_boundary_external_string_sites(
+    path: Path,
+    values: tuple[str, ...],
+) -> tuple[FormalBoundaryExternalStringSite, ...]:
+    if not values:
+        return ()
+    ordered_values = tuple(sorted(values, key=lambda value: (-len(value), value)))
+    pattern = re.compile("|".join(re.escape(value) for value in ordered_values))
+    sites: list[FormalBoundaryExternalStringSite] = []
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as source:
+            for line_number, line in enumerate(source, start=1):
+                for match in pattern.finditer(line):
+                    sites.append(
+                        FormalBoundaryExternalStringSite(
+                            target_name=match.group(0),
+                            value=match.group(0),
+                            line=line_number,
+                            path=path,
+                        )
+                    )
+    except OSError:
+        return ()
+    return tuple(sites)
+
+
+def _formal_boundary_external_sites_by_value(
+    path: Path,
+    values: tuple[str, ...],
+) -> FormalBoundaryExternalSitesByValue:
+    grouped: FormalBoundaryExternalSitesByValue = defaultdict(list)
+    for site in _formal_boundary_external_string_sites(path, values):
+        grouped[site.value].append(site)
+    return grouped
+
+
+def _formal_boundary_python_evidence_for_values(
+    constants_by_value: FormalBoundaryStringConstantsByValue,
+    values: tuple[str, ...],
+) -> tuple[SourceLocation, ...]:
+    evidence: list[SourceLocation] = []
+    for value in values:
+        module, constant = constants_by_value[value][0]
+        evidence.append(
+            SourceLocation(str(module.path), constant.line, constant.target_name)
+        )
+    return tuple(evidence)
+
+
+def _formal_boundary_external_evidence_for_values(
+    sites_by_value: FormalBoundaryExternalSitesByValue,
+    values: tuple[str, ...],
+) -> tuple[SourceLocation, ...]:
+    evidence: list[SourceLocation] = []
+    for value in values:
+        site = sites_by_value[value][0]
+        evidence.append(SourceLocation(str(site.path), site.line, value))
+    return tuple(evidence)
+
+
+class FormalBoundaryExternalStringRegistryMirrorAuthority:
+    @classmethod
+    def findings(
+        cls,
+        detector: IssueDetector,
+        modules: list[ParsedModule],
+    ) -> list[RefactorFinding]:
+        constants = _module_formal_boundary_string_constants(modules)
+        if len(constants) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+            return []
+        constants_by_value = _formal_boundary_python_constants_by_value(constants)
+        values = tuple(sorted(constants_by_value))
+        root = _formal_boundary_scan_root(modules)
+        if root is None:
+            return []
+        return [
+            finding
+            for path in _formal_boundary_external_file_paths(root)
+            if (
+                finding := cls.finding_for_external_path(
+                    detector,
+                    constants_by_value,
+                    values,
+                    path,
+                )
+            )
+            is not None
+        ]
+
+    @staticmethod
+    def finding_for_external_path(
+        detector: IssueDetector,
+        constants_by_value: FormalBoundaryStringConstantsByValue,
+        values: tuple[str, ...],
+        path: Path,
+    ) -> RefactorFinding | None:
+        sites_by_value = _formal_boundary_external_sites_by_value(path, values)
+        shared_values = tuple(sorted(set(sites_by_value) & set(constants_by_value)))
+        if len(shared_values) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+            return None
+        return detector.build_finding(
+            FormalBoundaryExternalStringRegistryMirrorAuthority.summary(
+                path,
+                shared_values,
+            ),
+            (
+                _formal_boundary_python_evidence_for_values(
+                    constants_by_value,
+                    shared_values[:6],
+                )
+                + _formal_boundary_external_evidence_for_values(
+                    sites_by_value,
+                    shared_values[:6],
+                )
+            ),
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=2,
+                field_names=shared_values,
+                mapping_name="formal_boundary_external_string_registry",
+                source_name=str(path),
+            ),
+            scaffold=(
+                "class GeneratedFormalBoundaryIdAuthority:\n"
+                "    @classmethod\n"
+                "    def id_for(cls, symbolic_name):\n"
+                "        return FormalArtifactCatalog.current().id_for(symbolic_name)"
+            ),
+            codemod_patch=(
+                "# Replace the Python-side string-id catalog with a generated "
+                "authority loaded from the formal artifact/export. Keep symbolic "
+                "names in runtime code and derive external ids from the formal "
+                "catalog so Lean/formal and Python cannot drift."
+            ),
+        )
+
+    @staticmethod
+    def summary(path: Path, shared_values: tuple[str, ...]) -> str:
+        preview_values = ", ".join(shared_values[:6])
+        return (
+            f"`{path}` and Python runtime code mirror "
+            f"{len(shared_values)} formal-boundary string ids ({preview_values})."
+        )
+
+
+class FormalBoundaryExternalStringRegistryMirrorDetector(IssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Formal-boundary string registries should not be mirrored across sources",
+        "When Python runtime modules and external Lean/formal policy artifacts declare the same proof-relevant string ids, the runtime has a second source of truth. The Python side should consume a generated/typed authority derived from the formal artifact instead of copying the registry values.",
+        "formal-boundary string ids have one generated authority shared by runtime and formal artifacts",
+        "Python and external formal artifacts mirror the same string-id registry",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        return FormalBoundaryExternalStringRegistryMirrorAuthority.findings(
+            self, modules
+        )
+
+
 class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
     detector_id = "unclassified_runtime_fallback"
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Runtime fallback/default sites should be classified at the formal boundary",
-        "Fallback/default operators in runtime code can silently choose behavior when required semantics are missing. They should either be Lean-declared defaults, explicit cache-miss semantics, diagnostic-only behavior, or fail-loud errors.",
+        "Fallback/default operators in runtime code can silently choose behavior when required semantics are missing. They should either be formal-boundary-declared defaults, explicit cache-miss semantics, diagnostic-only behavior, or fail-loud errors.",
         "each runtime fallback is classified as theorem-backed default, cache miss, diagnostic-only, or hard failure",
         "owner contains fallback/default operators that hide missing values locally",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
@@ -471,7 +2149,7 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        minimum = max(3, config.min_builder_keywords)
+        minimum = 1
         sites_by_owner: dict[str, list[tuple[int, str]]] = {}
 
         class Visitor(ClassFunctionStackNodeVisitor):
@@ -524,14 +2202,14 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
                         "@dataclass(frozen=True)\n"
                         "class RuntimeFallbackClassification:\n"
                         "    source: str\n"
-                        "    kind: Literal['lean_default', 'cache_miss', "
+                        "    kind: Literal['formal_default', 'cache_miss', "
                         "'diagnostic_only', 'fail_loud']\n"
                         "    theorem: str | None = None"
                     ),
                     codemod_patch=(
                         f"# Classify fallback/default sites in `{owner}`.\n"
                         "# Replace unclassified fallback operators with a "
-                        "Lean-declared default lookup, explicit cache miss branch, "
+                        "formal-boundary-declared default lookup, explicit cache miss branch, "
                         "diagnostic-only path, or a fail_loud hard error."
                     ),
                     metrics=DispatchCountMetrics(dispatch_site_count=len(sites)),
@@ -549,11 +2227,10 @@ _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
         "basis",
         "budget",
         "certified",
-        "contact",
         "family",
         "frontier",
         "kind",
-        "lean",
+        "formal",
         "materialization",
         "mode",
         "policy",
@@ -573,8 +2250,7 @@ _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
 
 def _runtime_semantic_identifier_tokens(text: str) -> tuple[str, ...]:
     normalized = "".join(
-        (character.lower() if character.isalnum() else "_")
-        for character in text
+        (character.lower() if character.isalnum() else "_") for character in text
     )
     return tuple((token for token in normalized.split("_") if token))
 
@@ -630,10 +2306,10 @@ def _runtime_semantic_branch_test(
 
 def _runtime_semantic_elif_chain(
     statement: ast.stmt,
-) -> tuple[tuple[int, str, str], ...]:
+) -> SemanticBranchChain:
     if not isinstance(statement, ast.If):
         return ()
-    chain: list[tuple[int, str, str]] = []
+    chain: list[SemanticBranchObservation] = []
     current: ast.If | None = statement
     while current is not None:
         branch_test = _runtime_semantic_branch_test(current.test)
@@ -651,8 +2327,8 @@ def _runtime_semantic_elif_chain(
 def _runtime_semantic_sequential_guard_chain(
     body: Sequence[ast.stmt],
     start: int,
-) -> tuple[tuple[int, str, str], ...]:
-    chain: list[tuple[int, str, str]] = []
+) -> SemanticBranchChain:
+    chain: list[SemanticBranchObservation] = []
     index = start
     while index < len(body):
         statement = body[index]
@@ -667,39 +2343,21 @@ def _runtime_semantic_sequential_guard_chain(
     return tuple(chain) if len(chain) >= 2 else ()
 
 
+RUNTIME_SEMANTIC_BRANCH_COLLECTION_SPEC = BranchChainCollectionSpec(
+    _runtime_semantic_elif_chain,
+    _runtime_semantic_sequential_guard_chain,
+    branch_observation_first_line,
+    all_branch_chains_active,
+)
+
+
 def _runtime_semantic_branch_chains_from_body(
     body: Sequence[ast.stmt],
-) -> tuple[tuple[tuple[int, str, str], ...], ...]:
-    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
-    chains: list[tuple[tuple[int, str, str], ...]] = []
-    seen: set[tuple[int, ...]] = set()
-
-    for index, statement in enumerate(trimmed_body):
-        for chain in (
-            _runtime_semantic_elif_chain(statement),
-            _runtime_semantic_sequential_guard_chain(trimmed_body, index),
-        ):
-            if not chain:
-                continue
-            line_key = tuple((line for line, _axis, _case in chain))
-            if line_key in seen:
-                continue
-            seen.add(line_key)
-            chains.append(chain)
-
-        nested_bodies: list[Sequence[ast.stmt]] = []
-        for attr_name in ("body", "orelse", "finalbody"):
-            nested = getattr(statement, attr_name, None)
-            if isinstance(nested, list):
-                nested_bodies.append(nested)
-        if isinstance(statement, ast.Try):
-            nested_bodies.extend(handler.body for handler in statement.handlers)
-        if isinstance(statement, ast.Match):
-            nested_bodies.extend(match_case.body for match_case in statement.cases)
-        for nested_body in nested_bodies:
-            chains.extend(_runtime_semantic_branch_chains_from_body(nested_body))
-
-    return tuple(chains)
+) -> SemanticBranchChains:
+    return collect_nested_branch_chains_from_body(
+        body,
+        RUNTIME_SEMANTIC_BRANCH_COLLECTION_SPEC,
+    )
 
 
 class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
@@ -753,7 +2411,7 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
                         codemod_patch=(
                             f"# Replace the runtime semantic branch chain in `{qualname}` with one "
                             "formal policy/profile authority.\n"
-                            "# Move case membership, precedence, and default behavior into the Lean-backed "
+                            "# Move case membership, precedence, and default behavior into the formal "
                             "runtime profile and make this Python site consume the declared result."
                         ),
                         metrics=BranchCountMetrics(branch_site_count=len(chain)),
@@ -763,6 +2421,467 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
                     )
                 )
         return findings
+
+
+@dataclass(frozen=True)
+class IsinstanceFamilyScatterCandidate:
+    file_path: str
+    line: int
+    qualname: str
+    subject_expression: str
+    type_names: tuple[str, ...]
+    site_count: int
+    line_numbers: tuple[int, ...]
+    test_expressions: tuple[str, ...]
+
+
+_ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES = frozenset(
+    {
+        "ABC",
+        "Any",
+        "Callable",
+        "ClassVar",
+        "Iterable",
+        "Iterator",
+        "Mapping",
+        "MutableMapping",
+        "MutableSequence",
+        "None",
+        "NoneType",
+        "Sequence",
+        "Set",
+        "SimpleNamespace",
+        "TypeAlias",
+        "bytearray",
+        "bool",
+        "bytes",
+        "dict",
+        "float",
+        "frozenset",
+        "generic",
+        "int",
+        "list",
+        "memoryview",
+        "ndarray",
+        "object",
+        "set",
+        "str",
+        "tuple",
+        "type",
+    }
+)
+
+
+def _isinstance_scatter_type_name(type_expr: ast.AST) -> str | None:
+    if isinstance(type_expr, ast.Attribute) and isinstance(type_expr.value, ast.Name):
+        if type_expr.value.id == "ast":
+            return None
+    type_name = ast.unparse(type_expr)
+    terminal_name = _ast_terminal_name(type_expr)
+    if terminal_name in _ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES:
+        return None
+    if type_name.startswith(("ast.", "jax.", "jnp.", "np.", "numpy.")):
+        return None
+    return type_name
+
+
+def _isinstance_scatter_type_names(type_expr: ast.AST) -> tuple[str, ...]:
+    if isinstance(type_expr, (ast.Tuple, ast.List, ast.Set)):
+        names = tuple(
+            name
+            for element in type_expr.elts
+            if (name := _isinstance_scatter_type_name(element)) is not None
+        )
+    else:
+        name = _isinstance_scatter_type_name(type_expr)
+        names = () if name is None else (name,)
+    return sorted_tuple(set(names))
+
+
+def _isinstance_family_scatter_candidates(
+    module: ParsedModule,
+) -> tuple[IsinstanceFamilyScatterCandidate, ...]:
+    candidates: list[IsinstanceFamilyScatterCandidate] = []
+    for qualname, function in _iter_named_functions(module):
+        grouped: dict[str, list[tuple[int, str, tuple[str, ...]]]] = defaultdict(list)
+        for subnode in _walk_nodes(function):
+            if not (
+                isinstance(subnode, ast.Call)
+                and len(subnode.args) == 2
+                and not subnode.keywords
+                and _ast_terminal_name(subnode.func) == "isinstance"
+            ):
+                continue
+            type_names = _isinstance_scatter_type_names(subnode.args[1])
+            if not type_names:
+                continue
+            grouped[ast.unparse(subnode.args[0])].append(
+                (subnode.lineno, ast.unparse(subnode), type_names)
+            )
+        for subject_expression, sites in sorted(grouped.items()):
+            unique_type_names = sorted_tuple(
+                {
+                    type_name
+                    for _line, _test, type_names in sites
+                    for type_name in type_names
+                }
+            )
+            if len(sites) < 3 or len(unique_type_names) < 3:
+                continue
+            line_numbers = tuple(line for line, _test, _types in sites)
+            candidates.append(
+                IsinstanceFamilyScatterCandidate(
+                    file_path=str(module.path),
+                    line=min(line_numbers),
+                    qualname=qualname,
+                    subject_expression=subject_expression,
+                    type_names=unique_type_names,
+                    site_count=len(sites),
+                    line_numbers=line_numbers,
+                    test_expressions=tuple(test for _line, test, _types in sites),
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.qualname,
+                item.subject_expression,
+            ),
+        )
+    )
+
+
+class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
+    detector_id = "isinstance_family_scatter"
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Scattered concrete isinstance recovery should become polymorphic behavior",
+        "Repeated `isinstance` checks against several concrete members of the same semantic family leave the consumer responsible for decoding family membership. The nominal boundary should expose polymorphic behavior through an ABC/base method or generated adapter family instead of scattering concrete type recovery through the walker.",
+        "single polymorphic ABC/base authority owns concrete family evidence projection",
+        "one owner repeatedly checks one subject against several concrete runtime types",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _isinstance_family_scatter_candidates(module):
+            type_summary = ", ".join(candidate.type_names[:6])
+            evidence = tuple(
+                SourceLocation(
+                    candidate.file_path,
+                    line,
+                    f"{candidate.qualname}:{candidate.subject_expression}",
+                )
+                for line in candidate.line_numbers[:8]
+            )
+            family_name = (
+                f"{_camel_case(candidate.subject_expression.rsplit('.', 1)[-1])}"
+                "Carrier"
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.qualname}` scatters {candidate.site_count} "
+                        f"`isinstance` checks on `{candidate.subject_expression}` "
+                        f"across concrete family types {type_summary}."
+                    ),
+                    evidence,
+                    scaffold=(
+                        f"class {family_name}(ABC):\n"
+                        "    @abstractmethod\n"
+                        "    def project_family_value(self, request): ...\n\n"
+                        "# Make each concrete family member inherit the ABC and implement the hook.\n"
+                        "# If the concrete classes are external, register nominal adapter classes once;\n"
+                        "# consumers should call the polymorphic method, not enumerate concrete types."
+                    ),
+                    codemod_patch=(
+                        "# Replace the scattered "
+                        f"`isinstance({candidate.subject_expression}, ...)` branches "
+                        f"in `{candidate.qualname}` with one polymorphic ABC/base method.\n"
+                        "# Move each concrete case body onto the matching subclass or a registered "
+                        "adapter; leave at most one fail-loud nominal boundary check."
+                    ),
+                    metrics=DispatchCountMetrics(
+                        dispatch_site_count=candidate.site_count,
+                        dispatch_axis=candidate.subject_expression,
+                        literal_cases=candidate.type_names,
+                    ),
+                )
+            )
+        return findings
+
+
+_LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(
+    (
+        "action",
+        "backend",
+        "case",
+        "family",
+        "field",
+        "format",
+        "key",
+        "kind",
+        "mode",
+        "policy",
+        "profile",
+        "rank",
+        "schema",
+        "scope",
+        "source",
+        "state",
+        "status",
+        "strategy",
+        "type",
+        "version",
+    )
+)
+_LITERAL_DISCRIMINATOR_OWNER_TOKENS = frozenset(
+    (
+        "authority",
+        "contract",
+        "dispatch",
+        "normalize",
+        "parse",
+        "parser",
+        "policy",
+        "project",
+        "require",
+        "resolve",
+        "schema",
+        "validate",
+        "validator",
+    )
+)
+
+
+@dataclass(frozen=True)
+class LiteralDiscriminatorBranchCandidate:
+    file_path: str
+    line: int
+    qualname: str
+    axis_expression: str
+    literal_cases: tuple[str, ...]
+    test_expression: str
+
+
+def _non_none_literal_case(value: ast.AST) -> str | None:
+    if not isinstance(value, ast.Constant):
+        return None
+    if value.value is None:
+        return None
+    if not isinstance(value.value, (str, int, bool)):
+        return None
+    return repr(value.value)
+
+
+def _literal_case_collection(value: ast.AST) -> tuple[str, ...]:
+    if not isinstance(value, (ast.Set, ast.Tuple, ast.List)):
+        return ()
+    literal_cases = tuple(
+        case
+        for element in value.elts
+        for case in (_non_none_literal_case(element),)
+        if case is not None
+    )
+    if len(literal_cases) != len(value.elts):
+        return ()
+    return sorted_tuple(literal_cases, key=str)
+
+
+def _literal_discriminator_axis_is_interesting(
+    axis_expression: str, qualname: str
+) -> bool:
+    axis_tokens = set(_runtime_semantic_identifier_tokens(axis_expression))
+    if axis_tokens & _LITERAL_DISCRIMINATOR_AXIS_TOKENS:
+        return True
+    owner_tokens = set(_runtime_semantic_identifier_tokens(qualname))
+    return bool(owner_tokens & _LITERAL_DISCRIMINATOR_OWNER_TOKENS)
+
+
+def _literal_discriminator_compare(
+    test: ast.AST, qualname: str
+) -> tuple[str, tuple[str, ...]] | None:
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _literal_discriminator_compare(test.operand, qualname)
+    if isinstance(test, ast.BoolOp):
+        for value in test.values:
+            match = _literal_discriminator_compare(value, qualname)
+            if match is not None:
+                return match
+        return None
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1 or not test.comparators:
+        return None
+
+    operator = test.ops[0]
+    comparator = test.comparators[0]
+    if isinstance(operator, (ast.Eq, ast.Is)):
+        right_case = _non_none_literal_case(comparator)
+        if right_case is not None:
+            axis_expression = ast.unparse(test.left)
+            if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
+                return axis_expression, (right_case,)
+        left_case = _non_none_literal_case(test.left)
+        if left_case is not None:
+            axis_expression = ast.unparse(comparator)
+            if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
+                return axis_expression, (left_case,)
+        return None
+
+    if isinstance(operator, (ast.In, ast.NotIn)):
+        literal_cases = _literal_case_collection(comparator)
+        if not literal_cases:
+            return None
+        axis_expression = ast.unparse(test.left)
+        if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
+            return axis_expression, literal_cases
+    return None
+
+
+def _literal_discriminator_branch_candidates(
+    module: ParsedModule,
+) -> tuple[LiteralDiscriminatorBranchCandidate, ...]:
+    candidates: list[LiteralDiscriminatorBranchCandidate] = []
+    for qualname, function in _iter_named_functions(module):
+        for node in _walk_nodes(function):
+            if not isinstance(node, ast.If):
+                continue
+            match = _literal_discriminator_compare(node.test, qualname)
+            if match is None:
+                continue
+            axis_expression, literal_cases = match
+            candidates.append(
+                LiteralDiscriminatorBranchCandidate(
+                    file_path=str(module.path),
+                    line=node.lineno,
+                    qualname=qualname,
+                    axis_expression=axis_expression,
+                    literal_cases=literal_cases,
+                    test_expression=ast.unparse(node.test),
+                )
+            )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.line,
+            item.qualname,
+            item.axis_expression,
+        ),
+    )
+
+
+class LiteralDiscriminatorBranchDetector(PerModuleIssueDetector):
+    detector_id = "literal_discriminator_branch"
+    finding_spec = high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Literal discriminator branch should be a nominal closed-axis authority",
+        "A parser, validator, resolver, or authority method that branches directly on a literal discriminator value is locally interpreting a closed semantic axis. The axis should be represented by a nominal case family or generated contract table so missing cases fail loudly.",
+        "nominal closed-axis authority owns literal discriminator cases",
+        "single runtime branch compares a discriminator axis to literal case values",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _literal_discriminator_branch_candidates(module):
+            case_summary = ", ".join(candidate.literal_cases)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.qualname}` branches on discriminator "
+                        f"`{candidate.axis_expression}` with literal case(s) "
+                        f"{case_summary}."
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.file_path,
+                            candidate.line,
+                            (
+                                f"{candidate.qualname}:"
+                                f"{candidate.axis_expression}:{case_summary}"
+                            ),
+                        ),
+                    ),
+                    scaffold=(
+                        "class ClosedAxisCase(ABC, metaclass=AutoRegisterMeta):\n"
+                        "    __registry_key__ = 'case_key'\n"
+                        "    case_key: ClassVar[object]\n"
+                        "    @classmethod\n"
+                        "    def for_case(cls, key):\n"
+                        "        return cls.__registry__[key]\n\n"
+                        "# Put allowed cases and per-case invariants in this family or a generated table;\n"
+                        "# parser/validator code should dispatch through the authority, not branch on literals."
+                    ),
+                    codemod_patch=(
+                        f"# Replace `{candidate.test_expression}` in "
+                        f"`{candidate.qualname}` with a closed-axis authority lookup.\n"
+                        "# Move case membership and invariants into nominal case declarations "
+                        "or a generated artifact contract, and let unknown cases fail loudly."
+                    ),
+                    metrics=DispatchCountMetrics.from_literal_family(
+                        candidate.axis_expression,
+                        candidate.literal_cases,
+                    ),
+                )
+            )
+        return findings
+
+
+declare_candidate_rule_detector(
+    StringKeyedFormulaSubclassFamilyCandidate,
+    high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "String-keyed formula subclasses should be derived from a typed policy algebra",
+        "A subclass family that assigns string `kind`/`mode` keys and implements formulas on the subclasses is a split semantic authority: the key registry owns case identity while method bodies own case semantics. The formulas should be represented by a typed/generated policy algebra or nominal proof-backed carrier so runtime code interprets one schema instead of maintaining per-string behavior.",
+        "typed/generated policy algebra owns case formulas with fail-loud validation",
+        "subclasses repeat formula semantics behind literal kind/mode keys",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.base_class_name}` has string-keyed subclasses "
+        f"{candidate.subclass_names} on `{candidate.key_attr_name}` with formulas "
+        f"in methods {candidate.method_names}; keys={candidate.key_values}."
+    ),
+    scaffold=lambda candidate: (
+        "class PolicyExprAuthority:\n"
+        "    def evaluate(self, expr: PolicyExpr, sources: SourceValues) -> int: ...\n\n"
+        "# Export case-specific formulas as typed data (Enum/dataclass/generated artifact),\n"
+        "# then route all cases through one interpreter/authority."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Replace literal `{candidate.key_attr_name}` subclasses under "
+        f"`{candidate.base_class_name}` with a typed formula schema or generated "
+        "policy artifact.\n"
+        "# Keep runtime behavior in one generic interpreter; derive case formulas "
+        "from the typed policy source so missing or unknown cases fail loudly."
+    ),
+    metrics=lambda candidate: DispatchCountMetrics.from_literal_family(
+        candidate.key_attr_name,
+        candidate.key_values,
+    ),
+    compression_certificate=lambda candidate: CompressionCertificate.from_object_family(
+        manual_object_count=len(candidate.subclass_names)
+        * max(1, len(candidate.method_names)),
+        replacement_shape=ObjectFamilyShape(
+            shared_objects=("policy_expr_authority",),
+            per_axis_objects=("typed_expr_variant",),
+        ),
+        semantic_axes=candidate.key_values,
+    ),
+    candidate_collector=_string_keyed_formula_subclass_family_candidates,
+)
 
 
 def _direct_terminal_return(
@@ -778,15 +2897,18 @@ def _direct_terminal_return(
 
 
 def _return_expression_is_literal_default(statement: ast.Return) -> bool:
-    return statement.value is not None and _literal_default_kind(statement.value) is not None
+    return (
+        statement.value is not None
+        and _literal_default_kind(statement.value) is not None
+    )
 
 
 def _runtime_authority_return_guard_chain_from_elif(
     statement: ast.stmt,
-) -> tuple[tuple[int, str, str, bool], ...]:
+) -> ReturnGuardBranchChain:
     if not isinstance(statement, ast.If):
         return ()
-    chain: list[tuple[int, str, str, bool]] = []
+    chain: list[ReturnGuardBranchObservation] = []
     current: ast.If | None = statement
     while current is not None:
         branch_return = _direct_terminal_return(current.body)
@@ -796,7 +2918,11 @@ def _runtime_authority_return_guard_chain_from_elif(
             (
                 current.lineno,
                 ast.unparse(current.test),
-                ast.unparse(branch_return.value) if branch_return.value is not None else "None",
+                (
+                    ast.unparse(branch_return.value)
+                    if branch_return.value is not None
+                    else "None"
+                ),
                 _return_expression_is_literal_default(branch_return),
             )
         )
@@ -810,8 +2936,8 @@ def _runtime_authority_return_guard_chain_from_elif(
 def _runtime_authority_return_guard_chain_from_sequence(
     body: Sequence[ast.stmt],
     start: int,
-) -> tuple[tuple[int, str, str, bool], ...]:
-    chain: list[tuple[int, str, str, bool]] = []
+) -> ReturnGuardBranchChain:
+    chain: list[ReturnGuardBranchObservation] = []
     index = start
     while index < len(body):
         statement = body[index]
@@ -824,7 +2950,11 @@ def _runtime_authority_return_guard_chain_from_sequence(
             (
                 statement.lineno,
                 ast.unparse(statement.test),
-                ast.unparse(branch_return.value) if branch_return.value is not None else "None",
+                (
+                    ast.unparse(branch_return.value)
+                    if branch_return.value is not None
+                    else "None"
+                ),
                 _return_expression_is_literal_default(branch_return),
             )
         )
@@ -832,50 +2962,28 @@ def _runtime_authority_return_guard_chain_from_sequence(
     return tuple(chain) if len(chain) >= 2 else ()
 
 
+RUNTIME_AUTHORITY_RETURN_GUARD_COLLECTION_SPEC = BranchChainCollectionSpec(
+    _runtime_authority_return_guard_chain_from_elif,
+    _runtime_authority_return_guard_chain_from_sequence,
+    branch_observation_first_line,
+    return_guard_chain_has_literal_default,
+)
+
+
 def _runtime_authority_return_guard_chains_from_body(
     body: Sequence[ast.stmt],
-) -> tuple[tuple[tuple[int, str, str, bool], ...], ...]:
-    trimmed_body = tuple(_trim_docstring_body(tuple(body)))
-    chains: list[tuple[tuple[int, str, str, bool], ...]] = []
-    seen: set[tuple[int, ...]] = set()
-
-    for index, statement in enumerate(trimmed_body):
-        for chain in (
-            _runtime_authority_return_guard_chain_from_elif(statement),
-            _runtime_authority_return_guard_chain_from_sequence(trimmed_body, index),
-        ):
-            if not chain:
-                continue
-            if not any(is_literal_default for _line, _test, _result, is_literal_default in chain):
-                continue
-            line_key = tuple((line for line, _test, _result, _default in chain))
-            if line_key in seen:
-                continue
-            seen.add(line_key)
-            chains.append(chain)
-
-        nested_bodies: list[Sequence[ast.stmt]] = []
-        for attr_name in ("body", "orelse", "finalbody"):
-            nested = getattr(statement, attr_name, None)
-            if isinstance(nested, list):
-                nested_bodies.append(nested)
-        if isinstance(statement, ast.Try):
-            nested_bodies.extend(handler.body for handler in statement.handlers)
-        if isinstance(statement, ast.Match):
-            nested_bodies.extend(match_case.body for match_case in statement.cases)
-        for nested_body in nested_bodies:
-            chains.extend(_runtime_authority_return_guard_chains_from_body(nested_body))
-
-    return tuple(chains)
+) -> ReturnGuardBranchChains:
+    return collect_nested_branch_chains_from_body(
+        body,
+        RUNTIME_AUTHORITY_RETURN_GUARD_COLLECTION_SPEC,
+    )
 
 
 def _runtime_authority_name_is_interesting(text: str) -> bool:
     if _runtime_semantic_axis_is_interesting(text):
         return True
     normalized = text.lower()
-    return any(
-        (token in normalized for token in _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
-    )
+    return any((token in normalized for token in _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS))
 
 
 class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
@@ -904,12 +3012,20 @@ class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
                 f"{owner_name}.{function.name}"
             ):
                 continue
-            for chain in _runtime_authority_return_guard_chains_from_body(function.body):
+            for chain in _runtime_authority_return_guard_chains_from_body(
+                function.body
+            ):
                 test_summary = ", ".join(
-                    (test_expression for _line, test_expression, _result, _default in chain[:3])
+                    (
+                        test_expression
+                        for _line, test_expression, _result, _default in chain[:3]
+                    )
                 )
                 result_summary = ", ".join(
-                    (result_expression for _line, _test, result_expression, _default in chain[:3])
+                    (
+                        result_expression
+                        for _line, _test, result_expression, _default in chain[:3]
+                    )
                 )
                 evidence = tuple(
                     SourceLocation(
@@ -937,7 +3053,7 @@ class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
                         codemod_patch=(
                             f"# Replace return guards in `{qualname}` with one formal "
                             "policy/profile authority.\n"
-                            "# Move case precedence and missing/default behavior into the Lean-backed "
+                            "# Move case precedence and missing/default behavior into the formal "
                             "runtime profile and make this authority a thin adapter over that result."
                         ),
                         metrics=BranchCountMetrics(branch_site_count=len(chain)),
@@ -946,6 +3062,391 @@ class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
                         ),
                     )
                 )
+        return findings
+
+
+_RELATION_COMPARISON_AXIS_TOKENS = frozenset(
+    (
+        "certificate",
+        "certified",
+        "case",
+        "count",
+        "family",
+        "index",
+        "key",
+        "length",
+        "original",
+        "previous",
+        "rank",
+        "relation",
+        "schema",
+        "shape",
+        "signature",
+        "size",
+        "type",
+        "version",
+    )
+)
+_RELATION_ARTIFACT_RESULT_TOKENS = frozenset(
+    (
+        "certificate",
+        "carrier",
+        "plan",
+        "policy",
+        "profile",
+        "proof",
+        "projection",
+        "record",
+        "result",
+        "summary",
+        "witness",
+    )
+)
+
+
+def _relation_text_has_axis(text: str) -> bool:
+    return bool(
+        set(_runtime_semantic_identifier_tokens(text))
+        & _RELATION_COMPARISON_AXIS_TOKENS
+    )
+
+
+def _relation_result_has_artifact(text: str) -> bool:
+    return bool(
+        set(_runtime_semantic_identifier_tokens(text))
+        & _RELATION_ARTIFACT_RESULT_TOKENS
+    )
+
+
+def _relation_compare_has_axis(test: ast.AST) -> bool:
+    if isinstance(test, ast.BoolOp):
+        return any(_relation_compare_has_axis(value) for value in test.values)
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _relation_compare_has_axis(test.operand)
+    if not isinstance(test, ast.Compare):
+        return False
+    operands = (test.left, *tuple(test.comparators))
+    return any(_relation_text_has_axis(ast.unparse(operand)) for operand in operands)
+
+
+def _relation_artifact_factory_return(value: ast.AST) -> str | None:
+    if not isinstance(value, ast.Call):
+        return None
+    expression = ast.unparse(value)
+    if _relation_result_has_artifact(expression):
+        return expression
+    if isinstance(value.func, ast.Attribute) and value.func.attr.startswith("from_"):
+        return expression
+    return None
+
+
+def _load_bearing_relation_branch(
+    statement: ast.If,
+) -> SemanticBranchObservation | None:
+    branch_return = _direct_terminal_return(statement.body)
+    if branch_return is None or branch_return.value is None:
+        return None
+    test_expression = ast.unparse(statement.test)
+    if not _relation_compare_has_axis(statement.test):
+        return None
+    result_expression = _relation_artifact_factory_return(branch_return.value)
+    if result_expression is None:
+        return None
+    return statement.lineno, test_expression, result_expression
+
+
+def _load_bearing_relation_elif_chain(
+    statement: ast.stmt,
+) -> SemanticBranchChain:
+    if not isinstance(statement, ast.If):
+        return ()
+    chain: list[SemanticBranchObservation] = []
+    current: ast.If | None = statement
+    while current is not None:
+        branch = _load_bearing_relation_branch(current)
+        if branch is None:
+            return ()
+        chain.append(branch)
+        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+            current = current.orelse[0]
+            continue
+        current = None
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+def _load_bearing_relation_sequential_guard_chain(
+    body: Sequence[ast.stmt],
+    start: int,
+) -> SemanticBranchChain:
+    chain: list[SemanticBranchObservation] = []
+    index = start
+    while index < len(body):
+        statement = body[index]
+        if not isinstance(statement, ast.If) or statement.orelse:
+            break
+        branch = _load_bearing_relation_branch(statement)
+        if branch is None:
+            break
+        chain.append(branch)
+        index += 1
+    return tuple(chain) if len(chain) >= 2 else ()
+
+
+LOAD_BEARING_RELATION_COLLECTION_SPEC = BranchChainCollectionSpec(
+    _load_bearing_relation_elif_chain,
+    _load_bearing_relation_sequential_guard_chain,
+    branch_observation_first_line,
+    all_branch_chains_active,
+)
+
+
+def _load_bearing_relation_chains_from_body(
+    body: Sequence[ast.stmt],
+) -> SemanticBranchChains:
+    return collect_nested_branch_chains_from_body(
+        body,
+        LOAD_BEARING_RELATION_COLLECTION_SPEC,
+    )
+
+
+class LoadBearingRelationBranchDetector(PerModuleIssueDetector):
+    detector_id = "load_bearing_relation_branch"
+    finding_spec = high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Load-bearing relation dispatch should be a nominal case family",
+        "An Authority method that chooses certificate, summary, or projection outputs through ordered relation/count/domain branches is encoding proof-relevant semantics in branch order. The relation cases should be named nominal classes with exactly-one-case selection.",
+        "nominal relation-case algebra owns certificate/domain dispatch",
+        "Authority method branches over proof-relevant source-domain relations",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        findings: list[RefactorFinding] = []
+        for qualname, function in _iter_named_functions(module):
+            if "." not in qualname:
+                continue
+            owner_name = qualname.rsplit(".", 1)[0]
+            if "Authority" not in owner_name:
+                continue
+            for chain in _load_bearing_relation_chains_from_body(function.body):
+                test_summary = ", ".join(
+                    (test_expression for _line, test_expression, _result in chain[:3])
+                )
+                result_summary = ", ".join(
+                    (result_expression for _line, _test, result_expression in chain[:3])
+                )
+                evidence = tuple(
+                    SourceLocation(
+                        str(module.path),
+                        line,
+                        f"{qualname}:{test_expression}->{result_expression}",
+                    )
+                    for line, test_expression, result_expression in chain[:6]
+                )
+                findings.append(
+                    self.build_finding(
+                        (
+                            f"`{qualname}` keeps {len(chain)} load-bearing "
+                            f"relation branches ({test_summary}) selecting "
+                            f"{result_summary}."
+                        ),
+                        evidence,
+                        scaffold=(
+                            "class RelationCase(ABC, metaclass=AutoRegisterMeta):\n"
+                            "    __registry_key__ = 'case_name'\n"
+                            "    @abstractmethod\n"
+                            "    def matches(self, request): ...\n"
+                            "    @abstractmethod\n"
+                            "    def certificate(self, request): ...\n\n"
+                            "# One authority should require exactly one matching relation case;\n"
+                            "# branch order must not carry proof-relevant semantics."
+                        ),
+                        codemod_patch=(
+                            f"# Replace the ordered relation branches in `{qualname}` "
+                            "with an AutoRegisterMeta-backed relation-case family.\n"
+                            "# Move each source-domain/certificate relation into a named case and "
+                            "make the authority require exactly one matching case."
+                        ),
+                        metrics=BranchCountMetrics(branch_site_count=len(chain)),
+                        capability_gap=(
+                            "proof-relevant certificate/domain dispatch is a nominal relation-case algebra"
+                        ),
+                    )
+                )
+        return findings
+
+
+_SEMANTIC_CERTIFICATE_FALLBACK_TEST_TOKENS = frozenset(
+    (
+        "certificate",
+        "certified",
+        "compatibility",
+        "count",
+        "family",
+        "formal",
+        "key",
+        "length",
+        "policy",
+        "proof",
+        "reuse",
+        "schema",
+        "shape",
+        "signature",
+        "size",
+        "theorem",
+        "version",
+    )
+)
+_SEMANTIC_CERTIFICATE_FALLBACK_RETURN_TOKENS = frozenset(
+    (
+        "certificate",
+        "current",
+        "fallback",
+        "previous",
+        "reuse",
+        "witness",
+    )
+)
+
+
+def _semantic_certificate_fallback_test_expression(
+    test: ast.AST,
+) -> str | None:
+    if isinstance(test, ast.BoolOp):
+        for value in test.values:
+            expression = _semantic_certificate_fallback_test_expression(value)
+            if expression is not None:
+                return expression
+        return None
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        return _semantic_certificate_fallback_test_expression(test.operand)
+    if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+        return None
+    operator = test.ops[0]
+    if not isinstance(operator, (ast.NotEq, ast.NotIn)):
+        return None
+    expression = ast.unparse(test)
+    lower_expression = expression.lower()
+    tokens = set(_runtime_semantic_identifier_tokens(expression))
+    if "signature" in tokens or "signature" in lower_expression:
+        return expression
+    if "certificate" in tokens or "certificate" in lower_expression:
+        return expression
+    text_matches = tuple(
+        token
+        for token in _SEMANTIC_CERTIFICATE_FALLBACK_TEST_TOKENS
+        if token in lower_expression
+    )
+    if len((tokens & _SEMANTIC_CERTIFICATE_FALLBACK_TEST_TOKENS)) >= 3:
+        return expression
+    if len(text_matches) >= 3:
+        return expression
+    return None
+
+
+def _semantic_certificate_fallback_return_expression(
+    statement: ast.If,
+) -> str | None:
+    if any(isinstance(item, ast.Raise) for item in statement.body):
+        return None
+    branch_return = _direct_terminal_return(statement.body)
+    if branch_return is None or branch_return.value is None:
+        return None
+    if _literal_default_kind(branch_return.value) is not None:
+        return None
+    expression = ast.unparse(branch_return.value)
+    tokens = set(_runtime_semantic_identifier_tokens(expression))
+    if not tokens & _SEMANTIC_CERTIFICATE_FALLBACK_RETURN_TOKENS:
+        return None
+    return expression
+
+
+class SemanticCertificateFallbackDetector(PerModuleIssueDetector):
+    detector_id = "semantic_certificate_fallback"
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic mismatch guards should produce typed certificates",
+        "A runtime Authority that compares proof-relevant signatures, certificates, or domain counts and returns an existing object on mismatch is a hidden fallback. The semantic relation should be represented as a typed certificate whose construction either succeeds through a formal rule or fails loudly.",
+        "typed formal certificate owns semantic reuse and mismatch behavior",
+        "proof-relevant mismatch guard returns a runtime fallback object",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        detector = self
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            traverse_class_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+            traverse_function_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+
+            def visit_If(self, node: ast.If) -> None:
+                test_expression = _semantic_certificate_fallback_test_expression(
+                    node.test
+                )
+                return_expression = _semantic_certificate_fallback_return_expression(
+                    node
+                )
+                if test_expression is not None and return_expression is not None:
+                    qualname = ".".join(
+                        (*tuple(self.class_stack), *tuple(self.function_stack))
+                    )
+                    owner = qualname or "module"
+                    findings.append(
+                        detector.build_finding(
+                            (
+                                f"`{owner}` branches on proof-relevant "
+                                f"`{test_expression}` and returns "
+                                f"`{return_expression}` instead of requiring a "
+                                "typed certificate."
+                            ),
+                            (
+                                SourceLocation(
+                                    str(module.path),
+                                    node.lineno,
+                                    f"{owner}:{test_expression}->{return_expression}",
+                                ),
+                            ),
+                            scaffold=(
+                                "@dataclass(frozen=True)\n"
+                                "class SemanticReuseCertificate:\n"
+                                "    signature: FormalSignature\n"
+                                "    payload: tuple[RuntimeBlock, ...]\n\n"
+                                "    @classmethod\n"
+                                "    def from_blocks(cls, blocks):\n"
+                                "        # Validate one formal family here; raise on mismatch.\n"
+                                "        ...\n\n"
+                                "# Consumers should accept SemanticReuseCertificate, not raw blocks plus fallback branches."
+                            ),
+                            codemod_patch=(
+                                f"# Replace the fallback branch in `{owner}` with "
+                                "construction of a typed formal certificate.\n"
+                                "# Move the mismatch rule into the certificate constructor and "
+                                "raise when no theorem-backed runtime morphism exists."
+                            ),
+                            capability_gap=(
+                                "proof-relevant reuse compatibility is a typed formal certificate"
+                            ),
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
         return findings
 
 
@@ -2568,6 +5069,199 @@ class StringDispatchDetector(PerModuleIssueDetector):
         return findings
 
 
+_SUBSTRING_CLASSIFIER_NAME_RE = re.compile(
+    r"(^|_)(case|category|field|key|kind|mode|name|role|selector|state|status|tag|type)($|_)"
+)
+
+
+@dataclass(frozen=True)
+class SemanticSubstringClassifierCandidate:
+    evidence: SourceLocation
+    owner: str
+    literal: str
+    classifier_expression: str
+    operation: str
+
+
+def _expression_source(node: ast.AST) -> str:
+    return ast.unparse(node)
+
+
+def _is_str_conversion(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "str"
+        and len(node.args) == 1
+    )
+
+
+_EXCEPTION_VALUE_NAMES = frozenset(("exc", "err", "error", "exception"))
+
+
+def _is_exception_message_conversion(node: ast.AST) -> bool:
+    return (
+        _is_str_conversion(node)
+        and isinstance(node.args[0], ast.Name)
+        and node.args[0].id in _EXCEPTION_VALUE_NAMES
+    )
+
+
+def _classifier_leaf_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+class ScalarClassifierOperandAuthority:
+    @classmethod
+    def matches(cls, node: ast.AST) -> bool:
+        if _is_exception_message_conversion(node):
+            return False
+        if _is_str_conversion(node):
+            return True
+        leaf_name = _classifier_leaf_name(node)
+        if leaf_name is not None:
+            return bool(_SUBSTRING_CLASSIFIER_NAME_RE.search(leaf_name))
+        if isinstance(node, ast.Subscript):
+            return cls.matches(node.value)
+        return False
+
+
+def _substring_classifier_candidate(
+    module: ParsedModule,
+    owner: str,
+    node: ast.Compare,
+    left: ast.AST,
+    right: ast.AST,
+) -> SemanticSubstringClassifierCandidate | None:
+    literal = _constant_string(left)
+    classifier = right
+    if literal is None:
+        literal = _constant_string(right)
+        classifier = left
+    if literal is None or len(literal) < 2:
+        return None
+    if not ScalarClassifierOperandAuthority.matches(classifier):
+        return None
+    classifier_expression = _expression_source(classifier)
+    return SemanticSubstringClassifierCandidate(
+        evidence=SourceLocation(str(module.path), node.lineno, classifier_expression),
+        owner=owner,
+        literal=literal,
+        classifier_expression=classifier_expression,
+        operation="substring membership",
+    )
+
+
+_STRING_SHAPE_CLASSIFIER_METHODS = frozenset(("endswith", "startswith"))
+
+
+def _string_shape_classifier_candidate(
+    module: ParsedModule,
+    owner: str,
+    node: ast.Call,
+) -> SemanticSubstringClassifierCandidate | None:
+    if not isinstance(node.func, ast.Attribute):
+        return None
+    if node.func.attr not in _STRING_SHAPE_CLASSIFIER_METHODS:
+        return None
+    if len(node.args) != 1:
+        return None
+    literal = _constant_string(node.args[0])
+    if literal is None or len(literal) < 2:
+        return None
+    classifier = node.func.value
+    if not ScalarClassifierOperandAuthority.matches(classifier):
+        return None
+    classifier_expression = _expression_source(classifier)
+    return SemanticSubstringClassifierCandidate(
+        evidence=SourceLocation(str(module.path), node.lineno, classifier_expression),
+        owner=owner,
+        literal=literal,
+        classifier_expression=classifier_expression,
+        operation=f"{node.func.attr} method",
+    )
+
+
+def _semantic_substring_classifier_candidates(
+    module: ParsedModule,
+) -> tuple[SemanticSubstringClassifierCandidate, ...]:
+    candidates: list[SemanticSubstringClassifierCandidate] = []
+
+    class Visitor(ClassFunctionStackNodeVisitor):
+        traverse_class_body = ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+        traverse_function_body = (
+            ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+        )
+
+        def visit_Compare(self, node: ast.Compare) -> None:
+            operands = (node.left, *node.comparators)
+            for operator, left, right in zip(node.ops, operands, operands[1:]):
+                if not isinstance(operator, (ast.In, ast.NotIn)):
+                    continue
+                candidate = _substring_classifier_candidate(
+                    module,
+                    self.qualname,
+                    node,
+                    left,
+                    right,
+                )
+                if candidate is not None:
+                    candidates.append(candidate)
+            self.generic_visit(node)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            candidate = _string_shape_classifier_candidate(
+                module,
+                self.qualname,
+                node,
+            )
+            if candidate is not None:
+                candidates.append(candidate)
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(candidates)
+
+
+declare_candidate_rule_detector(
+    SemanticSubstringClassifierCandidate,
+    high_confidence_spec(
+        PatternId.CLOSED_FAMILY_DISPATCH,
+        "Substring classifiers should become nominal dispatch",
+        "Literal substring, prefix, or suffix checks over key/name-like values derive behavior from spelling instead of a declared variant axis. That makes the rule partial and lets unrelated spelling changes alter runtime behavior.",
+        "nominal classifier values with exact equality, enum keys, or registered variants",
+        "single-site semantic classification is performed through literal string-shape testing",
+        _CLOSED_FAMILY_DISPATCH_AUTHORITATIVE_DISPATCH_CAPABILITY_TAGS,
+        _STRING_DISPATCH_CLOSED_FAMILY_CASES_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.owner}` classifies `{candidate.classifier_expression}` "
+        f"with {candidate.operation} literal `{candidate.literal}`."
+    ),
+    scaffold=lambda candidate: (
+        "class CaseAxis(Enum):\n"
+        "    FIRST = 'first'\n\n"
+        "def classify(value: CaseAxis) -> Result:\n"
+        "    return CASE_DISPATCH[value]()"
+    ),
+    codemod_patch=lambda candidate: (
+        "# Replace substring membership with an exact nominal classifier. "
+        "Parse external text at the boundary once, then dispatch on the "
+        "typed case value."
+    ),
+    metrics=lambda candidate: DispatchCountMetrics(
+        dispatch_site_count=1,
+        dispatch_axis=candidate.classifier_expression,
+        literal_cases=(candidate.literal,),
+    ),
+    candidate_collector=_semantic_substring_classifier_candidates,
+)
+
+
 class NumericLiteralDispatchDetector(PerModuleIssueDetector):
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
@@ -2885,8 +5579,8 @@ def _embedded_static_payload_candidates(
                 ),
             )
         )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
     )
 
 
@@ -3105,8 +5799,8 @@ def _unreferenced_private_function_candidates(
                 ),
             )
         )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
     )
 
 
@@ -4064,6 +6758,27 @@ def _private_helper_semantic_cluster_candidates(
     )
 
 
+class PrivateHelperEscapeAuthority:
+    def escapes_private_scope(self, caller_symbols: tuple[str, ...]) -> bool:
+        if len(caller_symbols) >= 2:
+            return True
+        return self.has_single_public_module_caller(caller_symbols)
+
+    def has_single_public_module_caller(
+        self,
+        caller_symbols: tuple[str, ...],
+    ) -> bool:
+        caller_symbol = single_item(caller_symbols)
+        return bool(
+            caller_symbol is not None
+            and "." not in caller_symbol
+            and not _is_private_symbol_name(caller_symbol)
+        )
+
+
+PRIVATE_HELPER_ESCAPE_AUTHORITY = PrivateHelperEscapeAuthority()
+
+
 def _non_nominal_private_helper_candidates(
     module: ParsedModule,
     config: DetectorConfig,
@@ -4093,13 +6808,18 @@ def _non_nominal_private_helper_candidates(
             ),
         ):
             continue
-        line_count = _function_line_count(function)
-        if line_count < config.min_unreferenced_private_function_lines:
-            continue
         caller_symbols = private_helper_call_graph.caller_symbols(
             function_name=function.name, qualname=qualname
         )
-        if len(caller_symbols) < 2:
+        if not PRIVATE_HELPER_ESCAPE_AUTHORITY.escapes_private_scope(caller_symbols):
+            continue
+        line_count = _function_line_count(function)
+        if (
+            not PRIVATE_HELPER_ESCAPE_AUTHORITY.has_single_public_module_caller(
+                caller_symbols
+            )
+            and line_count < config.min_unreferenced_private_function_lines
+        ):
             continue
         parameter_names = FUNCTION_PARAMETER_NAME_PROJECTION.names(function)
         caller_functions = private_helper_call_graph.caller_functions(
@@ -4129,8 +6849,8 @@ def _non_nominal_private_helper_candidates(
                 call_site_count=call_site_count,
             )
         )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.qualname)
+    return tuple(
+        sorted(candidates, key=lambda item: (item.file_path, item.line, item.qualname))
     )
 
 
@@ -4188,10 +6908,10 @@ class NonNominalPrivateHelperDetector(
 ):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Reused private helper should become nominal",
-        "A module-level private helper that is called from multiple functions has become a hidden API. Private lexical residue is acceptable only while it is tiny and locally owned; once multiple callsites share it, the helper should move into a nominal owner such as an ABC method, strategy object, descriptor, product/schema object, or registered effect step.",
-        "explicit nominal owner for reused private helper behavior",
-        "module-level private helper is reused by multiple functions without a nominal owner",
+        "Escaped private helper should become nominal",
+        "A module-level private helper that is called from multiple functions or exposed through a public module function has escaped local lexical residue. The helper should move into a nominal owner such as an ABC method, strategy object, descriptor, product/schema object, or registered effect step.",
+        "explicit nominal owner for private helper behavior that escapes local private scope",
+        "module-level private helper escapes private lexical ownership without a nominal owner",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_AUTHORITATIVE_CAPABILITY_TAGS,
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
@@ -4461,6 +7181,42 @@ def _normalized_small_method_template(
     )
 
 
+def _normalized_cross_class_method_template(
+    body: tuple[ast.stmt, ...],
+) -> tuple[str, ...]:
+    class Normalizer(ast.NodeTransformer):
+        def visit_arg(self, node: ast.arg) -> ast.arg:
+            return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id in _NORMALIZED_TEMPLATE_STABLE_NAMES:
+                return node
+            return ast.copy_location(ast.Name(id="NAME", ctx=node.ctx), node)
+
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            if isinstance(node.value, str):
+                return ast.copy_location(ast.Constant(value="STR"), node)
+            if isinstance(node.value, (int, float, complex, bool, type(None))):
+                return ast.copy_location(ast.Constant(value="CONST"), node)
+            return node
+
+        def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+            return ast.copy_location(ast.Constant(value="LAMBDA_RESIDUE"), node)
+
+    normalizer = Normalizer()
+    return tuple(
+        (
+            ast.dump(
+                ast.fix_missing_locations(
+                    cast(ast.stmt, normalizer.visit(copy.deepcopy(statement)))
+                ),
+                include_attributes=False,
+            )
+            for statement in body
+        )
+    )
+
+
 def _method_name_family_tokens(method_names: tuple[str, ...]) -> tuple[str, ...]:
     token_sets = [
         set(CLASS_NAME_ALGEBRA.ordered_tokens(method_name.strip("_")))
@@ -4550,6 +7306,149 @@ class SiblingSmallMethodTemplateDetector(
                 duplicate_site_count=len(template_candidate.method_names),
                 statement_count=template_candidate.statement_count,
                 class_count=1,
+                method_symbols=template_candidate.method_names,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class CrossClassSmallMethodTemplateCandidate(MethodEvidenceLocationsCandidate):
+    owner_name: str
+    owner_names: tuple[str, ...]
+    method_name: str
+    statement_count: int
+    parameter_count: int
+
+    @property
+    def witness_name(self) -> str:
+        return self.method_name
+
+
+_CLASSLEVEL_METHOD_DECORATORS = frozenset({"classmethod", "staticmethod"})
+
+
+def _decorator_simple_name(decorator: ast.AST) -> str | None:
+    if isinstance(decorator, ast.Name):
+        return decorator.id
+    if isinstance(decorator, ast.Attribute):
+        return decorator.attr
+    if isinstance(decorator, ast.Call):
+        return _decorator_simple_name(decorator.func)
+    return None
+
+
+def _has_only_nominal_method_decorators(function: _RuntimeFunctionNode) -> bool:
+    decorator_names = tuple(
+        _decorator_simple_name(decorator) for decorator in function.decorator_list
+    )
+    return all(
+        decorator_name in _CLASSLEVEL_METHOD_DECORATORS
+        for decorator_name in decorator_names
+    )
+
+
+def _public_method_template_owner(qualname: str, function_name: str) -> str | None:
+    if "." not in qualname:
+        return None
+    if _is_private_symbol_name(function_name) or function_name.startswith("__"):
+        return None
+    return qualname.rsplit(".", 1)[0]
+
+
+def _cross_class_small_method_template_candidates(
+    module: ParsedModule,
+) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
+    grouped: dict[
+        tuple[str, int, tuple[str, ...]],
+        list[tuple[str, str, ast.FunctionDef | ast.AsyncFunctionDef]],
+    ] = defaultdict(list)
+    for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
+        owner_name = _public_method_template_owner(qualname, function.name)
+        if owner_name is None:
+            continue
+        if not _has_only_nominal_method_decorators(function):
+            continue
+        body = _trimmed_function_body(function)
+        if not 1 <= len(body) <= 8:
+            continue
+        parameter_count = len(function.args.args) + len(function.args.kwonlyargs)
+        key = (
+            function.name,
+            parameter_count,
+            _normalized_cross_class_method_template(body),
+        )
+        grouped[key].append((owner_name, qualname, function))
+
+    candidates: list[CrossClassSmallMethodTemplateCandidate] = []
+    for (method_name, parameter_count, template), functions in grouped.items():
+        owner_names = sorted_tuple({owner_name for owner_name, _, _ in functions})
+        if len(owner_names) < 2:
+            continue
+        ordered = sorted_tuple(functions, key=lambda item: (item[2].lineno, item[1]))
+        method_names = tuple(qualname for _, qualname, _ in ordered)
+        line_numbers = tuple(function.lineno for _, _, function in ordered)
+        candidates.append(
+            CrossClassSmallMethodTemplateCandidate(
+                file_path=str(module.path),
+                line=line_numbers[0],
+                owner_name=", ".join(owner_names),
+                method_names=method_names,
+                line_numbers=line_numbers,
+                owner_names=owner_names,
+                method_name=method_name,
+                statement_count=len(template),
+                parameter_count=parameter_count,
+            )
+        )
+    return sorted_tuple(
+        candidates, key=lambda item: (item.file_path, item.line, item.method_name)
+    )
+
+
+class CrossClassSmallMethodTemplateDetector(
+    ModuleCollectorCandidateDetector[CrossClassSmallMethodTemplateCandidate]
+):
+    finding_spec = high_confidence_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Public authority methods repeat across class leaves",
+        "Public, classmethod, or staticmethod bodies repeated across distinct class owners are a hidden behavior family. The shared algorithm should live in one ABC/template-method base while leaf classes declare only the nominal residue that really varies.",
+        "one inherited authority algorithm with explicit leaf residue",
+        "same public method template repeats across class owners",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
+    )
+
+    def _candidate_items(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> Sequence[object]:
+        return _cross_class_small_method_template_candidates(module)
+
+    def _finding_for_candidate(
+        self, template_candidate: CrossClassSmallMethodTemplateCandidate
+    ) -> RefactorFinding:
+        owner_summary = ", ".join(template_candidate.owner_names)
+        return self.build_finding(
+            (
+                f"Classes {owner_summary} repeat `{template_candidate.method_name}` "
+                f"with the same {template_candidate.statement_count}-statement public method template."
+            ),
+            template_candidate.evidence_locations,
+            scaffold=(
+                f"class {template_candidate.method_name.title().replace('_', '')}TemplateBase(ABC):\n"
+                f"    def {template_candidate.method_name}(self, *args, **kwargs):\n"
+                "        return self._shared_template(*args, **kwargs)\n\n"
+                "    @abstractmethod\n"
+                "    def _shared_template(self, *args, **kwargs): ..."
+            ),
+            codemod_patch=(
+                f"# Move repeated `{template_candidate.method_name}` mechanics from "
+                f"{template_candidate.owner_names} into one inherited ABC/template-method base.\n"
+                "# Keep only class-level field names, enum families, or other irreducible residue in leaves."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=len(template_candidate.method_names),
+                statement_count=template_candidate.statement_count,
+                class_count=len(template_candidate.owner_names),
                 method_symbols=template_candidate.method_names,
             ),
         )
@@ -5649,7 +8548,7 @@ class FlattenedProjectionPropertyDetector(
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Flattened compatibility projection properties should be deleted",
-        "After a role-prefixed field bundle is moved into nominal nested records, adding properties such as `ligand_coords -> ligand.coords` preserves the old flattened schema as a shadow API. That is a local minimum: callers should move to the nested role record directly so the new schema is the only authority.",
+        "After a role-prefixed field bundle is moved into nominal nested records, adding properties such as `source_value -> source.value` preserves the old flattened schema as a shadow API. That is a local minimum: callers should move to the nested role record directly so the new schema is the only authority.",
         "direct nested record access instead of flattened compatibility aliases",
         "class exposes old role-prefixed fields as properties over nested role records",
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_NOMINAL_IDENTITY_CAPABILITY_TAGS,

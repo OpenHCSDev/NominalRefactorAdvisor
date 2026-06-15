@@ -128,6 +128,7 @@ from nominal_refactor_advisor.taxonomy import ConfidenceLevel
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
 _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID = "semantic_overlap_abc_optimization"
+_SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID = "semantic_substring_classifier"
 
 
 def _finding_spec(
@@ -192,7 +193,9 @@ FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
 IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_shell"
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
+OPAQUE_OBJECT_ANNOTATION_DETECTOR_ID = "opaque_object_annotation"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
+NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID = "non_nominal_private_helper"
 UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
 PRIVATE_COHORT_SHOULD_BE_MODULE_DETECTOR_ID = "private_cohort_should_be_module"
@@ -1873,6 +1876,121 @@ class ZMQExecutionRequestPayload:
     assert "NominalIdentityCarrier" in (finding.scaffold or "")
 
 
+def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
+    detector_root = (
+        Path(__file__).resolve().parents[1] / "nominal_refactor_advisor" / "detectors"
+    )
+    forbidden_terms = (
+        "dqdock",
+        "dq_dock",
+        "pdb",
+        "rmsd",
+        "1ajp",
+        "1xd1",
+        "docking",
+        "ligand",
+        "receptor",
+        "zero_residual",
+    )
+    violations = []
+    for path in sorted(detector_root.glob("*.py")):
+        text = path.read_text(encoding="utf-8").lower()
+        violations.extend((path.name, term) for term in forbidden_terms if term in text)
+    assert violations == []
+
+
+def test_detects_direct_reflective_builtin_calls(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_contract.py",
+        """
+class RuntimeAdapter:
+    def value_for(self, source, field_name):
+        if hasattr(source, field_name):
+            return getattr(source, field_name)
+        raise ValueError("missing declared field")
+""",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "direct_reflective_builtin_call"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_BOUNDARY
+    assert "typed/nominal authority" in (finding.codemod_patch or "")
+
+
+def test_detects_reflective_attribute_hooks(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_contract.py",
+        """
+class DynamicSource:
+    def __getattr__(self, name):
+        return self.values[name]
+""",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "direct_reflective_attribute_hook"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_BOUNDARY
+    assert "explicit value()/set_value()" in (finding.codemod_patch or "")
+
+
+def test_detects_repeated_literal_schema_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_schema.py",
+        """
+def required_field(payload, name, owner):
+    return payload[name]
+
+
+def optional_field(payload, name, owner):
+    return payload.get(name)
+
+
+def dependency_fields(raw_spec, owner):
+    kind = required_field(raw_spec, "kind", owner)
+    scope = optional_field(raw_spec, "scope", owner)
+    coordinate = required_field(raw_spec, "coordinate", owner)
+    return kind, scope, coordinate
+
+
+def projection_fields(raw_spec, owner):
+    if "kind" in raw_spec:
+        scope = optional_field(raw_spec, "scope", owner)
+    else:
+        scope = None
+    coordinate = raw_spec["coordinate"]
+    return scope, coordinate
+""",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "literal_schema_dispatch"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "dependency_fields" in finding.summary
+    assert "projection_fields" in finding.summary
+    assert "kind" in finding.summary
+    assert "scope" in finding.summary
+    assert "coordinate" in finding.summary
+    assert "nominal schema authority" in (finding.codemod_patch or "")
+
+
 def test_ignores_cross_domain_public_methods_with_same_shape(
     tmp_path: Path,
 ) -> None:
@@ -2441,6 +2559,52 @@ def test_detects_two_case_string_dispatch_as_polymorphism(tmp_path: Path) -> Non
     assert "AutoRegisterMeta" in (finding.scaffold or "")
 
 
+def test_detects_single_literal_discriminator_branches(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/parser.py",
+        '\nclass PortTypeAuthority:\n    def scalar_type(self, payload, kind):\n        if kind == "opaque":\n            return None\n        return payload["scalar_type"]\n\n    def rank(self, payload, kind):\n        if kind in {"scalar", "opaque"}:\n            return None\n        return payload["rank"]\n',
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "literal_discriminator_branch"
+    ]
+
+    summaries = "\n".join(finding.summary for finding in findings)
+    assert "PortTypeAuthority.scalar_type" in summaries
+    assert "PortTypeAuthority.rank" in summaries
+    assert "`kind`" in summaries
+    assert "'opaque'" in summaries
+    assert "'scalar'" in summaries
+    assert any(
+        "closed-axis authority lookup" in (finding.codemod_patch or "")
+        for finding in findings
+    )
+
+
+def test_detects_string_keyed_formula_subclass_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/policy.py",
+        '\nclass FrontierMode:\n    kind = None\n\n    def bound(self, *, width, count):\n        raise NotImplementedError\n\n\nclass WidthCountMode(FrontierMode):\n    kind = "width_count"\n\n    def bound(self, *, width, count):\n        return max(1, width * count)\n\n\nclass PairCountMode(FrontierMode):\n    kind = "pair_count"\n\n    def bound(self, *, width, count):\n        return max(1, count * count)\n',
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "string_keyed_formula_subclass_family"
+        )
+    )
+
+    assert "FrontierMode" in finding.summary
+    assert "width_count" in finding.summary
+    assert "pair_count" in finding.summary
+    assert "typed formula schema" in (finding.codemod_patch or "")
+
+
 def test_detects_inline_enum_subset_guard_policy(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -2507,6 +2671,32 @@ def test_detects_repeated_concrete_type_case_analysis(tmp_path: Path) -> None:
     assert "State" in case_finding.summary
     assert case_finding.scaffold is not None
     assert "class StateFamily(ABC)" in case_finding.scaffold
+
+
+def test_detects_isinstance_family_scatter_with_polymorphic_solution(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass EvidenceAction:\n    pass\n\n\nclass PayloadProjection:\n    pass\n\n\nclass PolicyEvidence:\n    pass\n\n\nclass EvidenceScope:\n    pass\n\n\ndef evidence_values(value, field):\n    if isinstance(value, EvidenceAction):\n        return value.action_values(field)\n    if isinstance(value, PayloadProjection):\n        return value.projection_values(field)\n    if isinstance(value, PolicyEvidence):\n        return value.policy_values(field)\n    if isinstance(value, EvidenceScope):\n        return value.scope_values(field)\n    return ()\n",
+    )
+    findings = analyze_path(tmp_path)
+    scatter_finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "isinstance_family_scatter"
+        )
+    )
+    assert scatter_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "evidence_values" in scatter_finding.summary
+    assert "EvidenceScope" in scatter_finding.summary
+    assert scatter_finding.scaffold is not None
+    assert "class ValueCarrier(ABC)" in scatter_finding.scaffold
+    assert "project_family_value" in scatter_finding.scaffold
+    assert scatter_finding.codemod_patch is not None
+    assert "polymorphic ABC/base method" in scatter_finding.codemod_patch
 
 
 def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
@@ -3026,13 +3216,9 @@ def test_detects_parallel_keyed_table_axis(tmp_path: Path) -> None:
     assert "MODE_SPECS" in finding.summary
     assert "MODE_PLANNING_SPECS" in finding.summary
     assert finding.pattern_id == PatternId.NOMINAL_STRATEGY_FAMILY
-    assert "from metaclass_registry import AutoRegisterMeta" in (
-        finding.scaffold or ""
-    )
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "__registry__[method].run" in (finding.scaffold or "")
-    assert "AutoRegisterMeta-backed semantic family" in (
-        finding.codemod_patch or ""
-    )
+    assert "AutoRegisterMeta-backed semantic family" in (finding.codemod_patch or "")
 
 
 def test_detects_callable_method_axis_registry_as_strategy_family(
@@ -3052,9 +3238,7 @@ def test_detects_callable_method_axis_registry_as_strategy_family(
     assert "SPATIAL_BIN_OPERATIONS" in finding.summary
     assert "SpatialBinMethod" in finding.summary
     assert "hardcoded strategy family" in finding.summary
-    assert "from metaclass_registry import AutoRegisterMeta" in (
-        finding.scaffold or ""
-    )
+    assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "__registry__[method].run" in (finding.scaffold or "")
 
 
@@ -3473,6 +3657,33 @@ def test_detects_private_object_boundary_field(tmp_path: Path) -> None:
     assert "UnsafeRequest" in finding.summary
     assert "_handler_impl" in finding.summary
     assert "SafeRequest" not in finding.summary
+
+
+def test_detects_opaque_object_annotations(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom dataclasses import dataclass\nfrom typing import Any, Callable, Mapping, cast\n\nStageCallback = Callable[[object], tuple[object, ...]]\n\n\n@dataclass(frozen=True)\nclass StageRequest:\n    source_scope: object\n    cache_key: tuple[object, ...]\n    values: Mapping[str, object]\n    callback: StageCallback\n\n\ndef run_stage(request: object, payload: Any) -> dict[str, object]:\n    typed = cast(Mapping[str, object], {"request": request, "payload": payload})\n    return dict(typed)\n',
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == OPAQUE_OBJECT_ANNOTATION_DETECTOR_ID
+    ]
+
+    summaries = "\n".join(finding.summary for finding in findings)
+    assert "StageCallback" in summaries
+    assert "StageRequest" in summaries
+    assert "source_scope" in summaries
+    assert "cache_key" in summaries
+    assert "values" in summaries
+    assert "run_stage" in summaries
+    assert "request" in summaries
+    assert "payload" in summaries
+    assert "return" in summaries
+    assert "cast" in summaries
+    assert all("Protocol" not in (finding.scaffold or "") for finding in findings)
 
 
 def test_detects_short_fail_soft_effect_pipeline(tmp_path: Path) -> None:
@@ -4611,12 +4822,14 @@ def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
     findings = analyze_path(tmp_path)
 
     assert not any(
-        finding.title == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
+        finding.title
+        == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
         and "remove_holes" in finding.summary
         for finding in findings
     )
     assert not any(
-        finding.title == "Identity keyword forwarding shell should collapse into the semantic authority"
+        finding.title
+        == "Identity keyword forwarding shell should collapse into the semantic authority"
         and "morph" in finding.summary
         for finding in findings
     )
@@ -5122,15 +5335,15 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--include-plans",
             "--prove-economics",
             "--fail-on-proof-regression",
-                "--calibrate",
-                "calibration.json",
-                "--fail-on-calibration-regression",
-                "--exclude-pattern",
-                "14",
-                "nominal_refactor_advisor",
-                "tests",
-            ]
-        )
+            "--calibrate",
+            "calibration.json",
+            "--fail-on-calibration-regression",
+            "--exclude-pattern",
+            "14",
+            "nominal_refactor_advisor",
+            "tests",
+        ]
+    )
 
     assert args.json is True
     assert args.include_plans is True
@@ -5325,7 +5538,7 @@ def test_ignores_direct_dataclass_product_family_for_membership_ssot(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedFilterRequest(ABC):\n    pixels: object\n    mask: object | None\n\n    @property\n    def resolved_mask(self):\n        return self.mask\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedLinearFilterRequest(MaskedFilterRequest):\n    operation: object\n\n    def apply(self):\n        return self.operation\n\n\n@dataclass(frozen=True, slots=True)\nclass OpenCVMaskedGaussianFilterRequest(MaskedFilterRequest):\n    sigma: float\n\n    @property\n    def image_array(self):\n        return self.pixels\n\n    @property\n    def mask_array(self):\n        return self.mask\n\n    def apply(self):\n        return self.sigma\n',
+        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedFilterRequest(ABC):\n    pixels: object\n    mask: object | None\n\n    @property\n    def resolved_mask(self):\n        return self.mask\n\n\n@dataclass(frozen=True, slots=True)\nclass MaskedLinearFilterRequest(MaskedFilterRequest):\n    operation: object\n\n    def apply(self):\n        return self.operation\n\n\n@dataclass(frozen=True, slots=True)\nclass OpenCVMaskedGaussianFilterRequest(MaskedFilterRequest):\n    sigma: float\n\n    @property\n    def image_array(self):\n        return self.pixels\n\n    @property\n    def mask_array(self):\n        return self.mask\n\n    def apply(self):\n        return self.sigma\n",
     )
 
     findings = analyze_path(tmp_path)
@@ -5361,9 +5574,7 @@ def test_detects_inherited_autoregister_config_boilerplate(
     assert "__registry_key__" in finding.summary
     assert "__skip_if_no_key__" in finding.summary
     assert "inherit registry config" in (finding.scaffold or "")
-    assert "fix AutoRegisterMeta inheritance semantics" in (
-        finding.codemod_patch or ""
-    )
+    assert "fix AutoRegisterMeta inheritance semantics" in (finding.codemod_patch or "")
 
 
 def test_autoregister_rent_counts_inherited_registry_config(
@@ -5383,6 +5594,43 @@ def test_autoregister_rent_counts_inherited_registry_config(
     assert not any(
         finding.detector_id == "autoregister_meta_under_rented"
         and "SpatialBinStrategy" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_autoregister_rent_counts_member_derived_stable_key_axis(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/cases.py",
+        '\nfrom abc import ABC\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass CaseKeyFamily(ABC):\n    __registry_key__ = "case_key"\n    __skip_if_no_key__ = True\n    case_key: ClassVar[str | None] = None\n\n\nclass RuntimeCase(CaseKeyFamily, metaclass=AutoRegisterMeta):\n    stable_key_axis: ClassVar[str] = CaseKeyFamily.__registry_key__\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    case_key = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    case_key = "beta"\n\n    def run(self, value):\n        return value\n',
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        and "RuntimeCase" in finding.summary
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_autoregister_rent_counts_imported_registry_key_constant(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/constants.py",
+        '\nRUNTIME_KIND_KEY = "kind"\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/cases.py",
+        '\nfrom abc import ABC\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .constants import RUNTIME_KIND_KEY\n\n\nclass RuntimeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = RUNTIME_KIND_KEY\n    __skip_if_no_key__ = True\n    kind = None\n\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    kind = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    kind = "beta"\n\n    def run(self, value):\n        return value\n',
+    )
+
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        and "RuntimeCase" in finding.summary
         for finding in analyze_path(tmp_path)
     )
 
@@ -5527,6 +5775,25 @@ def test_ignores_autoregister_meta_family_with_module_constant_registry_key(
         tmp_path,
         "pkg/mod.py",
         '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nEXPORTER_REGISTRY_KEY = "format"\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = EXPORTER_REGISTRY_KEY\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    assert not any(
+        finding.detector_id == "autoregister_meta_under_rented"
+        for finding in analyze_path(tmp_path)
+    )
+
+
+def test_ignores_autoregister_meta_family_with_explicit_stable_axis_marker(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom metaclass_registry import AutoRegisterMeta\n\nfrom .constants import EXPORTER_REGISTRY_KEY\n\n\nclass Exporter(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = EXPORTER_REGISTRY_KEY\n    stable_key_axis = __registry_key__\n\n    @classmethod\n    def for_format(cls, format_name):\n        return cls.__registry__[format_name]\n\n    @abstractmethod\n    def emit(self, rows): ...\n\n\nclass CsvExporter(Exporter):\n    format = "csv"\n\n    def emit(self, rows):\n        return rows\n\n\nclass JsonExporter(Exporter):\n    format = "json"\n\n    def emit(self, rows):\n        return rows\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/constants.py",
+        '\nEXPORTER_REGISTRY_KEY = "format"\n',
     )
     assert not any(
         finding.detector_id == "autoregister_meta_under_rented"
@@ -6147,6 +6414,7 @@ def test_detects_repeated_field_family_in_dataclasses(tmp_path: Path) -> None:
         )
     )
     assert finding.pattern_id == 5
+    assert "underleverage inheritance" in finding.summary
     assert "pose_id" in finding.summary
     assert "ResultBase" in (finding.scaffold or "")
     assert "pose_id: int" in (finding.scaffold or "")
@@ -6465,7 +6733,7 @@ def test_detects_reused_non_nominal_private_helper(tmp_path: Path) -> None:
         (
             finding
             for finding in analyze_path(tmp_path)
-            if finding.detector_id == "non_nominal_private_helper"
+            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
         )
     )
     assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
@@ -6473,7 +6741,84 @@ def test_detects_reused_non_nominal_private_helper(tmp_path: Path) -> None:
     assert "emit_csv" in finding.summary
     assert "emit_json" in finding.summary
     assert "module_nominal_authority" in finding.summary
-    assert "Insertion owner" in (finding.codemod_patch or "")
+    assert finding.codemod_patch is not None
+    assert "Insertion owner" in finding.codemod_patch
+
+
+def test_non_nominal_private_helper_detects_public_module_private_helper(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _build_runner(config):\n    normalized = []\n    for key, value in sorted(config.items()):\n        normalized.append((str(key), str(value)))\n    return tuple(normalized)\n\n\ndef runner(config):\n    return _build_runner(config)\n\n\n__all__ = tuple(name for name in globals() if not name.startswith('_'))\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
+            and "_build_runner" in finding.summary
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "runner" in finding.summary
+    assert "_build_runner" in finding.summary
+    assert "called from 1 surfaces" in finding.summary
+    assert finding.codemod_patch is not None
+    assert "Move `_build_runner` into a nominal owner" in finding.codemod_patch
+
+
+def test_non_nominal_private_helper_has_no_public_helper_sibling_detector(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n\n\ndef emit_json(rows):\n    return list(_normalize_rows(rows, trim=True))\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
+        and "_normalize_rows" in finding.summary
+        for finding in findings
+    )
+    assert not any(
+        finding.detector_id == "public_module_private_helper"
+        and "_normalize_rows" in finding.summary
+        for finding in findings
+    )
+
+
+def test_non_nominal_private_helper_does_not_duplicate_public_api_delegate_shell(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/scoring.py",
+        '\nclass _Router:\n    @classmethod\n    def for_engine(cls, engine):\n        return cls()\n\n    def score(self, kwargs):\n        return kwargs["value"]\n\n\ndef route_scoring(engine, **kwargs):\n    return _Router.for_engine(engine).score(kwargs)\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/pipeline.py",
+        '\nfrom pkg.scoring import route_scoring as score_route\n\n\ndef run_pipeline():\n    return score_route("fast", value=1.0)\n',
+    )
+    _write_module(
+        tmp_path,
+        "pkg/api.py",
+        '\nimport pkg.scoring as scoring\n\n\ndef score_request():\n    return scoring.route_scoring("safe", value=2.0)\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert any(
+        finding.detector_id == "public_api_private_delegate_shell"
+        and "route_scoring" in finding.summary
+        for finding in findings
+    )
+    assert not any(
+        finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
+        and "route_scoring" in finding.summary
+        for finding in findings
+    )
 
 
 def test_places_reused_private_helper_on_existing_inheritance_root(
@@ -6488,7 +6833,7 @@ def test_places_reused_private_helper_on_existing_inheritance_root(
         (
             finding
             for finding in analyze_path(tmp_path)
-            if finding.detector_id == "non_nominal_private_helper"
+            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
         )
     )
     assert "existing_inheritance_root" in finding.summary
@@ -6508,7 +6853,7 @@ def test_derives_private_helper_residue_from_callsite_axes(tmp_path: Path) -> No
         (
             finding
             for finding in analyze_path(tmp_path)
-            if finding.detector_id == "non_nominal_private_helper"
+            if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
         )
     )
     patch = finding.codemod_patch or ""
@@ -6519,18 +6864,19 @@ def test_derives_private_helper_residue_from_callsite_axes(tmp_path: Path) -> No
     assert "HELPER_TEMPLATE(_render)" in patch
 
 
-def test_ignores_lexically_local_private_helper(tmp_path: Path) -> None:
+def test_detects_publicly_escaped_private_helper(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
         "\ndef _normalize_rows(rows, *, trim):\n    normalized = []\n    for row in rows:\n        value = str(row)\n        if trim:\n            value = value.strip()\n        if value:\n            normalized.append(value)\n    return tuple(normalized)\n\n\ndef emit_csv(rows):\n    return ','.join(_normalize_rows(rows, trim=True))\n",
     )
-    assert not any(
-        (
-            finding.detector_id == "non_nominal_private_helper"
-            for finding in analyze_path(tmp_path)
-        )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID
     )
+    assert "Escaped private helper" in finding.title
+    assert "_normalize_rows" in finding.summary
 
 
 def test_detects_private_helper_semantic_cluster(tmp_path: Path) -> None:
@@ -6677,6 +7023,74 @@ def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
     assert "formal policy/profile authority" in (finding.codemod_patch or "")
 
 
+def test_detects_semantic_substring_classifier(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef classify(policy_keys):\n    return tuple(key for key in policy_keys if "ready_item" in str(key))\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "ready_item" in finding.summary
+    assert "str(key)" in finding.summary
+    assert finding.codemod_patch is not None
+    assert "exact nominal classifier" in finding.codemod_patch
+
+
+def test_semantic_substring_classifier_ignores_exact_collection_membership(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef has_requested_case(requested_cases):\n    return "ready_item" in requested_cases\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
+        for finding in findings
+    )
+
+
+def test_detects_semantic_suffix_method_classifier(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef classify(kind):\n    return str(kind).endswith("_active_case")\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "_active_case" in finding.summary
+    assert "endswith method" in finding.summary
+
+
+def test_semantic_substring_classifier_ignores_payload_text_suffix(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime_policy.py",
+        '\ndef has_suffix(payload_text):\n    return payload_text.endswith("_active_case")\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == _SEMANTIC_SUBSTRING_CLASSIFIER_DETECTOR_ID
+        for finding in findings
+    )
+
+
 def test_detects_two_case_runtime_semantic_branch_chain_at_builder_threshold(
     tmp_path: Path,
 ) -> None:
@@ -6708,10 +7122,7 @@ def test_runtime_semantic_branch_chain_ignores_validation_guards(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        (
-            finding.detector_id == "runtime_semantic_branch_chain"
-            for finding in findings
-        )
+        (finding.detector_id == "runtime_semantic_branch_chain" for finding in findings)
     )
 
 
@@ -6724,13 +7135,136 @@ def test_detects_runtime_authority_branch_semantics(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path, DetectorConfig(min_builder_keywords=3))
+            for finding in analyze_path(
+                tmp_path, DetectorConfig(min_builder_keywords=3)
+            )
             if finding.detector_id == "runtime_authority_branch_semantics"
         )
     )
     assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
     assert "CompositeRigidLocalCoverSourceIndicesAuthority.indices" in finding.summary
     assert "formal policy/profile authority" in (finding.codemod_patch or "")
+
+
+def test_detects_load_bearing_relation_branch_ladder(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/proof_prefix.py",
+        """
+class DeferredStreamPrefixCompactionAuthority:
+    @classmethod
+    def rebase(cls, certificate, prefix_summary, retained_indices, original_count):
+        certified_count = certificate.prefix_count
+        if certified_count == original_count:
+            projected_summary = subset(prefix_summary, retained_indices)
+            return PrefixCertificate.from_optional_summary(
+                projected_summary,
+                prefix_count=len(retained_indices),
+            )
+        if certified_count > original_count:
+            source_summary = subset(prefix_summary, range(original_count))
+            projected_summary = subset(source_summary, retained_indices)
+            trailing_summary = subset(prefix_summary, range(original_count, certified_count))
+            return PrefixCertificate.from_summary_sequence(
+                (projected_summary, trailing_summary),
+                prefix_count=len(retained_indices) + certified_count - original_count,
+            )
+        if certified_count == len(retained_indices):
+            projected_summary = subset(prefix_summary, retained_indices)
+            return PrefixCertificate.from_optional_summary(
+                projected_summary,
+                prefix_count=len(retained_indices),
+            )
+        raise ValueError("unrelated")
+""",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "load_bearing_relation_branch"
+        )
+    )
+    assert finding.pattern_id == PatternId.CLOSED_FAMILY_DISPATCH
+    assert "DeferredStreamPrefixCompactionAuthority.rebase" in (finding.summary)
+    assert "nominal relation-case" in (finding.capability_gap or "")
+    assert "exactly one matching case" in (finding.codemod_patch or "")
+
+
+def test_load_bearing_relation_branch_accepts_nominal_case_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/proof_prefix.py",
+        """
+class StreamPrefixCompactionRelationAuthority:
+    @staticmethod
+    def certificate(request):
+        cases = tuple(
+            case
+            for case in RelationCase.__registry__.values()
+            if case().matches(request)
+        )
+        if len(cases) != 1:
+            raise ValueError("requires exactly one case")
+        return cases[0]().certificate(request)
+""",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "load_bearing_relation_branch" for finding in findings
+    )
+
+
+def test_detects_semantic_certificate_fallback(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/formal_runtime.py",
+        """
+class RuntimeReuseAuthority:
+    @classmethod
+    def reuse_prefix(cls, certified_block, active_block, previous_certificate):
+        if (
+            FormalBlockReuseSignature.from_block(certified_block)
+            != FormalBlockReuseSignature.from_block(active_block)
+        ):
+            return previous_certificate
+        return ReuseCertificate.from_block_sequence((certified_block, active_block))
+""",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "semantic_certificate_fallback"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "typed certificate" in finding.summary
+    assert "theorem-backed runtime morphism" in (finding.codemod_patch or "")
+
+
+def test_semantic_certificate_fallback_accepts_typed_certificate(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/formal_runtime.py",
+        """
+class RuntimeReuseAuthority:
+    @classmethod
+    def reuse_prefix(cls, certified_block, active_block):
+        block_family = FormalBlockFamilyCertificate.from_block_sequence(
+            (certified_block, active_block)
+        )
+        return ReuseCertificate.from_certified_block_family(block_family)
+""",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "semantic_certificate_fallback" for finding in findings
+    )
 
 
 def test_detects_constant_backed_dispatch_axis(tmp_path: Path) -> None:
@@ -7710,7 +8244,7 @@ def test_ignores_abstract_hook_forwarding_implementations(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nfrom abc import ABC, abstractmethod\n\n\nclass HelperBackedStrategy(ABC):\n    def run(self, request):\n        return self._run_with_helper(request)\n\n    @abstractmethod\n    def _run_with_helper(self, request):\n        raise NotImplementedError\n\n\nclass ConcreteStrategy(HelperBackedStrategy):\n    def _run_with_helper(self, request):\n        return Helper.for_mode(request.mode).run(request.value)\n',
+        "\nfrom abc import ABC, abstractmethod\n\n\nclass HelperBackedStrategy(ABC):\n    def run(self, request):\n        return self._run_with_helper(request)\n\n    @abstractmethod\n    def _run_with_helper(self, request):\n        raise NotImplementedError\n\n\nclass ConcreteStrategy(HelperBackedStrategy):\n    def _run_with_helper(self, request):\n        return Helper.for_mode(request.mode).run(request.value)\n",
     )
 
     assert not any(
@@ -7964,6 +8498,35 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
         )
     )
     assert any((row["target_ids"] for row in evidence))
+
+
+def test_inheritance_optimizer_detects_repeated_class_level_declarations(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass PortTypeCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n\n\nclass TerminatorCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n\n\nclass ShapeConstraintCase(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "lean_kind"\n    __skip_if_no_key__ = True\n    lean_kind: ClassVar[str]\n\n    @classmethod\n    @abstractmethod\n    def parse(cls, payload):\n        raise NotImplementedError\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "class_level_inheritance_optimization"
+        )
+    )
+    assert "PortTypeCase" in finding.summary
+    assert "TerminatorCase" in finding.summary
+    assert "ShapeConstraintCase" in finding.summary
+    assert "__registry_key__" in finding.summary
+    assert "__skip_if_no_key__" in finding.summary
+    assert "lean_kind" in finding.summary
+    assert "ABC" in (finding.scaffold or "")
+    assert "Protocol" not in (finding.scaffold or "")
+    assert "shared declaration surface" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
@@ -8661,6 +9224,175 @@ def test_detects_repeated_export_policy_predicates(tmp_path: Path) -> None:
     assert "_is_public_alpha_export" in finding.summary
     assert "_is_public_beta_export" in finding.summary
     assert "DerivedSurfacePolicy" in (finding.scaffold or "")
+
+
+def test_detects_formal_boundary_literal_registry_mirror(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef build_request_profile(options):\n    return materialize_runtime_default_profile(\n        {\n            'alpha_start': options.alpha_start,\n            'alpha_limit': options.alpha_limit,\n            'audit_enabled': options.audit_enabled,\n            'projection_start': options.projection_start,\n        }\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_literal_registry_mirror"
+        )
+    )
+    assert "materialize_runtime_default_profile" in finding.summary
+    assert "alpha_start" in finding.summary
+    assert "exported formal/profile authority" in (finding.codemod_patch or "")
+
+
+def test_detects_formal_boundary_string_id_catalog_mirror(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nREQUEST_PROFILE_ID = "selection_replay_repair_audit_request"\nREUSE_PROFILE_ID = "selection_replay_repair_audit_reuse"\nFINAL_PROFILE_ID = "selection_replay_repair_final_bound"\n\n\ndef build_profile():\n    return LeanRuntimePolicyStaticDefaultProfileEntryAuthority.profile(REQUEST_PROFILE_ID)\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_literal_registry_mirror"
+        )
+    )
+    assert "formal-boundary string ids" in finding.summary
+    assert "REQUEST_PROFILE_ID" in finding.summary
+    assert "exported formal/profile/schema catalog" in (finding.codemod_patch or "")
+
+
+def test_detects_formal_boundary_stringly_source_scope_kwargs(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass RuntimeMaterialization:\n    def source_scope(self, source_scope, **kwargs):\n        return kwargs\n\n\ndef source_object(materialization, source_scope, state, debug, scores):\n    return materialization.source_scope(\n        source_scope,\n        local_state=state,\n        repair_seed_debug=debug,\n        exact_score_values=scores,\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_stringly_source_scope"
+        )
+    )
+    assert "local_state" in finding.summary
+    assert "exact_score_values" in finding.summary
+    assert "declared dataclass/nominal carrier" in (finding.codemod_patch or "")
+
+
+def test_detects_formal_boundary_stringly_source_scope_literal_mapping(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef policy_source_scope(state, debug, scores):\n    return lean_runtime_policy_source_scope(\n        {\n            'local_state': state,\n            'repair_seed_debug': debug,\n            'exact_score_values': scores,\n        }\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_stringly_source_scope"
+        )
+    )
+    assert "string-key mapping" in finding.summary
+    assert "repair_seed_debug" in finding.summary
+    assert "FormalBoundarySourcePayload" in (finding.scaffold or "")
+
+
+def test_detects_formal_boundary_stringly_source_scope_return_dict(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef policy_source_scope(state, debug, scores):\n    return {\n        'local_state': state,\n        'repair_seed_debug': debug,\n        'exact_score_values': scores,\n    }\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_stringly_source_scope"
+        )
+    )
+    assert "string-key mapping" in finding.summary
+    assert "FormalBoundarySourcePayload" in (finding.scaffold or "")
+
+
+def test_allows_formal_boundary_source_scope_nominal_request_constructor(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass LocalSeedContactSourceScopeRequest:\n    source_scope: object\n    materialization: object\n    domain_indices: object\n\n\ndef build_request(source_scope, materialization, domain_indices):\n    return LocalSeedContactSourceScopeRequest(\n        source_scope=source_scope,\n        materialization=materialization,\n        domain_indices=domain_indices,\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "formal_boundary_stringly_source_scope"
+        for finding in findings
+    )
+
+
+def test_detects_formal_boundary_string_registry_mirrored_with_lean_source(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        '\nREQUEST_PROFILE_ID = "selection_replay_repair_audit_request"\nREUSE_PROFILE_ID = "selection_replay_repair_audit_reuse"\nFINAL_PROFILE_ID = "selection_replay_repair_final_bound"\n\n\ndef build_profile():\n    return LeanRuntimePolicyStaticDefaultProfileEntryAuthority.profile(REQUEST_PROFILE_ID)\n',
+    )
+    lean_path = tmp_path / "formal" / "RuntimePolicy.lean"
+    lean_path.parent.mkdir(parents=True)
+    lean_path.write_text(
+        '\ndef requestProfileId := "selection_replay_repair_audit_request"\ndef reuseProfileId := "selection_replay_repair_audit_reuse"\ndef finalProfileId := "selection_replay_repair_final_bound"\n',
+        encoding="utf-8",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_external_string_registry_mirror"
+        )
+    )
+    assert "RuntimePolicy.lean" in finding.summary
+    assert "3 formal-boundary string ids" in finding.summary
+    assert "formal artifact/export" in (finding.codemod_patch or "")
+
+
+def test_detects_formal_boundary_string_registry_mirrored_with_generated_artifact(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        '\nREQUEST_PROFILE_ID = "selection_replay_repair_audit_request"\nREUSE_PROFILE_ID = "selection_replay_repair_audit_reuse"\nFINAL_PROFILE_ID = "selection_replay_repair_final_bound"\n\n\ndef build_profile():\n    return LeanRuntimePolicyStaticDefaultProfileEntryAuthority.profile(REQUEST_PROFILE_ID)\n',
+    )
+    artifact_path = tmp_path / "generated" / "lean_runtime_policy_bundle.json"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        '{"default_profiles": [{"profile_id": "selection_replay_repair_audit_request"}, {"profile_id": "selection_replay_repair_audit_reuse"}, {"profile_id": "selection_replay_repair_final_bound"}]}',
+        encoding="utf-8",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "formal_boundary_external_string_registry_mirror"
+        )
+    )
+    assert "lean_runtime_policy_bundle.json" in finding.summary
+    assert "3 formal-boundary string ids" in finding.summary
+    assert "GeneratedFormalBoundaryIdAuthority" in (finding.scaffold or "")
 
 
 def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:

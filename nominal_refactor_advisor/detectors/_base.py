@@ -432,6 +432,14 @@ class DetectorConfig:
         3,
         "Minimum repeated semantic string-literal sites before surfacing an SSOT finding.",
     )
+    min_literal_schema_field_count: int = detector_config_option(
+        2,
+        "Minimum distinct literal mapping fields in an owner before surfacing schema-dispatch duplication.",
+    )
+    min_literal_schema_owner_count: int = detector_config_option(
+        2,
+        "Minimum owners sharing a literal mapping-field signature before surfacing schema-dispatch duplication.",
+    )
     min_static_payload_function_lines: int = detector_config_option(
         60,
         "Minimum function length for unreferenced embedded static-payload emitter detection.",
@@ -10937,6 +10945,7 @@ _materialize_product_records((
     _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; shared_to_residue_ratio: float; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
     _product_record_spec('GlobalInheritanceOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; family_specs: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; leaf_residue_names: tuple[str, ...]; optimizer_score: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
     _product_record_spec('SemanticOverlapABCResidueAxisCatalogCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; residue_kind_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; residue_site_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
+    _product_record_spec('ClassLevelInheritanceOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; declaration_names: tuple[str, ...]; declaration_signatures: tuple[str, ...]; declaration_sources: tuple[str, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
 ))
 # fmt: on
 

@@ -11,6 +11,7 @@ from ._helpers import *
 from ._helpers import (
     _derived_query_index_candidates,
     _keyword_bag_adapter_candidates,
+    _manual_family_roster_candidates,
 )
 
 
@@ -124,7 +125,7 @@ declare_candidate_rule_detector(
     ),
     summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.",
     evidence=lambda query_candidate: query_candidate.evidence,
-    scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in ITEMS if hasattr(item, "secondary_key")}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]',
+    scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]',
     codemod_patch=lambda query_candidate: f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes.",
     metrics=lambda query_candidate: MappingMetrics(
         mapping_site_count=len(query_candidate.function_names),
