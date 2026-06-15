@@ -2441,6 +2441,210 @@ class EnumKeyedTableClassAxisShadowDetector(
         )
 
 
+@dataclass(frozen=True)
+class EnumConstructorPolicyTable:
+    """One enum-keyed dict that constructs behavioral policy objects."""
+
+    file_path: str
+    line: int
+    owner_symbol: str
+    table_name: str
+    enum_name: str
+    case_names: tuple[str, ...]
+    constructor_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(
+                self.file_path,
+                self.line,
+                f"{self.owner_symbol}.{self.table_name}",
+            ),
+        )
+
+
+def _enum_member_key(node: ast.AST) -> tuple[str, str] | None:
+    if not isinstance(node, ast.Attribute):
+        return None
+    if not isinstance(node.value, ast.Name):
+        return None
+    return (node.value.id, node.attr)
+
+
+def _constructor_call_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute):
+        return node.func.attr
+    return None
+
+
+def _assignment_target_name(node: ast.Assign | ast.AnnAssign) -> str | None:
+    if isinstance(node, ast.AnnAssign):
+        return name_id(node.target)
+    for target in node.targets:
+        name = name_id(target)
+        if name is not None:
+            return name
+    return None
+
+
+def _looks_like_behavior_policy_constructor(name: str) -> bool:
+    return name.endswith(("Policy", "Strategy", "Handler", "Route", "Runner"))
+
+
+def _enum_constructor_policy_table_from_assignment(
+    *,
+    module: ParsedModule,
+    node: ast.Assign | ast.AnnAssign,
+    owner_symbol: str,
+) -> EnumConstructorPolicyTable | None:
+    value = as_ast(node.value, ast.Dict)
+    if value is None or len(value.keys) < 2:
+        return None
+
+    key_pairs = tuple(
+        pair for key in value.keys if (pair := _enum_member_key(key)) is not None
+    )
+    if len(key_pairs) != len(value.keys):
+        return None
+    enum_names = {enum_name for enum_name, _case_name in key_pairs}
+    if len(enum_names) != 1:
+        return None
+
+    constructor_names = tuple(
+        name
+        for value_node in value.values
+        if (name := _constructor_call_name(value_node)) is not None
+    )
+    if len(constructor_names) != len(value.values):
+        return None
+    if len(set(constructor_names)) < 2:
+        return None
+    if not any(
+        _looks_like_behavior_policy_constructor(name) for name in constructor_names
+    ):
+        return None
+
+    table_name = _assignment_target_name(node) or "enum_constructor_policy_table"
+    enum_name = next(iter(enum_names))
+    return EnumConstructorPolicyTable(
+        file_path=str(module.path),
+        line=node.lineno,
+        owner_symbol=owner_symbol,
+        table_name=table_name,
+        enum_name=enum_name,
+        case_names=tuple(case_name for _enum_name, case_name in key_pairs),
+        constructor_names=constructor_names,
+    )
+
+
+def _enum_constructor_policy_tables(
+    module: ParsedModule,
+) -> tuple[EnumConstructorPolicyTable, ...]:
+    tables: list[EnumConstructorPolicyTable] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.owner_stack: list[str] = ["<module>"]
+
+        @property
+        def owner_symbol(self) -> str:
+            return ".".join(self.owner_stack)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.owner_stack.append(node.name)
+            self.generic_visit(node)
+            self.owner_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.owner_stack.append(node.name)
+            self.generic_visit(node)
+            self.owner_stack.pop()
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            self._visit_assignment(node)
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            self._visit_assignment(node)
+            self.generic_visit(node)
+
+        def _visit_assignment(self, node: ast.Assign | ast.AnnAssign) -> None:
+            table = _enum_constructor_policy_table_from_assignment(
+                module=module,
+                node=node,
+                owner_symbol=self.owner_symbol,
+            )
+            if table is not None:
+                tables.append(table)
+
+    Visitor().visit(module.module)
+    return tuple(tables)
+
+
+class ManualEnumConstructorPolicyTableDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTO_REGISTER_META,
+        "Enum-keyed constructor policy table should be auto-registered",
+        "A dict that maps enum cases directly to concrete policy/strategy/handler constructor calls is a manually synchronized closed behavioral axis. The enum case and concrete implementation membership should be declared by the implementation class and collected by an AutoRegisterMeta-backed nominal family.",
+        "AutoRegisterMeta-backed policy family with class-declared enum keys",
+        "enum-keyed dict literal constructs concrete behavioral policy instances",
+        _AUTHORITATIVE_CLOSED_FAMILY_DISPATCH_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _PROJECTION_DICT_CLASS_FAMILY_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for table in _enum_constructor_policy_tables(module):
+            constructor_summary = ", ".join(table.constructor_names[:4])
+            case_summary = ", ".join(table.case_names[:4])
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{table.owner_symbol}` builds `{table.table_name}` by mapping "
+                        f"`{table.enum_name}` cases {case_summary} to constructor calls "
+                        f"{constructor_summary}."
+                    ),
+                    table.evidence,
+                    scaffold=(
+                        "from abc import ABC, abstractmethod\n"
+                        "from typing import ClassVar\n"
+                        "from metaclass_registry import AutoRegisterMeta\n\n"
+                        "class RegisteredPolicy(ABC, metaclass=AutoRegisterMeta):\n"
+                        "    __registry_key__ = 'policy_key'\n"
+                        "    __skip_if_no_key__ = True\n"
+                        "    policy_key: ClassVar[EnumCase | None] = None\n\n"
+                        "    @abstractmethod\n"
+                        "    def run(self, request): ..."
+                    ),
+                    codemod_patch=(
+                        f"# Delete manual enum-keyed policy table `{table.table_name}`.\n"
+                        f"# Give each policy class a `{table.enum_name}` key and dispatch through the AutoRegisterMeta registry."
+                    ),
+                    metrics=MappingMetrics(
+                        mapping_site_count=len(table.case_names),
+                        field_count=1,
+                        mapping_name=table.table_name,
+                        field_names=table.constructor_names,
+                        source_name=table.enum_name,
+                        identity_field_names=("policy_key",),
+                    ),
+                )
+            )
+        return findings
+
+
 class TransportShellTemplateMethodDetector(
     ConfiguredModuleCollectorCandidateDetector[TransportShellTemplateCandidate]
 ):

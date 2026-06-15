@@ -2699,6 +2699,27 @@ def test_detects_isinstance_family_scatter_with_polymorphic_solution(
     assert "polymorphic ABC/base method" in scatter_finding.codemod_patch
 
 
+def test_detects_two_case_isinstance_family_dispatch(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ObjectLabelPayload:\n    pass\n\n\nclass ObjectLabelSet:\n    pass\n\n\ndef contextualize(output_value, source_payload):\n    if isinstance(output_value, ObjectLabelPayload):\n        return output_value.with_source_image_context(source_payload)\n    if isinstance(output_value, ObjectLabelSet):\n        return output_value.with_source_image_context(source_payload)\n    return output_value\n",
+    )
+    findings = analyze_path(tmp_path)
+    scatter_finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "isinstance_family_scatter"
+        )
+    )
+    assert scatter_finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "2 `isinstance` checks" in scatter_finding.summary
+    assert "ObjectLabelPayload" in scatter_finding.summary
+    assert "ObjectLabelSet" in scatter_finding.summary
+    assert "polymorphic ABC/base method" in (scatter_finding.codemod_patch or "")
+
+
 def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -3323,6 +3344,27 @@ def test_detects_enum_keyed_table_class_axis_shadow(tmp_path: Path) -> None:
     assert "route_kind" in finding.summary
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "AXIS_BY_KEY" in (finding.scaffold or "")
+
+
+def test_detects_manual_enum_constructor_policy_table(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom enum import Enum\n\n\nclass LayerKind(Enum):\n    IMAGE = "image"\n    SHAPES = "shapes"\n    POINTS = "points"\n\n\nclass ImageLayerCreatePolicy:\n    pass\n\n\nclass ShapesLayerCreatePolicy:\n    pass\n\n\nclass PointsLayerCreatePolicy:\n    pass\n\n\ndef layer_create_policies():\n    policies = {\n        LayerKind.IMAGE: ImageLayerCreatePolicy(),\n        LayerKind.SHAPES: ShapesLayerCreatePolicy(),\n        LayerKind.POINTS: PointsLayerCreatePolicy(),\n    }\n    return policies\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "manual_enum_constructor_policy_table"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTO_REGISTER_META
+    assert "LayerKind" in finding.summary
+    assert "ImageLayerCreatePolicy" in finding.summary
+    assert "AutoRegisterMeta" in (finding.scaffold or "")
+    assert "Delete manual enum-keyed policy table" in (finding.codemod_patch or "")
 
 
 def test_detects_manual_structural_record_mechanics(tmp_path: Path) -> None:

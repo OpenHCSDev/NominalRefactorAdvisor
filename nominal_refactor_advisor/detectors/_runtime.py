@@ -10,6 +10,7 @@ import ast
 import copy
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from typing import Callable, Generic, TypeAlias, TypeVar
 
@@ -1914,10 +1915,14 @@ def _formal_boundary_python_constants_by_value(
 
 def _formal_boundary_nearest_repository_root(path: Path) -> Path:
     current = path if path.is_dir() else path.parent
+    fallback_root = current.parent if current.parent != current else current
+    temp_root = Path(tempfile.gettempdir()).resolve()
     for candidate in (current, *current.parents):
+        if candidate.resolve() == temp_root:
+            continue
         if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
             return candidate
-    return current.parent if current.parent != current else current
+    return fallback_root
 
 
 def _formal_boundary_scan_root(modules: list[ParsedModule]) -> Path | None:
@@ -2526,7 +2531,7 @@ def _isinstance_family_scatter_candidates(
                     for type_name in type_names
                 }
             )
-            if len(sites) < 3 or len(unique_type_names) < 3:
+            if len(sites) < 2 or len(unique_type_names) < 2:
                 continue
             line_numbers = tuple(line for line, _test, _types in sites)
             candidates.append(
