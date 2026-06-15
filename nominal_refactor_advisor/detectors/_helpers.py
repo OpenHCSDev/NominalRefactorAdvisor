@@ -631,16 +631,32 @@ class HelperSupportProjectionAuthority:
             )
         )
 
+    @staticmethod
+    def registration_authority_base_name(base_name: str) -> bool:
+        tokens = frozenset(
+            token.lower()
+            for token in re.findall(
+                r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                base_name,
+            )
+            if token
+        )
+        return bool(
+            tokens & {"autoregister", "registered", "registry"}
+            or ("stable" in tokens and bool(tokens & {"axis", "key"}))
+            or ("key" in tokens and "family" in tokens)
+            or (
+                "nominal" in tokens
+                and "base" in tokens
+                and bool(tokens & {"axis", "family", "formula", "policy"})
+            )
+        )
+
     def inherits_named_registration_authority(self, node: ast.ClassDef) -> bool:
         return any(
             (
                 (base_name := _ast_terminal_name(base)) is not None
-                and (
-                    "AutoRegister" in base_name
-                    or "Registered" in base_name
-                    or "StableKeyAxis" in base_name
-                    or base_name.endswith("KeyFamily")
-                )
+                and self.registration_authority_base_name(base_name)
                 for base in node.bases
             )
         )
