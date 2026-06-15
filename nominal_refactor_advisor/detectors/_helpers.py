@@ -638,9 +638,17 @@ class HelperSupportProjectionAuthority:
                 and (
                     "AutoRegister" in base_name
                     or "Registered" in base_name
+                    or base_name.endswith("KeyFamily")
                 )
                 for base in node.bases
             )
+        )
+
+    def declares_named_registration_authority(self, node: ast.ClassDef) -> bool:
+        return (
+            "AutoRegister" in node.name
+            or "Registered" in node.name
+            or node.name.endswith("KeyFamily")
         )
 
     def declares_registry_protocol_authority(self, node: ast.ClassDef) -> bool:
@@ -655,6 +663,7 @@ class HelperSupportProjectionAuthority:
                 ancestor is not None
                 and (
                     self.declares_autoregister_meta(ancestor.node)
+                    or self.declares_named_registration_authority(ancestor.node)
                     or self.inherits_named_registration_authority(ancestor.node)
                     or self.declares_registry_protocol_authority(ancestor.node)
                 )

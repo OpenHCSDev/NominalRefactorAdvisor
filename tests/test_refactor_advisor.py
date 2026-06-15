@@ -5747,6 +5747,20 @@ def test_ignores_semantic_inheritance_family_with_custom_registered_family_base(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_key_family_base(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\n\nclass RuntimeCaseKeyFamily(ABC):\n    __registry_key__ = "case_key"\n    __skip_if_no_key__ = True\n    case_key = None\n\n\nclass RuntimeCase(RuntimeCaseKeyFamily):\n    def run(self, value):\n        raise NotImplementedError\n\n\nclass AlphaRuntimeCase(RuntimeCase):\n    case_key = "alpha"\n\n    def run(self, value):\n        return value\n\n\nclass BetaRuntimeCase(RuntimeCase):\n    case_key = "beta"\n\n    def run(self, value):\n        return value\n',
+    )
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_detects_autoregister_meta_family_without_rent_proof(
     tmp_path: Path,
 ) -> None:
