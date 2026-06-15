@@ -7940,6 +7940,26 @@ def test_detects_parameter_string_key_payload_contract(tmp_path: Path) -> None:
     assert "Payload" in (finding.scaffold or "")
 
 
+def test_detects_large_serialized_string_key_payload(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nimport json\n\n\ndef export_runtime_metadata(path, request):\n    metadata = {\n        'artifact_version': 1,\n        'artifact_kind': 'runtime_replay',\n        'exact_chemistry_mode': request.mode,\n        'certified_scoring_family': request.family,\n        'effective_scoring_engine': request.engine,\n        'charge_method': request.charge_method,\n        'target_rmsd': request.target_rmsd,\n        'target_error': request.target_error,\n        'sampled_pose_count': request.pose_count,\n    }\n    path.write_text(json.dumps(metadata))\n",
+    )
+
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "semantic_dict_bag"
+        )
+    )
+
+    assert "large serialized string key payload" in finding.relation_context
+    assert "artifact_version" in finding.summary
+    assert "target_error" in finding.summary
+
+
 def test_parameter_string_key_payload_requires_multiple_fields(
     tmp_path: Path,
 ) -> None:

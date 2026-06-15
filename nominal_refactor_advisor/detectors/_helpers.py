@@ -129,6 +129,7 @@ _OPTIONAL_VARIANT_PARAMETER_NAMES = frozenset(
         "strategy",
     }
 )
+_LARGE_STRING_KEY_PAYLOAD_MIN_KEYS = 8
 
 
 def _semantic_dict_bag_candidates(
@@ -233,10 +234,8 @@ def _function_local_semantic_dict_bag_candidates(
             self.generic_visit(node)
 
         def visit_Call(self, node: ast.Call) -> None:
-            if _is_json_boundary_call(node):
-                for arg in node.args:
-                    if isinstance(arg, ast.Name):
-                        serialization_boundary_names.add(arg.id)
+            for serialized_name in _serialized_mapping_name_arguments(node):
+                serialization_boundary_names.add(serialized_name)
             if (
                 isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
@@ -282,9 +281,43 @@ def _function_local_semantic_dict_bag_candidates(
 
     owner_symbol = _owner_symbol(class_stack, (function_node.name,), "record")
     for name, (lineno, items) in assignments.items():
+        if (
+            name in serialization_boundary_names
+            and len(items) >= _LARGE_STRING_KEY_PAYLOAD_MIN_KEYS
+            and not _function_name_marks_serialization_boundary(function_node.name)
+        ):
+            touched_keys = sorted_tuple(items)
+            recommendation = _recommend_local_semantic_record(
+                touched_keys,
+                owner_symbol=owner_symbol,
+                variable_name=name,
+                value_nodes=items,
+            )
+            if recommendation is None:
+                recommendation = _recommend_string_key_carrier_record(
+                    touched_keys,
+                    owner_symbol=owner_symbol,
+                    variable_name=name,
+                )
+            if recommendation is not None:
+                candidates.append(
+                    SemanticDictBagCandidate(
+                        line=lineno,
+                        symbol=f"{owner_symbol}:{name}",
+                        key_names=touched_keys,
+                        context_kind="large_serialized_string_key_payload",
+                        recommendation=recommendation,
+                    )
+                )
+            continue
         if name in serialization_boundary_names:
             continue
         touched_keys = set(items) | accessed_keys.get(name, set())
+        if (
+            not touched_keys
+            and len(items) >= _LARGE_STRING_KEY_PAYLOAD_MIN_KEYS
+        ):
+            touched_keys = set(items)
         if not touched_keys:
             continue
         recommendation = _recommend_local_semantic_record(
@@ -293,6 +326,15 @@ def _function_local_semantic_dict_bag_candidates(
             variable_name=name,
             value_nodes=items,
         )
+        if (
+            recommendation is None
+            and len(touched_keys) >= _LARGE_STRING_KEY_PAYLOAD_MIN_KEYS
+        ):
+            recommendation = _recommend_string_key_carrier_record(
+                sorted_tuple(touched_keys),
+                owner_symbol=owner_symbol,
+                variable_name=name,
+            )
         if recommendation is None:
             continue
         candidates.append(
@@ -1058,10 +1100,14 @@ def _string_dict_items(node: ast.AST) -> dict[str, ast.AST] | None:
         return None
     items: dict[str, ast.AST] = {}
     for key, value in zip(node.keys, node.values, strict=True):
+        if key is None:
+            continue
         key_name = _constant_string(key)
         if key_name is None or value is None:
             return None
         items[key_name] = value
+    if not items:
+        return None
     return items
 
 
@@ -1080,6 +1126,17 @@ def _is_json_boundary_call(node: ast.Call) -> bool:
         and node.func.value.id == "json"
         and node.func.attr in {"dump", "dumps"}
     )
+
+
+def _serialized_mapping_name_arguments(node: ast.Call) -> tuple[str, ...]:
+    names: list[str] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Call) or not _is_json_boundary_call(child):
+            continue
+        for arg in child.args:
+            if isinstance(arg, ast.Name):
+                names.append(arg.id)
+    return tuple(dict.fromkeys(names))
 
 
 def _class_direct_constant_string_assignments(node: ast.ClassDef) -> dict[str, str]:
