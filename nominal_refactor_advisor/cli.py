@@ -37,6 +37,11 @@ from .economics import (
     ScanEconomicsProof,
     build_economics_proof_report,
 )
+from .impact_ranking import (
+    RefactorImpactRankingReport,
+    RefactorImpactSearchBudget,
+    build_refactor_impact_ranking,
+)
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
@@ -139,6 +144,19 @@ _CLI_ARGUMENT_SPECS = (
             help="Also split working-tree LOC changes by backend/detector/test role.",
         ),
         CliArgumentSpec(
+            flags=("--include-impact-ranking",),
+            action="store_true",
+            dest="include_impact_ranking",
+            default=True,
+            help="Rank load-bearing refactor opportunities and dynamic trajectories.",
+        ),
+        CliArgumentSpec(
+            flags=("--no-impact-ranking",),
+            action="store_false",
+            dest="include_impact_ranking",
+            help="Skip load-bearing refactor opportunity ranking.",
+        ),
+        CliArgumentSpec(
             flags=("--prove-economics",),
             action="store_true",
             help="Run the standard long-term economics proof report.",
@@ -175,6 +193,30 @@ _CLI_ARGUMENT_SPECS = (
             help="Git ref used for --include-change-budget.",
         ),
         CliArgumentSpec(
+            flags=("--impact-ranking-max",),
+            value_type=int,
+            default=25,
+            help="Maximum load-bearing refactor opportunities to report.",
+        ),
+        CliArgumentSpec(
+            flags=("--impact-ranking-min-findings",),
+            value_type=int,
+            default=2,
+            help="Minimum findings a refactor opportunity must cover.",
+        ),
+        CliArgumentSpec(
+            flags=("--impact-ranking-depth",),
+            value_type=int,
+            default=4,
+            help="Maximum dynamic impact trajectory depth.",
+        ),
+        CliArgumentSpec(
+            flags=("--impact-ranking-beam-width",),
+            value_type=int,
+            default=8,
+            help="Beam width for dynamic impact trajectory search.",
+        ),
+        CliArgumentSpec(
             flags=("--import-lean-export",),
             value_type=Path,
             help="Load findings from a Lean advisor export JSON file.",
@@ -201,13 +243,15 @@ def _json_payload(
     economics: RecommendationEconomics | None = None,
     change_budget: RepositoryChangeBudget | None = None,
     timing: ScanTiming | None = None,
+    impact_ranking: RefactorImpactRankingReport | None = None,
 ) -> dict[str, object]:
     report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
     graph = build_observation_graph(modules)
     payload = report.to_dict()
     payload["findings"] = [finding.to_dict() for finding in findings]
     started = perf_counter()
-    payload["source_index"] = build_source_index(modules, findings).to_dict()
+    source_index = build_source_index(modules, findings)
+    payload["source_index"] = source_index.to_dict()
     if timing is not None:
         timing = ScanTiming(
             parse_seconds=timing.parse_seconds,
@@ -223,6 +267,8 @@ def _json_payload(
         payload["economics"] = economics.to_dict()
     if change_budget is not None:
         payload["change_budget"] = change_budget.to_dict()
+    if impact_ranking is not None:
+        payload["impact_ranking"] = impact_ranking.to_dict()
     return payload
 
 
@@ -380,6 +426,43 @@ def format_economics_markdown(
     return "\n".join(lines)
 
 
+def format_impact_ranking_markdown(
+    impact_ranking: RefactorImpactRankingReport,
+) -> str:
+    lines = [
+        "Impact ranking:",
+        "   - Candidate keys: "
+        f"{impact_ranking.candidate_key_count}; opportunities: "
+        f"{impact_ranking.opportunity_count}; trajectories: "
+        f"{impact_ranking.trajectory_count}",
+    ]
+    for index, opportunity in enumerate(impact_ranking.opportunities[:10], start=1):
+        lines.append(
+            f"   - Opportunity {index}: {opportunity.key.kind} "
+            f"`{opportunity.key.label}` -> "
+            f"{opportunity.finding_count} finding(s), "
+            f"{opportunity.detector_count} detector(s), "
+            f"{opportunity.file_count} file(s), score {opportunity.load_bearing_score}"
+        )
+        lines.append(
+            "     detectors: " + ", ".join(opportunity.detector_ids)
+        )
+    for index, trajectory in enumerate(impact_ranking.trajectories[:5], start=1):
+        keys = " -> ".join(
+            f"{key.kind}:{key.label}" for key in trajectory.keys
+        )
+        lines.append(
+            f"   - Trajectory {index}: removes "
+            f"{trajectory.predicted_removed_finding_count} finding(s), "
+            f"residual {trajectory.residual_finding_count}, "
+            f"blocked {trajectory.blocked_opportunity_count}, "
+            f"exposed {trajectory.exposed_opportunity_count}, "
+            f"score {trajectory.trajectory_score}"
+        )
+        lines.append(f"     sequence: {keys}")
+    return "\n".join(lines)
+
+
 class MarkdownReportRenderer(ABC):
     """Shared markdown rendering algorithm with one layout hook."""
 
@@ -398,6 +481,7 @@ class MarkdownReportRenderer(ABC):
         economics: RecommendationEconomics | None = None,
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
+        impact_ranking: RefactorImpactRankingReport | None = None,
     ) -> str:
         sections: list[str] = []
         if findings:
@@ -408,6 +492,8 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_plans_markdown(plans))
         if economics is not None:
             sections.append(format_economics_markdown(economics, change_budget))
+        if impact_ranking is not None:
+            sections.append(format_impact_ranking_markdown(impact_ranking))
         if timing is not None:
             sections.append(format_timing_markdown(timing))
         return self.join_sections(sections)
@@ -648,6 +734,18 @@ def main() -> int:
         if args.include_change_budget
         else None
     )
+    impact_ranking = None
+    if args.include_impact_ranking:
+        impact_ranking = build_refactor_impact_ranking(
+            findings,
+            build_source_index(modules, findings),
+            search_budget=RefactorImpactSearchBudget(
+                reported_opportunity_count=args.impact_ranking_max,
+                minimum_covered_findings=args.impact_ranking_min_findings,
+                trajectory_depth=args.impact_ranking_depth,
+                frontier_width=args.impact_ranking_beam_width,
+            ),
+        )
     if args.json:
         json_findings = [] if args.plans_only else findings
         print(
@@ -659,6 +757,7 @@ def main() -> int:
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,
+                    impact_ranking=impact_ranking,
                 ),
                 indent=2,
             )
@@ -668,6 +767,8 @@ def main() -> int:
             sections = [format_plans_markdown(plans or [])]
             if economics is not None:
                 sections.append(format_economics_markdown(economics, change_budget))
+            if impact_ranking is not None:
+                sections.append(format_impact_ranking_markdown(impact_ranking))
             sections.append(format_timing_markdown(timing))
             print("\n\n".join(sections))
         else:
@@ -678,6 +779,7 @@ def main() -> int:
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,
+                    impact_ranking=impact_ranking,
                 )
             )
     return 0

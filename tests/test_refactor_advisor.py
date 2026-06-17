@@ -89,7 +89,12 @@ from nominal_refactor_advisor.lean_export import (
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     FindingSpec,
+    MappingMetrics,
     SourceLocation,
+)
+from nominal_refactor_advisor.impact_ranking import (
+    RefactorImpactSearchBudget,
+    build_refactor_impact_ranking,
 )
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
@@ -123,6 +128,7 @@ from nominal_refactor_advisor.semantic_description_length import (
     OrbitPartition,
     SemanticCostVector,
 )
+from nominal_refactor_advisor.source_index import SourceIndex, build_source_index
 from nominal_refactor_advisor.taxonomy import ConfidenceLevel
 
 _PACKAGE_SCAN_LABEL = "package"
@@ -180,6 +186,129 @@ def _test_scan_economics_proof(
         findings=findings,
         plans=plans,
     )
+
+
+def _impact_ranking_finding(
+    *,
+    detector_id: str,
+    mapping_name: str,
+    field_names: tuple[str, ...],
+    line: int,
+) -> object:
+    return _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Authoritative mapping needed",
+        "repeated mappings should have one authority",
+        "single mapping authority",
+        "repeated mapping surface",
+    ).build(
+        detector_id,
+        f"{mapping_name} repeats fields {field_names}",
+        (SourceLocation("module.py", line, f"{mapping_name}_{line}"),),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=2,
+            field_names=field_names,
+            mapping_name=mapping_name,
+        ),
+    )
+
+
+def test_dynamic_impact_ranking_recomputes_after_simulated_move() -> None:
+    findings = cast(
+        tuple,
+        (
+            _impact_ranking_finding(
+                detector_id="repeated_builder_calls",
+                mapping_name="source_payload",
+                field_names=("source", "component"),
+                line=10,
+            ),
+            _impact_ranking_finding(
+                detector_id="role_surface_drift",
+                mapping_name="source_payload",
+                field_names=("source", "component"),
+                line=20,
+            ),
+            _impact_ranking_finding(
+                detector_id="available_carrier_reuse",
+                mapping_name="object_axis_context",
+                field_names=("row_identity", "slice_index"),
+                line=30,
+            ),
+            _impact_ranking_finding(
+                detector_id="parameter_thread_family",
+                mapping_name="object_axis_context",
+                field_names=("row_identity", "slice_index"),
+                line=40,
+            ),
+        ),
+    )
+    report = build_refactor_impact_ranking(
+        findings,
+        SourceIndex(),
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=2,
+            trajectory_depth=2,
+            frontier_width=4,
+        ),
+    )
+
+    assert report.opportunity_count >= 2
+    assert report.trajectory_count >= 1
+    assert any(
+        trajectory.step_count == 2
+        and trajectory.predicted_removed_finding_count == len(findings)
+        for trajectory in report.trajectories
+    )
+
+
+def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
+    findings = cast(
+        tuple,
+        (
+            _impact_ranking_finding(
+                detector_id="repeated_builder_calls",
+                mapping_name="source_payload",
+                field_names=("source", "component"),
+                line=10,
+            ),
+            _impact_ranking_finding(
+                detector_id="role_surface_drift",
+                mapping_name="source_payload",
+                field_names=("source", "component"),
+                line=20,
+            ),
+            _impact_ranking_finding(
+                detector_id="available_carrier_reuse",
+                mapping_name="object_axis_context",
+                field_names=("row_identity", "slice_index"),
+                line=30,
+            ),
+            _impact_ranking_finding(
+                detector_id="parameter_thread_family",
+                mapping_name="object_axis_context",
+                field_names=("row_identity", "slice_index"),
+                line=40,
+            ),
+        ),
+    )
+    report = build_refactor_impact_ranking(
+        findings,
+        SourceIndex(),
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=2,
+            trajectory_depth=2,
+            frontier_width=1,
+        ),
+    )
+
+    assert report.trajectory_count == 1
+    trajectory = report.trajectories[0]
+    assert trajectory.blocked_opportunity_count >= 1
+    assert trajectory.exposed_opportunity_count >= 1
+    assert any((step.second_order_signal_count for step in trajectory.steps))
 
 
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
