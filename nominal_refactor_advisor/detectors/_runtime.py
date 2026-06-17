@@ -16,6 +16,8 @@ from typing import Callable, Generic, TypeAlias, TypeVar
 
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
+from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
+from ..source_index import build_source_index
 
 from ..record_algebra import (
     materialize_product_record,
@@ -7504,6 +7506,767 @@ class CrossClassSmallMethodTemplateDetector(
                 statement_count=template_candidate.statement_count,
                 class_count=len(template_candidate.owner_names),
                 method_symbols=template_candidate.method_names,
+            ),
+        )
+
+
+_IDENTIFIER_STOP_TOKENS = frozenset(
+    {
+        "abc",
+        "api",
+        "base",
+        "class",
+        "cls",
+        "data",
+        "get",
+        "impl",
+        "item",
+        "make",
+        "new",
+        "object",
+        "old",
+        "return",
+        "self",
+        "set",
+        "tmp",
+        "value",
+        "values",
+    }
+)
+
+
+@dataclass(frozen=True)
+class _NominalAuthorityBypassCandidate:
+    scatter: IsinstanceFamilyScatterCandidate
+    checked_classes: tuple[IndexedClass, ...]
+    shared_base: IndexedClass
+    repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
+    wrapper_chains: tuple[WrapperChainCandidate, ...]
+    composition_signals: tuple[CancelableCompositionSignal, ...]
+
+
+@dataclass(frozen=True)
+class _VariantMethodSurface:
+    file_path: str
+    owner_class_name: str
+    owner_line: int
+    owner_is_abstract: bool
+    owner_base_names: tuple[str, ...]
+    qualname: str
+    method_name: str
+    line: int
+    statement_count: int
+    method_tokens: tuple[str, ...]
+    product_parameter_names: tuple[str, ...]
+    forwarded_field_names: tuple[str, ...]
+    construction_shape: str
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.qualname)
+
+
+@dataclass(frozen=True)
+class _VariantMethodFamilyCandidate:
+    file_path: str
+    owner_class_name: str
+    owner_line: int
+    owner_is_abstract: bool
+    owner_base_names: tuple[str, ...]
+    methods: tuple[_VariantMethodSurface, ...]
+    shared_product_parameter_names: tuple[str, ...]
+    shared_field_names: tuple[str, ...]
+    construction_shape: str
+    anchor_tokens: tuple[str, ...]
+    variant_tokens: tuple[str, ...]
+    wrapper_chains: tuple[WrapperChainCandidate, ...]
+    composition_signals: tuple[CancelableCompositionSignal, ...]
+
+    @property
+    def method_names(self) -> tuple[str, ...]:
+        return tuple(method.qualname for method in self.methods)
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = [
+            SourceLocation(self.file_path, self.owner_line, self.owner_class_name),
+            *(method.evidence for method in self.methods[:5]),
+            *(
+                SourceLocation(signal.file_path, signal.line, signal.qualname)
+                for signal in self.composition_signals[:2]
+            ),
+            *(
+                wrapper.evidence
+                for chain in self.wrapper_chains[:2]
+                for wrapper in chain.wrappers[:1]
+            ),
+        ]
+        return tuple(evidence[:8])
+
+
+def _identifier_tokens(value: str) -> tuple[str, ...]:
+    tokens: list[str] = []
+    for chunk in re.split(r"[^0-9A-Za-z]+", value):
+        if not chunk:
+            continue
+        matches = re.findall(
+            r"[A-Z]+(?=[A-Z][a-z]|[0-9]|\b)|[A-Z]?[a-z]+|[0-9]+", chunk
+        )
+        tokens.extend(match.lower() for match in matches if match)
+    return tuple(tokens)
+
+
+def _semantic_tokens(*values: object) -> frozenset[str]:
+    tokens = {
+        token
+        for value in values
+        for token in _identifier_tokens(str(value))
+        if len(token) >= 3 and token not in _IDENTIFIER_STOP_TOKENS
+    }
+    return frozenset(tokens)
+
+
+def _indexed_classes_for_type_names(
+    module: ParsedModule,
+    class_index: ClassFamilyIndex,
+    type_names: tuple[str, ...],
+) -> tuple[IndexedClass, ...]:
+    indexed_classes: list[IndexedClass] = []
+    seen_symbols: set[str] = set()
+    for type_name in type_names:
+        simple_name = type_name.rsplit(".", 1)[-1]
+        indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
+            module, class_index, simple_name
+        )
+        if indexed_class is None or indexed_class.symbol in seen_symbols:
+            continue
+        seen_symbols.add(indexed_class.symbol)
+        indexed_classes.append(indexed_class)
+    return tuple(indexed_classes)
+
+
+def _shared_nominal_base_classes(
+    class_index: ClassFamilyIndex, indexed_classes: tuple[IndexedClass, ...]
+) -> tuple[IndexedClass, ...]:
+    if len(indexed_classes) < 2:
+        return ()
+    checked_symbols = {indexed_class.symbol for indexed_class in indexed_classes}
+    common_symbols = set(
+        _indexed_ancestor_symbols(class_index, indexed_classes[0].symbol)
+    )
+    for indexed_class in indexed_classes[1:]:
+        common_symbols &= set(_indexed_ancestor_symbols(class_index, indexed_class.symbol))
+    base_classes = tuple(
+        indexed_class
+        for symbol in sorted(common_symbols)
+        if symbol not in checked_symbols
+        if (indexed_class := class_index.class_for(symbol)) is not None
+        if not indexed_class.simple_name.startswith("_")
+    )
+    abstract_bases = tuple(
+        indexed_class
+        for indexed_class in base_classes
+        if CLASS_NODE_AUTHORITY.is_abstract(indexed_class.node)
+    )
+    return abstract_bases or base_classes
+
+
+def _cancelable_composition_signals_for_modules(
+    modules: list[ParsedModule],
+) -> tuple[CancelableCompositionSignal, ...]:
+    if not modules:
+        return ()
+    source_index = build_source_index(modules, ())
+    return detect_cancelable_composition_signals(
+        source_index,
+        {str(module.path): module.source for module in modules},
+    )
+
+
+def _related_composition_signals(
+    signals: tuple[CancelableCompositionSignal, ...],
+    *,
+    file_path: str,
+    token_sources: tuple[object, ...],
+    field_names: tuple[str, ...] = (),
+) -> tuple[CancelableCompositionSignal, ...]:
+    source_tokens = _semantic_tokens(*token_sources)
+    field_name_set = set(field_names)
+    related = []
+    for signal in signals:
+        if signal.file_path != file_path:
+            continue
+        signal_tokens = _semantic_tokens(
+            signal.qualname,
+            signal.carrier_name,
+            signal.source_name,
+            *signal.field_names,
+        )
+        if (source_tokens & signal_tokens) or len(field_name_set & set(signal.field_names)) >= 2:
+            related.append(signal)
+    return sorted_tuple(
+        related,
+        key=lambda item: (-item.load_bearing_score, item.file_path, item.line, item.qualname),
+    )
+
+
+def _related_wrapper_chains(
+    chains: tuple[WrapperChainCandidate, ...],
+    *,
+    file_path: str,
+    token_sources: tuple[object, ...],
+) -> tuple[WrapperChainCandidate, ...]:
+    source_tokens = _semantic_tokens(*token_sources)
+    related = []
+    for chain in chains:
+        if chain.file_path != file_path:
+            continue
+        chain_tokens = _semantic_tokens(
+            chain.leaf_delegate_symbol,
+            *(wrapper.qualname for wrapper in chain.wrappers),
+            *(attr for wrapper in chain.wrappers for attr in wrapper.projected_attributes),
+        )
+        if source_tokens & chain_tokens:
+            related.append(chain)
+    return sorted_tuple(
+        related,
+        key=lambda item: (-len(item.wrappers), item.file_path, item.wrappers[0].lineno),
+    )
+
+
+def _templates_related_to_checked_classes(
+    templates: tuple[CrossClassSmallMethodTemplateCandidate, ...],
+    checked_classes: tuple[IndexedClass, ...],
+) -> tuple[CrossClassSmallMethodTemplateCandidate, ...]:
+    checked_names = {indexed_class.simple_name for indexed_class in checked_classes}
+    related = []
+    for template in templates:
+        owner_names = {owner.rsplit(".", 1)[-1] for owner in template.owner_names}
+        if len(checked_names & owner_names) >= 2:
+            related.append(template)
+    return sorted_tuple(
+        related,
+        key=lambda item: (item.file_path, item.line, item.method_name),
+    )
+
+
+def _nominal_authority_bypass_candidates(
+    modules: list[ParsedModule],
+) -> tuple[_NominalAuthorityBypassCandidate, ...]:
+    class_index = build_class_family_index(modules)
+    templates = tuple(
+        template
+        for module in modules
+        for template in _cross_class_small_method_template_candidates(module)
+    )
+    wrapper_chains = tuple(
+        chain for module in modules for chain in _wrapper_chain_candidates(module)
+    )
+    composition_signals = _cancelable_composition_signals_for_modules(modules)
+
+    candidates: list[_NominalAuthorityBypassCandidate] = []
+    for module in modules:
+        for scatter in _isinstance_family_scatter_candidates(module):
+            checked_classes = _indexed_classes_for_type_names(
+                module, class_index, scatter.type_names
+            )
+            shared_bases = _shared_nominal_base_classes(class_index, checked_classes)
+            if not shared_bases:
+                continue
+            shared_base = shared_bases[0]
+            base_display_name = CLASS_INDEX_PROJECTION.display_name(
+                shared_base, class_index
+            )
+            related_templates = _templates_related_to_checked_classes(
+                templates, checked_classes
+            )
+            token_sources = (
+                scatter.qualname,
+                scatter.subject_expression,
+                base_display_name,
+                *(indexed_class.simple_name for indexed_class in checked_classes),
+                *(template.method_name for template in related_templates),
+            )
+            candidates.append(
+                _NominalAuthorityBypassCandidate(
+                    scatter=scatter,
+                    checked_classes=checked_classes,
+                    shared_base=shared_base,
+                    repeated_templates=related_templates,
+                    wrapper_chains=_related_wrapper_chains(
+                        wrapper_chains,
+                        file_path=scatter.file_path,
+                        token_sources=token_sources,
+                    ),
+                    composition_signals=_related_composition_signals(
+                        composition_signals,
+                        file_path=scatter.file_path,
+                        token_sources=token_sources,
+                    ),
+                )
+            )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.scatter.file_path,
+            item.scatter.line,
+            item.scatter.qualname,
+            item.shared_base.symbol,
+        ),
+    )
+
+
+class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
+    detector_id = "abc_polymorphism_bypassed_by_concrete_dispatch"
+    detector_priority = -20
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "ABC polymorphism bypassed by helper-level concrete dispatch",
+        "A helper that branches on concrete carrier classes while those classes already share a nominal base has moved behavior out of the family authority. The root cause is not the local isinstance syntax: it is bypassed polymorphism, often amplified by duplicate leaf methods and cancelable product pack/unpack/forward layers.",
+        "shared nominal carrier authority exposes one polymorphic/template-method hook",
+        "helper-level concrete runtime dispatch crosses a shared ABC/base family",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _CLASS_FAMILY_DATAFLOW_ROOT_PARTIAL_VIEW_OBSERVATION_TAGS
+        + _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _nominal_authority_bypass_candidates(modules)
+        ]
+
+    def _finding_for_candidate(
+        self, candidate: _NominalAuthorityBypassCandidate
+    ) -> RefactorFinding:
+        scatter = candidate.scatter
+        base_name = candidate.shared_base.simple_name
+        checked_type_names = tuple(
+            indexed_class.simple_name for indexed_class in candidate.checked_classes
+        )
+        branch_summary = ", ".join(scatter.test_expressions[:4])
+        template_summary = ", ".join(
+            sorted_tuple({template.method_name for template in candidate.repeated_templates})
+        )
+        composition_summary = ", ".join(
+            signal.qualname for signal in candidate.composition_signals[:3]
+        )
+        wrapper_summary = ", ".join(
+            " -> ".join(wrapper.qualname for wrapper in chain.wrappers)
+            for chain in candidate.wrapper_chains[:2]
+        )
+        extra_context = []
+        if template_summary:
+            extra_context.append(f"duplicate leaf template(s): {template_summary}")
+        if composition_summary:
+            extra_context.append(
+                f"cancelable product composition(s): {composition_summary}"
+            )
+        if wrapper_summary:
+            extra_context.append(f"wrapper chain(s): {wrapper_summary}")
+        context_suffix = f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        evidence = tuple(
+            [
+                *(
+                    SourceLocation(
+                        scatter.file_path,
+                        line,
+                        f"{scatter.qualname}:{scatter.subject_expression}",
+                    )
+                    for line in scatter.line_numbers[:4]
+                ),
+                SourceLocation(
+                    candidate.shared_base.file_path,
+                    candidate.shared_base.line,
+                    base_name,
+                ),
+                *(
+                    location
+                    for template in candidate.repeated_templates[:2]
+                    for location in template.evidence_locations[:2]
+                ),
+                *(
+                    SourceLocation(signal.file_path, signal.line, signal.qualname)
+                    for signal in candidate.composition_signals[:2]
+                ),
+                *(
+                    wrapper.evidence
+                    for chain in candidate.wrapper_chains[:2]
+                    for wrapper in chain.wrappers[:1]
+                ),
+            ][:8]
+        )
+        method_symbols = tuple(
+            (
+                *(
+                    f"{scatter.qualname}:{test}"
+                    for test in scatter.test_expressions[:4]
+                ),
+                *(
+                    method_name
+                    for template in candidate.repeated_templates
+                    for method_name in template.method_names
+                ),
+                *(signal.qualname for signal in candidate.composition_signals),
+                *(
+                    wrapper.qualname
+                    for chain in candidate.wrapper_chains
+                    for wrapper in chain.wrappers
+                ),
+            )
+        )
+        return self.build_finding(
+            (
+                "ABC polymorphism bypassed by helper-level concrete dispatch: "
+                f"`{scatter.qualname}` checks `{scatter.subject_expression}` with "
+                f"{branch_summary} even though {', '.join(checked_type_names)} share "
+                f"`{base_name}`.{context_suffix}"
+            ),
+            evidence,
+            scaffold=(
+                f"class {base_name}(...):\n"
+                "    def construct_from(self, request):\n"
+                "        return self._construct_from_nominal_context(request)\n\n"
+                "    def _construct_from_nominal_context(self, request): ...\n\n"
+                f"# Replace helper branches in `{scatter.qualname}` with one call through "
+                f"`{base_name}`. Put concrete construction residue on the leaf classes or "
+                "on a nominal request/context object; do not unpack a product carrier through "
+                "external helper dispatch."
+            ),
+            codemod_patch=(
+                f"# Collapse `{scatter.qualname}` concrete isinstance branches into a "
+                f"`{base_name}` polymorphic/template-method hook.\n"
+                "# Move duplicate leaf method templates and cancelable pack/unpack forwarding "
+                "into the same nominal authority before deleting the helper-level branch table."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=max(
+                    2,
+                    scatter.site_count
+                    + len(candidate.repeated_templates)
+                    + len(candidate.composition_signals)
+                    + len(candidate.wrapper_chains),
+                ),
+                statement_count=max(
+                    2,
+                    1
+                    + sum(
+                        template.statement_count
+                        for template in candidate.repeated_templates
+                    ),
+                ),
+                class_count=max(2, len(candidate.checked_classes)),
+                method_symbols=method_symbols,
+            ),
+        )
+
+
+def _method_parameter_names(function: _RuntimeFunctionNode) -> tuple[str, ...]:
+    names = [arg.arg for arg in function.args.posonlyargs]
+    names.extend(arg.arg for arg in function.args.args)
+    names.extend(arg.arg for arg in function.args.kwonlyargs)
+    if names and names[0] in {"self", "cls"}:
+        names = names[1:]
+    return tuple(names)
+
+
+def _product_parameter_fields(
+    function: _RuntimeFunctionNode,
+) -> dict[str, tuple[str, ...]]:
+    parameter_names = set(_method_parameter_names(function))
+    fields_by_parameter: dict[str, set[str]] = defaultdict(set)
+    for node in _walk_nodes(function):
+        if not (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in parameter_names
+        ):
+            continue
+        fields_by_parameter[node.value.id].add(node.attr)
+    return {
+        parameter_name: sorted_tuple(fields)
+        for parameter_name, fields in fields_by_parameter.items()
+        if len(fields) >= 2
+    }
+
+
+def _single_return_call(function: _RuntimeFunctionNode) -> ast.Call | None:
+    return_calls = tuple(
+        node.value
+        for node in _walk_nodes(function)
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Call)
+    )
+    if len(return_calls) != 1:
+        return None
+    return return_calls[0]
+
+
+def _construction_shape(function: _RuntimeFunctionNode) -> str | None:
+    call = _single_return_call(function)
+    if call is None:
+        return None
+    callee_name = _call_name(call.func)
+    if callee_name is None:
+        return None
+    keyword_names = sorted_tuple(
+        keyword.arg for keyword in call.keywords if keyword.arg is not None
+    )
+    if len(keyword_names) != len(call.keywords):
+        return None
+    return f"{callee_name}|args={len(call.args)}|kwargs={','.join(keyword_names)}"
+
+
+def _variant_method_surface(
+    module: ParsedModule,
+    class_node: ast.ClassDef,
+    method: _RuntimeFunctionNode,
+) -> _VariantMethodSurface | None:
+    if _is_private_symbol_name(method.name) or method.name.startswith("__"):
+        return None
+    if not _has_only_nominal_method_decorators(method):
+        return None
+    product_fields = _product_parameter_fields(method)
+    if not product_fields:
+        return None
+    construction_shape = _construction_shape(method)
+    if construction_shape is None:
+        return None
+    method_tokens = _identifier_tokens(method.name)
+    if len(method_tokens) < 2:
+        return None
+    forwarded_field_names = sorted_tuple(
+        {field for fields in product_fields.values() for field in fields}
+    )
+    statement_count = len(_trimmed_function_body(method))
+    if statement_count > 8:
+        return None
+    return _VariantMethodSurface(
+        file_path=str(module.path),
+        owner_class_name=class_node.name,
+        owner_line=class_node.lineno,
+        owner_is_abstract=CLASS_NODE_AUTHORITY.is_abstract(class_node),
+        owner_base_names=CLASS_NODE_AUTHORITY.declared_base_names(class_node),
+        qualname=f"{class_node.name}.{method.name}",
+        method_name=method.name,
+        line=method.lineno,
+        statement_count=max(1, statement_count),
+        method_tokens=method_tokens,
+        product_parameter_names=sorted_tuple(product_fields),
+        forwarded_field_names=forwarded_field_names,
+        construction_shape=construction_shape,
+    )
+
+
+def _variant_method_surfaces(module: ParsedModule) -> tuple[_VariantMethodSurface, ...]:
+    surfaces = []
+    for class_node in sorted(
+        (node for node in _walk_nodes(module.module) if isinstance(node, ast.ClassDef)),
+        key=lambda item: (item.lineno, item.name),
+    ):
+        if _is_private_symbol_name(class_node.name):
+            continue
+        for method in CLASS_NODE_AUTHORITY.methods(class_node):
+            surface = _variant_method_surface(module, class_node, method)
+            if surface is not None:
+                surfaces.append(surface)
+    return sorted_tuple(
+        surfaces, key=lambda item: (item.file_path, item.owner_line, item.line)
+    )
+
+
+def _variant_method_family_candidate(
+    methods: tuple[_VariantMethodSurface, ...],
+    *,
+    wrapper_chains: tuple[WrapperChainCandidate, ...],
+    composition_signals: tuple[CancelableCompositionSignal, ...],
+) -> _VariantMethodFamilyCandidate | None:
+    if len(methods) < 2:
+        return None
+    token_sets = [set(method.method_tokens) for method in methods]
+    anchor_tokens = sorted_tuple(set.intersection(*token_sets))
+    variant_tokens = sorted_tuple(set.union(*token_sets) - set(anchor_tokens))
+    if not anchor_tokens or not variant_tokens:
+        return None
+    if len(anchor_tokens) < 2 and len(methods) < 3:
+        return None
+    shared_product_parameter_names = sorted_tuple(
+        set.intersection(*(set(method.product_parameter_names) for method in methods))
+    )
+    shared_field_names = sorted_tuple(
+        set.intersection(*(set(method.forwarded_field_names) for method in methods))
+    )
+    if not shared_product_parameter_names or len(shared_field_names) < 2:
+        return None
+    exemplar = methods[0]
+    token_sources = (
+        exemplar.owner_class_name,
+        *exemplar.owner_base_names,
+        *anchor_tokens,
+        *variant_tokens,
+        *shared_product_parameter_names,
+        *shared_field_names,
+        *(method.method_name for method in methods),
+    )
+    related_compositions = _related_composition_signals(
+        composition_signals,
+        file_path=exemplar.file_path,
+        token_sources=token_sources,
+        field_names=shared_field_names,
+    )
+    related_wrappers = _related_wrapper_chains(
+        wrapper_chains,
+        file_path=exemplar.file_path,
+        token_sources=token_sources,
+    )
+    return _VariantMethodFamilyCandidate(
+        file_path=exemplar.file_path,
+        owner_class_name=exemplar.owner_class_name,
+        owner_line=exemplar.owner_line,
+        owner_is_abstract=exemplar.owner_is_abstract,
+        owner_base_names=exemplar.owner_base_names,
+        methods=methods,
+        shared_product_parameter_names=shared_product_parameter_names,
+        shared_field_names=shared_field_names,
+        construction_shape=exemplar.construction_shape,
+        anchor_tokens=anchor_tokens,
+        variant_tokens=variant_tokens,
+        wrapper_chains=related_wrappers,
+        composition_signals=related_compositions,
+    )
+
+
+def _variant_method_family_candidates(
+    modules: list[ParsedModule],
+) -> tuple[_VariantMethodFamilyCandidate, ...]:
+    wrapper_chains = tuple(
+        chain for module in modules for chain in _wrapper_chain_candidates(module)
+    )
+    composition_signals = _cancelable_composition_signals_for_modules(modules)
+    grouped: dict[
+        tuple[str, str, str, tuple[str, ...], str],
+        list[_VariantMethodSurface],
+    ] = defaultdict(list)
+    for module in modules:
+        for surface in _variant_method_surfaces(module):
+            grouped[
+                (
+                    surface.file_path,
+                    surface.owner_class_name,
+                    surface.construction_shape,
+                    surface.product_parameter_names,
+                    surface.method_tokens[-1],
+                )
+            ].append(surface)
+    candidates = []
+    for surfaces in grouped.values():
+        ordered = sorted_tuple(
+            surfaces, key=lambda item: (item.line, item.method_name)
+        )
+        candidate = _variant_method_family_candidate(
+            ordered,
+            wrapper_chains=wrapper_chains,
+            composition_signals=composition_signals,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.owner_line,
+            item.owner_class_name,
+            item.construction_shape,
+        ),
+    )
+
+
+class AlgebraicVariantMethodFamilyDetector(IssueDetector):
+    detector_id = "algebraic_variant_method_family"
+    detector_priority = -15
+    finding_spec = high_confidence_certified_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Algebraic variant method family inflates public authority surface",
+        "A public authority class that grows sibling methods whose names encode operation variants is exporting the operation algebra in method names. If those methods share a product carrier/request parameter and forward to the same construction shape, the variant should live in a nominal context, request, or product type instead of multiplying public methods.",
+        "one algebraic operation over a nominal context/request/product variant",
+        "same owner exposes variant-named methods over the same product construction",
+        _SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_MRO_ORDERING_CAPABILITY_TAGS,
+        _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS
+        + _ACCESSOR_WRAPPER_NORMALIZED_AST_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in _variant_method_family_candidates(modules)
+        ]
+
+    def _finding_for_candidate(
+        self, candidate: _VariantMethodFamilyCandidate
+    ) -> RefactorFinding:
+        method_summary = ", ".join(method.method_name for method in candidate.methods)
+        variant_summary = ", ".join(candidate.variant_tokens[:8])
+        field_summary = ", ".join(candidate.shared_field_names[:8])
+        parameter_summary = ", ".join(candidate.shared_product_parameter_names)
+        authority_kind = "ABC/public authority" if candidate.owner_is_abstract else "public authority"
+        composition_summary = ", ".join(
+            signal.qualname for signal in candidate.composition_signals[:3]
+        )
+        wrapper_summary = ", ".join(
+            " -> ".join(wrapper.qualname for wrapper in chain.wrappers)
+            for chain in candidate.wrapper_chains[:2]
+        )
+        extra_context = []
+        if composition_summary:
+            extra_context.append(
+                f"cancelable product composition(s): {composition_summary}"
+            )
+        if wrapper_summary:
+            extra_context.append(f"wrapper chain(s): {wrapper_summary}")
+        context_suffix = f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        return self.build_finding(
+            (
+                f"`{candidate.owner_class_name}` inflates its {authority_kind} surface "
+                f"with variant-named methods {method_summary}. They share product "
+                f"parameter(s) {parameter_summary}, forward fields {field_summary}, "
+                f"and return the same construction shape `{candidate.construction_shape}`; "
+                f"operation variants {variant_summary} should be encoded in the domain "
+                f"algebra, not method names.{context_suffix}"
+            ),
+            candidate.evidence,
+            scaffold=(
+                f"class {candidate.owner_class_name}(...):\n"
+                "    def with_variants(self, request):\n"
+                "        match request.operation:\n"
+                "            case ...:\n"
+                "                return self._construct_variants(request)\n\n"
+                "# Collapse the sibling public methods into one algebraic operation.\n"
+                "# Put the operation variant in a nominal request/context/product type, or make "
+                "the product variant itself carry the operation semantics."
+            ),
+            codemod_patch=(
+                f"# Replace variant method family {candidate.method_names} on "
+                f"`{candidate.owner_class_name}` with one nominal request/context operation.\n"
+                "# Use source-index anchored rewrites to migrate callers after the request/product "
+                "type represents the operation variant explicitly."
+            ),
+            metrics=RepeatedMethodMetrics.from_duplicate_family(
+                duplicate_site_count=max(
+                    2,
+                    len(candidate.methods)
+                    + len(candidate.composition_signals)
+                    + len(candidate.wrapper_chains),
+                ),
+                statement_count=max(
+                    method.statement_count for method in candidate.methods
+                ),
+                class_count=1,
+                method_symbols=candidate.method_names,
             ),
         )
 

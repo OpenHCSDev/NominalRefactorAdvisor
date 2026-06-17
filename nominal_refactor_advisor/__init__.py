@@ -28,6 +28,53 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.planner",
         "build_refactor_plans",
     ),
+    "CodemodCandidate": ("nominal_refactor_advisor.codemod", "CodemodCandidate"),
+    "CodemodApplicability": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodApplicability",
+    ),
+    "CodemodAutomationLevel": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodAutomationLevel",
+    ),
+    "CodemodBackend": ("nominal_refactor_advisor.codemod", "CodemodBackend"),
+    "CodemodSimulationReport": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodSimulationReport",
+    ),
+    "CodemodSimulationStatus": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodSimulationStatus",
+    ),
+    "CodemodStrategy": ("nominal_refactor_advisor.codemod", "CodemodStrategy"),
+    "CodemodStrategyRegistry": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodStrategyRegistry",
+    ),
+    "CancelableCompositionSignal": (
+        "nominal_refactor_advisor.codemod",
+        "CancelableCompositionSignal",
+    ),
+    "CancelableCompositionKind": (
+        "nominal_refactor_advisor.codemod",
+        "CancelableCompositionKind",
+    ),
+    "PlannedSourceRewrite": (
+        "nominal_refactor_advisor.codemod",
+        "PlannedSourceRewrite",
+    ),
+    "codemod_candidates_from_impact_ranking": (
+        "nominal_refactor_advisor.codemod",
+        "codemod_candidates_from_impact_ranking",
+    ),
+    "simulate_planned_rewrites": (
+        "nominal_refactor_advisor.codemod",
+        "simulate_planned_rewrites",
+    ),
+    "detect_cancelable_composition_signals": (
+        "nominal_refactor_advisor.codemod",
+        "detect_cancelable_composition_signals",
+    ),
     "CapabilityTag": ("nominal_refactor_advisor.taxonomy", "CapabilityTag"),
     "CertificationLevel": (
         "nominal_refactor_advisor.taxonomy",

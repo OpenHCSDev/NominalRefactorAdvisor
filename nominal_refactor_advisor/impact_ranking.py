@@ -4,13 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import TypeAlias, cast
 
 from .models import (
     ImpactDelta,
     RefactorFinding,
     SemanticRecord,
-    stable_source_location_id,
 )
 from .source_index import SourceIndex
 
@@ -182,11 +182,7 @@ class RefactorImpactTrajectory(SemanticRecord):
     def blocked_opportunity_keys(self) -> tuple[RefactorImpactKey, ...]:
         return tuple(
             sorted(
-                {
-                    key
-                    for step in self.steps
-                    for key in step.blocked_opportunity_keys
-                },
+                {key for step in self.steps for key in step.blocked_opportunity_keys},
                 key=lambda item: (item.kind, item.value),
             )
         )
@@ -195,11 +191,7 @@ class RefactorImpactTrajectory(SemanticRecord):
     def exposed_opportunity_keys(self) -> tuple[RefactorImpactKey, ...]:
         return tuple(
             sorted(
-                {
-                    key
-                    for step in self.steps
-                    for key in step.exposed_opportunity_keys
-                },
+                {key for step in self.steps for key in step.exposed_opportunity_keys},
                 key=lambda item: (item.kind, item.value),
             )
         )
@@ -242,20 +234,18 @@ class RefactorImpactTrajectory(SemanticRecord):
 
 @dataclass(frozen=True)
 class _TrajectoryState:
-    remaining_findings: tuple[RefactorFinding, ...]
+    remaining_finding_ids: frozenset[str]
     steps: tuple[RefactorImpactTrajectoryStep, ...] = ()
+
+    @cached_property
+    def covered_finding_id_set(self) -> frozenset[str]:
+        return frozenset(
+            finding_id for step in self.steps for finding_id in step.covered_finding_ids
+        )
 
     @property
     def covered_finding_ids(self) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    finding_id
-                    for step in self.steps
-                    for finding_id in step.covered_finding_ids
-                }
-            )
-        )
+        return tuple(sorted(self.covered_finding_id_set))
 
     def trajectory(self, initial_finding_count: int) -> RefactorImpactTrajectory:
         total_impact_delta = sum_impact_deltas(
@@ -282,7 +272,7 @@ class _TrajectoryState:
             for file_path in step.opportunity.file_paths
         }
         return (
-            len(self.covered_finding_ids) * 100
+            len(self.covered_finding_id_set) * 100
             + len(detector_ids) * 25
             + len(file_paths) * 10
             + sum((step.second_order_signal_count for step in self.steps)) * 5
@@ -302,33 +292,77 @@ class RefactorImpactRankingRequest:
     )
 
     def report(self) -> RefactorImpactRankingReport:
-        grouped = self._grouped_findings(self.findings)
-        ranked = self._ranked_opportunities(self.findings)
+        ranked = self._ranked_opportunities_for_ids(self._all_finding_ids)
         trajectories = self._ranked_trajectories()
         return RefactorImpactRankingReport(
             opportunities=ranked[: self.search_budget.reported_opportunity_count],
             trajectories=trajectories[: self.search_budget.frontier_width],
             search_budget=self.search_budget,
-            candidate_key_count=len(grouped),
+            candidate_key_count=self._candidate_key_count_for_ids(
+                self._all_finding_ids
+            ),
         )
+
+    @cached_property
+    def _findings_by_id(self) -> dict[str, RefactorFinding]:
+        return {finding.stable_id: finding for finding in self.findings}
+
+    @cached_property
+    def _all_finding_ids(self) -> frozenset[str]:
+        return frozenset(self._findings_by_id)
+
+    @cached_property
+    def _keys_by_finding_id(self) -> dict[str, tuple[RefactorImpactKey, ...]]:
+        return {
+            finding.stable_id: self._keys_for_finding(finding)
+            for finding in self.findings
+        }
+
+    @cached_property
+    def _finding_ids_by_key(self) -> dict[RefactorImpactKey, frozenset[str]]:
+        grouped: dict[RefactorImpactKey, set[str]] = {}
+        for finding in self.findings:
+            finding_id = finding.stable_id
+            for key in self._keys_by_finding_id[finding_id]:
+                grouped.setdefault(key, set()).add(finding_id)
+        return {key: frozenset(finding_ids) for key, finding_ids in grouped.items()}
+
+    @cached_property
+    def _ranked_opportunity_cache(
+        self,
+    ) -> dict[frozenset[str], tuple[RefactorImpactOpportunity, ...]]:
+        return {}
 
     def _ranked_opportunities(
         self,
         findings: tuple[RefactorFinding, ...],
     ) -> tuple[RefactorImpactOpportunity, ...]:
-        grouped = self._grouped_findings(findings)
+        return self._ranked_opportunities_for_ids(self._finding_ids_for(findings))
+
+    def _ranked_opportunities_for_ids(
+        self,
+        remaining_finding_ids: frozenset[str],
+    ) -> tuple[RefactorImpactOpportunity, ...]:
+        cached = self._ranked_opportunity_cache.get(remaining_finding_ids)
+        if cached is not None:
+            return cached
+        minimum_covered_findings = max(
+            self.search_budget.minimum_covered_findings,
+            1,
+        )
         opportunities = tuple(
             opportunity
-            for key, grouped_findings in grouped.items()
+            for key, indexed_finding_ids in self._finding_ids_by_key.items()
+            for covered_finding_ids in (indexed_finding_ids & remaining_finding_ids,)
+            if len(covered_finding_ids) >= minimum_covered_findings
             for opportunity in (
                 self._opportunity(
                     key,
-                    tuple(sorted(grouped_findings, key=lambda item: item.stable_id)),
+                    self._findings_for_ids(covered_finding_ids),
                 ),
             )
-            if opportunity.finding_count >= self.search_budget.minimum_covered_findings
         )
-        return tuple(
+        ranked = tuple(
             sorted(
                 opportunities,
                 key=lambda item: (
@@ -340,6 +374,8 @@ class RefactorImpactRankingRequest:
                 ),
             )
         )
+        self._ranked_opportunity_cache[remaining_finding_ids] = ranked
+        return ranked
 
     def _grouped_findings(
         self,
@@ -347,11 +383,33 @@ class RefactorImpactRankingRequest:
     ) -> OpportunityGroups:
         grouped: OpportunityGroups = {}
         for finding in findings:
-            for key in self._keys_for_finding(finding):
+            finding_id = finding.stable_id
+            keys = self._keys_by_finding_id.get(finding_id)
+            if keys is None:
+                keys = self._keys_for_finding(finding)
+            for key in keys:
                 if key not in grouped:
                     grouped[key] = []
                 grouped[key].append(finding)
         return grouped
+
+    @staticmethod
+    def _finding_ids_for(findings: tuple[RefactorFinding, ...]) -> frozenset[str]:
+        return frozenset(finding.stable_id for finding in findings)
+
+    def _findings_for_ids(
+        self, finding_ids: frozenset[str]
+    ) -> tuple[RefactorFinding, ...]:
+        return tuple(
+            self._findings_by_id[finding_id] for finding_id in sorted(finding_ids)
+        )
+
+    def _candidate_key_count_for_ids(self, finding_ids: frozenset[str]) -> int:
+        return sum(
+            1
+            for indexed_finding_ids in self._finding_ids_by_key.values()
+            if indexed_finding_ids & finding_ids
+        )
 
     def _ranked_trajectories(self) -> tuple[RefactorImpactTrajectory, ...]:
         if (
@@ -360,14 +418,16 @@ class RefactorImpactRankingRequest:
         ):
             return ()
 
-        initial_state = _TrajectoryState(remaining_findings=self.findings)
+        initial_state = _TrajectoryState(remaining_finding_ids=self._all_finding_ids)
         frontier = (initial_state,)
         completed: dict[tuple[str, ...], RefactorImpactTrajectory] = {}
         initial_finding_count = len(self.findings)
         for _depth in range(self.search_budget.trajectory_depth):
             next_states = []
             for state in frontier:
-                opportunities = self._ranked_opportunities(state.remaining_findings)
+                opportunities = self._ranked_opportunities_for_ids(
+                    state.remaining_finding_ids
+                )
                 for opportunity in opportunities[: self.search_budget.frontier_width]:
                     next_state = self._state_after_opportunity(
                         state,
@@ -408,18 +468,14 @@ class RefactorImpactRankingRequest:
         opportunities_before: tuple[RefactorImpactOpportunity, ...],
     ) -> _TrajectoryState | None:
         covered = frozenset(opportunity.covered_finding_ids)
-        remaining = tuple(
-            finding
-            for finding in state.remaining_findings
-            if finding.stable_id not in covered
-        )
-        if len(remaining) == len(state.remaining_findings):
+        remaining_finding_ids = state.remaining_finding_ids - covered
+        if len(remaining_finding_ids) == len(state.remaining_finding_ids):
             return None
-        opportunities_after = self._ranked_opportunities(remaining)
+        opportunities_after = self._ranked_opportunities_for_ids(remaining_finding_ids)
         step = RefactorImpactTrajectoryStep(
             opportunity=opportunity,
             covered_finding_ids=opportunity.covered_finding_ids,
-            remaining_finding_count=len(remaining),
+            remaining_finding_count=len(remaining_finding_ids),
             blocked_opportunity_keys=self._blocked_opportunity_keys(
                 opportunity,
                 opportunities_before,
@@ -428,10 +484,12 @@ class RefactorImpactRankingRequest:
                 opportunities_before,
                 opportunities_after,
             ),
-            candidate_key_count_after=len(self._grouped_findings(remaining)),
+            candidate_key_count_after=self._candidate_key_count_for_ids(
+                remaining_finding_ids
+            ),
         )
         return _TrajectoryState(
-            remaining_findings=remaining,
+            remaining_finding_ids=remaining_finding_ids,
             steps=(*state.steps, step),
         )
 
@@ -460,15 +518,11 @@ class RefactorImpactRankingRequest:
     ) -> tuple[RefactorImpactKey, ...]:
         before_beam = {
             opportunity.key
-            for opportunity in opportunities_before[
-                : self.search_budget.frontier_width
-            ]
+            for opportunity in opportunities_before[: self.search_budget.frontier_width]
         }
         after_beam = {
             opportunity.key
-            for opportunity in opportunities_after[
-                : self.search_budget.frontier_width
-            ]
+            for opportunity in opportunities_after[: self.search_budget.frontier_width]
         }
         return tuple(
             sorted(
@@ -517,7 +571,7 @@ class RefactorImpactRankingRequest:
                 best_by_covered_ids.values(),
                 key=lambda item: (
                     -item.trajectory(initial_finding_count).trajectory_score,
-                    len(item.remaining_findings),
+                    len(item.remaining_finding_ids),
                     tuple(
                         (step.opportunity.key.kind, step.opportunity.key.value)
                         for step in item.steps
@@ -532,8 +586,8 @@ class RefactorImpactRankingRequest:
         right: _TrajectoryState,
         initial_finding_count: int,
     ) -> bool:
-        left_covered = frozenset(left.covered_finding_ids)
-        right_covered = frozenset(right.covered_finding_ids)
+        left_covered = left.covered_finding_id_set
+        right_covered = right.covered_finding_id_set
         left_score = left.trajectory(initial_finding_count).trajectory_score
         right_score = right.trajectory(initial_finding_count).trajectory_score
         return (
@@ -583,28 +637,11 @@ class RefactorImpactRankingRequest:
         self,
         finding: RefactorFinding,
     ) -> tuple[RefactorImpactKey, ...]:
-        evidence_by_id = {
-            evidence.evidence_id: evidence for evidence in self.source_index.evidence
-        }
-        target_by_id = {
-            target.target_id: target for target in self.source_index.ast_targets
-        }
         keys: list[RefactorImpactKey] = []
-        for source_location in finding.evidence:
-            evidence_id = stable_source_location_id(source_location)
-            evidence = evidence_by_id.get(evidence_id)
-            if evidence is None:
-                continue
-            for target_id in evidence.target_ids:
-                target = target_by_id.get(target_id)
-                if target is None:
-                    continue
-                self._append_scalar_key(
-                    keys,
-                    "ast-target",
-                    target_id,
-                    label=f"{target.file_path}:{target.qualname}",
-                )
+        for target_id, label in self.source_index.source_target_keys_for_finding(
+            finding
+        ):
+            self._append_scalar_key(keys, "ast-target", target_id, label=label)
         return tuple(keys)
 
     @staticmethod

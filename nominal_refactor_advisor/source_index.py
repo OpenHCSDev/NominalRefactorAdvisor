@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import hashlib
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Iterable, TypeAlias
 
@@ -48,6 +49,7 @@ EvidenceDigest = product_record(
 )
 
 TargetIndex: TypeAlias = dict[str, tuple[AstTargetDigest, ...]]
+SourceTargetKey: TypeAlias = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -57,6 +59,81 @@ class SourceIndex:
     files: tuple[SourceFileDigest, ...] = ()
     ast_targets: tuple[AstTargetDigest, ...] = ()
     evidence: tuple[EvidenceDigest, ...] = ()
+
+    @cached_property
+    def evidence_by_id(self) -> dict[str, EvidenceDigest]:
+        return {item.evidence_id: item for item in self.evidence}
+
+    @cached_property
+    def target_by_id(self) -> dict[str, AstTargetDigest]:
+        return {item.target_id: item for item in self.ast_targets}
+
+    @cached_property
+    def targets_by_file(self) -> TargetIndex:
+        target_lists_by_file: dict[str, list[AstTargetDigest]] = {}
+        for target in self.ast_targets:
+            target_lists_by_file.setdefault(target.file_path, []).append(target)
+        return {
+            file_path: tuple(targets)
+            for file_path, targets in target_lists_by_file.items()
+        }
+
+    @cached_property
+    def target_ids_by_finding_id(self) -> dict[str, tuple[str, ...]]:
+        target_ids_by_finding_id: dict[str, set[str]] = {}
+        for evidence in self.evidence:
+            for finding_id in evidence.finding_ids:
+                target_ids_by_finding_id.setdefault(finding_id, set()).update(
+                    evidence.target_ids
+                )
+        return {
+            finding_id: sorted_tuple(target_ids)
+            for finding_id, target_ids in target_ids_by_finding_id.items()
+        }
+
+    @cached_property
+    def finding_ids_by_target_id(self) -> dict[str, tuple[str, ...]]:
+        finding_ids_by_target_id: dict[str, set[str]] = {}
+        for evidence in self.evidence:
+            for target_id in evidence.target_ids:
+                finding_ids_by_target_id.setdefault(target_id, set()).update(
+                    evidence.finding_ids
+                )
+        return {
+            target_id: sorted_tuple(finding_ids)
+            for target_id, finding_ids in finding_ids_by_target_id.items()
+        }
+
+    def target_ids_for_finding_ids(self, finding_ids: Iterable[str]) -> tuple[str, ...]:
+        target_ids: set[str] = set()
+        for finding_id in finding_ids:
+            target_ids.update(self.target_ids_by_finding_id.get(finding_id, ()))
+        return sorted_tuple(target_ids)
+
+    def finding_ids_for_target_id(self, target_id: str) -> tuple[str, ...]:
+        return self.finding_ids_by_target_id.get(target_id, ())
+
+    def source_target_keys_for_finding(
+        self, finding: RefactorFinding
+    ) -> tuple[SourceTargetKey, ...]:
+        """Return deterministic AST target id/label pairs touched by a finding."""
+
+        keys_by_target_id: dict[str, SourceTargetKey] = {}
+        for source_location in finding.evidence:
+            evidence_id = stable_source_location_id(source_location)
+            evidence = self.evidence_by_id.get(evidence_id)
+            if evidence is None:
+                continue
+            for target_id in evidence.target_ids:
+                target = self.target_by_id.get(target_id)
+                if target is None:
+                    continue
+                keys_by_target_id.setdefault(
+                    target_id, (target_id, f"{target.file_path}:{target.qualname}")
+                )
+        return tuple(
+            keys_by_target_id[target_id] for target_id in sorted(keys_by_target_id)
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -256,8 +333,16 @@ def build_source_index(
     targets_by_file: TargetIndex = {
         file_path: tuple(targets) for file_path, targets in target_lists_by_file.items()
     }
-    return SourceIndex(
+    source_index = SourceIndex(
         files=files,
         ast_targets=ast_targets,
         evidence=_evidence_digests(finding_tuple, file_ids_by_path, targets_by_file),
     )
+    _ = (
+        source_index.evidence_by_id,
+        source_index.target_by_id,
+        source_index.targets_by_file,
+        source_index.target_ids_by_finding_id,
+        source_index.finding_ids_by_target_id,
+    )
+    return source_index

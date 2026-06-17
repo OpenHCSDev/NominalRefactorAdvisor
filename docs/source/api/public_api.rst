@@ -25,6 +25,18 @@ Planning Surface
    :members: build_refactor_plans
 
 
+Codemod Planning Surface
+------------------------
+
+The codemod surface models planned rewrites and simulations without applying
+edits. Its cancelable-composition signal is generic: it treats pack, unpack, and
+field-forwarding wrappers as factorable product morphisms when they preserve
+common fields and do not own an invariant.
+
+.. automodule:: nominal_refactor_advisor.codemod
+   :members: PlannedSourceRewrite, CodemodStrategy, CodemodStrategyRegistry, CodemodApplicability, CodemodCandidate, CodemodSimulationReport, codemod_candidates_from_impact_ranking, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+
+
 Result Records And Taxonomy
 ---------------------------
 

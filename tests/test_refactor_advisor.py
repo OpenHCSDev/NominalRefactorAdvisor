@@ -4,6 +4,8 @@ import argparse
 import ast
 import inspect
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -52,6 +54,17 @@ from nominal_refactor_advisor.cli import _proof_exit_code
 from nominal_refactor_advisor.cli import _require_single_root_mode
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import analyze_paths
+from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
+from nominal_refactor_advisor.codemod import (
+    CodemodAutomationLevel,
+    CodemodBackend,
+    CancelableCompositionKind,
+    CodemodSimulationStatus,
+    CodemodStrategy,
+    CodemodStrategyRegistry,
+    codemod_candidates_from_impact_ranking,
+    detect_cancelable_composition_signals,
+)
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
@@ -99,6 +112,7 @@ from nominal_refactor_advisor.impact_ranking import (
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
     ObservationKind,
+    StructuralObservation,
     StructuralExecutionLevel,
     build_observation_graph,
 )
@@ -309,6 +323,141 @@ def test_dynamic_impact_ranking_reports_second_order_graph_effects() -> None:
     assert trajectory.blocked_opportunity_count >= 1
     assert trajectory.exposed_opportunity_count >= 1
     assert any((step.second_order_signal_count for step in trajectory.steps))
+
+
+def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+    impact_ranking = build_refactor_impact_ranking(
+        (finding,),
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=5,
+            minimum_covered_findings=1,
+            trajectory_depth=1,
+            frontier_width=3,
+        ),
+    )
+
+    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
+    mechanical_strategy = CodemodStrategy(
+        strategy_id="mechanical-test-strategy",
+        automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+        reason="test strategy proves registry metadata is carried",
+        safe_to_apply=True,
+    )
+    mechanical_candidates = codemod_candidates_from_impact_ranking(
+        impact_ranking,
+        source_index,
+        strategy_registry=CodemodStrategyRegistry(
+            {PatternId.ABC_TEMPLATE_METHOD: mechanical_strategy}
+        ),
+    )
+
+    candidate = candidates[0]
+    mechanical_applicability = mechanical_candidates[0].applicability
+    applicability = candidate.applicability
+    target_id = candidate.target_ids[0]
+    planned_candidate = candidate.with_replacement(
+        target_id,
+        "    def run(self, value):\n        return value + 1",
+        rationale="exercise source-index target simulation",
+    )
+    planned_applicability = planned_candidate.applicability
+    simulation = planned_candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert candidate.covered_finding_ids == (finding.stable_id,)
+    assert candidate.predicted_removed_finding_count == 1
+    assert candidate.impact_delta == impact_ranking.opportunities[0].impact_delta
+    assert applicability.automation_level == CodemodAutomationLevel.ADVISORY_ONLY
+    assert applicability.simulation_status == CodemodSimulationStatus.NO_REWRITE_PLAN
+    assert applicability.safe_to_apply is False
+    assert (
+        mechanical_applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert mechanical_applicability.safe_to_apply is True
+    assert planned_candidate.has_planned_rewrites
+    assert (
+        planned_applicability.simulation_status
+        == CodemodSimulationStatus.READY_TO_SIMULATE
+    )
+    assert (
+        planned_applicability.automation_level == CodemodAutomationLevel.ADVISORY_ONLY
+    )
+    assert (
+        planned_candidate.to_dict()["applicability"]["simulation_status"]
+        == "ready_to_simulate"
+    )
+    assert simulation.applied_rewrite_count == 1
+    assert simulation.changed_file_paths == (module_path.as_posix(),)
+    assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
+
+
+def test_detects_generic_cancelable_product_composition_signal(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Intermediate:\n"
+        "    pass\n\n"
+        "class Destination:\n"
+        "    pass\n\n"
+        "class Planner:\n"
+        "    def adapt(self, payload):\n"
+        "        carried = Intermediate(alpha=payload.alpha, beta=payload.beta)\n"
+        "        return Destination(alpha=carried.alpha, beta=carried.beta)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Repeated carrier composition",
+        "Repeated product fields should have one authority.",
+        "carrier factoring",
+        "cancelable product morphism",
+    ).build(
+        "carrier_factorization",
+        "adapter immediately unpacks a carrier with identical product fields",
+        (SourceLocation(str(module_path), 8, "Planner.adapt"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+
+    signals = detect_cancelable_composition_signals(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    signal = signals[0]
+    assert signal.qualname == "Planner.adapt"
+    assert signal.composition_kind == CancelableCompositionKind.PACK_UNPACK_FORWARD
+    assert signal.field_names == ("alpha", "beta")
+    assert signal.covered_finding_ids == (finding.stable_id,)
+    assert signal.load_bearing_score > signal.field_count
 
 
 ACCESSOR_WRAPPER_DETECTOR_ID = "accessor_wrapper"
@@ -5472,6 +5621,73 @@ def test_observation_graph_recovers_method_coherence_cohort(tmp_path: Path) -> N
     assert len(cohort.fibers) == 2
 
 
+def test_observation_graph_caches_derived_groupings() -> None:
+    observations = (
+        StructuralObservation(
+            "module.py",
+            "Alpha",
+            "Alpha",
+            1,
+            ObservationKind.FIELD,
+            StructuralExecutionLevel.CLASS_BODY,
+            "pose_id",
+            "pose_id",
+        ),
+        StructuralObservation(
+            "module.py",
+            "Alpha",
+            "Alpha",
+            2,
+            ObservationKind.FIELD,
+            StructuralExecutionLevel.CLASS_BODY,
+            "score",
+            "score",
+        ),
+        StructuralObservation(
+            "module.py",
+            "Beta",
+            "Beta",
+            10,
+            ObservationKind.FIELD,
+            StructuralExecutionLevel.CLASS_BODY,
+            "pose_id",
+            "pose_id",
+        ),
+        StructuralObservation(
+            "module.py",
+            "Beta",
+            "Beta",
+            11,
+            ObservationKind.FIELD,
+            StructuralExecutionLevel.CLASS_BODY,
+            "score",
+            "score",
+        ),
+    )
+    graph = ObservationGraph(observations)
+
+    assert graph.fibers is graph.fibers
+    assert graph.fibers_for(
+        ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY
+    ) is graph.fibers_for(ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY)
+    assert graph.witness_groups_for(
+        ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY
+    ) is graph.witness_groups_for(
+        ObservationKind.FIELD, StructuralExecutionLevel.CLASS_BODY
+    )
+    assert graph.coherence_cohorts_for(
+        ObservationKind.FIELD,
+        StructuralExecutionLevel.CLASS_BODY,
+        minimum_witnesses=2,
+        minimum_fibers=2,
+    ) is graph.coherence_cohorts_for(
+        ObservationKind.FIELD,
+        StructuralExecutionLevel.CLASS_BODY,
+        minimum_witnesses=2,
+        minimum_fibers=2,
+    )
+
+
 def test_detects_attribute_probe_dispatch(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -5770,6 +5986,27 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
+
+
+def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "nominal_refactor_advisor", str(tmp_path), "--json"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert "findings" in payload
+    assert "source_index" in payload
 
 
 def test_single_root_modes_reject_multiple_paths() -> None:
@@ -6972,6 +7209,171 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
     assert any((target["qualname"] == "Alpha.run" for target in ast_targets))
     assert evidence[0]["finding_ids"] == (finding.stable_id,)
     assert evidence[0]["target_ids"]
+
+
+def test_source_index_caches_lookup_maps_and_finding_target_keys(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+
+    target_keys = source_index.source_target_keys_for_finding(finding)
+
+    assert source_index.evidence_by_id is source_index.evidence_by_id
+    assert source_index.target_by_id is source_index.target_by_id
+    assert source_index.targets_by_file is source_index.targets_by_file
+    assert (
+        source_index.target_ids_by_finding_id is source_index.target_ids_by_finding_id
+    )
+    assert (
+        source_index.finding_ids_by_target_id is source_index.finding_ids_by_target_id
+    )
+    assert target_keys
+    assert source_index.target_by_id[target_keys[0][0]].qualname == "Alpha.run"
+    assert target_keys[0][1] == f"{module_path.as_posix()}:Alpha.run"
+    assert set(source_index.to_dict()) == {"files", "ast_targets", "evidence"}
+
+
+def test_impact_ranking_preserves_public_output_shape_with_source_targets(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+    impact_ranking = build_refactor_impact_ranking(
+        (finding,),
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=5,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+
+    payload = impact_ranking.to_dict()
+    opportunities = cast(tuple[dict[str, object], ...], payload["opportunities"])
+    opportunity = opportunities[0]
+    key = cast(dict[str, object], opportunity["key"])
+
+    assert set(payload) == {
+        "opportunities",
+        "trajectories",
+        "search_budget",
+        "candidate_key_count",
+        "opportunity_count",
+        "trajectory_count",
+    }
+    assert set(opportunity) == {
+        "key",
+        "covered_finding_ids",
+        "detector_ids",
+        "pattern_ids",
+        "file_paths",
+        "symbols",
+        "evidence_count",
+        "impact_delta",
+        "load_bearing_score",
+        "finding_count",
+        "detector_count",
+        "file_count",
+        "predicted_removed_finding_count",
+    }
+    assert key["kind"] == "ast-target"
+    assert opportunity["covered_finding_ids"] == (finding.stable_id,)
+
+
+def test_json_and_markdown_expose_codemod_applicability(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+    impact_ranking = build_refactor_impact_ranking(
+        (finding,),
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=5,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    codemod_candidates = codemod_candidates_from_impact_ranking(
+        impact_ranking,
+        source_index,
+    )
+
+    payload = _json_payload(
+        [finding],
+        [],
+        modules,
+        impact_ranking=impact_ranking,
+        codemod_candidates=codemod_candidates,
+    )
+    candidate_payload = cast(
+        tuple[dict[str, object], ...],
+        payload["codemod_candidates"],
+    )[0]
+    applicability = cast(dict[str, object], candidate_payload["applicability"])
+    markdown = format_codemod_applicability_markdown(codemod_candidates)
+
+    assert applicability["automation_level"] == "advisory_only"
+    assert applicability["simulation_status"] == "no_rewrite_plan"
+    assert applicability["safe_to_apply"] is False
+    assert candidate_payload["target_ids"]
+    assert "Codemod applicability:" in markdown
+    assert "advisory_only" in markdown
+    assert "no_rewrite_plan" in markdown
 
 
 def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ from .calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
+from .codemod import CodemodCandidate, codemod_candidates_from_impact_ranking
 from .detectors import DetectorConfig
 from .economics import (
     EconomicsProofReport,
@@ -244,6 +245,7 @@ def _json_payload(
     change_budget: RepositoryChangeBudget | None = None,
     timing: ScanTiming | None = None,
     impact_ranking: RefactorImpactRankingReport | None = None,
+    codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
 ) -> dict[str, object]:
     report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
     graph = build_observation_graph(modules)
@@ -269,6 +271,15 @@ def _json_payload(
         payload["change_budget"] = change_budget.to_dict()
     if impact_ranking is not None:
         payload["impact_ranking"] = impact_ranking.to_dict()
+        if codemod_candidates is None:
+            codemod_candidates = codemod_candidates_from_impact_ranking(
+                impact_ranking,
+                source_index,
+            )
+    if codemod_candidates is not None:
+        payload["codemod_candidates"] = tuple(
+            candidate.to_dict() for candidate in codemod_candidates
+        )
     return payload
 
 
@@ -444,13 +455,9 @@ def format_impact_ranking_markdown(
             f"{opportunity.detector_count} detector(s), "
             f"{opportunity.file_count} file(s), score {opportunity.load_bearing_score}"
         )
-        lines.append(
-            "     detectors: " + ", ".join(opportunity.detector_ids)
-        )
+        lines.append("     detectors: " + ", ".join(opportunity.detector_ids))
     for index, trajectory in enumerate(impact_ranking.trajectories[:5], start=1):
-        keys = " -> ".join(
-            f"{key.kind}:{key.label}" for key in trajectory.keys
-        )
+        keys = " -> ".join(f"{key.kind}:{key.label}" for key in trajectory.keys)
         lines.append(
             f"   - Trajectory {index}: removes "
             f"{trajectory.predicted_removed_finding_count} finding(s), "
@@ -460,6 +467,46 @@ def format_impact_ranking_markdown(
             f"score {trajectory.trajectory_score}"
         )
         lines.append(f"     sequence: {keys}")
+    return "\n".join(lines)
+
+
+def format_codemod_applicability_markdown(
+    candidates: tuple[CodemodCandidate, ...],
+) -> str:
+    lines = ["Codemod applicability:"]
+    if not candidates:
+        lines.append("   - Candidates: 0")
+        return "\n".join(lines)
+
+    advisory_count = sum(
+        (
+            candidate.applicability.automation_level.value == "advisory_only"
+            for candidate in candidates
+        )
+    )
+    ready_count = sum(
+        (
+            candidate.applicability.simulation_status.value == "ready_to_simulate"
+            for candidate in candidates
+        )
+    )
+    planned_count = sum((candidate.has_planned_rewrites for candidate in candidates))
+    lines.append(
+        "   - Candidates: "
+        f"{len(candidates)}; advisory-only: {advisory_count}; "
+        f"planned rewrites: {planned_count}; ready to simulate: {ready_count}"
+    )
+    for index, candidate in enumerate(candidates[:10], start=1):
+        applicability = candidate.applicability
+        lines.append(
+            f"   - Candidate {index}: {applicability.automation_level.value} "
+            f"`{candidate.opportunity_key.label}` -> "
+            f"{candidate.target_count} target(s), "
+            f"{candidate.predicted_removed_finding_count} finding(s), "
+            f"simulation {applicability.simulation_status.value}"
+        )
+        lines.append(f"     strategy: {applicability.strategy_id}")
+        lines.append(f"     reason: {applicability.reason}")
     return "\n".join(lines)
 
 
@@ -482,6 +529,7 @@ class MarkdownReportRenderer(ABC):
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
         impact_ranking: RefactorImpactRankingReport | None = None,
+        codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
     ) -> str:
         sections: list[str] = []
         if findings:
@@ -494,6 +542,8 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_economics_markdown(economics, change_budget))
         if impact_ranking is not None:
             sections.append(format_impact_ranking_markdown(impact_ranking))
+        if codemod_candidates is not None:
+            sections.append(format_codemod_applicability_markdown(codemod_candidates))
         if timing is not None:
             sections.append(format_timing_markdown(timing))
         return self.join_sections(sections)
@@ -736,9 +786,10 @@ def main() -> int:
     )
     impact_ranking = None
     if args.include_impact_ranking:
+        source_index = build_source_index(modules, findings)
         impact_ranking = build_refactor_impact_ranking(
             findings,
-            build_source_index(modules, findings),
+            source_index,
             search_budget=RefactorImpactSearchBudget(
                 reported_opportunity_count=args.impact_ranking_max,
                 minimum_covered_findings=args.impact_ranking_min_findings,
@@ -746,6 +797,12 @@ def main() -> int:
                 frontier_width=args.impact_ranking_beam_width,
             ),
         )
+        codemod_candidates = codemod_candidates_from_impact_ranking(
+            impact_ranking,
+            source_index,
+        )
+    else:
+        codemod_candidates = None
     if args.json:
         json_findings = [] if args.plans_only else findings
         print(
@@ -758,6 +815,7 @@ def main() -> int:
                     change_budget=change_budget,
                     timing=timing,
                     impact_ranking=impact_ranking,
+                    codemod_candidates=codemod_candidates,
                 ),
                 indent=2,
             )
@@ -769,6 +827,10 @@ def main() -> int:
                 sections.append(format_economics_markdown(economics, change_budget))
             if impact_ranking is not None:
                 sections.append(format_impact_ranking_markdown(impact_ranking))
+            if codemod_candidates is not None:
+                sections.append(
+                    format_codemod_applicability_markdown(codemod_candidates)
+                )
             sections.append(format_timing_markdown(timing))
             print("\n\n".join(sections))
         else:
@@ -780,6 +842,7 @@ def main() -> int:
                     change_budget=change_budget,
                     timing=timing,
                     impact_ranking=impact_ranking,
+                    codemod_candidates=codemod_candidates,
                 )
             )
     return 0

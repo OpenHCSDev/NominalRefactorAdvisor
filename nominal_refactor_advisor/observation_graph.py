@@ -8,9 +8,10 @@ reason about partial views, confusability, and coherence.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from functools import cached_property
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import CollectionAttributeProjection
@@ -55,6 +56,16 @@ class StructuralExecutionLevel(StrEnum):
     @property
     def allows_prefixed_role_field_bundle(self) -> bool:
         return self in {self.CLASS_BODY, self.INIT_BODY}
+
+
+_ObservationAxis: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel]
+_FiberGroupKey: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel, str]
+_CoherenceCohortCacheKey: TypeAlias = tuple[
+    ObservationKind,
+    StructuralExecutionLevel,
+    int,
+    int,
+]
 
 
 @dataclass(frozen=True)
@@ -162,15 +173,13 @@ class ObservationGraph:
     """Query surface over normalized structural observations."""
 
     observations: tuple[StructuralObservation, ...]
+    _coherence_cohorts_cache: dict[
+        _CoherenceCohortCacheKey, tuple[ObservationCohort, ...]
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
 
-    @property
+    @cached_property
     def fibers(self) -> tuple[ObservationFiber, ...]:
-        grouped: dict[
-            (
-                tuple[ObservationKind, StructuralExecutionLevel, str],
-                list[StructuralObservation],
-            )
-        ] = {}
+        grouped: dict[_FiberGroupKey, list[StructuralObservation]] = {}
         for observation in self.observations:
             key = (
                 observation.observation_kind,
@@ -198,18 +207,23 @@ class ObservationGraph:
             ),
         )
 
+    @cached_property
+    def _fibers_by_axis(self) -> dict[_ObservationAxis, tuple[ObservationFiber, ...]]:
+        grouped: dict[_ObservationAxis, list[ObservationFiber]] = {}
+        for fiber in self.fibers:
+            grouped.setdefault(
+                (fiber.observation_kind, fiber.execution_level), []
+            ).append(fiber)
+        return {axis: tuple(fibers) for axis, fibers in grouped.items()}
+
     def fibers_for(
         self,
         observation_kind: ObservationKind,
         execution_level: StructuralExecutionLevel,
     ) -> tuple[ObservationFiber, ...]:
-        return tuple(
-            (
-                fiber
-                for fiber in self.fibers
-                if fiber.observation_kind == observation_kind
-                and fiber.execution_level == execution_level
-            )
+        return self._fibers_by_axis.get(
+            (observation_kind, execution_level),
+            (),
         )
 
     def fibers_with_min_observations(
@@ -231,26 +245,46 @@ class ObservationGraph:
         observation_kind: ObservationKind,
         execution_level: StructuralExecutionLevel,
     ) -> tuple[NominalWitnessGroup, ...]:
-        grouped: dict[str, list[StructuralObservation]] = {}
+        return self._witness_groups_by_axis.get(
+            (observation_kind, execution_level),
+            (),
+        )
+
+    @cached_property
+    def _witness_groups_by_axis(
+        self,
+    ) -> dict[_ObservationAxis, tuple[NominalWitnessGroup, ...]]:
+        grouped_by_axis: dict[
+            _ObservationAxis, dict[str, list[StructuralObservation]]
+        ] = {}
         for observation in self.observations:
-            if observation.observation_kind != observation_kind:
-                continue
-            if observation.execution_level != execution_level:
-                continue
-            grouped.setdefault(observation.nominal_witness, []).append(observation)
-        groups = [
-            NominalWitnessGroup(
-                observation_kind=observation_kind,
-                execution_level=execution_level,
-                nominal_witness=nominal_witness,
-                observations=sorted_tuple(
-                    items,
-                    key=lambda item: (item.file_path, item.line, item.owner_symbol),
-                ),
+            axis = (observation.observation_kind, observation.execution_level)
+            grouped_by_axis.setdefault(axis, {}).setdefault(
+                observation.nominal_witness, []
+            ).append(observation)
+
+        groups_by_axis: dict[_ObservationAxis, tuple[NominalWitnessGroup, ...]] = {}
+        for (observation_kind, execution_level), grouped in grouped_by_axis.items():
+            groups = [
+                NominalWitnessGroup(
+                    observation_kind=observation_kind,
+                    execution_level=execution_level,
+                    nominal_witness=nominal_witness,
+                    observations=sorted_tuple(
+                        items,
+                        key=lambda item: (
+                            item.file_path,
+                            item.line,
+                            item.owner_symbol,
+                        ),
+                    ),
+                )
+                for nominal_witness, items in grouped.items()
+            ]
+            groups_by_axis[(observation_kind, execution_level)] = sorted_tuple(
+                groups, key=lambda item: item.nominal_witness
             )
-            for nominal_witness, items in grouped.items()
-        ]
-        return sorted_tuple(groups, key=lambda item: item.nominal_witness)
+        return groups_by_axis
 
     def coherence_cohorts_for(
         self,
@@ -258,6 +292,31 @@ class ObservationGraph:
         execution_level: StructuralExecutionLevel,
         minimum_witnesses: int = 2,
         minimum_fibers: int = 2,
+    ) -> tuple[ObservationCohort, ...]:
+        cache_key = (
+            observation_kind,
+            execution_level,
+            minimum_witnesses,
+            minimum_fibers,
+        )
+        cached = self._coherence_cohorts_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        cohorts = self._build_coherence_cohorts_for(
+            observation_kind,
+            execution_level,
+            minimum_witnesses,
+            minimum_fibers,
+        )
+        self._coherence_cohorts_cache[cache_key] = cohorts
+        return cohorts
+
+    def _build_coherence_cohorts_for(
+        self,
+        observation_kind: ObservationKind,
+        execution_level: StructuralExecutionLevel,
+        minimum_witnesses: int,
+        minimum_fibers: int,
     ) -> tuple[ObservationCohort, ...]:
         fibers = self.fibers_for(observation_kind, execution_level)
         relevant_fibers = {
