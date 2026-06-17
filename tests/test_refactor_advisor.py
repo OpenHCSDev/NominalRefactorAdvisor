@@ -7104,6 +7104,36 @@ def test_detects_unclassified_runtime_fallbacks(tmp_path: Path) -> None:
     assert "fail_loud" in (finding.codemod_patch or "")
 
 
+def test_ignores_optional_none_projection_fallbacks(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        "\nimport numpy as np\n\n\nclass RuntimeProfilePayloadInspection:\n    @property\n    def data_array(self) -> np.ndarray | None:\n        return self.data if isinstance(self.data, np.ndarray) else None\n\n    @property\n    def shape(self):\n        data_array = self.data_array\n        return None if data_array is None else data_array.shape\n\n    @property\n    def nbytes(self) -> int | None:\n        data_array = self.data_array\n        return None if data_array is None else int(data_array.nbytes)\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "unclassified_runtime_fallback"
+        for finding in findings
+    )
+
+
+def test_ignores_class_namespace_default_installation(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/runtime.py",
+        "\nclass Defaults:\n    def apply_to(self, attrs):\n        attrs.setdefault(\"__registry_key__\", self.registry_key_attr)\n        attrs.setdefault(\"__skip_if_no_key__\", True)\n        attrs.setdefault(\"__key_extractor__\", staticmethod(self.registry_key_for_class))\n        attrs.setdefault(self.registry_key_attr, None)\n        attrs.setdefault(self.module_name_attr, None)\n        attrs.setdefault(self.fallback_registry_key_attr, Default.value)\n\n\nclass Leaf:\n    def declare_in(self, namespace):\n        module_name = namespace.get(\"__name__\", self.base_type.__module__)\n        return module_name\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "unclassified_runtime_fallback"
+        for finding in findings
+    )
+    assert not any(
+        finding.detector_id == "semantic_dict_bag"
+        for finding in findings
+    )
+
+
 def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

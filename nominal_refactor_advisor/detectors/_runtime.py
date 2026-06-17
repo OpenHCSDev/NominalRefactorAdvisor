@@ -392,20 +392,69 @@ def _call_fallback_kind(node: ast.Call) -> str | None:
             return "next_default"
     if isinstance(node.func, ast.Attribute):
         if node.func.attr == "get" and len(node.args) >= 2:
+            if _is_class_namespace_get_default(node):
+                return None
             return "mapping_get_default"
         if node.func.attr == "setdefault":
+            if _is_class_namespace_setdefault(node):
+                return None
             return "mapping_setdefault"
     if any((keyword.arg == "default" for keyword in node.keywords)):
         return "keyword_default"
     return None
 
 
+def _mapping_receiver_name(node: ast.Call) -> str | None:
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        return node.func.value.id
+    return None
+
+
+def _is_class_namespace_get_default(node: ast.Call) -> bool:
+    receiver_name = _mapping_receiver_name(node)
+    key_name = _constant_string(node.args[0]) if node.args else None
+    return (
+        receiver_name is not None
+        and key_name is not None
+        and _is_class_namespace_mapping_key(receiver_name, key_name)
+    )
+
+
+def _is_class_namespace_setdefault(node: ast.Call) -> bool:
+    receiver_name = _mapping_receiver_name(node)
+    return receiver_name in _CLASS_NAMESPACE_MAPPING_NAMES
+
+
 def _default_ifexp_kind(node: ast.IfExp) -> str | None:
+    if _is_optional_none_projection_ifexp(node):
+        return None
     if (kind := _literal_default_kind(node.orelse)) is not None:
         return f"ifexp_else_{kind}"
     if (kind := _literal_default_kind(node.body)) is not None:
         return f"ifexp_body_{kind}"
     return None
+
+
+def _is_optional_none_projection_ifexp(node: ast.IfExp) -> bool:
+    has_none_body = _is_none_literal(node.body)
+    has_none_orelse = _is_none_literal(node.orelse)
+    if has_none_body == has_none_orelse:
+        return False
+    return _is_optional_projection_guard(node.test)
+
+
+def _is_none_literal(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _is_optional_projection_guard(node: ast.AST) -> bool:
+    if isinstance(node, ast.Call) and _call_name(node.func) == "isinstance":
+        return len(node.args) >= 2
+    if isinstance(node, ast.Compare):
+        return any(isinstance(op, (ast.Is, ast.IsNot)) for op in node.ops) and any(
+            _is_none_literal(comparator) for comparator in node.comparators
+        )
+    return False
 
 
 def _boolop_default_kind(node: ast.BoolOp) -> str | None:

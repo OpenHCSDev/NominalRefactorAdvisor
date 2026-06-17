@@ -71,6 +71,28 @@ _WEAK_BARE_FUNCTION_OWNER_ATTRIBUTE_NAMES = frozenset(
         "path",
     }
 )
+_CLASS_NAMESPACE_MAPPING_NAMES = frozenset(
+    {
+        "attrs",
+        "class_attrs",
+        "class_attributes",
+        "namespace",
+    }
+)
+
+
+def _is_dunder_metadata_key(key_name: str) -> bool:
+    return key_name.startswith("__") and key_name.endswith("__")
+
+
+def _is_class_namespace_mapping_key(
+    mapping_name: str,
+    key_name: str,
+) -> bool:
+    return (
+        mapping_name in _CLASS_NAMESPACE_MAPPING_NAMES
+        and _is_dunder_metadata_key(key_name)
+    )
 
 
 class _BuiltinCollectionName(StrEnum):
@@ -228,7 +250,10 @@ def _function_local_semantic_dict_bag_candidates(
         def visit_Subscript(self, node: ast.Subscript) -> None:
             if isinstance(node.value, ast.Name):
                 key_name = _string_slice_name(node.slice)
-                if key_name is not None:
+                if key_name is not None and not _is_class_namespace_mapping_key(
+                    node.value.id,
+                    key_name,
+                ):
                     accessed_keys[node.value.id].add(key_name)
                     first_access_lines.setdefault(node.value.id, node.lineno)
             self.generic_visit(node)
@@ -243,7 +268,10 @@ def _function_local_semantic_dict_bag_candidates(
                 and node.args
             ):
                 key_name = _constant_string(node.args[0])
-                if key_name is not None:
+                if key_name is not None and not _is_class_namespace_mapping_key(
+                    node.func.value.id,
+                    key_name,
+                ):
                     accessed_keys[node.func.value.id].add(key_name)
                     first_access_lines.setdefault(node.func.value.id, node.lineno)
             self.generic_visit(node)
