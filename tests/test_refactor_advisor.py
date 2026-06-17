@@ -3408,6 +3408,63 @@ def test_detects_prefixed_role_field_bundle(tmp_path: Path) -> None:
     assert "Protocol" not in (finding.scaffold or "")
 
 
+def test_detects_role_surface_drift_from_plane_indexed_channel_surface(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/provenance.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SourceProvenance:\n    channel_source_component_metadata: tuple[dict[str, str], ...]\n\n\ndef stream_plane(provenance, plane_index):\n    plane_metadata = provenance.channel_source_component_metadata[plane_index]\n    return plane_metadata\n\n\ndef materialize_plane(provenance, plane_index):\n    return RoiTarget(\n        plane_metadata=provenance.channel_source_component_metadata[plane_index]\n    )\n\n\ndef display_axis(provenance, axis_index):\n    axis_metadata = provenance.channel_source_component_metadata[axis_index]\n    return axis_metadata\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "role_surface_drift"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_WITNESS_CARRIER
+    assert "channel_source_component_metadata" in finding.summary
+    assert "channel" in finding.summary
+    assert "plane" in finding.summary
+    assert "indexed" in finding.summary
+    assert "role-neutral" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_detects_role_surface_drift_without_project_specific_tokens(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/archive.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ExportArchive:\n    csv_destination_records: tuple[object, ...]\n\n\ndef format_payload(archive, format_index):\n    format_record = archive.csv_destination_records[format_index]\n    return format_record\n\n\ndef route_format(archive, format_index):\n    return Writer(format_record=archive.csv_destination_records[format_index])\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "role_surface_drift"
+        )
+    )
+    assert "csv_destination_records" in finding.summary
+    assert "format" in finding.summary
+    assert "csv" in finding.summary
+
+
+def test_role_surface_drift_ignores_role_specific_channel_usage(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/provenance.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass SourceProvenance:\n    channel_source_component_metadata: tuple[dict[str, str], ...]\n\n\ndef stream_channel(provenance, channel_index):\n    channel_metadata = provenance.channel_source_component_metadata[channel_index]\n    return channel_metadata\n\n\ndef materialize_channel(provenance, channel_index):\n    return ChannelTarget(\n        channel_metadata=provenance.channel_source_component_metadata[channel_index]\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
+
+
 def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from . import (
     _abstraction_reuse,
+    _role_surface_drift,
     _systemic,
     _structural,
     _runtime,
@@ -12,6 +13,7 @@ from . import (
     _reflection,
 )
 from ._abstraction_reuse import *
+from ._role_surface_drift import *
 from ._systemic import *
 from ._structural import *
 from ._runtime import *

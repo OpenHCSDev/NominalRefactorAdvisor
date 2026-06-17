@@ -471,6 +471,14 @@ class DetectorConfig:
         8,
         "Minimum branch count before surfacing a branch-cluster under-abstraction finding.",
     )
+    min_role_drift_use_sites: int = detector_config_option(
+        2,
+        "Minimum structurally broad use sites before surfacing role-surface drift.",
+    )
+    min_role_drift_token_support: int = detector_config_option(
+        2,
+        "Minimum repeated observed role-token support before surfacing role-surface drift.",
+    )
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
