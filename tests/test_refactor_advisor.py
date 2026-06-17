@@ -188,6 +188,7 @@ DETECTOR_BACKEND_PAYOFF_GUARD_DETECTOR_ID = "detector_backend_payoff_guard"
 EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
+AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
 PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
@@ -1874,6 +1875,92 @@ class ZMQExecutionRequestPayload:
 
     assert "plate, execution_plate, selected_pipeline" in finding.summary
     assert "NominalIdentityCarrier" in (finding.scaffold or "")
+
+
+def test_detects_available_nominal_carrier_reuse(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/shared/source_context.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SourceProvenanceContext:
+    source_path: str | None
+    source_component_metadata: dict[str, str] | None
+    source_image_names: tuple[str, ...]
+    source_image_provenance_planes: tuple[object, ...]
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/features/labels.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ObjectLabelSourceDomain:
+    spatial_origin_yx: tuple[int, int] | None
+    source_path: str | None
+    source_component_metadata: dict[str, str] | None
+    source_image_names: tuple[str, ...]
+    source_image_provenance_planes: tuple[object, ...]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == AVAILABLE_CARRIER_REUSE_DETECTOR_ID
+    )
+
+    assert "ObjectLabelSourceDomain" in finding.summary
+    assert "SourceProvenanceContext" in finding.summary
+    assert "source" in finding.summary
+
+
+def test_available_nominal_carrier_reuse_ignores_composed_carrier(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/shared/source_context.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SourceProvenanceContext:
+    source_path: str | None
+    source_component_metadata: dict[str, str] | None
+    source_image_names: tuple[str, ...]
+    source_image_provenance_planes: tuple[object, ...]
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/features/labels.py",
+        """
+from dataclasses import dataclass
+from pkg.shared.source_context import SourceProvenanceContext
+
+
+@dataclass(frozen=True)
+class ObjectLabelSourceDomain:
+    spatial_origin_yx: tuple[int, int] | None
+    provenance: SourceProvenanceContext
+    label_name: str
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == AVAILABLE_CARRIER_REUSE_DETECTOR_ID
+        for finding in findings
+    )
 
 
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:

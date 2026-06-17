@@ -21,6 +21,10 @@ from ._base import (
     SourceLocation,
     high_confidence_spec,
 )
+from ._helpers import (
+    HELPER_SYNTAX_PROJECTION_AUTHORITY,
+    _semantic_role_names_for_fields,
+)
 
 
 _MIN_AUTHORITY_ATOMS = 7
@@ -69,6 +73,28 @@ _IDENTITY_FIELD_TERMINALS = frozenset(
 )
 _MIN_PARALLEL_PRIMITIVE_FIELDS = 3
 _MIN_PARALLEL_PRIMITIVE_RECORDS = 2
+_MIN_CARRIER_REUSE_FIELDS = 3
+_MIN_CARRIER_REUSE_ROLES = 3
+_MIN_CARRIER_ROLE_OVERLAP = 3
+_MIN_CARRIER_AUTHORITY_COVERAGE = 0.50
+_MIN_CARRIER_LOCAL_COVERAGE = 0.50
+
+_CARRIER_NAME_SUFFIXES = (
+    "Boundary",
+    "Carrier",
+    "Context",
+    "Domain",
+    "Fields",
+    "Metadata",
+    "Payload",
+    "Provenance",
+    "Record",
+    "Request",
+    "Semantics",
+    "Spec",
+    "State",
+    "Value",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +111,26 @@ class ParallelPrimitiveFieldBundle:
 class ParallelPrimitiveCarrierCandidate:
     semantic_roles: tuple[str, ...]
     bundles: tuple[ParallelPrimitiveFieldBundle, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CarrierSurface:
+    file_path: str
+    module_name: str
+    line: int
+    class_name: str
+    field_names: tuple[str, ...]
+    field_type_map: tuple[tuple[str, str], ...]
+    role_names: tuple[str, ...]
+    base_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AvailableCarrierReuseCandidate:
+    local: CarrierSurface
+    authority: CarrierSurface
+    shared_roles: tuple[str, ...]
+    shared_field_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +224,189 @@ def _module_parallel_primitive_bundles(
             )
         )
     return tuple(bundles)
+
+
+def _looks_like_reusable_carrier_name(name: str) -> bool:
+    return name.endswith(_CARRIER_NAME_SUFFIXES)
+
+
+def _module_carrier_surfaces(module: ParsedModule) -> tuple[CarrierSurface, ...]:
+    surfaces: list[CarrierSurface] = []
+    for node in ast.walk(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        if not _public_name(node.name):
+            continue
+        field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
+        if len(field_type_map) < _MIN_CARRIER_REUSE_FIELDS:
+            continue
+        field_names = tuple(name for name, _ in field_type_map)
+        role_names = _semantic_role_names_for_fields(field_names)
+        if len(role_names) < _MIN_CARRIER_REUSE_ROLES:
+            continue
+        surfaces.append(
+            CarrierSurface(
+                file_path=str(module.path),
+                module_name=module.module_name,
+                line=node.lineno,
+                class_name=node.name,
+                field_names=field_names,
+                field_type_map=field_type_map,
+                role_names=role_names,
+                base_names=HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node),
+            )
+        )
+    return sorted_tuple(
+        surfaces,
+        key=lambda surface: (surface.file_path, surface.line, surface.class_name),
+    )
+
+
+def _carrier_authority_surfaces(
+    surfaces: tuple[CarrierSurface, ...],
+) -> tuple[CarrierSurface, ...]:
+    return tuple(
+        surface
+        for surface in surfaces
+        if _looks_like_reusable_carrier_name(surface.class_name)
+    )
+
+
+def _carrier_surface_related(left: CarrierSurface, right: CarrierSurface) -> bool:
+    return (
+        left.class_name == right.class_name
+        or left.class_name in right.base_names
+        or right.class_name in left.base_names
+    )
+
+
+def _carrier_uses_authority(local: CarrierSurface, authority: CarrierSurface) -> bool:
+    if authority.class_name in local.base_names:
+        return True
+    return any(
+        authority.class_name in annotation_text
+        for _, annotation_text in local.field_type_map
+    )
+
+
+def _shared_carrier_field_names(
+    local: CarrierSurface,
+    authority: CarrierSurface,
+) -> tuple[str, ...]:
+    authority_fields = set(authority.field_names)
+    return tuple(
+        field_name
+        for field_name in local.field_names
+        if field_name in authority_fields
+    )
+
+
+def _carrier_authority_rank(authority: CarrierSurface) -> tuple[object, ...]:
+    module_parts = tuple(part.lower() for part in authority.module_name.split("."))
+    shared_module = bool(
+        set(module_parts)
+        & {
+            "common",
+            "core",
+            "model",
+            "models",
+            "schema",
+            "schemas",
+            "semantic",
+            "semantics",
+            "shared",
+        }
+    )
+    return (
+        not shared_module,
+        -len(authority.role_names),
+        authority.file_path,
+        authority.line,
+        authority.class_name,
+    )
+
+
+def _carrier_reuse_candidate(
+    local: CarrierSurface,
+    authority: CarrierSurface,
+) -> AvailableCarrierReuseCandidate | None:
+    if local.file_path == authority.file_path:
+        return None
+    if _top_level_package(local.module_name) != _top_level_package(authority.module_name):
+        return None
+    if _carrier_surface_related(local, authority):
+        return None
+    if _carrier_uses_authority(local, authority):
+        return None
+    if _looks_like_reusable_carrier_name(local.class_name) and (
+        _carrier_authority_rank(local) <= _carrier_authority_rank(authority)
+    ):
+        return None
+
+    shared_roles = sorted_tuple(set(local.role_names) & set(authority.role_names))
+    if len(shared_roles) < _MIN_CARRIER_ROLE_OVERLAP:
+        return None
+    authority_coverage = len(shared_roles) / max(len(authority.role_names), 1)
+    if authority_coverage < _MIN_CARRIER_AUTHORITY_COVERAGE:
+        return None
+    local_coverage = len(shared_roles) / max(len(local.role_names), 1)
+    if local_coverage < _MIN_CARRIER_LOCAL_COVERAGE:
+        return None
+    shared_field_names = _shared_carrier_field_names(local, authority)
+    if not shared_field_names and len(shared_roles) < (_MIN_CARRIER_ROLE_OVERLAP + 1):
+        return None
+    return AvailableCarrierReuseCandidate(
+        local=local,
+        authority=authority,
+        shared_roles=shared_roles,
+        shared_field_names=shared_field_names,
+    )
+
+
+def _available_carrier_reuse_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[AvailableCarrierReuseCandidate, ...]:
+    surfaces = tuple(
+        surface
+        for module in modules
+        for surface in _module_carrier_surfaces(module)
+    )
+    authorities = _carrier_authority_surfaces(surfaces)
+    if not authorities:
+        return ()
+
+    candidates_by_local: dict[
+        tuple[str, int, str], list[AvailableCarrierReuseCandidate]
+    ] = defaultdict(list)
+    for local in surfaces:
+        for authority in authorities:
+            candidate = _carrier_reuse_candidate(local, authority)
+            if candidate is not None:
+                candidates_by_local[(local.file_path, local.line, local.class_name)].append(
+                    candidate
+                )
+
+    selected = []
+    for candidates in candidates_by_local.values():
+        selected.append(
+            sorted(
+                candidates,
+                key=lambda candidate: (
+                    -len(candidate.shared_roles),
+                    -len(candidate.shared_field_names),
+                    _carrier_authority_rank(candidate.authority),
+                ),
+            )[0]
+        )
+    return sorted_tuple(
+        selected,
+        key=lambda candidate: (
+            candidate.local.file_path,
+            candidate.local.line,
+            candidate.local.class_name,
+            candidate.authority.class_name,
+        ),
+    )
 
 
 def _parallel_primitive_carrier_candidates(
@@ -711,6 +940,76 @@ class AvailableAbstractionReuseDetector(IssueDetector):
                     codemod_patch=(
                         f"# Import and call `{candidate.authority.name}` instead of rebuilding its internals.\n"
                         "# Keep local residue as configuration, callback, or adapter arguments passed into the authority."
+                    ),
+                )
+            )
+        return findings
+
+
+class AvailableCarrierReuseDetector(IssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Local carrier should reuse an available nominal carrier",
+        "A record or context class repeats the field-role surface of an existing carrier in the same package. The docs prefer reusing the existing nominal carrier, or extending it through inheritance/composition, before adding another parallel class.",
+        "reuse of an existing nominal carrier instead of a parallel field surface",
+        "class field-role overlap with an available carrier authority",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.KEYWORD_MAPPING,
+            ObservationTag.NORMALIZED_AST,
+        ),
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _available_carrier_reuse_candidates(modules):
+            role_summary = ", ".join(candidate.shared_roles)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.local.class_name}` repeats carrier roles "
+                        f"({role_summary}) already represented by "
+                        f"`{candidate.authority.class_name}`."
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.local.file_path,
+                            candidate.local.line,
+                            candidate.local.class_name,
+                        ),
+                        SourceLocation(
+                            candidate.authority.file_path,
+                            candidate.authority.line,
+                            candidate.authority.class_name,
+                        ),
+                    ),
+                    scaffold=(
+                        f"# Reuse `{candidate.authority.class_name}` for roles: "
+                        f"{role_summary}.\n"
+                        "# Keep only fields that are genuinely local residue on "
+                        f"`{candidate.local.class_name}`."
+                    ),
+                    codemod_patch=(
+                        f"# Replace overlapping fields on `{candidate.local.class_name}` "
+                        f"with `{candidate.authority.class_name}` through inheritance or "
+                        "a single carrier field.\n"
+                        "# Do not duplicate the shared nominal surface across modules."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=2,
+                        mapping_name="available_carrier_reuse",
+                        field_names=candidate.shared_roles,
+                        source_name=candidate.authority.class_name,
+                        identity_field_names=tuple(
+                            candidate.shared_field_names or candidate.shared_roles
+                        ),
                     ),
                 )
             )
