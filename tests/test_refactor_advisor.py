@@ -3453,6 +3453,30 @@ def test_detects_role_surface_drift_without_project_specific_tokens(
     assert "csv" in finding.summary
 
 
+def test_detects_distributed_boundary_fanout_without_project_specific_tokens(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/boundary.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ArchiveReadRequest:\n    shared_boundary_support: object\n\n\n@dataclass(frozen=True)\nclass ArchiveWriteRequest:\n    shared_boundary_support: object\n\n\ndef forward_read(request):\n    return ArchiveWriteRequest(\n        shared_boundary_support=request.shared_boundary_support,\n    )\n\n\ndef forward_write(shared_boundary_support):\n    return ArchiveReadRequest(\n        shared_boundary_support=shared_boundary_support,\n    )\n\n\ndef execute_archive(request):\n    header, payload = request.shared_boundary_support\n    return header, payload\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "distributed_boundary_fanout"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
+    assert "shared_boundary_support" in finding.summary
+    assert "ArchiveReadRequest" in finding.summary
+    assert "ArchiveWriteRequest" in finding.summary
+    assert "forwarded at 2 call sites" in finding.summary
+    assert "projected at 1 site" in finding.summary
+    assert "one nominal carrier" in (finding.title or "")
+
+
 def test_role_surface_drift_ignores_role_specific_channel_usage(
     tmp_path: Path,
 ) -> None:

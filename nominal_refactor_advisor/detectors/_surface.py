@@ -590,6 +590,432 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         )
 
 
+_BOUNDARY_FANOUT_STOPWORDS = frozenset(
+    {
+        "arg",
+        "args",
+        "class",
+        "cls",
+        "context",
+        "field",
+        "fields",
+        "for",
+        "from",
+        "input",
+        "inputs",
+        "item",
+        "items",
+        "key",
+        "keys",
+        "list",
+        "lists",
+        "name",
+        "names",
+        "object",
+        "objects",
+        "output",
+        "outputs",
+        "request",
+        "requests",
+        "result",
+        "results",
+        "self",
+        "source",
+        "state",
+        "states",
+        "to",
+        "value",
+        "values",
+        "with",
+    }
+)
+
+
+@dataclass(frozen=True)
+class DistributedBoundaryDeclaration:
+    file_path: str
+    line: int
+    class_name: str
+    field_name: str
+
+    @property
+    def evidence(self) -> SourceLocation:
+        return SourceLocation(
+            self.file_path,
+            self.line,
+            f"{self.class_name}.{self.field_name}",
+        )
+
+
+@dataclass(frozen=True)
+class DistributedBoundaryUse:
+    file_path: str
+    line: int
+    symbol: str
+    field_name: str
+    use_kind: str
+    context_tokens: tuple[str, ...]
+
+    @property
+    def evidence(self) -> SourceLocation:
+        token_summary = ",".join(self.context_tokens[:5]) or "boundary"
+        return SourceLocation(
+            self.file_path,
+            self.line,
+            f"{self.symbol}:{self.field_name}:{self.use_kind}:{token_summary}",
+        )
+
+
+@dataclass(frozen=True)
+class DistributedBoundaryFanoutCandidate:
+    field_name: str
+    declarations: tuple[DistributedBoundaryDeclaration, ...]
+    forwarding_sites: tuple[DistributedBoundaryUse, ...]
+    projection_sites: tuple[DistributedBoundaryUse, ...]
+    context_tokens: tuple[str, ...]
+
+    @property
+    def class_names(self) -> tuple[str, ...]:
+        return tuple(sorted({declaration.class_name for declaration in self.declarations}))
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            *(declaration.evidence for declaration in self.declarations[:3]),
+            *(use_site.evidence for use_site in self.forwarding_sites[:3]),
+            *(use_site.evidence for use_site in self.projection_sites[:3]),
+        )
+
+
+def _boundary_identifier_tokens(name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower().split("_")
+        if token and token not in _BOUNDARY_FANOUT_STOPWORDS
+    )
+
+
+def _boundary_node_tokens(node: ast.AST) -> tuple[str, ...]:
+    tokens: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            tokens.update(_boundary_identifier_tokens(child.id))
+        elif isinstance(child, ast.Attribute):
+            tokens.update(_boundary_identifier_tokens(child.attr))
+        elif isinstance(child, ast.keyword) and child.arg is not None:
+            tokens.update(_boundary_identifier_tokens(child.arg))
+    return tuple(sorted(tokens))
+
+
+def _boundary_contains_node(root: ast.AST, target: ast.AST) -> bool:
+    return any(child is target for child in ast.walk(root))
+
+
+def _boundary_target_tokens(targets: Iterable[ast.AST]) -> tuple[str, ...]:
+    tokens: set[str] = set()
+    for target in targets:
+        tokens.update(_boundary_node_tokens(target))
+    return tuple(sorted(tokens))
+
+
+def _boundary_call_display_name(call: ast.Call | None) -> str:
+    if call is None:
+        return "<call>"
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ast.unparse(call.func)
+
+
+def _distributed_boundary_declarations(
+    module: ParsedModule,
+) -> tuple[DistributedBoundaryDeclaration, ...]:
+    declarations: list[DistributedBoundaryDeclaration] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(class_name: str, field_name: str, line: int) -> None:
+        if field_name.startswith("_"):
+            return
+        if len(_boundary_identifier_tokens(field_name)) < 2:
+            return
+        key = (class_name, field_name)
+        if key in seen:
+            return
+        seen.add(key)
+        declarations.append(
+            DistributedBoundaryDeclaration(
+                file_path=str(module.path),
+                line=line,
+                class_name=class_name,
+                field_name=field_name,
+            )
+        )
+
+    for node in _walk_nodes(module.module):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for statement in node.body:
+            if isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                add(node.name, statement.target.id, statement.lineno)
+            elif isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        add(node.name, target.id, statement.lineno)
+            elif isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
+                for child in _walk_nodes(statement):
+                    if isinstance(child, ast.Assign):
+                        for target in child.targets:
+                            if (
+                                isinstance(target, ast.Attribute)
+                                and isinstance(target.value, ast.Name)
+                                and target.value.id == "self"
+                            ):
+                                add(node.name, target.attr, child.lineno)
+                    elif (
+                        isinstance(child, ast.AnnAssign)
+                        and isinstance(child.target, ast.Attribute)
+                        and isinstance(child.target.value, ast.Name)
+                        and child.target.value.id == "self"
+                    ):
+                        add(node.name, child.target.attr, child.lineno)
+    return tuple(declarations)
+
+
+class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
+    def __init__(self, file_path: str, field_names: frozenset[str]) -> None:
+        super().__init__()
+        self.file_path = file_path
+        self.field_names = field_names
+        self.node_stack: list[ast.AST] = []
+        self.uses: list[DistributedBoundaryUse] = []
+        self._seen: set[tuple[str, int, str, str, tuple[str, ...]]] = set()
+
+    def visit(self, node: ast.AST) -> None:
+        self.node_stack.append(node)
+        try:
+            super().visit(node)
+        finally:
+            self.node_stack.pop()
+
+    def _record(
+        self,
+        *,
+        line: int,
+        field_name: str,
+        use_kind: str,
+        context_tokens: tuple[str, ...],
+    ) -> None:
+        tokens = tuple(
+            sorted(token for token in set(context_tokens) if token != field_name)
+        )
+        if not tokens:
+            return
+        key = (field_name, line, self.qualname, use_kind, tokens)
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self.uses.append(
+            DistributedBoundaryUse(
+                file_path=self.file_path,
+                line=line,
+                symbol=self.qualname,
+                field_name=field_name,
+                use_kind=use_kind,
+                context_tokens=tokens,
+            )
+        )
+
+    def visit_keyword(self, node: ast.keyword) -> None:
+        if node.arg in self.field_names:
+            call_node = next(
+                (
+                    parent
+                    for parent in reversed(self.node_stack[:-1])
+                    if isinstance(parent, ast.Call)
+                ),
+                None,
+            )
+            self._record(
+                line=getattr(node, "lineno", 0),
+                field_name=cast(str, node.arg),
+                use_kind="keyword_forwarded",
+                context_tokens=(
+                    *_boundary_identifier_tokens(_boundary_call_display_name(call_node)),
+                    *_boundary_node_tokens(node.value),
+                ),
+            )
+        self.generic_visit(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        if node.attr in self.field_names:
+            projection_tokens: tuple[str, ...] = ()
+            for parent in reversed(self.node_stack[:-1]):
+                if isinstance(parent, ast.Assign) and _boundary_contains_node(
+                    parent.value,
+                    node,
+                ):
+                    projection_tokens = _boundary_target_tokens(parent.targets)
+                    break
+                if (
+                    isinstance(parent, ast.AnnAssign)
+                    and parent.value is not None
+                    and _boundary_contains_node(parent.value, node)
+                ):
+                    projection_tokens = _boundary_target_tokens((parent.target,))
+                    break
+                if isinstance(parent, ast.Subscript) and _boundary_contains_node(
+                    parent.value,
+                    node,
+                ):
+                    projection_tokens = _boundary_node_tokens(parent.slice)
+                    break
+            if projection_tokens:
+                self._record(
+                    line=node.lineno,
+                    field_name=node.attr,
+                    use_kind="projected",
+                    context_tokens=projection_tokens,
+                )
+        self.generic_visit(node)
+
+
+def _distributed_boundary_uses(
+    module: ParsedModule,
+    field_names: frozenset[str],
+) -> tuple[DistributedBoundaryUse, ...]:
+    visitor = _DistributedBoundaryUseVisitor(str(module.path), field_names)
+    visitor.visit(module.module)
+    return tuple(visitor.uses)
+
+
+def _distributed_boundary_fanout_candidates(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    declarations_by_field: dict[str, list[DistributedBoundaryDeclaration]] = (
+        defaultdict(list)
+    )
+    for module in modules:
+        for declaration in _distributed_boundary_declarations(module):
+            declarations_by_field[declaration.field_name].append(declaration)
+    field_names = frozenset(
+        field_name
+        for field_name, declarations in declarations_by_field.items()
+        if len({declaration.class_name for declaration in declarations}) >= 2
+    )
+    if not field_names:
+        return ()
+    uses_by_field: dict[str, list[DistributedBoundaryUse]] = defaultdict(list)
+    for module in modules:
+        for use_site in _distributed_boundary_uses(module, field_names):
+            uses_by_field[use_site.field_name].append(use_site)
+
+    candidates: list[DistributedBoundaryFanoutCandidate] = []
+    for field_name in sorted(field_names):
+        forwarding_sites = tuple(
+            sorted(
+                (
+                    use_site
+                    for use_site in uses_by_field[field_name]
+                    if use_site.use_kind == "keyword_forwarded"
+                ),
+                key=lambda item: (item.file_path, item.line, item.symbol),
+            )
+        )
+        projection_sites = tuple(
+            sorted(
+                (
+                    use_site
+                    for use_site in uses_by_field[field_name]
+                    if use_site.use_kind == "projected"
+                ),
+                key=lambda item: (item.file_path, item.line, item.symbol),
+            )
+        )
+        site_count = (
+            len(declarations_by_field[field_name])
+            + len(forwarding_sites)
+            + len(projection_sites)
+        )
+        if (
+            len(forwarding_sites) < 2
+            or not projection_sites
+            or site_count < config.min_boundary_fanout_sites
+        ):
+            continue
+        context_tokens = tuple(
+            sorted(
+                {
+                    token
+                    for use_site in (*forwarding_sites, *projection_sites)
+                    for token in use_site.context_tokens
+                }
+            )
+        )
+        candidates.append(
+            DistributedBoundaryFanoutCandidate(
+                field_name=field_name,
+                declarations=tuple(
+                    sorted(
+                        declarations_by_field[field_name],
+                        key=lambda item: (item.file_path, item.line, item.class_name),
+                    )
+                ),
+                forwarding_sites=forwarding_sites,
+                projection_sites=projection_sites,
+                context_tokens=context_tokens,
+            )
+        )
+    return tuple(candidates)
+
+
+class DistributedBoundaryFanoutDetector(
+    ConfiguredCrossModuleCollectorCandidateDetector[DistributedBoundaryFanoutCandidate]
+):
+    finding_spec = high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Distributed boundary fanout should collapse behind one nominal carrier",
+        "A same-named boundary is declared on multiple nominal records, forwarded through keyword calls, and projected or destructured elsewhere. That makes one conceptual refactor require edits at many sites and lets support semantics drift across transport shells.",
+        "single authoritative nominal carrier consumed directly at the execution boundary",
+        "same boundary field is redeclared, forwarded, and re-projected across several API surfaces",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    )
+    candidate_collector = staticmethod(_distributed_boundary_fanout_candidates)
+
+    def _finding_for_candidate(
+        self, candidate: DistributedBoundaryFanoutCandidate
+    ) -> RefactorFinding:
+        classes = ", ".join(candidate.class_names)
+        context = ", ".join(candidate.context_tokens[:8])
+        return self.build_finding(
+            (
+                f"`{candidate.field_name}` is declared on {classes}, forwarded at "
+                f"{len(candidate.forwarding_sites)} call sites, and projected at "
+                f"{len(candidate.projection_sites)} site(s) over roles {context}."
+            ),
+            candidate.evidence[:8],
+            scaffold=(
+                f"@dataclass(frozen=True)\nclass {''.join(part.title() for part in candidate.field_name.split('_'))}Boundary:\n    ...\n\n# Thread this carrier directly; do not mirror its fields through request kwargs."
+            ),
+            codemod_patch=(
+                f"# Collapse `{candidate.field_name}` fanout into one nominal carrier boundary.\n"
+                "# Replace pass-through kwargs/request fields with direct carrier consumption at the execution authority."
+            ),
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=(
+                    len(candidate.forwarding_sites) + len(candidate.projection_sites)
+                ),
+                mapping_name=candidate.field_name,
+                field_names=candidate.context_tokens,
+                source_name="distributed_boundary_fanout",
+            ),
+        )
+
+
 def default_detectors() -> tuple[IssueDetector, ...]:
     """Instantiate all registered detectors in deterministic priority order."""
     return tuple(

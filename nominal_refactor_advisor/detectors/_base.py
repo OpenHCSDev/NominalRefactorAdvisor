@@ -479,6 +479,10 @@ class DetectorConfig:
         2,
         "Minimum repeated observed role-token support before surfacing role-surface drift.",
     )
+    min_boundary_fanout_sites: int = detector_config_option(
+        4,
+        "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",
+    )
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
