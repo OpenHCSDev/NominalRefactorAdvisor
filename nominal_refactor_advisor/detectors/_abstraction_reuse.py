@@ -226,6 +226,109 @@ def _module_parallel_primitive_bundles(
     return tuple(bundles)
 
 
+def _literal_string_tuple(node: ast.AST) -> tuple[str, ...]:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return (node.value,)
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return tuple(
+            value.value
+            for value in node.elts
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
+        )
+    return ()
+
+
+def _class_slot_names(node: ast.ClassDef) -> tuple[str, ...]:
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(
+            isinstance(target, ast.Name) and target.id == "__slots__"
+            for target in statement.targets
+        ):
+            continue
+        return _literal_string_tuple(statement.value)
+    return ()
+
+
+def _parameter_annotation_map(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, str]:
+    annotations: dict[str, str] = {}
+    for argument in (
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+    ):
+        if argument.arg in {"self", "cls"} or argument.annotation is None:
+            continue
+        annotations[argument.arg] = ast.unparse(argument.annotation)
+    return annotations
+
+
+def _assigned_self_attribute(
+    statement: ast.stmt,
+) -> tuple[str, ast.AST | None] | None:
+    target: ast.AST | None = None
+    value: ast.AST | None = None
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target = statement.targets[0]
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target = statement.target
+        value = statement.value
+    if not (
+        isinstance(target, ast.Attribute)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "self"
+    ):
+        return None
+    return target.attr, value
+
+
+def _expression_name_references(node: ast.AST | None) -> frozenset[str]:
+    if node is None:
+        return frozenset()
+    return frozenset(
+        current.id for current in ast.walk(node) if isinstance(current, ast.Name)
+    )
+
+
+def _constructor_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
+    slots = set(_class_slot_names(node))
+    typed_fields: dict[str, str] = {}
+    for statement in node.body:
+        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if statement.name != "__init__":
+            continue
+        annotations = _parameter_annotation_map(statement)
+        for inner in statement.body:
+            assignment = _assigned_self_attribute(inner)
+            if assignment is None:
+                continue
+            field_name, value = assignment
+            if slots and field_name not in slots:
+                continue
+            if field_name in annotations:
+                typed_fields.setdefault(field_name, annotations[field_name])
+                continue
+            references = _expression_name_references(value)
+            for parameter_name, annotation_text in annotations.items():
+                if parameter_name == field_name or parameter_name not in references:
+                    continue
+                typed_fields.setdefault(field_name, annotation_text)
+                break
+    return sorted_tuple(typed_fields.items())
+
+
+def _carrier_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
+    field_type_map = dict(HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node))
+    for field_name, annotation_text in _constructor_field_type_map(node):
+        field_type_map.setdefault(field_name, annotation_text)
+    return sorted_tuple(field_type_map.items())
+
+
 def _looks_like_reusable_carrier_name(name: str) -> bool:
     return name.endswith(_CARRIER_NAME_SUFFIXES)
 
@@ -237,7 +340,7 @@ def _module_carrier_surfaces(module: ParsedModule) -> tuple[CarrierSurface, ...]
             continue
         if not _public_name(node.name):
             continue
-        field_type_map = HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(node)
+        field_type_map = _carrier_field_type_map(node)
         if len(field_type_map) < _MIN_CARRIER_REUSE_FIELDS:
             continue
         field_names = tuple(name for name, _ in field_type_map)
@@ -272,6 +375,34 @@ def _carrier_authority_surfaces(
     )
 
 
+def _package_root_name_for_path(file_path: str) -> str | None:
+    path = Path(file_path)
+    package_dirs: list[Path] = []
+    current = path.parent
+    while (current / "__init__.py").exists():
+        package_dirs.append(current)
+        current = current.parent
+    if package_dirs:
+        return package_dirs[-1].name
+    if not path.is_absolute() and path.parts:
+        return path.parts[0]
+    return None
+
+
+def _carrier_surfaces_share_package(
+    left: CarrierSurface,
+    right: CarrierSurface,
+) -> bool:
+    if _top_level_package(left.module_name) == _top_level_package(right.module_name):
+        return True
+    left_path_package = _package_root_name_for_path(left.file_path)
+    right_path_package = _package_root_name_for_path(right.file_path)
+    return (
+        left_path_package is not None
+        and left_path_package == right_path_package
+    )
+
+
 def _carrier_surface_related(left: CarrierSurface, right: CarrierSurface) -> bool:
     return (
         left.class_name == right.class_name
@@ -280,11 +411,19 @@ def _carrier_surface_related(left: CarrierSurface, right: CarrierSurface) -> boo
     )
 
 
+def _annotation_type_names(annotation_text: str) -> frozenset[str]:
+    return frozenset(
+        token
+        for token in annotation_text.replace(".", " ").replace("[", " ").replace("]", " ").split()
+        if token.isidentifier()
+    )
+
+
 def _carrier_uses_authority(local: CarrierSurface, authority: CarrierSurface) -> bool:
     if authority.class_name in local.base_names:
         return True
     return any(
-        authority.class_name in annotation_text
+        authority.class_name in _annotation_type_names(annotation_text)
         for _, annotation_text in local.field_type_map
     )
 
@@ -303,8 +442,10 @@ def _shared_carrier_field_names(
 
 def _carrier_authority_rank(authority: CarrierSurface) -> tuple[object, ...]:
     module_parts = tuple(part.lower() for part in authority.module_name.split("."))
+    path_parts = tuple(part.lower() for part in Path(authority.file_path).parts)
+    location_parts = (*module_parts, *path_parts)
     shared_module = bool(
-        set(module_parts)
+        set(location_parts)
         & {
             "common",
             "core",
@@ -332,7 +473,7 @@ def _carrier_reuse_candidate(
 ) -> AvailableCarrierReuseCandidate | None:
     if local.file_path == authority.file_path:
         return None
-    if _top_level_package(local.module_name) != _top_level_package(authority.module_name):
+    if not _carrier_surfaces_share_package(local, authority):
         return None
     if _carrier_surface_related(local, authority):
         return None
@@ -394,6 +535,7 @@ def _available_carrier_reuse_candidates(
                 key=lambda candidate: (
                     -len(candidate.shared_roles),
                     -len(candidate.shared_field_names),
+                    len(candidate.authority.role_names) - len(candidate.shared_roles),
                     _carrier_authority_rank(candidate.authority),
                 ),
             )[0]
