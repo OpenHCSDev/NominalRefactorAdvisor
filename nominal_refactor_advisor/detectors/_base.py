@@ -9930,6 +9930,17 @@ class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
+class DuplicateNominalAuthoritySurfaceCandidate(WitnessCarrierCandidate):
+    authority_file_path: str
+    authority_name: str
+    authority_line: int
+    duplicate_class_names: tuple[str, ...]
+    duplicate_line_numbers: tuple[int, ...]
+    shared_method_names: tuple[str, ...]
+    detection_kind: str
+
+
+@dataclass(frozen=True)
 class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     delegate_field_name: str
     delegate_authority_file_path: str

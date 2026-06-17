@@ -8317,6 +8317,49 @@ def test_detects_existing_nominal_authority_reuse(tmp_path: Path) -> None:
     assert "EventCarrierBase" in (finding.scaffold or "")
 
 
+def test_detects_duplicate_nominal_authority_delegate_surface(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass PayloadContextRequest:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        return PayloadContext(self.data, self.mask, self.metadata).payload()\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "duplicate_nominal_authority_surface"
+        )
+    )
+    assert "PayloadContextRequest" in finding.summary
+    assert "PayloadContext" in finding.summary
+    assert "delegate_construction" in finding.summary
+
+
+def test_detects_duplicate_nominal_authority_field_flow_component(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RuntimePayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass AdapterPayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n\n\n@dataclass(frozen=True)\nclass StepPayloadContext:\n    data: object\n    mask: object | None\n    metadata: object\n\n    def payload(self):\n        if self.mask is not None:\n            return (self.data, self.mask, self.metadata)\n        return self.data\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "duplicate_nominal_authority_surface"
+            and "field_flow_confusability_component" in finding.summary
+        )
+    )
+    assert "RuntimePayloadContext" in finding.summary
+    assert "AdapterPayloadContext" in finding.summary
+    assert "StepPayloadContext" in finding.summary
+
+
 def test_detects_local_reimplementation_of_available_abstraction(
     tmp_path: Path,
 ) -> None:

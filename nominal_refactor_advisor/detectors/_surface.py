@@ -13,6 +13,9 @@ from ._helpers import (
     _keyword_bag_adapter_candidates,
     _manual_family_roster_candidates,
 )
+from ._nominal_authority_surface import (
+    _duplicate_nominal_authority_surface_candidates,
+)
 
 
 class ManualFamilyRosterDetector(IssueDetector):
@@ -311,6 +314,73 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
                         ),
                         field_names=candidate.shared_field_names,
                         execution_level="existing_nominal_authority",
+                    ),
+                )
+            )
+        return findings
+
+
+class DuplicateNominalAuthoritySurfaceDetector(IssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_WITNESS_CARRIER,
+        "Duplicate nominal authority surface should collapse onto one owner",
+        "Several unrelated classes expose the same semantic field-flow surface, or a local shell rebuilds an existing compatible authority before forwarding through it. That keeps one behavior family split across nominal owners and lets payload/context bugs leak through the transport layer.",
+        "one authoritative nominal carrier or template owner for the shared field-flow surface",
+        "unrelated classes are confusable under their field roles, public methods, and method field-flow graph",
+        _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _duplicate_nominal_authority_surface_candidates(modules):
+            role_names = candidate.name_family
+            duplicate_evidence = tuple(
+                SourceLocation(candidate.file_path, line, class_name)
+                for class_name, line in zip(
+                    candidate.duplicate_class_names,
+                    candidate.duplicate_line_numbers,
+                    strict=True,
+                )
+            )
+            evidence = (
+                SourceLocation(
+                    candidate.authority_file_path,
+                    candidate.authority_line,
+                    candidate.authority_name,
+                ),
+                *duplicate_evidence,
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.authority_name}` and {candidate.duplicate_class_names} share "
+                        f"field roles {role_names} and methods {candidate.shared_method_names} "
+                        f"under `{candidate.detection_kind}`."
+                    ),
+                    evidence[:6],
+                    scaffold=(
+                        f"class {candidate.authority_name}:\n"
+                        f"    # Own roles {role_names} and methods {candidate.shared_method_names} once.\n"
+                        "    ...\n\n"
+                        f"# Delete or inherit the duplicate shells {candidate.duplicate_class_names}."
+                    ),
+                    codemod_patch=(
+                        f"# Collapse duplicate authority surface {candidate.duplicate_class_names} onto "
+                        f"`{candidate.authority_name}`.\n"
+                        "# Keep adapters responsible only for irreducible boundary residue, not for re-declaring "
+                        f"roles {role_names} and methods {candidate.shared_method_names}."
+                    ),
+                    metrics=WitnessCarrierMetrics(
+                        class_count=1 + len(candidate.duplicate_class_names),
+                        shared_role_count=len(role_names),
+                        class_names=(
+                            candidate.authority_name,
+                            *candidate.duplicate_class_names,
+                        ),
+                        shared_role_names=role_names,
                     ),
                 )
             )
