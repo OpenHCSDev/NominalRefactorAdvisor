@@ -108,7 +108,7 @@ materialize_product_records((
     product_record_spec('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.'),
     product_record_spec('AstNameFamily', 'names: frozenset[str]'),
     product_record_spec('AstCallObservation', 'call: ast.Call; matched_name: str'),
-    product_record_spec('_BuilderCallContext', 'call: ast.Call; callee_name: str; keyword_pairs: tuple[tuple[str, ast.AST], ...]'),
+    product_record_spec('_BuilderCallContext', 'call: ast.Call; callee_name: str; field_pairs: tuple[tuple[str, ast.AST], ...]'),
     product_record_spec('_ExportDictContext', 'dict_node: ast.Dict; key_pairs: tuple[tuple[str, ast.AST], ...]'),
     product_record_spec('_ScopedShapeSpecCall', 'spec_name: str; call: ast.Call'),
     product_record_spec('_ScopedShapeSpecKeywords', 'function_name: str; node_types: tuple[str, ...]'),
@@ -2146,6 +2146,23 @@ def _builder_call_shape(
     class_name: str | None,
     function_name: str | None,
 ) -> BuilderCallShape | None:
+    def positional_builder_roles_allowed(callee_name: str) -> bool:
+        return callee_name.startswith(("for_", "from_", "with_"))
+
+    def positional_field_pairs(
+        call: ast.Call,
+        callee_name: str,
+    ) -> tuple[tuple[str, ast.AST], ...]:
+        if not positional_builder_roles_allowed(callee_name):
+            return ()
+        pairs: list[tuple[str, ast.AST]] = []
+        for argument in call.args:
+            field_name = _terminal_name(argument)
+            if field_name is None:
+                return ()
+            pairs.append((field_name, argument))
+        return tuple(pairs)
+
     context = (
         Maybe.of(as_ast(node, ast.Call))
         .filter(lambda _call: function_name is not None)
@@ -2154,26 +2171,31 @@ def _builder_call_shape(
             lambda call, callee_name: _BuilderCallContext(
                 call=call,
                 callee_name=callee_name,
-                keyword_pairs=tuple(
-                    (kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
+                field_pairs=(
+                    positional_field_pairs(call, callee_name)
+                    + tuple(
+                        (kw.arg, kw.value)
+                        for kw in call.keywords
+                        if kw.arg is not None
+                    )
                 ),
             ),
         )
-        .filter(lambda builder_context: bool(builder_context.keyword_pairs))
+        .filter(lambda builder_context: bool(builder_context.field_pairs))
         .unwrap_or_none()
     )
     if context is None:
         return None
-    keyword_names = tuple(name for name, _ in context.keyword_pairs)
+    field_names = tuple(name for name, _ in context.field_pairs)
     value_fingerprint = tuple(
-        (_fingerprint_builder_value(value) for _, value in context.keyword_pairs)
+        (_fingerprint_builder_value(value) for _, value in context.field_pairs)
     )
     source_roots = set()
-    for _, value in context.keyword_pairs:
+    for _, value in context.field_pairs:
         source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
-        (name for name, value in context.keyword_pairs if _terminal_name(value) == name)
+        (name for name, value in context.field_pairs if _terminal_name(value) == name)
     )
     return BuilderCallShape(
         file_path=str(parsed_module.path),
@@ -2181,7 +2203,7 @@ def _builder_call_shape(
         function_name=function_name,
         lineno=context.call.lineno,
         callee_name=context.callee_name,
-        keyword_names=keyword_names,
+        field_names=field_names,
         value_fingerprint=value_fingerprint,
         source_arity=len(source_roots),
         source_name=source_name,

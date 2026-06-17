@@ -586,7 +586,7 @@ class MethodShape(
 class BuilderCallShape(FunctionBodyCallLikeShape):
     OBSERVATION_KIND = ObservationKind.BUILDER_CALL
     callee_name: str
-    keyword_names: tuple[str, ...]
+    field_names: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
@@ -596,7 +596,7 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
 
     @property
     def fiber_key(self) -> str:
-        return f"{self.callee_name}:{self.keyword_names}:{self.value_fingerprint}"
+        return f"{self.callee_name}:{self.field_names}:{self.value_fingerprint}"
 
 
 _REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog(

@@ -3657,10 +3657,10 @@ class RepeatedBuilderCallDetector(IssueDetector):
         for builder in builders:
             if _is_external_declarative_builder_call(builder):
                 continue
-            if len(builder.keyword_names) < config.min_builder_keywords:
+            if len(builder.field_names) < config.min_builder_keywords:
                 continue
             grouped[
-                builder.callee_name, builder.keyword_names, builder.value_fingerprint
+                builder.callee_name, builder.field_names, builder.value_fingerprint
             ].append(builder)
         findings: list[RefactorFinding] = []
         for group in grouped.values():
@@ -3680,7 +3680,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"Call `{ordered[0].callee_name}` repeats the same keyword-mapping shape across {len(ordered)} sites.",
+                    f"Call `{ordered[0].callee_name}` repeats the same field-mapping shape across {len(ordered)} sites.",
                     evidence,
                     capability_gap=(
                         "single authoritative data-to-record mapping"
@@ -3692,7 +3692,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
                         mapping_name=ordered[0].callee_name,
-                        field_names=ordered[0].keyword_names,
+                        field_names=ordered[0].field_names,
                         source_name=ordered[0].source_name,
                         identity_field_names=ordered[0].identity_field_names,
                     ),
@@ -3709,7 +3709,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
         for builder in builders:
             if _is_external_declarative_builder_call(builder):
                 continue
-            if not builder.keyword_names:
+            if not builder.field_names:
                 continue
             grouped[(builder.owner_prefix, builder.callee_name)].append(builder)
         findings: list[RefactorFinding] = []
@@ -3720,12 +3720,12 @@ class RepeatedBuilderCallDetector(IssueDetector):
             )
             if len(ordered) < minimum_sites:
                 continue
-            distinct_keyword_names = sorted_tuple(
-                {name for builder in ordered for name in builder.keyword_names}
+            distinct_field_names = sorted_tuple(
+                {name for builder in ordered for name in builder.field_names}
             )
-            if len(distinct_keyword_names) < config.min_builder_keywords:
+            if len(distinct_field_names) < config.min_builder_keywords:
                 continue
-            if len({builder.keyword_names for builder in ordered}) < 2:
+            if len({builder.field_names for builder in ordered}) < 2:
                 continue
             owner_symbols = {builder.symbol for builder in ordered}
             if len(owner_symbols) != 1:
@@ -3739,7 +3739,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"`{owner_symbol}` repeats builder `{callee_name}` across {len(ordered)} declarative sites with keyword family {distinct_keyword_names}.",
+                    f"`{owner_symbol}` repeats builder `{callee_name}` across {len(ordered)} declarative sites with field family {distinct_field_names}.",
                     evidence,
                     capability_gap="single authoritative declarative builder table for one owner surface",
                     relation_context="one owner repeats a builder call family with varying declarative payload",
@@ -3750,7 +3750,7 @@ class RepeatedBuilderCallDetector(IssueDetector):
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(ordered),
                         mapping_name=callee_name,
-                        field_names=distinct_keyword_names,
+                        field_names=distinct_field_names,
                         source_name=owner_symbol,
                     ),
                 )

@@ -507,7 +507,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
         findings: list[RefactorFinding] = []
         for builders in _projection_builder_groups(module, config):
             callee_name = builders[0].callee_name
-            keyword_names = builders[0].keyword_names
+            field_names = builders[0].field_names
             evidence = tuple(
                 (
                     SourceLocation(builder.file_path, builder.lineno, builder.symbol)
@@ -517,7 +517,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
             findings.append(
                 self.build_finding(
                     (
-                        f"`{callee_name}` is rebuilt across {len(builders)} projection sites over keyword family {keyword_names}, "
+                        f"`{callee_name}` is rebuilt across {len(builders)} projection sites over field family {field_names}, "
                         "with guards/defaults varying per site."
                     ),
                     evidence,
@@ -531,7 +531,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(builders),
                         mapping_name=callee_name,
-                        field_names=keyword_names,
+                        field_names=field_names,
                     ),
                 )
             )

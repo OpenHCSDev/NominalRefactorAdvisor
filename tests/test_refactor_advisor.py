@@ -5545,6 +5545,23 @@ def test_detects_repeated_builder_call_shape(tmp_path: Path) -> None:
     )
 
 
+def test_repeated_builder_normalizes_positional_identity_fields(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef alpha(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels=labels,\n        unedited_labels=unedited_labels,\n        small_removed_labels=small_removed_labels,\n    )\n\n\ndef beta(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels,\n        unedited_labels,\n        small_removed_labels,\n    )\n\n\ndef gamma(labels, unedited_labels, small_removed_labels):\n    return ObjectLabelVariantData.for_labels(\n        labels,\n        unedited_labels,\n        small_removed_labels,\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert any(
+        (
+            finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+            and "for_labels" in finding.summary
+            and "field-mapping" in finding.summary
+        )
+        for finding in findings
+    )
+
+
 def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

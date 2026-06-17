@@ -2681,7 +2681,7 @@ def _projection_builder_groups(
         list
     )
     for builder in _module_builder_call_shapes(module):
-        if len(builder.keyword_names) < max(config.min_builder_keywords, 6):
+        if len(builder.field_names) < max(config.min_builder_keywords, 6):
             continue
         if not all(
             (
@@ -2690,7 +2690,7 @@ def _projection_builder_groups(
             )
         ):
             continue
-        grouped[(builder.callee_name, builder.keyword_names)].append(builder)
+        grouped[(builder.callee_name, builder.field_names)].append(builder)
     candidates: list[tuple[BuilderCallShape, ...]] = []
     for builders in grouped.values():
         if len(builders) < 3:
@@ -8927,10 +8927,10 @@ def _abc_family_scaffold(
 
 def _builder_scaffold(builders: tuple[BuilderCallShape, ...]) -> str:
     callee_name = builders[0].callee_name
-    keywords = builders[0].keyword_names
+    field_names = builders[0].field_names
     row_name = callee_name if callee_name[:1].isupper() else "ProjectedRow"
     args_block = "\n".join(
-        (f"            {name}=source.{name}," for name in keywords[:4])
+        (f"            {name}=source.{name}," for name in field_names[:4])
     )
     return f"@dataclass(frozen=True)\nclass {row_name}:\n    ...\n\n    @classmethod\n    def from_source(cls, source):\n        return cls(\n{args_block}\n        )"
 
