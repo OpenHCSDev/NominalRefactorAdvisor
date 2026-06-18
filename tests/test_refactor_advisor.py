@@ -400,8 +400,14 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert candidate.covered_finding_ids == (finding.stable_id,)
     assert candidate.predicted_removed_finding_count == 1
     assert candidate.impact_delta == impact_ranking.opportunities[0].impact_delta
-    assert applicability.automation_level == CodemodAutomationLevel.ADVISORY_ONLY
-    assert applicability.simulation_status == CodemodSimulationStatus.NO_REWRITE_PLAN
+    assert (
+        applicability.automation_level
+        == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+    )
+    assert (
+        applicability.simulation_status
+        == CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
+    )
     assert applicability.safe_to_apply is False
     assert (
         mechanical_applicability.automation_level
@@ -414,7 +420,8 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
         == CodemodSimulationStatus.READY_TO_SIMULATE
     )
     assert (
-        planned_applicability.automation_level == CodemodAutomationLevel.ADVISORY_ONLY
+        planned_applicability.automation_level
+        == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
     )
     assert (
         planned_candidate.to_dict()["applicability"]["simulation_status"]
@@ -425,7 +432,7 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
 
 
-def test_supplied_authority_boundary_turns_advisory_candidate_into_simulation(
+def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -8029,13 +8036,15 @@ def test_json_and_markdown_expose_codemod_applicability(
     applicability = cast(dict[str, object], candidate_payload["applicability"])
     markdown = format_codemod_applicability_markdown(codemod_candidates)
 
-    assert applicability["automation_level"] == "advisory_only"
-    assert applicability["simulation_status"] == "no_rewrite_plan"
+    assert applicability["automation_level"] == "semantic_agent_required"
+    assert applicability["simulation_status"] == "rewrite_plan_required"
     assert applicability["safe_to_apply"] is False
+    assert "Inspect the targets" in str(applicability["agent_action"])
     assert candidate_payload["target_ids"]
-    assert "Codemod applicability:" in markdown
-    assert "advisory_only" in markdown
-    assert "no_rewrite_plan" in markdown
+    assert "Refactor implementation guidance:" in markdown
+    assert "semantic_agent_required" in markdown
+    assert "rewrite_plan_required" in markdown
+    assert "agent action:" in markdown
 
 
 def test_json_payload_auto_attaches_safe_codemod_options(
@@ -8089,7 +8098,7 @@ def test_json_payload_auto_attaches_safe_codemod_options(
     assert applicability["simulation_status"] == "ready_to_simulate"
     assert applicability["safe_to_apply"] is True
     assert applicability["planned_rewrite_count"] == 1
-    assert "safe mechanical: 1" in markdown
+    assert "safe mechanical available: 1" in markdown
     assert "1 planned rewrite(s)" in markdown
 
 

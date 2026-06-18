@@ -32,7 +32,9 @@ from .codemod import (
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
     CodemodCandidate,
+    CodemodAutomationLevel,
     CodemodSimulationReport,
+    CodemodSimulationStatus,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
@@ -238,7 +240,8 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             help=(
                 "Load caller-supplied authority boundary codemod plan JSON. "
-                "Plans enable simulatable rewrites for advisory candidates."
+                "Plans enable simulatable rewrites for semantic agent-required "
+                "candidates."
             ),
         ),
         CliArgumentSpec(
@@ -609,14 +612,15 @@ def format_impact_ranking_markdown(
 def format_codemod_applicability_markdown(
     candidates: tuple[CodemodCandidate, ...],
 ) -> str:
-    lines = ["Codemod applicability:"]
+    lines = ["Refactor implementation guidance:"]
     if not candidates:
         lines.append("   - Candidates: 0")
         return "\n".join(lines)
 
-    advisory_count = sum(
+    semantic_agent_count = sum(
         (
-            candidate.applicability.automation_level.value == "advisory_only"
+            candidate.applicability.automation_level
+            is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
             for candidate in candidates
         )
     )
@@ -625,15 +629,16 @@ def format_codemod_applicability_markdown(
     )
     ready_count = sum(
         (
-            candidate.applicability.simulation_status.value == "ready_to_simulate"
+            candidate.applicability.simulation_status
+            is CodemodSimulationStatus.READY_TO_SIMULATE
             for candidate in candidates
         )
     )
     planned_count = sum((candidate.has_planned_rewrites for candidate in candidates))
     lines.append(
         "   - Candidates: "
-        f"{len(candidates)}; advisory-only: {advisory_count}; "
-        f"safe mechanical: {safe_count}; "
+        f"{len(candidates)}; semantic agent work required: "
+        f"{semantic_agent_count}; safe mechanical available: {safe_count}; "
         f"planned rewrites: {planned_count}; ready to simulate: {ready_count}"
     )
     for index, candidate in enumerate(candidates[:10], start=1):
@@ -648,6 +653,7 @@ def format_codemod_applicability_markdown(
         )
         lines.append(f"     strategy: {applicability.strategy_id}")
         lines.append(f"     reason: {applicability.reason}")
+        lines.append(f"     agent action: {applicability.agent_action}")
     return "\n".join(lines)
 
 
