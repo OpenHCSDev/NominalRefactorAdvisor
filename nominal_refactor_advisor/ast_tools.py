@@ -1886,7 +1886,11 @@ def _class_marker_observations(
                             marker_name=marker_name,
                         )
                     )
-        if isinstance(node, ast.Attribute) and node.attr.startswith("_is_"):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("_is_")
+            and _is_class_target(node.value)
+        ):
             key = (node.lineno, node.attr)
             if key not in seen:
                 seen.add(key)

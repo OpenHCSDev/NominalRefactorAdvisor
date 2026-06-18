@@ -22,6 +22,52 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "RefactorFinding": ("nominal_refactor_advisor.models", "RefactorFinding"),
     "RefactorPlan": ("nominal_refactor_advisor.models", "RefactorPlan"),
     "SourceLocation": ("nominal_refactor_advisor.models", "SourceLocation"),
+    "AssignmentSummary": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "AssignmentSummary",
+    ),
+    "CallSummary": ("nominal_refactor_advisor.semantic_inspection", "CallSummary"),
+    "ClassSummary": ("nominal_refactor_advisor.semantic_inspection", "ClassSummary"),
+    "DataclassSummary": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "DataclassSummary",
+    ),
+    "EvidenceSummary": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "EvidenceSummary",
+    ),
+    "FindingSummary": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "FindingSummary",
+    ),
+    "FunctionSummary": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "FunctionSummary",
+    ),
+    "ImportSummary": ("nominal_refactor_advisor.semantic_inspection", "ImportSummary"),
+    "ModuleSummary": ("nominal_refactor_advisor.semantic_inspection", "ModuleSummary"),
+    "SemanticAstInspector": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "SemanticAstInspector",
+    ),
+    "SemanticInspectionRecord": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "SemanticInspectionRecord",
+    ),
+    "SemanticInspectionReport": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "SemanticInspectionReport",
+    ),
+    "SourceIndexSemanticAstInspector": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "SourceIndexSemanticAstInspector",
+    ),
+    "inspect_modules": (
+        "nominal_refactor_advisor.semantic_inspection",
+        "inspect_modules",
+    ),
+    "inspect_path": ("nominal_refactor_advisor.semantic_inspection", "inspect_path"),
+    "inspect_paths": ("nominal_refactor_advisor.semantic_inspection", "inspect_paths"),
     "PATTERN_SPECS": ("nominal_refactor_advisor.patterns", "PATTERN_SPECS"),
     "PatternSpec": ("nominal_refactor_advisor.patterns", "PatternSpec"),
     "build_refactor_plans": (
@@ -32,6 +78,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "CodemodApplicability": (
         "nominal_refactor_advisor.codemod",
         "CodemodApplicability",
+    ),
+    "CodemodActionability": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodActionability",
     ),
     "CodemodAutomationLevel": (
         "nominal_refactor_advisor.codemod",

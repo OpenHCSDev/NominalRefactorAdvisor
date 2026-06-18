@@ -71,6 +71,15 @@ class CodemodSimulationStatus(StrEnum):
     READY_TO_SIMULATE = "ready_to_simulate"
 
 
+class CodemodActionability(StrEnum):
+    """Agent-facing implementation posture for a codemod candidate."""
+
+    SAFE_MECHANICAL = "safe_mechanical"
+    SIMULATABLE_REWRITE = "simulatable_rewrite"
+    SEMANTIC_AGENT_REFACTOR = "semantic_agent_refactor"
+    SEMANTIC_UNCERTAINTY_REVIEW = "semantic_uncertainty_review"
+
+
 class CancelableCompositionKind(StrEnum):
     """Kinds of product-carrier compositions that can be factored away."""
 
@@ -106,20 +115,41 @@ class CodemodApplicability:
     automation_level: CodemodAutomationLevel
     simulation_status: CodemodSimulationStatus
     safe_to_apply: bool
+    actionability: CodemodActionability
     target_count: int
     planned_rewrite_count: int
     reason: str
+    confidence_basis: str
 
     @property
     def agent_action(self) -> str:
-        if (
-            self.automation_level
-            is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
-        ):
-            if (
-                self.simulation_status
-                is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
-            ):
+        if self.actionability is CodemodActionability.SEMANTIC_AGENT_REFACTOR:
+            if self.simulation_status is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED:
+                return (
+                    "Confidence is sufficient: inspect the source-index targets, "
+                    "design the semantic authority boundary, and implement the "
+                    "refactor; stop only if domain semantics are genuinely "
+                    "ambiguous."
+                )
+            return (
+                "Confidence is sufficient and a rewrite plan exists: simulate the "
+                "plan, inspect the diff, and carry the semantic refactor through "
+                "unless source evidence contradicts it."
+            )
+        if self.actionability is CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW:
+            return (
+                "Resolve the finding uncertainty before rewriting: inspect the "
+                "evidence and stop only while the semantic authority boundary is "
+                "genuinely unclear."
+            )
+        if self.actionability is CodemodActionability.SIMULATABLE_REWRITE:
+            return (
+                "A caller-supplied semantic rewrite plan is available: simulate it, "
+                "inspect the diff, and apply only after the planned authority "
+                "boundary matches the source evidence."
+            )
+        if self.automation_level is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED:
+            if self.simulation_status is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED:
                 return (
                     "Inspect the targets and implement the semantic refactor with "
                     "an explicit rewrite plan; stop only for unresolved domain "
@@ -140,9 +170,11 @@ class CodemodApplicability:
             "automation_level": self.automation_level.value,
             "simulation_status": self.simulation_status.value,
             "safe_to_apply": self.safe_to_apply,
+            "actionability": self.actionability.value,
             "target_count": self.target_count,
             "planned_rewrite_count": self.planned_rewrite_count,
             "reason": self.reason,
+            "confidence_basis": self.confidence_basis,
             "agent_action": self.agent_action,
         }
 
@@ -208,18 +240,78 @@ class CodemodStrategyRegistry:
             if candidate.planned_rewrites
             else CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
         )
+        actionability = _candidate_actionability(
+            candidate,
+            simulation_status=simulation_status,
+        )
         return CodemodApplicability(
             strategy_id=strategy.strategy_id,
             automation_level=strategy.automation_level,
             simulation_status=simulation_status,
             safe_to_apply=strategy.safe_to_apply,
+            actionability=actionability,
             target_count=candidate.target_count,
             planned_rewrite_count=len(candidate.planned_rewrites),
             reason=strategy.reason,
+            confidence_basis=_candidate_confidence_basis(candidate),
         )
 
 
 DEFAULT_CODEMOD_STRATEGY_REGISTRY = CodemodStrategyRegistry()
+
+
+_ACTIONABLE_CONFIDENCE_LEVELS = frozenset(("high", "medium"))
+_ACTIONABLE_CERTIFICATION_LEVELS = frozenset(("certified", "strong_heuristic"))
+
+
+def _candidate_actionability(
+    candidate: "CodemodCandidate",
+    *,
+    simulation_status: CodemodSimulationStatus,
+) -> CodemodActionability:
+    if candidate.strategy.safe_to_apply:
+        return CodemodActionability.SAFE_MECHANICAL
+    if (
+        candidate.strategy.automation_level
+        is CodemodAutomationLevel.SIMULATABLE_REWRITE
+    ):
+        return CodemodActionability.SIMULATABLE_REWRITE
+    if (
+        candidate.strategy.automation_level
+        is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+        and _candidate_has_actionable_semantic_confidence(candidate)
+    ):
+        return CodemodActionability.SEMANTIC_AGENT_REFACTOR
+    if (
+        candidate.strategy.automation_level
+        is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+        and simulation_status is CodemodSimulationStatus.READY_TO_SIMULATE
+    ):
+        return CodemodActionability.SEMANTIC_AGENT_REFACTOR
+    return CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
+
+
+def _candidate_has_actionable_semantic_confidence(
+    candidate: "CodemodCandidate",
+) -> bool:
+    confidence_levels = set(candidate.opportunity.confidence_levels)
+    certification_levels = set(candidate.opportunity.certification_levels)
+    if not confidence_levels or not certification_levels:
+        return False
+    return (
+        confidence_levels <= _ACTIONABLE_CONFIDENCE_LEVELS
+        and certification_levels <= _ACTIONABLE_CERTIFICATION_LEVELS
+    )
+
+
+def _candidate_confidence_basis(candidate: "CodemodCandidate") -> str:
+    confidence_levels = ", ".join(candidate.opportunity.confidence_levels)
+    certification_levels = ", ".join(candidate.opportunity.certification_levels)
+    if not confidence_levels:
+        confidence_levels = "unknown"
+    if not certification_levels:
+        certification_levels = "unknown"
+    return f"confidence={confidence_levels}; certification={certification_levels}"
 
 
 SORTED_TUPLE_WRAPPER_CODEMOD_STRATEGY = CodemodStrategy(

@@ -4035,6 +4035,7 @@ _LATENT_ROSTER_POLICY_TOKENS = frozenset(
         "visible",
     }
 )
+_LATENT_ROSTER_MUTATION_METHODS = frozenset({"extend", "update"})
 
 
 class LatentRosterProjectionAuthority:
@@ -4170,6 +4171,41 @@ def _collection_rosters_for_statement(
     )
 
 
+def _inline_mutation_roster_observations(
+    module: ParsedModule,
+    statement: ast.stmt,
+) -> tuple[_LatentRosterObservation, ...]:
+    if not isinstance(statement, ast.Expr):
+        return ()
+    call = as_ast(statement.value, ast.Call)
+    if call is None or not isinstance(call.func, ast.Attribute):
+        return ()
+    mutation_name = call.func.attr
+    if mutation_name not in _LATENT_ROSTER_MUTATION_METHODS:
+        return ()
+    roster_name = ast.unparse(call.func.value)
+    observations: list[_LatentRosterObservation] = []
+    for argument in call.args:
+        for observation in LATENT_ROSTER_PROJECTION_AUTHORITY.observations(
+            module=module,
+            statement=statement,
+            roster_name=roster_name,
+            value=argument,
+        ):
+            observations.append(
+                _LatentRosterObservation(
+                    file_path=observation.file_path,
+                    roster_name=observation.roster_name,
+                    line=observation.line,
+                    roster_kind=f"inline_{observation.roster_kind}.{mutation_name}",
+                    projection_role=f"{mutation_name}_{observation.projection_role}",
+                    member_names=observation.member_names,
+                    line_count=observation.line_count,
+                )
+            )
+    return tuple(observations)
+
+
 def _implementation_collection_rosters(
     modules: list[ParsedModule],
 ) -> tuple[_LatentRosterObservation, ...]:
@@ -4177,6 +4213,7 @@ def _implementation_collection_rosters(
     for module in modules:
         for statement in _trim_docstring_body(module.module.body):
             rosters.extend(_collection_rosters_for_statement(module, statement))
+            rosters.extend(_inline_mutation_roster_observations(module, statement))
             if isinstance(statement, ast.ClassDef):
                 for class_statement in _trim_docstring_body(statement.body):
                     rosters.extend(
@@ -4185,6 +4222,9 @@ def _implementation_collection_rosters(
                             class_statement,
                             roster_prefix=statement.name,
                         )
+                    )
+                    rosters.extend(
+                        _inline_mutation_roster_observations(module, class_statement)
                     )
     return tuple(rosters)
 

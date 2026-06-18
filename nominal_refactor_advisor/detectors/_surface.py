@@ -757,6 +757,62 @@ class DistributedBoundaryFanoutCandidate:
         )
 
 
+_BOUNDARY_PROJECTION_CONTEXT_TOKENS = frozenset(
+    {
+        "axis",
+        "index",
+        "offset",
+        "offsets",
+        "project",
+        "projected",
+        "projection",
+        "route",
+        "viewer",
+    }
+)
+
+
+def _boundary_pascal_name(field_name: str) -> str:
+    return "".join(part.title() for part in field_name.split("_"))
+
+
+def _distributed_boundary_scaffold(candidate: DistributedBoundaryFanoutCandidate) -> str:
+    boundary_name = _boundary_pascal_name(candidate.field_name)
+    if _BOUNDARY_PROJECTION_CONTEXT_TOKENS & set(candidate.context_tokens):
+        return (
+            "@dataclass(frozen=True)\n"
+            f"class {boundary_name}ProjectionRequest:\n"
+            "    ...\n\n"
+            "@dataclass(frozen=True)\n"
+            f"class {boundary_name}ProjectionStep:\n"
+            "    ...\n\n"
+            "# Collapse the forwarded scalar field into the request, then let each\n"
+            "# projection step consume the request and return the projected carrier.\n"
+            "# Do not mirror the field through kwargs or recompute offsets at call sites."
+        )
+    return (
+        "@dataclass(frozen=True)\n"
+        f"class {boundary_name}Boundary:\n"
+        "    ...\n\n"
+        "# Thread this carrier directly; do not mirror its fields through request kwargs."
+    )
+
+
+def _distributed_boundary_codemod_patch(
+    candidate: DistributedBoundaryFanoutCandidate,
+) -> str:
+    if _BOUNDARY_PROJECTION_CONTEXT_TOKENS & set(candidate.context_tokens):
+        return (
+            f"# Collapse `{candidate.field_name}` fanout into one typed projection request.\n"
+            "# Move per-item projection/offset logic into a nominal projection-step object,\n"
+            "# and pass the projection carrier instead of mirrored kwargs."
+        )
+    return (
+        f"# Collapse `{candidate.field_name}` fanout into one nominal carrier boundary.\n"
+        "# Replace pass-through kwargs/request fields with direct carrier consumption at the execution authority."
+    )
+
+
 def _boundary_identifier_tokens(name: str) -> tuple[str, ...]:
     return tuple(
         token
@@ -1068,13 +1124,8 @@ class DistributedBoundaryFanoutDetector(
                 f"{len(candidate.projection_sites)} site(s) over roles {context}."
             ),
             candidate.evidence[:8],
-            scaffold=(
-                f"@dataclass(frozen=True)\nclass {''.join(part.title() for part in candidate.field_name.split('_'))}Boundary:\n    ...\n\n# Thread this carrier directly; do not mirror its fields through request kwargs."
-            ),
-            codemod_patch=(
-                f"# Collapse `{candidate.field_name}` fanout into one nominal carrier boundary.\n"
-                "# Replace pass-through kwargs/request fields with direct carrier consumption at the execution authority."
-            ),
+            scaffold=_distributed_boundary_scaffold(candidate),
+            codemod_patch=_distributed_boundary_codemod_patch(candidate),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=(
                     len(candidate.forwarding_sites) + len(candidate.projection_sites)

@@ -3001,6 +3001,225 @@ class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
         return findings
 
 
+@dataclass(frozen=True, slots=True)
+class RoleGuardedSurfaceAccessCandidate:
+    file_path: str
+    line: int
+    qualname: str
+    subject_expression: str
+    role_type_name: str
+    guard_expression: str
+    accessed_members: tuple[str, ...]
+    declared_members: tuple[str, ...]
+
+
+def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
+    members: set[str] = set()
+    for statement in node.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not statement.name.startswith("__"):
+                members.add(statement.name)
+            continue
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+            members.add(statement.target.id)
+            continue
+        if isinstance(statement, ast.Assign):
+            for target in statement.targets:
+                if isinstance(target, ast.Name):
+                    members.add(target.id)
+    return sorted_tuple(members)
+
+
+def _role_surface_members_by_type_name(
+    modules: Sequence[ParsedModule],
+) -> dict[str, tuple[str, ...]]:
+    surfaces: dict[str, set[str]] = defaultdict(set)
+    for module in modules:
+        for node in ast.walk(module.module):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            members = _declared_class_surface_members(node)
+            if len(members) == 0:
+                continue
+            surfaces[node.name].update(members)
+            surfaces[f"{module.module_name}.{node.name}"].update(members)
+    return {
+        type_name: sorted_tuple(members)
+        for type_name, members in sorted(surfaces.items())
+    }
+
+
+def _isinstance_guard_bindings(
+    test: ast.AST,
+) -> tuple[tuple[str, str, str], ...]:
+    bindings: list[tuple[str, str, str]] = []
+    for node in ast.walk(test):
+        if not (
+            isinstance(node, ast.Call)
+            and len(node.args) == 2
+            and not node.keywords
+            and _ast_terminal_name(node.func) == "isinstance"
+        ):
+            continue
+        type_names = _isinstance_scatter_type_names(node.args[1])
+        if len(type_names) == 0:
+            continue
+        subject_expression = ast.unparse(node.args[0])
+        guard_expression = ast.unparse(node)
+        bindings.extend(
+            (subject_expression, type_name, guard_expression)
+            for type_name in type_names
+        )
+    return tuple(bindings)
+
+
+def _accessed_declared_members(
+    statements: Sequence[ast.stmt],
+    *,
+    subject_expression: str,
+    declared_members: tuple[str, ...],
+) -> tuple[str, ...]:
+    declared_member_set = frozenset(declared_members)
+    accessed: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            del node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            del node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            del node
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            if node.attr in declared_member_set and ast.unparse(node.value) == subject_expression:
+                accessed.add(node.attr)
+            self.generic_visit(node)
+
+    visitor = Visitor()
+    for statement in statements:
+        visitor.visit(statement)
+    return sorted_tuple(accessed)
+
+
+def _role_guarded_surface_access_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
+    role_surfaces = _role_surface_members_by_type_name(modules)
+    candidates: list[RoleGuardedSurfaceAccessCandidate] = []
+    for module in modules:
+        for qualname, function in _iter_named_functions(module):
+            for node in ast.walk(function):
+                if not isinstance(node, ast.If):
+                    continue
+                for subject_expression, type_name, guard_expression in _isinstance_guard_bindings(node.test):
+                    if type_name not in role_surfaces:
+                        continue
+                    declared_members = role_surfaces[type_name]
+                    accessed_members = _accessed_declared_members(
+                        node.body,
+                        subject_expression=subject_expression,
+                        declared_members=declared_members,
+                    )
+                    if len(accessed_members) == 0:
+                        continue
+                    candidates.append(
+                        RoleGuardedSurfaceAccessCandidate(
+                            file_path=str(module.path),
+                            line=node.lineno,
+                            qualname=qualname,
+                            subject_expression=subject_expression,
+                            role_type_name=type_name,
+                            guard_expression=guard_expression,
+                            accessed_members=accessed_members,
+                            declared_members=declared_members,
+                        )
+                    )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (
+            item.file_path,
+            item.line,
+            item.qualname,
+            item.subject_expression,
+            item.role_type_name,
+        ),
+    )
+
+
+class RoleGuardedSurfaceAccessDetector(IssueDetector):
+    detector_id = "role_guarded_surface_access"
+    detector_priority = -25
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Runtime role guard leaks role-owned semantics into the caller",
+        "An `isinstance` guard proves a nominal role and the guarded block immediately consumes members declared on that same role. That leaves the caller responsible for discovering and interpreting optional role semantics instead of making the semantic value explicit at the boundary or requiring the role as the declared contract.",
+        "explicit request/value boundary or role-typed parameter owns the semantic relation",
+        "caller-side role probe followed by role-surface member access",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.FAIL_LOUD_CONTRACTS,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.RUNTIME_MEMBERSHIP,
+            ObservationTag.BRANCH_DISPATCH,
+            ObservationTag.PARTIAL_VIEW,
+        ),
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _role_guarded_surface_access_candidates(modules):
+            accessed_summary = ", ".join(candidate.accessed_members)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.qualname}` checks `{candidate.guard_expression}` "
+                        f"and then accesses role-owned member(s) {accessed_summary} "
+                        f"on `{candidate.subject_expression}`."
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.file_path,
+                            candidate.line,
+                            (
+                                f"{candidate.qualname}:"
+                                f"{candidate.subject_expression}:"
+                                f"{candidate.role_type_name}"
+                            ),
+                        ),
+                    ),
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        "class SemanticOperationRequest:\n"
+                        "    target: object\n"
+                        "    role_owned_value: object\n\n"
+                        "# Build this request at the owner/call boundary, or type the callee "
+                        f"parameter as `{candidate.role_type_name}` if the role itself is required. "
+                        "The central helper should not discover the role and pull its semantics."
+                    ),
+                    codemod_patch=(
+                        f"# Replace the `{candidate.guard_expression}` block in "
+                        f"`{candidate.qualname}` with one explicit semantic input.\n"
+                        "# Either require the parameter to implement the role up front and fail "
+                        "before calling, or pass the extracted role-owned value/request from the "
+                        "caller that owns that relationship."
+                    ),
+                    metrics=DispatchCountMetrics(
+                        dispatch_site_count=1,
+                        dispatch_axis=candidate.subject_expression,
+                        literal_cases=(candidate.role_type_name,),
+                    ),
+                )
+            )
+        return findings
+
+
 _LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(
     (
         "action",
@@ -4311,10 +4530,10 @@ class LatentImplementationRosterDetector(
 ):
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
-        "Latent implementation roster should derive from the ABC registry",
-        "A module-level collection whose members exactly mirror concrete implementations of one ABC family is a shadow registry even when it is just strings, class objects, or instances. Membership should be derived from an AutoRegisterMeta-backed ABC or from a named projection policy over that registry.",
+        "Manual implementation enumeration should derive from the ABC registry",
+        "A collection or inline literal whose members mirror concrete implementations of one ABC family is a shadow registry even when it is just strings, class objects, instances, or a dict passed to `update(...)`. Membership should be derived from an AutoRegisterMeta-backed ABC or from a named projection policy over that registry.",
         "AutoRegisterMeta-backed implementation registry with generated projection surfaces",
-        "module collection repeats the complete concrete implementation set of an ABC family",
+        "manual collection or inline literal repeats the complete concrete implementation set of an ABC family",
         _CLASS_LEVEL_REGISTRATION_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
         _CLASS_FAMILY_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )

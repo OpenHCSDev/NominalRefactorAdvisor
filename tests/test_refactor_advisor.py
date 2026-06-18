@@ -59,6 +59,7 @@ from nominal_refactor_advisor.cli import load_authority_boundary_plans
 from nominal_refactor_advisor.codemod import (
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
+    CodemodActionability,
     CodemodAutomationLevel,
     CodemodBackend,
     CancelableCompositionKind,
@@ -151,7 +152,7 @@ from nominal_refactor_advisor.semantic_description_length import (
     SemanticCostVector,
 )
 from nominal_refactor_advisor.source_index import SourceIndex, build_source_index
-from nominal_refactor_advisor.taxonomy import ConfidenceLevel
+from nominal_refactor_advisor.taxonomy import ConfidenceLevel, SPECULATIVE
 
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
@@ -401,12 +402,10 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert candidate.predicted_removed_finding_count == 1
     assert candidate.impact_delta == impact_ranking.opportunities[0].impact_delta
     assert (
-        applicability.automation_level
-        == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+        applicability.automation_level == CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
     )
     assert (
-        applicability.simulation_status
-        == CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
+        applicability.simulation_status == CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
     )
     assert applicability.safe_to_apply is False
     assert (
@@ -439,9 +438,7 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
-        "    def run(self, value):\n"
-        "        return value\n",
+        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     finding = _finding_spec(
@@ -4449,6 +4446,29 @@ def test_detects_distributed_boundary_fanout_without_project_specific_tokens(
     assert "forwarded at 2 call sites" in finding.summary
     assert "projected at 1 site" in finding.summary
     assert "one nominal carrier" in (finding.title or "")
+    assert "ProjectionRequest" not in (finding.scaffold or "")
+
+
+def test_distributed_boundary_fanout_suggests_projection_request_for_axis_roles(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/axis_projection.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass AxisProjection:\n    axis_offsets: tuple[int, ...]\n\n\n@dataclass(frozen=True)\nclass AxisPresentation:\n    axis_offsets: tuple[int, ...]\n\n\ndef present_projection(projection):\n    return AxisPresentation(\n        axis_offsets=projection.axis_offsets,\n    )\n\n\ndef rebuild_projection(axis_offsets):\n    return AxisProjection(\n        axis_offsets=axis_offsets,\n    )\n\n\ndef axis_offset_for_viewer(projection, axis_index):\n    return projection.axis_offsets[axis_index]\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "distributed_boundary_fanout"
+            and "axis_offsets" in finding.summary
+        )
+    )
+    assert "ProjectionRequest" in (finding.scaffold or "")
+    assert "ProjectionStep" in (finding.scaffold or "")
+    assert "typed projection request" in (finding.codemod_patch or "")
+    assert "projection-step object" in (finding.codemod_patch or "")
 
 
 def test_role_surface_drift_ignores_role_specific_channel_usage(
@@ -4467,7 +4487,7 @@ def test_detects_generic_role_case_table_under_shared_axis(tmp_path: Path) -> No
     _write_module(
         tmp_path,
         "pkg/display.py",
-        "\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        \"alpha\": lambda value: f\"Alpha {value}\",\n        \"beta\": lambda value: f\"Beta {value}\",\n        \"gamma\": lambda value: f\"Gamma {value}\",\n        \"delta\": lambda value: f\"Delta {value}\",\n        \"epsilon\": lambda value: f\"Epsilon {value}\",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f\"Field {value}\"\n\n\nclass WidgetFieldLabelAuthority:\n    ABBREVIATIONS = {\n        \"alpha\": \"A\",\n        \"beta\": \"B\",\n        \"gamma\": \"G\",\n        \"delta\": \"D\",\n        \"epsilon\": \"E\",\n    }\n\n    def field_label(self, field, value):\n        prefix = self.ABBREVIATIONS.get(field, field)\n        return f\"{prefix} {value}\"\n\n\nclass ReportFieldLabelPresenter:\n    ORDER = {\n        \"alpha\": 1,\n        \"beta\": 2,\n        \"gamma\": 3,\n        \"delta\": 4,\n        \"epsilon\": 5,\n    }\n\n    def field_label(self, field, value):\n        rank = self.ORDER.get(field, 0)\n        return f\"{rank}: {value}\"\n",
+        '\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        "alpha": lambda value: f"Alpha {value}",\n        "beta": lambda value: f"Beta {value}",\n        "gamma": lambda value: f"Gamma {value}",\n        "delta": lambda value: f"Delta {value}",\n        "epsilon": lambda value: f"Epsilon {value}",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f"Field {value}"\n\n\nclass WidgetFieldLabelAuthority:\n    ABBREVIATIONS = {\n        "alpha": "A",\n        "beta": "B",\n        "gamma": "G",\n        "delta": "D",\n        "epsilon": "E",\n    }\n\n    def field_label(self, field, value):\n        prefix = self.ABBREVIATIONS.get(field, field)\n        return f"{prefix} {value}"\n\n\nclass ReportFieldLabelPresenter:\n    ORDER = {\n        "alpha": 1,\n        "beta": 2,\n        "gamma": 3,\n        "delta": 4,\n        "epsilon": 5,\n    }\n\n    def field_label(self, field, value):\n        rank = self.ORDER.get(field, 0)\n        return f"{rank}: {value}"\n',
     )
     finding = next(
         (
@@ -4491,7 +4511,7 @@ def test_generic_role_case_table_ignores_single_owner_table(tmp_path: Path) -> N
     _write_module(
         tmp_path,
         "pkg/display.py",
-        "\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        \"alpha\": lambda value: f\"Alpha {value}\",\n        \"beta\": lambda value: f\"Beta {value}\",\n        \"gamma\": lambda value: f\"Gamma {value}\",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f\"Field {value}\"\n",
+        '\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        "alpha": lambda value: f"Alpha {value}",\n        "beta": lambda value: f"Beta {value}",\n        "gamma": lambda value: f"Gamma {value}",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f"Field {value}"\n',
     )
     findings = analyze_path(tmp_path)
     assert not any(
@@ -6092,6 +6112,21 @@ def test_detects_manual_virtual_membership(tmp_path: Path) -> None:
     assert any((finding.pattern_id == 9 for finding in findings))
 
 
+def test_manual_virtual_membership_ignores_private_predicate_helper_calls(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass AxisProjector:\n    @classmethod\n    def project(cls, route_values, viewer_values):\n        start_index = cls._viewer_index(route_values[0], viewer_values)\n        if cls._is_contiguous_subset(route_values, viewer_values, start_index):\n            return route_values, start_index\n        return viewer_values, 0\n\n    @staticmethod\n    def _viewer_index(value, viewer_values):\n        return viewer_values.index(value)\n\n    @staticmethod\n    def _is_contiguous_subset(route_values, viewer_values, start_index):\n        stop_index = start_index + len(route_values)\n        return viewer_values[start_index:stop_index] == route_values\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "manual_virtual_membership"
+        for finding in findings
+    )
+
+
 def test_collects_class_marker_observations_via_spec_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -7458,6 +7493,29 @@ def test_detects_latent_implementation_dict_projection_roster(
     assert any("dict_values" in finding.summary for finding in findings)
 
 
+def test_detects_inline_update_dict_implementation_roster(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom enum import Enum\n\n\nclass PayloadKind(Enum):\n    IMAGE = "image"\n    ROIS = "rois"\n\n\nclass PayloadHandler(ABC):\n    data_type: PayloadKind\n\n    @abstractmethod\n    def handle(self, request): ...\n\n\nclass ImagePayloadHandler(PayloadHandler):\n    data_type = PayloadKind.IMAGE\n\n    def handle(self, request):\n        return request\n\n\nclass RoiPayloadHandler(PayloadHandler):\n    data_type = PayloadKind.ROIS\n\n    def handle(self, request):\n        return request\n\n\nPAYLOAD_HANDLERS: dict[PayloadKind, PayloadHandler] = {}\nPAYLOAD_HANDLERS.update(\n    {\n        PayloadKind.IMAGE: ImagePayloadHandler(),\n        PayloadKind.ROIS: RoiPayloadHandler(),\n    }\n)\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "latent_implementation_roster"
+            and "PAYLOAD_HANDLERS" in finding.summary
+            and "inline_Dict.update" in finding.summary
+        )
+    )
+    assert "PayloadHandler" in finding.summary
+    assert "ImagePayloadHandler" in finding.summary
+    assert "RoiPayloadHandler" in finding.summary
+    assert "PayloadHandler.__registry__.values()" in (finding.scaffold or "")
+
+
 def test_ignores_unnamed_latent_implementation_subset_roster(
     tmp_path: Path,
 ) -> None:
@@ -8007,6 +8065,8 @@ def test_impact_ranking_preserves_public_output_shape_with_source_targets(
         "covered_finding_ids",
         "detector_ids",
         "pattern_ids",
+        "confidence_levels",
+        "certification_levels",
         "file_paths",
         "symbols",
         "evidence_count",
@@ -8075,12 +8135,75 @@ def test_json_and_markdown_expose_codemod_applicability(
     assert applicability["automation_level"] == "semantic_agent_required"
     assert applicability["simulation_status"] == "rewrite_plan_required"
     assert applicability["safe_to_apply"] is False
-    assert "Inspect the targets" in str(applicability["agent_action"])
+    assert applicability["actionability"] == "semantic_agent_refactor"
+    assert applicability["confidence_basis"] == (
+        "confidence=medium; certification=strong_heuristic"
+    )
+    assert "Confidence is sufficient" in str(applicability["agent_action"])
+    assert "stop only if domain semantics are genuinely ambiguous" in str(
+        applicability["agent_action"]
+    )
     assert candidate_payload["target_ids"]
     assert "Refactor implementation guidance:" in markdown
     assert "semantic_agent_required" in markdown
     assert "rewrite_plan_required" in markdown
+    assert "actionability: semantic_agent_refactor" in markdown
+    assert (
+        "confidence basis: confidence=medium; certification=strong_heuristic"
+        in markdown
+    )
     assert "agent action:" in markdown
+
+
+def test_semantic_codemod_applicability_stops_only_for_uncertain_findings(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family may compress through one ABC",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+        certification=SPECULATIVE,
+    )
+    source_index = build_source_index(modules, (finding,))
+    impact_ranking = build_refactor_impact_ranking(
+        (finding,),
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=5,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    codemod_candidates = codemod_candidates_from_impact_ranking(
+        impact_ranking,
+        source_index,
+    )
+    applicability = codemod_candidates[0].applicability
+
+    assert (
+        applicability.actionability is CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
+    )
+    assert (
+        applicability.confidence_basis == "confidence=medium; certification=speculative"
+    )
+    assert "Resolve the finding uncertainty" in applicability.agent_action
+    assert "stop only while the semantic authority boundary is genuinely unclear" in (
+        applicability.agent_action
+    )
 
 
 def test_json_payload_auto_attaches_safe_codemod_options(
@@ -8133,6 +8256,7 @@ def test_json_payload_auto_attaches_safe_codemod_options(
     assert applicability["automation_level"] == "safe_mechanical"
     assert applicability["simulation_status"] == "ready_to_simulate"
     assert applicability["safe_to_apply"] is True
+    assert applicability["actionability"] == "safe_mechanical"
     assert applicability["planned_rewrite_count"] == 1
     assert "safe mechanical available: 1" in markdown
     assert "1 planned rewrite(s)" in markdown
@@ -8670,8 +8794,7 @@ def test_ignores_optional_none_projection_fallbacks(tmp_path: Path) -> None:
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == "unclassified_runtime_fallback"
-        for finding in findings
+        finding.detector_id == "unclassified_runtime_fallback" for finding in findings
     )
 
 
@@ -8679,17 +8802,13 @@ def test_ignores_class_namespace_default_installation(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/runtime.py",
-        "\nclass Defaults:\n    def apply_to(self, attrs):\n        attrs.setdefault(\"__registry_key__\", self.registry_key_attr)\n        attrs.setdefault(\"__skip_if_no_key__\", True)\n        attrs.setdefault(\"__key_extractor__\", staticmethod(self.registry_key_for_class))\n        attrs.setdefault(self.registry_key_attr, None)\n        attrs.setdefault(self.module_name_attr, None)\n        attrs.setdefault(self.fallback_registry_key_attr, Default.value)\n\n\nclass Leaf:\n    def declare_in(self, namespace):\n        module_name = namespace.get(\"__name__\", self.base_type.__module__)\n        return module_name\n",
+        '\nclass Defaults:\n    def apply_to(self, attrs):\n        attrs.setdefault("__registry_key__", self.registry_key_attr)\n        attrs.setdefault("__skip_if_no_key__", True)\n        attrs.setdefault("__key_extractor__", staticmethod(self.registry_key_for_class))\n        attrs.setdefault(self.registry_key_attr, None)\n        attrs.setdefault(self.module_name_attr, None)\n        attrs.setdefault(self.fallback_registry_key_attr, Default.value)\n\n\nclass Leaf:\n    def declare_in(self, namespace):\n        module_name = namespace.get("__name__", self.base_type.__module__)\n        return module_name\n',
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == "unclassified_runtime_fallback"
-        for finding in findings
+        finding.detector_id == "unclassified_runtime_fallback" for finding in findings
     )
-    assert not any(
-        finding.detector_id == "semantic_dict_bag"
-        for finding in findings
-    )
+    assert not any(finding.detector_id == "semantic_dict_bag" for finding in findings)
 
 
 def test_detects_runtime_semantic_branch_chain(tmp_path: Path) -> None:
@@ -9848,7 +9967,7 @@ def test_detects_local_reimplementation_of_available_abstraction(
     _write_module(
         tmp_path,
         "pkg/debug_toolbar.py",
-        "\nclass DebugToolbarWidget:\n    BUTTONS = ((\"Run\", \"run\", \"Run\"), (\"Stop\", \"stop\", \"Stop\"))\n\n    def __init__(self, style_generator=None):\n        layout = QVBoxLayout(self)\n        layout.setContentsMargins(0, 0, 0, 0)\n        layout.setSpacing(0)\n        self.buttons = {}\n        for label, action_id, tooltip in self.BUTTONS:\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: self.emit(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button)\n",
+        '\nclass DebugToolbarWidget:\n    BUTTONS = (("Run", "run", "Run"), ("Stop", "stop", "Stop"))\n\n    def __init__(self, style_generator=None):\n        layout = QVBoxLayout(self)\n        layout.setContentsMargins(0, 0, 0, 0)\n        layout.setSpacing(0)\n        self.buttons = {}\n        for label, action_id, tooltip in self.BUTTONS:\n            button = QPushButton(label)\n            button.setToolTip(tooltip)\n            if style_generator:\n                button.setStyleSheet(style_generator.generate_button_style())\n            button.clicked.connect(lambda checked, a=action_id: self.emit(a))\n            self.buttons[action_id] = button\n            layout.addWidget(button)\n',
     )
     findings = analyze_path(tmp_path)
     finding = next(
@@ -9875,7 +9994,7 @@ def test_available_abstraction_reuse_ignores_direct_authority_call(
     _write_module(
         tmp_path,
         "pkg/debug_toolbar.py",
-        "\nfrom pkg.shared.button_panel import ButtonPanel\n\n\nclass DebugToolbarWidget:\n    def __init__(self, style_generator=None):\n        self.button_panel = ButtonPanel(\n            button_configs=((\"Run\", \"run\", \"Run\"),),\n            on_action=self.emit,\n            style_generator=style_generator,\n            parent=self,\n        )\n",
+        '\nfrom pkg.shared.button_panel import ButtonPanel\n\n\nclass DebugToolbarWidget:\n    def __init__(self, style_generator=None):\n        self.button_panel = ButtonPanel(\n            button_configs=(("Run", "run", "Run"),),\n            on_action=self.emit,\n            style_generator=style_generator,\n            parent=self,\n        )\n',
     )
     findings = analyze_path(tmp_path)
     assert not any(

@@ -50,6 +50,8 @@ class RefactorImpactOpportunity(SemanticRecord):
     covered_finding_ids: tuple[str, ...]
     detector_ids: tuple[str, ...]
     pattern_ids: tuple[int, ...]
+    confidence_levels: tuple[str, ...]
+    certification_levels: tuple[str, ...]
     file_paths: tuple[str, ...]
     symbols: tuple[str, ...]
     evidence_count: int
@@ -690,6 +692,12 @@ class RefactorImpactRankingRequest:
             detector_ids=tuple(sorted({finding.detector_id for finding in findings})),
             pattern_ids=tuple(
                 sorted({finding.pattern_id.value for finding in findings})
+            ),
+            confidence_levels=tuple(
+                sorted({finding.confidence.value for finding in findings})
+            ),
+            certification_levels=tuple(
+                sorted({finding.certification.value for finding in findings})
             ),
             file_paths=tuple(
                 sorted({source_location.file_path for source_location in evidence})

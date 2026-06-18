@@ -652,6 +652,8 @@ def format_codemod_applicability_markdown(
             f"simulation {applicability.simulation_status.value}"
         )
         lines.append(f"     strategy: {applicability.strategy_id}")
+        lines.append(f"     actionability: {applicability.actionability.value}")
+        lines.append(f"     confidence basis: {applicability.confidence_basis}")
         lines.append(f"     reason: {applicability.reason}")
         lines.append(f"     agent action: {applicability.agent_action}")
     return "\n".join(lines)
