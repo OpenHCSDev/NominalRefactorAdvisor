@@ -9942,6 +9942,23 @@ class ExistingNominalAuthorityReuseCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
+class NominalAuthorityImplementationRetreatSite:
+    path: str
+    line: int
+    class_name: str
+
+
+@dataclass(frozen=True)
+class NominalAuthorityImplementationRetreatCandidate:
+    retreat_authority_sites: tuple[
+        NominalAuthorityImplementationRetreatSite,
+        NominalAuthorityImplementationRetreatSite,
+    ]
+    shared_field_names: tuple[str, ...]
+    shared_role_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class DuplicateNominalAuthoritySurfaceCandidate(WitnessCarrierCandidate):
     authority_file_path: str
     authority_name: str

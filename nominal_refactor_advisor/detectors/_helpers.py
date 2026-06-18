@@ -2356,17 +2356,15 @@ def _existing_nominal_authority_reuse_candidates(
         compatible = index.compatible_authorities_for(shape)
         if not compatible:
             continue
-        authority = next(
-            (
-                item
-                for item in compatible
-                if CLASS_NAME_ALGEBRA.token_set(item.class_name)
-                & CLASS_NAME_ALGEBRA.token_set(shape.class_name)
-            ),
-            None,
+        matching_authorities = tuple(
+            item
+            for item in compatible
+            if CLASS_NAME_ALGEBRA.token_set(item.class_name)
+            & CLASS_NAME_ALGEBRA.token_set(shape.class_name)
         )
-        if authority is None:
+        if not matching_authorities:
             continue
+        authority = matching_authorities[0]
         shared_field_names = (
             HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
                 shape, authority
@@ -2387,14 +2385,76 @@ def _existing_nominal_authority_reuse_candidates(
                 shared_role_names=_semantic_role_names_for_fields(shared_field_names),
             )
         )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.line,
-            item.class_name,
-            item.compatible_authority_name,
-        ),
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.class_name,
+                item.compatible_authority_name,
+            ),
+        )
+    )
+
+
+def _nominal_authority_implementation_retreat_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[NominalAuthorityImplementationRetreatCandidate, ...]:
+    index = NominalAuthorityIndex(modules)
+    candidates: list[NominalAuthorityImplementationRetreatCandidate] = []
+    for shape in index.all_shapes():
+        if shape.is_abstract or not shape.is_dataclass_family:
+            continue
+        if len(shape.field_type_map) < 2:
+            continue
+        for authority in index.compatible_authorities_for(shape):
+            if not authority.is_dataclass_family:
+                continue
+            shared_nominal_ancestors = (
+                set(shape.ancestor_names) & set(authority.ancestor_names)
+            ) - _IGNORED_ANCESTOR_NAMES
+            if shared_nominal_ancestors:
+                continue
+            shared_field_names = (
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
+                    shape,
+                    authority,
+                )
+            )
+            if len(shared_field_names) < 2:
+                continue
+            if set(shared_field_names) != set(authority.field_names):
+                continue
+            candidates.append(
+                NominalAuthorityImplementationRetreatCandidate(
+                    retreat_authority_sites=(
+                        NominalAuthorityImplementationRetreatSite(
+                            path=shape.file_path,
+                            line=shape.line,
+                            class_name=shape.class_name,
+                        ),
+                        NominalAuthorityImplementationRetreatSite(
+                            path=authority.file_path,
+                            line=authority.line,
+                            class_name=authority.class_name,
+                        ),
+                    ),
+                    shared_field_names=shared_field_names,
+                    shared_role_names=_semantic_role_names_for_fields(
+                        shared_field_names
+                    ),
+                )
+            )
+            break
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: tuple(
+                (site.path, site.line, site.class_name)
+                for site in item.retreat_authority_sites
+            ),
+        )
     )
 
 

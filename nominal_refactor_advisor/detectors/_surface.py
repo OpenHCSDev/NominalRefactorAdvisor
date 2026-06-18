@@ -12,9 +12,34 @@ from ._helpers import (
     _derived_query_index_candidates,
     _keyword_bag_adapter_candidates,
     _manual_family_roster_candidates,
+    _nominal_authority_implementation_retreat_candidates,
 )
 from ._nominal_authority_surface import (
     _duplicate_nominal_authority_surface_candidates,
+)
+
+
+class NominalAuthorityImplementationRetreatMetricsAuthority:
+    def metrics(
+        self,
+        candidate: NominalAuthorityImplementationRetreatCandidate,
+        execution_level: str,
+    ) -> FieldFamilyMetrics:
+        retreat_site, authority_site = candidate.retreat_authority_sites
+        return FieldFamilyMetrics(
+            class_count=2,
+            field_count=len(candidate.shared_field_names),
+            class_names=(
+                authority_site.class_name,
+                retreat_site.class_name,
+            ),
+            field_names=candidate.shared_field_names,
+            execution_level=execution_level,
+        )
+
+
+NOMINAL_AUTHORITY_IMPLEMENTATION_RETREAT_METRICS_AUTHORITY = (
+    NominalAuthorityImplementationRetreatMetricsAuthority()
 )
 
 
@@ -314,6 +339,71 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
                         ),
                         field_names=candidate.shared_field_names,
                         execution_level="existing_nominal_authority",
+                    ),
+                )
+            )
+        return findings
+
+
+class NominalAuthorityImplementationRetreatDetector(IssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Implementation mechanics must not split nominal authority identity",
+        "A dataclass repeats an existing nominal authority field surface but stays outside the family, often because frozen and mutable dataclass mechanics make direct inheritance inconvenient. That is a semantic retreat: implementation mechanics should not decide type identity.",
+        "implementation-neutral nominal ABC/root with dataclass leaves for frozen or mutable storage mechanics",
+        "dataclass mechanics split a semantic field family away from its nominal authority",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _nominal_authority_implementation_retreat_candidates(modules):
+            retreat_site, authority_site = candidate.retreat_authority_sites
+            evidence = (
+                SourceLocation(
+                    retreat_site.path,
+                    retreat_site.line,
+                    retreat_site.class_name,
+                ),
+                SourceLocation(
+                    authority_site.path,
+                    authority_site.line,
+                    authority_site.class_name,
+                ),
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{retreat_site.class_name}` repeats semantic fields "
+                        f"{candidate.shared_field_names} already owned by "
+                        f"`{authority_site.class_name}`, but remains "
+                        "outside that nominal family."
+                    ),
+                    evidence,
+                    scaffold=(
+                        f"class {authority_site.class_name}Root(ABC):\n"
+                        f"    # Owns roles {candidate.shared_role_names}; no dataclass freeze policy here.\n"
+                        "    ...\n\n"
+                        f"@dataclass(frozen=True)\n"
+                        f"class {authority_site.class_name}({authority_site.class_name}Root):\n"
+                        "    ...\n\n"
+                        f"@dataclass\n"
+                        f"class {retreat_site.class_name}({authority_site.class_name}Root):\n"
+                        "    ..."
+                    ),
+                    codemod_patch=(
+                        f"# Do not leave `{retreat_site.class_name}` outside "
+                        f"`{authority_site.class_name}`'s semantic family "
+                        "because dataclass freezing differs.\n"
+                        "# Extract an implementation-neutral nominal root/ABC and make both "
+                        "dataclass storage forms inherit it."
+                    ),
+                    metrics=NOMINAL_AUTHORITY_IMPLEMENTATION_RETREAT_METRICS_AUTHORITY.metrics(
+                        candidate,
+                        execution_level="implementation_neutral_nominal_root",
                     ),
                 )
             )

@@ -3945,6 +3945,32 @@ def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) 
     )
 
 
+def test_detects_nominal_authority_implementation_retreat(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass TorsionProjectionCompiledBasisCarrier:\n    projection_specs: object\n    compiled_projection_specs: object\n\n    def projection_basis_arrays(self):\n        return self.compiled_projection_specs(self.projection_specs)\n\n\n@dataclass\nclass ExactContactFeasibilityConstraintSystemProvider:\n    projection_specs: object\n    compiled_projection_specs: object\n    ready: bool = False\n\n    def __call__(self):\n        return self.compiled_projection_specs(self.projection_specs)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "nominal_authority_implementation_retreat"
+        )
+    )
+    assert "ExactContactFeasibilityConstraintSystemProvider" in finding.summary
+    assert "TorsionProjectionCompiledBasisCarrier" in finding.summary
+    assert "implementation-neutral nominal root" in (finding.codemod_patch or "")
+    assert "ABC" in (finding.scaffold or "")
+    assert finding.metrics.field_names == (
+        "compiled_projection_specs",
+        "projection_specs",
+    )
+
+
 def test_ignores_explicit_public_measurement_companion_dataclass(
     tmp_path: Path,
 ) -> None:
