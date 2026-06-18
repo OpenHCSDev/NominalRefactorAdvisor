@@ -15896,6 +15896,335 @@ def _schema_accessor_family_candidates(
     )
 
 
+_DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_FIELDS = 4
+_DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_RATIO = 0.6
+_DATACLASS_FIELD_PROJECTION_BOILERPLATE_MIN_FIELDS = 4
+_SCHEMA_REGISTRY_FIELD_KEYWORDS = frozenset(
+    {
+        "field",
+        "field_name",
+        "key",
+        "name",
+        "source_field",
+        "target_field",
+        "metadata_field",
+    }
+)
+
+
+def _dataclass_field_projection_default_call(
+    statement: ast.stmt,
+) -> tuple[str, str, tuple[str, ...], int, int] | None:
+    annotated_assignment = as_ast(statement, ast.AnnAssign)
+    if annotated_assignment is None or annotated_assignment.value is None:
+        return None
+    field_name = name_id(annotated_assignment.target)
+    call = as_ast(annotated_assignment.value, ast.Call)
+    if field_name is None or call is None:
+        return None
+    helper_name = _ast_terminal_name(call.func)
+    if helper_name is None:
+        return None
+    if helper_name in {"Field", "field"}:
+        return None
+    projected_argument_names = tuple(
+        name
+        for argument in call.args
+        for name in (_ast_terminal_name(argument),)
+        if name is not None
+    )
+    projected_argument_names += tuple(
+        name
+        for keyword in call.keywords
+        for name in (_ast_terminal_name(keyword.value),)
+        if keyword.arg is not None and name is not None
+    )
+    if not projected_argument_names:
+        return None
+    line_count = max(
+        1,
+        (annotated_assignment.end_lineno or annotated_assignment.lineno)
+        - annotated_assignment.lineno
+        + 1,
+    )
+    return (
+        field_name,
+        helper_name,
+        projected_argument_names,
+        annotated_assignment.lineno,
+        line_count,
+    )
+
+
+def _dataclass_field_projection_boilerplate_certificate(
+    *,
+    field_names: tuple[str, ...],
+    helper_names: tuple[str, ...],
+    line_count: int,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(line_count, len(field_names) * max(len(helper_names), 1)),
+        replacement_shape=ObjectFamilyShape.from_roles(
+            ("dataclass_type_annotation", "default_value_authority", "derived_projector"),
+            axis=("declared_dataclass_field",),
+        ),
+        semantic_axes=field_names,
+        residual_object_count=len(helper_names),
+    )
+
+
+def _dataclass_field_projection_boilerplate_candidates(
+    module: ParsedModule,
+) -> tuple[DataclassFieldProjectionBoilerplateCandidate, ...]:
+    candidates: list[DataclassFieldProjectionBoilerplateCandidate] = []
+    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+        if not _is_dataclass_class(class_node):
+            continue
+        rows = tuple(
+            row
+            for statement in class_node.body
+            for row in (_dataclass_field_projection_default_call(statement),)
+            if row is not None
+        )
+        if len(rows) < _DATACLASS_FIELD_PROJECTION_BOILERPLATE_MIN_FIELDS:
+            continue
+        helper_names = tuple(dict.fromkeys(row[1] for row in rows))
+        if len(helper_names) > max(1, len(rows) // 2):
+            continue
+        field_names = tuple(row[0] for row in rows)
+        projection_argument_names = tuple(
+            dict.fromkeys(argument for row in rows for argument in row[2])
+        )
+        line_count = sum(row[4] for row in rows)
+        certificate = _dataclass_field_projection_boilerplate_certificate(
+            field_names=field_names,
+            helper_names=helper_names,
+            line_count=line_count,
+        )
+        if not certificate.pays_rent:
+            continue
+        candidates.append(
+            DataclassFieldProjectionBoilerplateCandidate(
+                file_path=str(module.path),
+                line=class_node.lineno,
+                class_name=class_node.name,
+                field_names=field_names,
+                helper_names=helper_names,
+                projection_argument_names=projection_argument_names,
+                line_numbers=tuple(row[3] for row in rows),
+                line_count=line_count,
+                compression_certificate=certificate,
+            )
+        )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.class_name),
+        )
+    )
+
+
+def _schema_registry_assignment(
+    statement: ast.stmt,
+) -> tuple[str, ast.AST, int, int] | None:
+    target_name: str | None = None
+    value: ast.AST | None = None
+    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+        target_name = name_id(statement.targets[0])
+        value = statement.value
+    elif isinstance(statement, ast.AnnAssign):
+        target_name = name_id(statement.target)
+        value = statement.value
+    if target_name is None or value is None:
+        return None
+    line_count = max(1, (statement.end_lineno or statement.lineno) - statement.lineno + 1)
+    return target_name, value, statement.lineno, line_count
+
+
+def _normalized_schema_axis_name(name: str | None) -> str | None:
+    if name is None:
+        return None
+    stripped = name.strip("_")
+    if not stripped:
+        return None
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", stripped)
+    snake = re.sub(r"[^0-9A-Za-z]+", "_", snake).strip("_").lower()
+    return snake or None
+
+
+def _schema_axis_name_from_node(node: ast.AST) -> str | None:
+    string_value = _constant_string(node)
+    if string_value is not None:
+        return _normalized_schema_axis_name(string_value)
+    chain = _ast_attribute_chain(node)
+    if chain is not None:
+        return _normalized_schema_axis_name(chain[-1])
+    return _normalized_schema_axis_name(name_id(node))
+
+
+def _schema_row_field_name(
+    call: ast.Call,
+    dataclass_fields: frozenset[str],
+) -> str | None:
+    prioritized_names: list[str] = []
+    fallback_names: list[str] = []
+    for keyword in call.keywords:
+        if keyword.arg is None:
+            continue
+        projected_name = _schema_axis_name_from_node(keyword.value)
+        if projected_name is None:
+            continue
+        if keyword.arg in _SCHEMA_REGISTRY_FIELD_KEYWORDS:
+            prioritized_names.append(projected_name)
+        else:
+            fallback_names.append(projected_name)
+    for argument in call.args:
+        projected_name = _schema_axis_name_from_node(argument)
+        if projected_name is not None:
+            fallback_names.append(projected_name)
+    for projected_name in (*prioritized_names, *fallback_names):
+        if projected_name in dataclass_fields:
+            return projected_name
+    return None
+
+
+def _schema_registry_field_rows(
+    value: ast.AST,
+    dataclass_fields: frozenset[str],
+) -> tuple[tuple[str, str, int], ...]:
+    rows: list[tuple[str, str, int]] = []
+    for call in _typed_ast_nodes(value, ast.Call):
+        constructor_name = _ast_terminal_name(call.func)
+        if constructor_name is None:
+            continue
+        field_name = _schema_row_field_name(call, dataclass_fields)
+        if field_name is not None:
+            rows.append((field_name, constructor_name, call.lineno))
+    return tuple(rows)
+
+
+def _dataclass_schema_registry_axis_system(
+    schema_name: str,
+    dataclass_name: str,
+    rows: tuple[tuple[str, str, int], ...],
+) -> FiniteAxisSystem[str, str]:
+    return FiniteAxisSystem.from_rows(
+        (
+            (
+                f"{schema_name}:{line_number}:{field_name}",
+                {
+                    "schema": schema_name,
+                    "dataclass": dataclass_name,
+                    "field": field_name,
+                    "constructor": constructor_name,
+                },
+            )
+            for field_name, constructor_name, line_number in rows
+        )
+    )
+
+
+def _dataclass_schema_registry_mirror_certificate(
+    *,
+    field_names: tuple[str, ...],
+    constructor_count: int,
+    line_count: int,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(line_count, len(field_names) * max(constructor_count, 1)),
+        replacement_shape=ObjectFamilyShape.from_roles(
+            ("dataclass_field_declaration", "metadata_driven_projector"),
+            axis=("declared_dataclass_field",),
+        ),
+        semantic_axes=field_names,
+        residual_object_count=constructor_count,
+    )
+
+
+def _dataclass_schema_registry_mirror_candidates(
+    module: ParsedModule,
+) -> tuple[DataclassSchemaRegistryMirrorCandidate, ...]:
+    dataclass_specs: list[tuple[ast.ClassDef, tuple[str, ...], frozenset[str]]] = []
+    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+        if not _is_dataclass_class(class_node):
+            continue
+        field_names = tuple(_dataclass_field_signature_map(class_node))
+        if len(field_names) < _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_FIELDS:
+            continue
+        dataclass_specs.append((class_node, field_names, frozenset(field_names)))
+
+    candidates: list[DataclassSchemaRegistryMirrorCandidate] = []
+    for statement in module.module.body:
+        assignment = _schema_registry_assignment(statement)
+        if assignment is None:
+            continue
+        schema_name, value, schema_line, schema_line_count = assignment
+        for class_node, dataclass_field_names, dataclass_field_set in dataclass_specs:
+            rows = _schema_registry_field_rows(value, dataclass_field_set)
+            if len(rows) < _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_FIELDS:
+                continue
+            schema_field_names = tuple(field_name for field_name, _constructor, _line in rows)
+            unique_schema_fields = tuple(dict.fromkeys(schema_field_names))
+            mirrored_fields = tuple(
+                field_name
+                for field_name in dataclass_field_names
+                if field_name in unique_schema_fields
+            )
+            if len(mirrored_fields) < _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_FIELDS:
+                continue
+            mirror_denominator = max(1, min(len(dataclass_field_names), len(unique_schema_fields)))
+            if (
+                len(mirrored_fields) / mirror_denominator
+                < _DATACLASS_SCHEMA_REGISTRY_MIRROR_MIN_RATIO
+            ):
+                continue
+            axis_system = _dataclass_schema_registry_axis_system(
+                schema_name,
+                class_node.name,
+                rows,
+            )
+            if not axis_system.determines(("field",), "dataclass"):
+                continue
+            constructor_names = tuple(
+                dict.fromkeys(constructor_name for _field_name, constructor_name, _line in rows)
+            )
+            certificate = _dataclass_schema_registry_mirror_certificate(
+                field_names=mirrored_fields,
+                constructor_count=len(constructor_names),
+                line_count=schema_line_count + len(dataclass_field_names),
+            )
+            if not certificate.pays_rent:
+                continue
+            candidates.append(
+                DataclassSchemaRegistryMirrorCandidate(
+                    file_path=str(module.path),
+                    line=schema_line,
+                    class_name=class_node.name,
+                    schema_name=schema_name,
+                    dataclass_name=class_node.name,
+                    schema_constructor_names=constructor_names,
+                    mirrored_field_names=mirrored_fields,
+                    schema_field_names=unique_schema_fields,
+                    schema_line_numbers=tuple(
+                        line_number for _field_name, _constructor, line_number in rows
+                    ),
+                    line_count=schema_line_count,
+                    compression_certificate=certificate,
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.dataclass_name,
+                item.schema_name,
+            ),
+        )
+    )
+
+
 def _empty_dict_value_name(target_value: tuple[ast.AST, ast.AST]) -> str | None:
     target, value = target_value
     target_name = name_id(target)

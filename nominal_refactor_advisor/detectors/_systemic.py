@@ -4048,6 +4048,106 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    DataclassSchemaRegistryMirrorCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Schema registry should derive from dataclass field declarations",
+        "A literal schema or registry table repeats the field axis already declared by a dataclass. Moving accessor methods into a table is still an SSOT violation when the table restates field names, requiredness, or coercion policy outside the nominal product declaration. The dataclass field declaration should own the projection metadata, and the projector should derive rows from `dataclasses.fields(...)`.",
+        "dataclass-owned field metadata with a derived projection engine",
+        "literal schema/registry rows mirror a nearby dataclass field axis",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda mirror: (
+        f"`{mirror.schema_name}` mirrors {len(mirror.mirrored_field_names)} fields "
+        f"from dataclass `{mirror.dataclass_name}`: {mirror.mirrored_field_names}; "
+        f"constructors {mirror.schema_constructor_names} should be derived field metadata."
+    ),
+    evidence=lambda mirror: (
+        SourceLocation(mirror.file_path, mirror.line, mirror.schema_name),
+        *(
+            SourceLocation(mirror.file_path, line, mirror.schema_name)
+            for line in mirror.schema_line_numbers[:8]
+        ),
+    ),
+    scaffold=lambda mirror: (
+        "from dataclasses import dataclass, field, fields\n\n"
+        "@dataclass(frozen=True)\n"
+        f"class {mirror.dataclass_name}:\n"
+        "    value: object = field(metadata={'projection': ProjectionFieldSpec(...)})\n\n"
+        "class DataclassProjectionSchema:\n"
+        "    @classmethod\n"
+        "    def from_dataclass(cls, dataclass_type):\n"
+        "        return cls(tuple(field.metadata['projection'] for field in fields(dataclass_type)))"
+    ),
+    codemod_patch=lambda mirror: (
+        f"# Delete the parallel schema rows in `{mirror.schema_name}` that restate "
+        f"{mirror.mirrored_field_names}.\n"
+        f"# Attach requiredness/coercion/key metadata to `{mirror.dataclass_name}` "
+        "fields with `field(metadata=...)` and derive the projector with "
+        "`dataclasses.fields(...)`."
+    ),
+    compression_certificate=lambda mirror: mirror.compression_certificate,
+    metrics=lambda mirror: MappingMetrics.from_field_names(
+        mapping_site_count=len(mirror.schema_field_names),
+        mapping_name=mirror.schema_name,
+        field_names=mirror.mirrored_field_names,
+        source_name=mirror.dataclass_name,
+    ),
+    detector_priority=-14,
+    candidate_collector=_dataclass_schema_registry_mirror_candidates,
+)
+
+
+declare_candidate_rule_detector(
+    DataclassFieldProjectionBoilerplateCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Dataclass field projection should derive from annotations and defaults",
+        "A dataclass field list repeatedly calls the same projection/default helper with per-field coercer or policy arguments. That still makes a parallel schema: the annotation and default value are no longer load-bearing enough, and every new field needs a hand-written projection row. The projector should derive requiredness from dataclass defaults and derive validation/coercion from the annotated type, with only true semantic conversions declared as nominal converter types.",
+        "annotation/default-derived dataclass projector with nominal converter exceptions",
+        "dataclass fields repeat projection helper calls instead of letting field declarations carry semantics",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.class_name}` repeats projection helpers {candidate.helper_names} "
+        f"across fields {candidate.field_names}; arguments "
+        f"{candidate.projection_argument_names} are per-field schema residue."
+    ),
+    evidence=lambda candidate: candidate.evidence_locations,
+    scaffold=lambda candidate: (
+        "from dataclasses import fields, MISSING\n"
+        "from typing import get_type_hints\n\n"
+        "class DataclassProjector:\n"
+        "    def project(self, dataclass_type, payload):\n"
+        "        hints = get_type_hints(dataclass_type)\n"
+        "        for field in fields(dataclass_type):\n"
+        "            required = field.default is MISSING and field.default_factory is MISSING\n"
+        "            target_type = hints[field.name]\n"
+        "            ...\n"
+        "# Keep explicit converter classes only when the type annotation cannot express the semantic conversion."
+    ),
+    codemod_patch=lambda candidate: (
+        f"# Delete per-field projection helper calls {candidate.helper_names} on "
+        f"`{candidate.class_name}`.\n"
+        "# Use plain dataclass defaults for required/optional semantics, derive the "
+        "target contract from type annotations, and route exceptional conversions "
+        "through nominal converter classes keyed by the target type."
+    ),
+    compression_certificate=lambda candidate: candidate.compression_certificate,
+    metrics=lambda candidate: MappingMetrics.from_field_names(
+        mapping_site_count=len(candidate.field_names),
+        mapping_name=candidate.class_name,
+        field_names=candidate.field_names,
+        source_name="dataclass_annotations",
+    ),
+    detector_priority=-15,
+    candidate_collector=_dataclass_field_projection_boilerplate_candidates,
+)
+
+
+declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
