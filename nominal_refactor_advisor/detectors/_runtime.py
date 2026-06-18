@@ -7237,6 +7237,58 @@ def _normalized_small_method_template(
     )
 
 
+def _normalized_role_residue_small_method_template(
+    body: tuple[ast.stmt, ...],
+) -> tuple[str, ...]:
+    """Normalize private sibling-helper shape while ignoring role-specific attrs."""
+
+    class Normalizer(ast.NodeTransformer):
+        def visit_arg(self, node: ast.arg) -> ast.arg:
+            return ast.copy_location(ast.arg(arg="ARG", annotation=None), node)
+
+        def visit_Name(self, node: ast.Name) -> ast.AST:
+            if node.id in _NORMALIZED_TEMPLATE_STABLE_NAMES:
+                return node
+            return ast.copy_location(ast.Name(id="NAME", ctx=node.ctx), node)
+
+        def visit_Attribute(self, node: ast.Attribute) -> ast.AST:
+            value = cast(ast.expr, self.visit(node.value))
+            return ast.copy_location(
+                ast.Attribute(value=value, attr="ATTR", ctx=node.ctx),
+                node,
+            )
+
+        def visit_If(self, node: ast.If) -> ast.AST:
+            return ast.copy_location(
+                ast.If(
+                    test=ast.Constant(value="ROLE_PRESENCE_TEST"),
+                    body=[cast(ast.stmt, self.visit(item)) for item in node.body],
+                    orelse=[cast(ast.stmt, self.visit(item)) for item in node.orelse],
+                ),
+                node,
+            )
+
+        def visit_Constant(self, node: ast.Constant) -> ast.AST:
+            if isinstance(node.value, str):
+                return ast.copy_location(ast.Constant(value="STR"), node)
+            if isinstance(node.value, (int, float, complex, bool, type(None))):
+                return ast.copy_location(ast.Constant(value="CONST"), node)
+            return node
+
+    normalizer = Normalizer()
+    return tuple(
+        (
+            ast.dump(
+                ast.fix_missing_locations(
+                    cast(ast.stmt, normalizer.visit(copy.deepcopy(statement)))
+                ),
+                include_attributes=False,
+            )
+            for statement in body
+        )
+    )
+
+
 def _normalized_cross_class_method_template(
     body: tuple[ast.stmt, ...],
 ) -> tuple[str, ...]:
@@ -7294,14 +7346,20 @@ def _sibling_small_method_template_candidates(
     for qualname, function in SurfaceFunctionIndex.from_module(module.module).functions:
         if "." not in qualname or not _is_private_symbol_name(function.name):
             continue
-        if _has_external_protocol_shape(function):
+        if _has_external_protocol_shape(
+            function
+        ) and not _has_only_nominal_method_decorators(function):
             continue
         body = _trimmed_function_body(function)
         if not 2 <= len(body) <= 6:
             continue
         owner_name = qualname.rsplit(".", 1)[0]
         parameter_count = len(function.args.args) + len(function.args.kwonlyargs)
-        key = (owner_name, parameter_count, _normalized_small_method_template(body))
+        key = (
+            owner_name,
+            parameter_count,
+            _normalized_role_residue_small_method_template(body),
+        )
         grouped[key].append((qualname, function))
 
     candidates: list[SiblingSmallMethodTemplateCandidate] = []
