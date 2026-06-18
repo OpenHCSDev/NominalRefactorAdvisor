@@ -7719,6 +7719,66 @@ def _abc_optimizer_class_declaration_candidate_base_name(
     return f"{family_prefix}{semantic_suffix}Base"
 
 
+_AUTOREGISTER_REGISTRY_CONTROL_DECLARATIONS = frozenset(
+    ("__registry_key__", "__skip_if_no_key__")
+)
+
+
+def _abc_optimizer_keyword_value_name(keyword: ast.keyword) -> str | None:
+    value = keyword.value
+    if isinstance(value, ast.Name):
+        return value.id
+    if isinstance(value, ast.Attribute):
+        return value.attr
+    return None
+
+
+def _abc_optimizer_declares_autoregister_metaclass(node: ast.ClassDef) -> bool:
+    for keyword in node.keywords:
+        if keyword.arg != "metaclass":
+            continue
+        value_name = _abc_optimizer_keyword_value_name(keyword)
+        if value_name is None:
+            continue
+        if value_name == "AutoRegisterMeta":
+            return True
+        if value_name.endswith("AutoRegisterMeta"):
+            return True
+    return False
+
+
+def _abc_optimizer_unrelated_autoregister_registry_controls(
+    class_symbols: tuple[str, ...],
+    declaration_names: tuple[str, ...],
+    class_index: ClassFamilyIndex,
+) -> bool:
+    if frozenset(declaration_names) - _AUTOREGISTER_REGISTRY_CONTROL_DECLARATIONS:
+        return False
+    if len(declaration_names) != len(frozenset(declaration_names)):
+        return False
+    indexed_classes = tuple(
+        class_index.classes_by_symbol[symbol] for symbol in class_symbols
+    )
+    if not all(
+        (
+            _abc_optimizer_declares_autoregister_metaclass(indexed_class.node)
+            for indexed_class in indexed_classes
+        )
+    ):
+        return False
+    for symbol in class_symbols:
+        family_symbols = frozenset((*class_index.ancestor_symbols(symbol), symbol))
+        if family_symbols.intersection(
+            (
+                other_symbol
+                for other_symbol in class_symbols
+                if other_symbol != symbol
+            )
+        ):
+            return False
+    return True
+
+
 def _abc_optimizer_class_declaration_certificate(
     *,
     class_names: tuple[str, ...],
@@ -7740,6 +7800,7 @@ def _abc_optimizer_class_level_declaration_candidate(
     class_symbols: tuple[str, ...],
     declaration_signatures: tuple[str, ...],
     families_by_signature: _ABCOptimizerClassDeclarationFamiliesBySignature,
+    class_index: ClassFamilyIndex,
 ) -> ClassLevelInheritanceOptimizationCandidate | None:
     if len(class_symbols) < 2 or len(declaration_signatures) < 2:
         return None
@@ -7755,6 +7816,10 @@ def _abc_optimizer_class_level_declaration_candidate(
     file_paths = tuple((indexed_class.file_path for indexed_class in indexed_classes))
     line_numbers = tuple((indexed_class.line for indexed_class in indexed_classes))
     declaration_names = tuple((declaration.name for declaration in declarations))
+    if _abc_optimizer_unrelated_autoregister_registry_controls(
+        class_symbols, declaration_names, class_index
+    ):
+        return None
     certificate = _abc_optimizer_class_declaration_certificate(
         class_names=class_names,
         declaration_names=declaration_names,
@@ -7804,6 +7869,7 @@ def _abc_optimizer_class_level_declaration_candidates(
                         ][1].line,
                     ),
                     families_by_signature,
+                    class_index,
                 )
             )
             is not None

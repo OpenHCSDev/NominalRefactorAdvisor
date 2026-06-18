@@ -10203,6 +10203,27 @@ def test_inheritance_optimizer_detects_repeated_class_level_declarations(
     assert finding.compression_certificate.pays_rent
 
 
+def test_inheritance_optimizer_ignores_unrelated_autoregister_registry_controls(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC\n\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass ExecutionPipelineDefinitionProvider(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "provider_key"\n    __skip_if_no_key__ = True\n\n    def provide(self):\n        raise NotImplementedError\n\n\nclass ZMQPipelineConfigCodePolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "policy_key"\n    __skip_if_no_key__ = True\n\n    def render(self):\n        raise NotImplementedError\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (
+            finding.detector_id == "class_level_inheritance_optimization"
+            and "ExecutionPipelineDefinitionProvider" in finding.summary
+            and "ZMQPipelineConfigCodePolicy" in finding.summary
+        )
+        for finding in findings
+    )
+
+
 def test_abc_optimizer_derives_subset_mixin_axes(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
