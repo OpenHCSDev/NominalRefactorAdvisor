@@ -4463,6 +4463,42 @@ def test_role_surface_drift_ignores_role_specific_channel_usage(
     assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
 
 
+def test_detects_generic_role_case_table_under_shared_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/display.py",
+        "\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        \"alpha\": lambda value: f\"Alpha {value}\",\n        \"beta\": lambda value: f\"Beta {value}\",\n        \"gamma\": lambda value: f\"Gamma {value}\",\n        \"delta\": lambda value: f\"Delta {value}\",\n        \"epsilon\": lambda value: f\"Epsilon {value}\",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f\"Field {value}\"\n\n\nclass WidgetFieldLabelAuthority:\n    ABBREVIATIONS = {\n        \"alpha\": \"A\",\n        \"beta\": \"B\",\n        \"gamma\": \"G\",\n        \"delta\": \"D\",\n        \"epsilon\": \"E\",\n    }\n\n    def field_label(self, field, value):\n        prefix = self.ABBREVIATIONS.get(field, field)\n        return f\"{prefix} {value}\"\n\n\nclass ReportFieldLabelPresenter:\n    ORDER = {\n        \"alpha\": 1,\n        \"beta\": 2,\n        \"gamma\": 3,\n        \"delta\": 4,\n        \"epsilon\": 5,\n    }\n\n    def field_label(self, field, value):\n        rank = self.ORDER.get(field, 0)\n        return f\"{rank}: {value}\"\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "generic_role_case_table"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "FieldDisplayPolicy" in finding.summary
+    assert "WidgetFieldLabelAuthority" in finding.summary
+    assert "alpha" in finding.summary
+    assert "beta" in finding.summary
+    assert "field" in finding.summary
+    assert "generic axis authority" in finding.summary
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+
+
+def test_generic_role_case_table_ignores_single_owner_table(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/display.py",
+        "\nclass FieldDisplayPolicy:\n    FORMATTERS = {\n        \"alpha\": lambda value: f\"Alpha {value}\",\n        \"beta\": lambda value: f\"Beta {value}\",\n        \"gamma\": lambda value: f\"Gamma {value}\",\n    }\n\n    def field_label(self, field, value):\n        formatter = self.FORMATTERS.get(field)\n        if formatter is not None:\n            return formatter(value)\n        return f\"Field {value}\"\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "generic_role_case_table" for finding in findings
+    )
+
+
 def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

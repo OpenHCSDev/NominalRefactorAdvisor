@@ -479,6 +479,14 @@ class DetectorConfig:
         2,
         "Minimum repeated observed role-token support before surfacing role-surface drift.",
     )
+    min_generic_role_case_table_owners: int = detector_config_option(
+        2,
+        "Minimum independent owners sharing a generic role-case table before surfacing it.",
+    )
+    min_generic_role_case_table_cases: int = detector_config_option(
+        2,
+        "Minimum shared concrete role cases before surfacing a generic role-case table.",
+    )
     min_boundary_fanout_sites: int = detector_config_option(
         4,
         "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",
