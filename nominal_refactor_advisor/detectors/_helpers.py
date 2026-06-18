@@ -19,7 +19,7 @@ from ..record_algebra import (
     materialize_product_records,
     product_record_spec,
 )
-from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
@@ -15643,6 +15643,257 @@ def _call_targets_nominal_owner(node: ast.AST) -> bool:
         parts = _ast_attribute_chain(node)
         return parts is not None and parts[0] in {"self", "cls"}
     return False
+
+
+_SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
+_SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = frozenset({"isinstance"})
+_SCHEMA_ACCESSOR_MIN_METHODS = 4
+_SCHEMA_ACCESSOR_COPY_CALL_NAMES = frozenset({"dict", "list", "set", "tuple"})
+_SCHEMA_ACCESSOR_SELF_NAME = "self"
+
+
+def _schema_accessor_self_fetch_func(call: ast.Call) -> ast.Attribute | None:
+    return (
+        Maybe.of(as_ast(call.func, ast.Attribute))
+        .filter(
+            lambda func: isinstance(func.value, ast.Name)
+            and func.value.id == _SCHEMA_ACCESSOR_SELF_NAME
+        )
+        .unwrap_or_none()
+    )
+
+
+def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
+    return (
+        Maybe.of(as_ast(value, ast.Call))
+        .filter(lambda call: len(call.args) == 1 and not call.keywords)
+        .combine(
+            _schema_accessor_self_fetch_func,
+            lambda call, func: (call, func),
+        )
+        .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
+        .combine(
+            lambda context: _ast_attribute_chain(context[0].args[0]),
+            lambda context, field_chain: (context[1], field_chain),
+        )
+        .filter(lambda context: len(context[1]) >= 2)
+        .map(
+            lambda context: (
+                context[0].attr,
+                ".".join(context[1][:-1]),
+                context[1][-1],
+            )
+        )
+        .unwrap_or_none()
+    )
+
+
+def _schema_accessor_fetch_assignment(
+    statement: ast.stmt,
+) -> tuple[str, str, str, str] | None:
+    if isinstance(statement, ast.Assign):
+        if len(statement.targets) != 1 or not isinstance(statement.targets[0], ast.Name):
+            return None
+        target_name = statement.targets[0].id
+        fetch = _schema_accessor_fetch_call(statement.value)
+    elif isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        if statement.value is None:
+            return None
+        target_name = statement.target.id
+        fetch = _schema_accessor_fetch_call(statement.value)
+    else:
+        return None
+    if fetch is None:
+        return None
+    fetch_mode, enum_name, field_name = fetch
+    return target_name, fetch_mode, enum_name, field_name
+
+
+def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
+    return any(
+        isinstance(item, ast.Name) and item.id == local_name for item in _walk_nodes(node)
+    )
+
+
+def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
+    operands = (node.left, *node.comparators)
+    return _node_mentions_name(node, local_name) and any(
+        isinstance(operand, ast.Constant) and operand.value is None
+        for operand in operands
+    )
+
+
+def _schema_accessor_coercion_kinds(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
+) -> tuple[str, ...]:
+    kinds: set[str] = set()
+    for node in _walk_nodes(function):
+        if isinstance(node, ast.Compare) and _compare_mentions_none(node, local_name):
+            kinds.add("none_guard")
+        if not isinstance(node, ast.Call):
+            continue
+        call_name = _call_name(node.func)
+        if (
+            call_name in _SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES
+            and node.args
+            and _node_mentions_name(node.args[0], local_name)
+        ):
+            kinds.add("runtime_type_guard")
+        elif call_name in _SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
+            _node_mentions_name(argument, local_name) for argument in node.args
+        ):
+            kinds.add(f"{call_name}_coercion")
+        elif (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr.startswith("from_")
+            and any(_node_mentions_name(argument, local_name) for argument in node.args)
+        ):
+            kinds.add(node.func.attr)
+    return tuple(sorted(kinds))
+
+
+def _schema_accessor_returns_local(
+    function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
+) -> bool:
+    return any(
+        isinstance(node, ast.Return)
+        and node.value is not None
+        and _node_mentions_name(node.value, local_name)
+        for node in _walk_nodes(function)
+    )
+
+
+def _schema_accessor_method_row(
+    method: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> tuple[str, str, str, str, str, int, int] | None:
+    if method.name in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES:
+        return None
+    if _is_private_symbol_name(method.name):
+        return None
+    body = _trim_docstring_body(list(method.body))
+    fetches = tuple(
+        fetch
+        for statement in body
+        if (fetch := _schema_accessor_fetch_assignment(statement)) is not None
+    )
+    if len(fetches) != 1:
+        return None
+    local_name, fetch_mode, enum_name, field_name = fetches[0]
+    coercion_kinds = _schema_accessor_coercion_kinds(method, local_name)
+    if not coercion_kinds or not _schema_accessor_returns_local(method, local_name):
+        return None
+    line_count = max(1, (method.end_lineno or method.lineno) - method.lineno + 1)
+    return (
+        method.name,
+        enum_name,
+        field_name,
+        fetch_mode,
+        "+".join(coercion_kinds),
+        method.lineno,
+        line_count,
+    )
+
+
+def _schema_accessor_axis_system(
+    rows: tuple[tuple[str, str, str, str, str, int, int], ...]
+) -> FiniteAxisSystem[str, str]:
+    return FiniteAxisSystem.from_rows(
+        (
+            (
+                method_name,
+                {
+                    "method": method_name,
+                    "enum": enum_name,
+                    "field": field_name,
+                    "fetch_mode": fetch_mode,
+                    "coercion": coercion_kind,
+                },
+            )
+            for (
+                method_name,
+                enum_name,
+                field_name,
+                fetch_mode,
+                coercion_kind,
+                _line,
+                _line_count,
+            ) in rows
+        )
+    )
+
+
+def _schema_accessor_family_certificate(
+    *,
+    method_count: int,
+    line_count: int,
+    field_axes: tuple[str, ...],
+    coercion_kind_count: int,
+) -> CompressionCertificate:
+    return CompressionCertificate.from_object_family(
+        manual_object_count=max(line_count, method_count * max(coercion_kind_count, 1)),
+        replacement_shape=ObjectFamilyShape.from_roles(
+            ("payload_projection_schema", "typed_payload_projector"),
+            axis=("projection_row",),
+        ),
+        semantic_axes=field_axes,
+        residual_object_count=coercion_kind_count,
+    )
+
+
+def _schema_accessor_family_candidates(
+    module: ParsedModule,
+) -> tuple[SchemaAccessorFamilyCandidate, ...]:
+    candidates: list[SchemaAccessorFamilyCandidate] = []
+    for class_node in _typed_ast_nodes(module.module, ast.ClassDef):
+        grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
+            defaultdict(list)
+        )
+        for method in CLASS_NODE_AUTHORITY.methods(class_node):
+            row = _schema_accessor_method_row(method)
+            if row is not None:
+                grouped_rows[row[1]].append(row)
+        for enum_name, rows in grouped_rows.items():
+            if len(rows) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                continue
+            ordered_rows = tuple(sorted(rows, key=lambda item: (item[5], item[0])))
+            field_names = tuple((row[2] for row in ordered_rows))
+            if len(frozenset(field_names)) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                continue
+            axis_system = _schema_accessor_axis_system(ordered_rows)
+            if not axis_system.determines(("field",), "method"):
+                continue
+            line_count = sum((row[6] for row in ordered_rows))
+            coercion_kinds = tuple((row[4] for row in ordered_rows))
+            field_axes = tuple((f"{enum_name}.{field_name}" for field_name in field_names))
+            certificate = _schema_accessor_family_certificate(
+                method_count=len(ordered_rows),
+                line_count=line_count,
+                field_axes=field_axes,
+                coercion_kind_count=len(frozenset(coercion_kinds)),
+            )
+            if not certificate.pays_rent:
+                continue
+            candidates.append(
+                SchemaAccessorFamilyCandidate(
+                    file_path=str(module.path),
+                    line=class_node.lineno,
+                    class_name=class_node.name,
+                    enum_name=enum_name,
+                    method_names=tuple((row[0] for row in ordered_rows)),
+                    field_names=field_names,
+                    requirement_modes=tuple((row[3] for row in ordered_rows)),
+                    coercion_kinds=coercion_kinds,
+                    line_numbers=tuple((row[5] for row in ordered_rows)),
+                    line_count=line_count,
+                    compression_certificate=certificate,
+                )
+            )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.class_name, item.enum_name),
+        )
+    )
 
 
 def _empty_dict_value_name(target_value: tuple[ast.AST, ast.AST]) -> str | None:

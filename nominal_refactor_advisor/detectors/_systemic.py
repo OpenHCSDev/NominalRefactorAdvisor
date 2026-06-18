@@ -4003,6 +4003,51 @@ declare_candidate_rule_detector(
 
 
 declare_candidate_rule_detector(
+    SchemaAccessorFamilyCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Schema-shaped accessor family should derive from one projection schema",
+        "Several public methods on one class fetch one enum-keyed payload field with `self.required(...)` or `self.optional(...)`, then repeat local runtime guards or coercions before returning the value. That is a hidden field schema spread across methods: the enum member, requiredness, accepted type, coercion, and error policy should be declared once and projected through a typed accessor engine.",
+        "single authoritative projection schema for enum-keyed payload fields",
+        "same class repeats payload accessor methods over one closed enum/key axis",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_CAPABILITY_TAGS,
+        _DATAFLOW_ROOT_NORMALIZED_AST_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=lambda family: (
+        f"`{family.class_name}` repeats {len(family.method_names)} accessor methods "
+        f"over `{family.enum_name}` fields {family.field_names}; requiredness "
+        f"{family.requirement_modes} and coercions {family.coercion_kinds} are schema rows."
+    ),
+    evidence=lambda family: family.evidence_locations,
+    scaffold=lambda family: (
+        "@dataclass(frozen=True)\n"
+        "class ProjectionFieldSpec:\n"
+        "    key: Enum\n"
+        "    required: bool\n"
+        "    coerce: Callable[[object], object]\n\n"
+        "class PayloadProjectionSchema:\n"
+        "    fields: ClassVar[tuple[ProjectionFieldSpec, ...]]\n"
+        "    def project(self, key): ..."
+    ),
+    codemod_patch=lambda family: (
+        f"# Replace accessor methods {family.method_names} on `{family.class_name}` "
+        f"with one authoritative projection schema keyed by `{family.enum_name}`.\n"
+        "# Keep required/optional mode, accepted type, coercion, and error text as "
+        "field-spec coordinates; derive named accessors only if callers need them."
+    ),
+    compression_certificate=lambda family: family.compression_certificate,
+    metrics=lambda family: MappingMetrics.from_field_names(
+        mapping_site_count=len(family.method_names),
+        mapping_name=family.class_name,
+        field_names=family.field_names,
+        source_name=family.enum_name,
+    ),
+    detector_priority=-13,
+    candidate_collector=_schema_accessor_family_candidates,
+)
+
+
+declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,

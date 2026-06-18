@@ -8871,6 +8871,25 @@ def test_detects_mirrored_constructor_validation(tmp_path: Path) -> None:
     assert "dataclass field metadata" in (finding.codemod_patch or "")
 
 
+def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/viewer_transport.py",
+        "\nclass ViewerStreamKwargName:\n    VIEWER_TRANSPORT = object()\n    TRANSPORT_CONFIG = object()\n    PRODUCER_IDENTITY = object()\n    COMPONENT_METADATA = object()\n\n\nclass Payload:\n    def viewer_transport(self):\n        value = self.required(ViewerStreamKwargName.VIEWER_TRANSPORT)\n        if isinstance(value, ViewerTransportEndpoint):\n            return value\n        raise TypeError('viewer_transport must be a ViewerTransportEndpoint.')\n\n    def transport_config(self):\n        value = self.optional(ViewerStreamKwargName.TRANSPORT_CONFIG)\n        if value is None or isinstance(value, ZMQConfig):\n            return value\n        raise TypeError('transport_config must be a ZMQConfig or None.')\n\n    def producer_identity(self):\n        value = self.required(ViewerStreamKwargName.PRODUCER_IDENTITY)\n        if isinstance(value, StreamProducerIdentity):\n            return value\n        if isinstance(value, Mapping):\n            return StreamProducerIdentity.from_payload(value)\n        raise TypeError('producer_identity must be a StreamProducerIdentity or mapping.')\n\n    def component_metadata(self):\n        value = self.optional(ViewerStreamKwargName.COMPONENT_METADATA)\n        if value is None:\n            return None\n        if isinstance(value, Mapping):\n            return dict(value)\n        raise TypeError('component_metadata must be a mapping or None.')\n\n    def required(self, field):\n        return self.kwargs[field.value]\n\n    def optional(self, field):\n        return None\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "schema_accessor_family"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "Payload" in finding.summary
+    assert "ViewerStreamKwargName" in finding.summary
+    assert "projection schema" in (finding.codemod_patch or "")
+
+
 def test_detects_unclassified_runtime_fallbacks(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
