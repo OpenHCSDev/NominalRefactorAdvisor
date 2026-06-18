@@ -2318,6 +2318,51 @@ def test_execution_plan_groups_findings_by_weighted_graph(
     assert grouped_class.first_codemod_hint
 
 
+def test_execution_plan_splits_weak_bridges_by_semantic_axis(
+    tmp_path: Path,
+) -> None:
+    context_spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Collapse threaded context",
+        "Repeated threaded parameters should have one authority.",
+        "single authoritative context",
+        "shared parameter fanout",
+    )
+    witness_spec = _finding_spec(
+        PatternId.NOMINAL_WITNESS_CARRIER,
+        "Create witness carrier",
+        "Projected witnesses should have one nominal owner.",
+        "single witness carrier",
+        "shared witness projection",
+    )
+    shared_file = tmp_path / "pkg" / "runtime.py"
+    findings = [
+        context_spec.build(
+            "threaded_context",
+            "context fanout",
+            (SourceLocation(str(shared_file), 10, "Context.run"),),
+        ),
+        witness_spec.build(
+            "witness_projection",
+            "witness projection",
+            (SourceLocation(str(shared_file), 30, "Witness.run"),),
+        ),
+    ]
+
+    report = build_refactor_execution_plan(findings, tmp_path)
+
+    assert report.total_finding_count == 2
+    assert report.connected_component_count == 2
+    assert len(report.edges) == 1
+    assert {execution_class.finding_count for execution_class in report.classes} == {1}
+    assert {
+        execution_class.primary_pattern_id for execution_class in report.classes
+    } == {
+        PatternId.AUTHORITATIVE_CONTEXT,
+        PatternId.NOMINAL_WITNESS_CARRIER,
+    }
+
+
 def test_planner_derives_local_minimum_escape_from_findings(
     tmp_path: Path,
 ) -> None:

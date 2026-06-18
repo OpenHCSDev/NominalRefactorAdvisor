@@ -885,8 +885,9 @@ def build_refactor_execution_plan(
 
     Findings are observation vertices. Edges are weighted by shared evidence,
     shared capabilities, pattern synergy, directory locality, and shared symbol
-    roots. Connected components become execution classes so agents can refactor
-    a whole bug class rather than chasing the highest-ranked individual symptom.
+    roots. Weakly connected components are then partitioned by their semantic
+    execution axis so agents can refactor a whole bug class without allowing
+    transitive locality bridges to swallow unrelated batches.
     """
 
     if not findings:
@@ -899,7 +900,7 @@ def build_refactor_execution_plan(
         )
     finding_tuple = tuple(findings)
     edges = _execution_graph_edges(finding_tuple, root)
-    clusters = _cluster_findings(findings, root)
+    clusters = ExecutionPartitionPlanner(root).clusters(findings)
     class_inputs = [
         _execution_class_input(cluster, root, edges) for cluster in clusters
     ]
@@ -989,6 +990,83 @@ class _FindingRelation:
 @dataclass(frozen=True)
 class _ExecutionClassInput(RefactorExecutionClassSurface):
     file_paths: frozenset[Path]
+
+
+@dataclass(frozen=True)
+class ExecutionPartitionAxis(SemanticRecord):
+    """Semantic axis that prevents weak graph bridges from over-batching work."""
+
+    pattern: PatternId
+    evidence_file: Path
+
+    @property
+    def sort_key(self) -> tuple[int, str, str]:
+        return (
+            self.pattern.value,
+            PATTERN_SPECS[self.pattern].name,
+            self.evidence_file.as_posix(),
+        )
+
+    @property
+    def subsystem_label(self) -> str:
+        return f"{self.evidence_file.as_posix()}::pattern_{self.pattern.value}"
+
+
+@dataclass(frozen=True)
+class ExecutionPartitionPlanner(SemanticRecord):
+    """Refine weak graph components into executable semantic work batches."""
+
+    root: Path
+
+    def clusters(self, findings: list[RefactorFinding]) -> list[_FindingCluster]:
+        execution_clusters: list[_FindingCluster] = []
+        for cluster in _cluster_findings(findings, self.root):
+            execution_clusters.extend(self.partition_cluster(cluster))
+        return sorted(
+            execution_clusters,
+            key=lambda cluster: (cluster.subsystem, len(cluster.findings)),
+        )
+
+    def partition_cluster(self, cluster: _FindingCluster) -> tuple[_FindingCluster, ...]:
+        grouped: dict[ExecutionPartitionAxis, list[RefactorFinding]] = defaultdict(list)
+        for finding in cluster.findings:
+            grouped[self.axis_for(finding)].append(finding)
+        if len(grouped) <= 1:
+            return (cluster,)
+        return tuple(
+            _FindingCluster(
+                subsystem=axis.subsystem_label,
+                findings=tuple(
+                    sorted(
+                        group_findings,
+                        key=lambda finding: (
+                            finding.pattern_id,
+                            finding.title,
+                            finding.stable_id,
+                        ),
+                    )
+                ),
+                evidence=_FINDING_PROJECTION.combined_evidence(tuple(group_findings)),
+            )
+            for axis, group_findings in sorted(
+                grouped.items(),
+                key=lambda item: item[0].sort_key,
+            )
+        )
+
+    def axis_for(self, finding: RefactorFinding) -> ExecutionPartitionAxis:
+        return ExecutionPartitionAxis(
+            pattern=finding.pattern_id,
+            evidence_file=self.primary_evidence_file(finding),
+        )
+
+    def primary_evidence_file(self, finding: RefactorFinding) -> Path:
+        paths = tuple(
+            sorted(_safe_relative(path, self.root) for path in _evidence_paths(finding))
+        )
+        if not paths:
+            return Path(self.root.name)
+        return paths[0]
 
 
 def _finding_relation(
