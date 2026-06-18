@@ -293,6 +293,31 @@ _IGNORED_BASE_NAMES = frozenset({"ABC", "object"})
 _IGNORED_ANCESTOR_NAMES = frozenset({"ABC", "ABCMeta", "object"})
 
 
+def _class_ancestor_names_for(
+    class_name: str,
+    base_lookup: dict[str, set[str]],
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    stack = list(base_lookup[class_name])
+    while stack:
+        base_name = stack.pop()
+        if base_name in seen or base_name == class_name:
+            continue
+        seen.add(base_name)
+        if base_name in base_lookup:
+            stack.extend(sorted(base_lookup[base_name] - seen))
+    return tuple(sorted(seen))
+
+
+def _class_ancestor_name_map(
+    base_lookup: dict[str, set[str]],
+) -> dict[str, tuple[str, ...]]:
+    return {
+        class_name: _class_ancestor_names_for(class_name, base_lookup)
+        for class_name in sorted(base_lookup)
+    }
+
+
 def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
     return {
         node.name: node

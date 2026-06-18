@@ -2952,6 +2952,57 @@ class ObjectLabelSourceDomain:
     assert "SourceProvenance" in finding.summary
 
 
+def test_available_nominal_carrier_reuse_accepts_shared_nominal_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(tmp_path, "pkg/shared/__init__.py", "")
+    _write_module(tmp_path, "pkg/features/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/shared/source_context.py",
+        """
+from abc import ABC
+from dataclasses import dataclass
+
+
+class SourceProvenanceRoot(ABC):
+    pass
+
+
+@dataclass(frozen=True)
+class SourceProvenanceContext(SourceProvenanceRoot):
+    source_path: str | None
+    source_component_metadata: dict[str, str] | None
+    source_image_names: tuple[str, ...]
+    source_image_provenance_planes: tuple[object, ...]
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/features/labels.py",
+        """
+from dataclasses import dataclass
+from pkg.shared.source_context import SourceProvenanceRoot
+
+
+@dataclass(frozen=True)
+class ObjectLabelSourceDomain(SourceProvenanceRoot):
+    spatial_origin_yx: tuple[int, int] | None
+    source_path: str | None
+    source_component_metadata: dict[str, str] | None
+    source_image_names: tuple[str, ...]
+    source_image_provenance_planes: tuple[object, ...]
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == AVAILABLE_CARRIER_REUSE_DETECTOR_ID
+        for finding in findings
+    )
+
+
 def test_detector_sources_do_not_embed_project_specific_vocabulary() -> None:
     detector_root = (
         Path(__file__).resolve().parents[1] / "nominal_refactor_advisor" / "detectors"

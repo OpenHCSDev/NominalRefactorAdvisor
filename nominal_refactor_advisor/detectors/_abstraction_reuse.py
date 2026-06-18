@@ -25,6 +25,10 @@ from ._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
     _semantic_role_names_for_fields,
 )
+from ._substrate_support import (
+    _IGNORED_ANCESTOR_NAMES,
+    _class_ancestor_name_map,
+)
 
 
 _MIN_AUTHORITY_ATOMS = 7
@@ -123,6 +127,7 @@ class CarrierSurface:
     field_type_map: tuple[tuple[str, str], ...]
     role_names: tuple[str, ...]
     base_names: tuple[str, ...]
+    nominal_ancestor_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,6 +362,7 @@ def _module_carrier_surfaces(module: ParsedModule) -> tuple[CarrierSurface, ...]
                 field_type_map=field_type_map,
                 role_names=role_names,
                 base_names=HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node),
+                nominal_ancestor_names=(),
             )
         )
     return sorted_tuple(
@@ -408,6 +414,47 @@ def _carrier_surface_related(left: CarrierSurface, right: CarrierSurface) -> boo
         left.class_name == right.class_name
         or left.class_name in right.base_names
         or right.class_name in left.base_names
+    )
+
+
+def _carrier_surfaces_with_ancestors(
+    surfaces: tuple[CarrierSurface, ...],
+) -> tuple[CarrierSurface, ...]:
+    base_lookup: dict[str, set[str]] = defaultdict(set)
+    for surface in surfaces:
+        base_lookup[surface.class_name].update(surface.base_names)
+    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
+    return tuple(
+        sorted(
+            (
+                CarrierSurface(
+                    file_path=surface.file_path,
+                    module_name=surface.module_name,
+                    line=surface.line,
+                    class_name=surface.class_name,
+                    field_names=surface.field_names,
+                    field_type_map=surface.field_type_map,
+                    role_names=surface.role_names,
+                    base_names=surface.base_names,
+                    nominal_ancestor_names=ancestor_names_by_class[surface.class_name],
+                )
+                for surface in surfaces
+            ),
+            key=lambda surface: (surface.file_path, surface.line, surface.class_name),
+        )
+    )
+
+
+def _carrier_surfaces_share_nominal_ancestor(
+    local: CarrierSurface,
+    authority: CarrierSurface,
+) -> bool:
+    return bool(
+        (
+            set(local.nominal_ancestor_names)
+            & set(authority.nominal_ancestor_names)
+            - _IGNORED_ANCESTOR_NAMES
+        )
     )
 
 
@@ -479,6 +526,8 @@ def _carrier_reuse_candidate(
         return None
     if _carrier_uses_authority(local, authority):
         return None
+    if _carrier_surfaces_share_nominal_ancestor(local, authority):
+        return None
     if _looks_like_reusable_carrier_name(local.class_name) and (
         _carrier_authority_rank(local) <= _carrier_authority_rank(authority)
     ):
@@ -507,10 +556,12 @@ def _carrier_reuse_candidate(
 def _available_carrier_reuse_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[AvailableCarrierReuseCandidate, ...]:
-    surfaces = tuple(
-        surface
-        for module in modules
-        for surface in _module_carrier_surfaces(module)
+    surfaces = _carrier_surfaces_with_ancestors(
+        tuple(
+            surface
+            for module in modules
+            for surface in _module_carrier_surfaces(module)
+        )
     )
     authorities = _carrier_authority_surfaces(surfaces)
     if not authorities:

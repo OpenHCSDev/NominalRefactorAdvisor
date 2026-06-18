@@ -33,6 +33,7 @@ from typing import Callable, ClassVar, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
+from ._substrate_support import _class_ancestor_name_map
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 ExternalCallsitesByTarget: TypeAlias = dict[str, tuple[ResolvedExternalCallsite, ...]]
@@ -1291,17 +1292,7 @@ def _nominal_authority_shapes(
     base_lookup: dict[str, set[str]] = defaultdict(set)
     for shape in shapes_without_ancestors:
         base_lookup[shape.class_name].update(shape.declared_base_names)
-
-    def ancestors_for(class_name: str) -> tuple[str, ...]:
-        seen: set[str] = set()
-        stack = list(base_lookup.get(class_name, set()))
-        while stack:
-            base_name = stack.pop()
-            if base_name in seen or base_name == class_name:
-                continue
-            seen.add(base_name)
-            stack.extend(sorted(base_lookup.get(base_name, set()) - seen))
-        return sorted_tuple(seen)
+    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
 
     return tuple(
         (
@@ -1310,7 +1301,7 @@ def _nominal_authority_shapes(
                 class_name=shape.class_name,
                 line=shape.line,
                 declared_base_names=shape.declared_base_names,
-                ancestor_names=ancestors_for(shape.class_name),
+                ancestor_names=ancestor_names_by_class[shape.class_name],
                 field_names=shape.field_names,
                 field_type_map=shape.field_type_map,
                 method_names=shape.method_names,
