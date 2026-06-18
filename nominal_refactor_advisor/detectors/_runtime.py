@@ -513,6 +513,43 @@ def _is_exact_object_annotation(annotation: ast.AST) -> bool:
 
 
 _OPAQUE_OBJECT_ANNOTATION_NAMES = frozenset(("Any", "object"))
+_SMELLY_TYPE_ALIAS_BARE_ROOT_NAMES = frozenset(("ABC", "Enum", "Protocol"))
+_SMELLY_TYPE_ALIAS_CALLABLE_ROOT_NAMES = frozenset(("Callable",))
+_SMELLY_TYPE_ALIAS_MAPPING_ROOT_NAMES = frozenset(
+    ("Dict", "Mapping", "MutableMapping", "dict")
+)
+_SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = frozenset(
+    (
+        "by",
+        "dict",
+        "dicts",
+        "group",
+        "groups",
+        "index",
+        "indexes",
+        "indices",
+        "key",
+        "keys",
+        "list",
+        "lists",
+        "map",
+        "maps",
+        "mapping",
+        "mappings",
+        "pair",
+        "pairs",
+        "sequence",
+        "sequences",
+        "set",
+        "sets",
+        "spec",
+        "specs",
+        "table",
+        "tables",
+        "tuple",
+        "tuples",
+    )
+)
 
 
 def _opaque_object_annotation_names(annotation: ast.AST) -> tuple[str, ...]:
@@ -536,6 +573,143 @@ def _opaque_object_annotation_names(annotation: ast.AST) -> tuple[str, ...]:
 
 def _has_opaque_object_annotation(annotation: ast.AST) -> bool:
     return bool(_opaque_object_annotation_names(annotation))
+
+
+def _annotation_leaf_names(annotation: ast.AST) -> tuple[str, ...]:
+    names: list[str] = []
+
+    def visit(node: ast.AST) -> None:
+        if isinstance(node, ast.Name):
+            names.append(node.id)
+            return
+        if isinstance(node, ast.Attribute):
+            names.append(node.attr)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(annotation)
+    return tuple(dict.fromkeys(names))
+
+
+def _is_ellipsis_node(annotation: ast.AST) -> bool:
+    return isinstance(annotation, ast.Constant) and annotation.value is Ellipsis
+
+
+def _callable_has_variadic_parameter_list(annotation: ast.AST) -> bool:
+    if not _annotation_has_subscripted_root(
+        annotation,
+        _SMELLY_TYPE_ALIAS_CALLABLE_ROOT_NAMES,
+    ):
+        return False
+    if not isinstance(annotation, ast.Subscript):
+        return False
+    slice_node = annotation.slice
+    if _is_ellipsis_node(slice_node):
+        return True
+    if isinstance(slice_node, ast.Tuple) and slice_node.elts:
+        return _is_ellipsis_node(slice_node.elts[0])
+    return False
+
+
+def _is_bare_annotation_root(annotation: ast.AST, root_name: str) -> bool:
+    return (
+        isinstance(annotation, ast.Name)
+        and annotation.id == root_name
+        or isinstance(annotation, ast.Attribute)
+        and annotation.attr == root_name
+    )
+
+
+def _annotation_has_subscripted_root(
+    annotation: ast.AST,
+    root_names: frozenset[str],
+) -> bool:
+    if isinstance(annotation, ast.Subscript):
+        root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(annotation)
+        return root_name in root_names
+    return False
+
+
+def _annotation_contains_subscripted_root(
+    annotation: ast.AST,
+    root_names: frozenset[str],
+) -> bool:
+    if _annotation_has_subscripted_root(annotation, root_names):
+        return True
+    return any(
+        _annotation_contains_subscripted_root(child, root_names)
+        for child in ast.iter_child_nodes(annotation)
+    )
+
+
+def _annotation_contains_variadic_callable(annotation: ast.AST) -> bool:
+    if _callable_has_variadic_parameter_list(annotation):
+        return True
+    return any(
+        _annotation_contains_variadic_callable(child)
+        for child in ast.iter_child_nodes(annotation)
+    )
+
+
+def _type_alias_marker_name(annotation: ast.AST) -> str | None:
+    if isinstance(annotation, ast.Name):
+        return annotation.id
+    if isinstance(annotation, ast.Attribute):
+        return annotation.attr
+    if isinstance(annotation, ast.Subscript):
+        return _type_alias_marker_name(annotation.value)
+    return None
+
+
+def _is_type_alias_annotation(annotation: ast.AST) -> bool:
+    return _type_alias_marker_name(annotation) == "TypeAlias"
+
+
+def _split_alias_name_tokens(alias_name: str) -> tuple[str, ...]:
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", alias_name)
+    normalized = re.sub(r"[^0-9A-Za-z]+", "_", spaced).lower()
+    return tuple(token for token in normalized.split("_") if token)
+
+
+def _alias_name_describes_collection_shape(alias_name: str) -> bool:
+    tokens = _split_alias_name_tokens(alias_name)
+    if not tokens:
+        return False
+    if any(token in _SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS for token in tokens):
+        return True
+    return any(token.endswith("s") and len(token) > 3 for token in tokens)
+
+
+def _type_alias_reason_names(alias_name: str, value: ast.AST) -> tuple[str, ...]:
+    reason_names: list[str] = []
+    leaf_names = frozenset(_annotation_leaf_names(value))
+    root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(value)
+
+    if leaf_names & _OPAQUE_OBJECT_ANNOTATION_NAMES:
+        reason_names.append("opaque-member")
+
+    for broad_root in sorted(_SMELLY_TYPE_ALIAS_BARE_ROOT_NAMES):
+        if _is_bare_annotation_root(value, broad_root):
+            reason_names.append("bare-generic-root")
+            break
+
+    if _annotation_contains_variadic_callable(value) or (
+        _annotation_contains_subscripted_root(
+            value,
+            _SMELLY_TYPE_ALIAS_CALLABLE_ROOT_NAMES,
+        )
+        and bool(leaf_names & _OPAQUE_OBJECT_ANNOTATION_NAMES)
+    ):
+        reason_names.append("opaque-callable")
+
+    if (
+        root_name in _SMELLY_TYPE_ALIAS_MAPPING_ROOT_NAMES
+        and not _alias_name_describes_collection_shape(alias_name)
+    ):
+        reason_names.append("semantic-mapping-shell")
+
+    return tuple(dict.fromkeys(reason_names))
 
 
 def _is_annotation_like_expression(node: ast.AST) -> bool:
@@ -845,6 +1019,158 @@ class OpaqueObjectAnnotationDetector(PerModuleIssueDetector):
                         mapping_site_count=len(sites),
                         mapping_name=owner_name,
                         field_names=site_names,
+                    ),
+                )
+            )
+        return findings
+
+
+@dataclass(frozen=True)
+class SmellyTypeAliasSite:
+    owner_name: str
+    alias_name: str
+    value_text: str
+    reason_names: tuple[str, ...]
+    line: int
+
+    @property
+    def symbol(self) -> str:
+        if self.owner_name == "module":
+            return self.alias_name
+        return f"{self.owner_name}.{self.alias_name}"
+
+
+def _smelly_type_alias_sites(module: ParsedModule) -> tuple[SmellyTypeAliasSite, ...]:
+    sites: list[SmellyTypeAliasSite] = []
+    class_stack: list[str] = []
+    function_stack: list[str] = []
+
+    def owner_name() -> str:
+        return ".".join(class_stack) if class_stack else "module"
+
+    def add_alias(alias_name: str, value: ast.AST, line: int) -> None:
+        reason_names = _type_alias_reason_names(alias_name, value)
+        if not reason_names:
+            return
+        sites.append(
+            SmellyTypeAliasSite(
+                owner_name=owner_name(),
+                alias_name=alias_name,
+                value_text=ast.unparse(value),
+                reason_names=reason_names,
+                line=line,
+            )
+        )
+
+    def add_type_stmt_alias(node: ast.AST) -> bool:
+        type_alias_type = getattr(ast, "TypeAlias", None)
+        if type_alias_type is None or not isinstance(node, type_alias_type):
+            return False
+        alias_node = getattr(node, "name", None)
+        value = getattr(node, "value", None)
+        if value is None:
+            return True
+        if isinstance(alias_node, ast.Name):
+            alias_name = alias_node.id
+        elif isinstance(alias_node, str):
+            alias_name = alias_node
+        else:
+            return True
+        add_alias(alias_name, value, int(getattr(node, "lineno", 0)))
+        return True
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            class_stack.append(node.name)
+            self.generic_visit(node)
+            class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            function_stack.append(node.name)
+            self.generic_visit(node)
+            function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if function_stack:
+                self.generic_visit(node)
+                return
+            if (
+                isinstance(node.target, ast.Name)
+                and node.value is not None
+                and _is_type_alias_annotation(node.annotation)
+            ):
+                add_alias(node.target.id, node.value, int(node.lineno))
+                return
+            self.generic_visit(node)
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if function_stack:
+                self.generic_visit(node)
+                return
+            if not _is_annotation_like_expression(node.value):
+                self.generic_visit(node)
+                return
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    add_alias(target.id, node.value, int(node.lineno))
+            self.generic_visit(node)
+
+        def visit(self, node: ast.AST) -> None:
+            if add_type_stmt_alias(node):
+                return
+            super().visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(sites)
+
+
+class SmellyTypeAliasDetector(PerModuleIssueDetector):
+    detector_id = "smelly_type_alias"
+    finding_spec = high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Type alias erases a semantic boundary",
+        "A type alias is useful when it names a repeated structural shape. It becomes debt when the alias only hides an opaque member, a bare generic root, an unbounded callback, or a map-shaped bag that should be a nominal carrier.",
+        "nominal carrier/base/enum authority instead of alias-level erasure",
+        "type alias declaration expands to an opaque or over-broad structural permission",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self,
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for site in _smelly_type_alias_sites(module):
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{site.symbol}` aliases `{site.value_text}` but the "
+                        f"alias still carries {site.reason_names}."
+                    ),
+                    (SourceLocation(str(module.path), site.line, site.symbol),),
+                    scaffold=(
+                        "@dataclass(frozen=True)\n"
+                        f"class {site.alias_name.removesuffix('Alias')}:\n"
+                        "    ...\n\n"
+                        "# Keep raw mapping/callback shapes at parser or adapter "
+                        "edges; pass this nominal carrier through the core."
+                    ),
+                    codemod_patch=(
+                        f"# Replace `{site.alias_name} = {site.value_text}` with "
+                        "a nominal carrier, closed enum family, or named base "
+                        "authority. Preserve structural containers only at IO "
+                        "boundaries where they are decoded."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=len(site.reason_names),
+                        mapping_name=site.symbol,
+                        field_names=site.reason_names,
+                        source_name="smelly_type_alias",
                     ),
                 )
             )

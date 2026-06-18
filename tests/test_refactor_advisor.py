@@ -1014,6 +1014,7 @@ IDENTITY_KEYWORD_FORWARDING_SHELL_DETECTOR_ID = "identity_keyword_forwarding_she
 OPTIONAL_PARAMETER_BRANCH_DETECTOR_ID = "optional_parameter_branch"
 OPAQUE_OBJECT_ANNOTATION_DETECTOR_ID = "opaque_object_annotation"
 PRIVATE_OBJECT_BOUNDARY_FIELD_DETECTOR_ID = "private_object_boundary_field"
+SMELLY_TYPE_ALIAS_DETECTOR_ID = "smelly_type_alias"
 NON_NOMINAL_PRIVATE_HELPER_DETECTOR_ID = "non_nominal_private_helper"
 UNDER_AMORTIZED_INFRASTRUCTURE_DETECTOR_ID = "under_amortized_infrastructure"
 MANUAL_CONCRETE_SUBCLASS_ROSTER_DETECTOR_ID = "manual_concrete_subclass_roster"
@@ -4773,6 +4774,37 @@ def test_detects_opaque_object_annotations(tmp_path: Path) -> None:
     assert "return" in summaries
     assert "cast" in summaries
     assert all("Protocol" not in (finding.scaffold or "") for finding in findings)
+
+
+def test_detects_smelly_type_aliases_without_flagging_precise_aliases(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom enum import Enum\nfrom typing import Any, Callable, Mapping, TypeAlias\n\nViewerScalar: TypeAlias = str | int | float | bool | None\nFijiCoordinateKey = tuple[tuple, tuple, tuple]\nSortKey = Callable[[str], tuple[str, int, str]]\nMaybeSortKey = Callable[[str], int] | None\nExplicitStringMap = Mapping[str, str]\n\nPayload: TypeAlias = dict[str, Any]\nViewerTransportMode: TypeAlias = Enum\nStageCallback: TypeAlias = Callable[..., Any]\nMaybeCallback = Callable[..., str] | None\nRuntimeContext = dict[str, str]\nConfigMap = Mapping[str, object]\n",
+    )
+
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == SMELLY_TYPE_ALIAS_DETECTOR_ID
+    ]
+    summaries = "\n".join(finding.summary for finding in findings)
+    scaffolds = "\n".join(finding.scaffold or "" for finding in findings)
+
+    assert "Payload" in summaries
+    assert "ViewerTransportMode" in summaries
+    assert "StageCallback" in summaries
+    assert "MaybeCallback" in summaries
+    assert "RuntimeContext" in summaries
+    assert "ConfigMap" in summaries
+    assert "ViewerScalar" not in summaries
+    assert "FijiCoordinateKey" not in summaries
+    assert "SortKey" not in summaries
+    assert "MaybeSortKey" not in summaries
+    assert "ExplicitStringMap" not in summaries
+    assert "Protocol" not in scaffolds
 
 
 def test_detects_short_fail_soft_effect_pipeline(tmp_path: Path) -> None:
