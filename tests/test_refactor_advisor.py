@@ -6052,6 +6052,24 @@ def test_forwarding_detectors_ignore_semantic_decorated_entrypoints(
     )
 
 
+def test_detects_field_delegate_forwarding_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass Schedule:\n    def __init__(self, step_scale):\n        self.step_scale = step_scale\n\n    def pose_translation_steps(self, pose_count):\n        return self.step_scale.pose_translation_steps(pose_count, self.per_pose_translation_steps)\n',
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert any(
+        finding.title
+        == "Trivial forwarding wrapper should be deleted in favor of the delegate authority"
+        and "Schedule.pose_translation_steps" in finding.summary
+        and "self.step_scale.pose_translation_steps" in finding.summary
+        for finding in findings
+    )
+
+
 def test_parameter_thread_detector_ignores_semantic_decorated_entrypoints(
     tmp_path: Path,
 ) -> None:

@@ -9319,6 +9319,16 @@ def _call_transport_values(call: ast.Call) -> tuple[ast.AST, ...]:
 
 
 class TransportProjectionAuthority:
+    def attribute_path(self, node: ast.AST) -> tuple[str, ...] | None:
+        parts: list[str] = []
+        current = node
+        while isinstance(current, ast.Attribute):
+            parts.append(current.attr)
+            current = current.value
+        if not isinstance(current, ast.Name):
+            return None
+        return (current.id, *reversed(parts))
+
     def transported_delegate_symbol(
         self,
         call: ast.Call,
@@ -9419,6 +9429,31 @@ class TransportProjectionAuthority:
             .with_projection(lambda chain: self.transported_values(function, chain))
             .unwrap_or_none()
         )
+
+    def field_delegate_match(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[tuple[ast.Call, ...], tuple[ast.AST, ...]] | None:
+        call = single_return_call(_trim_docstring_body(function.body))
+        if call is None or not isinstance(call.func, ast.Attribute):
+            return None
+        path = self.attribute_path(call.func)
+        if (
+            path is None
+            or len(path) < 3
+            or path[0] not in _IMPLICIT_METHOD_PARAMETER_NAMES
+        ):
+            return None
+        values = self.transported_values(function, (call,))
+        if values is None:
+            return None
+        return ((call,), values)
+
+    def forwarding_match(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[tuple[ast.Call, ...], tuple[ast.AST, ...]] | None:
+        return self.call_chain_match(function) or self.field_delegate_match(function)
 
 
 TRANSPORT_PROJECTION_AUTHORITY = TransportProjectionAuthority()
@@ -9560,7 +9595,7 @@ def _trivial_forwarding_wrapper_candidate(
         return None
     if _implements_abstract_hook(module, qualname, function.name):
         return None
-    chain_match = TRANSPORT_PROJECTION_AUTHORITY.call_chain_match(function)
+    chain_match = TRANSPORT_PROJECTION_AUTHORITY.forwarding_match(function)
     if chain_match is None:
         return None
     chain, values = chain_match
@@ -14695,7 +14730,11 @@ def _readability_compressed_line_candidates(
         if not isinstance(node, _READABILITY_INLINE_SUITE_TYPES):
             continue
         body = node.body
-        if body and getattr(body[0], "lineno", None) == node.lineno:
+        first_body_statement = body[0] if body else None
+        if (
+            isinstance(first_body_statement, ast.stmt)
+            and first_body_statement.lineno == node.lineno
+        ):
             reasons_by_line[node.lineno].add(f"inline {type(node).__name__} suite")
             statement_counts_by_line[node.lineno] = max(
                 statement_counts_by_line[node.lineno],
