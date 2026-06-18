@@ -2365,6 +2365,11 @@ def _existing_nominal_authority_reuse_candidates(
         if not matching_authorities:
             continue
         authority = matching_authorities[0]
+        shared_nominal_ancestors = (
+            set(shape.ancestor_names) & set(authority.ancestor_names)
+        ) - _IGNORED_ANCESTOR_NAMES
+        if shared_nominal_ancestors:
+            continue
         shared_field_names = (
             HELPER_SYNTAX_PROJECTION_AUTHORITY.shared_typed_field_names(
                 shape, authority

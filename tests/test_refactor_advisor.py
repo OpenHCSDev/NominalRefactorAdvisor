@@ -3971,6 +3971,27 @@ def test_detects_nominal_authority_implementation_retreat(
     )
 
 
+def test_existing_nominal_authority_reuse_accepts_shared_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom abc import ABC\nfrom dataclasses import dataclass\n\n\nclass TorsionProjectionCompiledBasisRoot(ABC):\n    pass\n\n\n@dataclass(frozen=True)\nclass TorsionProjectionCompiledBasisCarrier(TorsionProjectionCompiledBasisRoot):\n    projection_specs: object\n    compiled_projection_specs: object\n\n\n@dataclass\nclass ExactContactFeasibilityConstraintSystemProvider(TorsionProjectionCompiledBasisRoot):\n    projection_specs: object\n    compiled_projection_specs: object\n",
+    )
+    findings = analyze_path(tmp_path)
+    summaries = [
+        finding.summary
+        for finding in findings
+        if finding.detector_id
+        in {
+            "existing_nominal_authority_reuse",
+            "nominal_authority_implementation_retreat",
+        }
+    ]
+    assert summaries == []
+
+
 def test_ignores_explicit_public_measurement_companion_dataclass(
     tmp_path: Path,
 ) -> None:
