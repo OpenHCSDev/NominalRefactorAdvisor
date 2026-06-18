@@ -51,6 +51,14 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "CodemodStrategyRegistry",
     ),
+    "AuthorityBoundaryRewrite": (
+        "nominal_refactor_advisor.codemod",
+        "AuthorityBoundaryRewrite",
+    ),
+    "AuthorityBoundaryPlan": (
+        "nominal_refactor_advisor.codemod",
+        "AuthorityBoundaryPlan",
+    ),
     "CodemodRewriteBuilder": (
         "nominal_refactor_advisor.codemod",
         "CodemodRewriteBuilder",
@@ -66,6 +74,22 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "ZippedSourceLocationEvidencePropertyCodemodBuilder": (
         "nominal_refactor_advisor.codemod",
         "ZippedSourceLocationEvidencePropertyCodemodBuilder",
+    ),
+    "DerivableDetectorIdCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "DerivableDetectorIdCodemodBuilder",
+    ),
+    "DerivableCandidateCollectorCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "DerivableCandidateCollectorCodemodBuilder",
+    ),
+    "DerivableDetectorDeclarationsCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "DerivableDetectorDeclarationsCodemodBuilder",
+    ),
+    "SuppliedAuthorityBoundaryCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "SuppliedAuthorityBoundaryCodemodBuilder",
     ),
     "CancelableCompositionSignal": (
         "nominal_refactor_advisor.codemod",
@@ -86,6 +110,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "codemod_candidates_with_automated_rewrites": (
         "nominal_refactor_advisor.codemod",
         "codemod_candidates_with_automated_rewrites",
+    ),
+    "codemod_candidates_with_supplied_authority_boundaries": (
+        "nominal_refactor_advisor.codemod",
+        "codemod_candidates_with_supplied_authority_boundaries",
     ),
     "simulate_planned_rewrites": (
         "nominal_refactor_advisor.codemod",

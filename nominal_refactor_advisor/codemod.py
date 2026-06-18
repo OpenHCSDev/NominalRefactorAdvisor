@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -225,6 +226,51 @@ ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
 )
 
 
+DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="derivable-detector-id-delete-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "A detector_id class assignment whose literal exactly matches the "
+        "IssueDetector class-name derivation can be deleted."
+    ),
+)
+
+
+DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="derivable-candidate-collector-delete-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "A candidate_collector class assignment whose name exactly matches the "
+        "collector-base class-name derivation can be deleted."
+    ),
+)
+
+
+DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="derivable-detector-declarations-delete-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "Detector class declarations that exactly match class-name-derived "
+        "detector_id or candidate_collector conventions can be deleted."
+    ),
+)
+
+
+SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="supplied-authority-boundary-rewrite",
+    automation_level=CodemodAutomationLevel.SIMULATABLE_REWRITE,
+    safe_to_apply=False,
+    reason=(
+        "The caller supplied the semantic authority boundary, so the advisor can "
+        "resolve and simulate explicit source rewrites without claiming the "
+        "boundary choice was mechanically derived."
+    ),
+)
+
+
 @dataclass(frozen=True)
 class SimulatedSourceRewrite:
     """Resolved source span and replacement preview for one planned rewrite."""
@@ -238,6 +284,43 @@ class SimulatedSourceRewrite:
     original_source: str
     replacement_source: str
     rationale: str = ""
+
+
+@dataclass(frozen=True)
+class AuthorityBoundaryRewrite:
+    """Caller-supplied rewrite for one source-index target."""
+
+    replacement_source: str
+    target_id: str | None = None
+    target_qualname: str | None = None
+    file_path: str | None = None
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
+class AuthorityBoundaryPlan:
+    """Semantic boundary declaration that enables explicit advisory rewrites."""
+
+    boundary_id: str
+    rewrites: tuple[AuthorityBoundaryRewrite, ...]
+    detector_ids: tuple[str, ...] = ()
+    opportunity_kinds: tuple[str, ...] = ()
+    opportunity_labels: tuple[str, ...] = ()
+    reason: str = ""
+
+    def matches(self, candidate: "CodemodCandidate") -> bool:
+        if self.detector_ids and not (
+            set(self.detector_ids) & set(candidate.opportunity.detector_ids)
+        ):
+            return False
+        if (
+            self.opportunity_kinds
+            and candidate.opportunity_key.kind not in self.opportunity_kinds
+        ):
+            return False
+        return not self.opportunity_labels or (
+            candidate.opportunity_key.label in self.opportunity_labels
+        )
 
 
 @dataclass(frozen=True)
@@ -500,10 +583,149 @@ class ZippedSourceLocationEvidencePropertyCodemodBuilder(CodemodRewriteBuilder):
         )
 
 
+class DerivableDetectorIdCodemodBuilder(CodemodRewriteBuilder):
+    """Plan deletion of redundant detector_id class assignments."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        if "derivable_detector_id" not in candidate.opportunity.detector_ids:
+            return ()
+        return _class_statement_deletion_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            statement_selector=_derivable_detector_id_assignment,
+            rationale=(
+                "Delete redundant detector_id; IssueDetector derives the registry "
+                "key from the detector class name."
+            ),
+        )
+
+
+class DerivableCandidateCollectorCodemodBuilder(CodemodRewriteBuilder):
+    """Plan deletion of redundant candidate_collector class assignments."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        if "derivable_candidate_collector" not in candidate.opportunity.detector_ids:
+            return ()
+        return _class_statement_deletion_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            statement_selector=_derivable_candidate_collector_assignment,
+            rationale=(
+                "Delete redundant candidate_collector; the collector base derives "
+                "the hook from the detector class name."
+            ),
+        )
+
+
+class DerivableDetectorDeclarationsCodemodBuilder(CodemodRewriteBuilder):
+    """Plan deletion of redundant detector declaration class assignments."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        detector_ids = frozenset(candidate.opportunity.detector_ids)
+        if not (
+            detector_ids & {"derivable_detector_id", "derivable_candidate_collector"}
+        ):
+            return ()
+        return _class_statement_deletion_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            statement_selector=lambda node: _derivable_detector_declaration_assignments(
+                node,
+                detector_ids,
+            ),
+            rationale=(
+                "Delete redundant detector declarations derived from the detector "
+                "class name."
+            ),
+        )
+
+
+class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
+    """Attach caller-supplied rewrites once the authority boundary is declared."""
+
+    def __init__(self, plans: Iterable[AuthorityBoundaryPlan]) -> None:
+        self._plans = tuple(plans)
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        del source_by_path
+        rewrites: list[PlannedSourceRewrite] = []
+        for plan in self._plans:
+            if not plan.matches(candidate):
+                continue
+            for boundary_rewrite in plan.rewrites:
+                target_id = _authority_boundary_target_id(
+                    boundary_rewrite,
+                    candidate,
+                    source_index,
+                )
+                if target_id is None:
+                    continue
+                rewrites.append(
+                    PlannedSourceRewrite(
+                        target_id=target_id,
+                        replacement_source=boundary_rewrite.replacement_source,
+                        rationale=(
+                            boundary_rewrite.rationale
+                            or plan.reason
+                            or f"Apply supplied authority boundary {plan.boundary_id}."
+                        ),
+                    )
+                )
+        return _non_overlapping_planned_rewrites(rewrites, source_index)
+
+
 DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
     SortedTupleWrapperCodemodBuilder(),
     SourceLocationEvidencePropertyCodemodBuilder(),
     ZippedSourceLocationEvidencePropertyCodemodBuilder(),
+    DerivableDetectorDeclarationsCodemodBuilder(),
+    DerivableDetectorIdCodemodBuilder(),
+    DerivableCandidateCollectorCodemodBuilder(),
 )
 
 
@@ -534,6 +756,22 @@ def codemod_candidates_with_automated_rewrites(
             item.opportunity_key.value,
             item.target_ids,
         ),
+    )
+
+
+def codemod_candidates_with_supplied_authority_boundaries(
+    candidates: Iterable[CodemodCandidate],
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    boundaries: Iterable[AuthorityBoundaryPlan],
+) -> tuple[CodemodCandidate, ...]:
+    """Attach explicit rewrites enabled by caller-declared authority boundaries."""
+
+    return codemod_candidates_with_automated_rewrites(
+        candidates,
+        source_index,
+        source_by_path,
+        builders=(SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
     )
 
 
@@ -794,6 +1032,40 @@ def _opportunity_pattern_ids(
     return tuple(pattern_ids)
 
 
+def _authority_boundary_target_id(
+    rewrite: AuthorityBoundaryRewrite,
+    candidate: CodemodCandidate,
+    source_index: SourceIndex,
+) -> str | None:
+    candidate_target_ids = set(candidate.target_ids)
+    if rewrite.target_id is not None:
+        return rewrite.target_id if rewrite.target_id in candidate_target_ids else None
+    if rewrite.target_qualname is None:
+        return None
+    matching_target_ids = [
+        target_id
+        for target_id in candidate.target_ids
+        if _authority_boundary_target_matches(
+            rewrite,
+            source_index.target_by_id.get(target_id),
+        )
+    ]
+    if len(matching_target_ids) != 1:
+        return None
+    return matching_target_ids[0]
+
+
+def _authority_boundary_target_matches(
+    rewrite: AuthorityBoundaryRewrite,
+    target: AstTargetDigest | None,
+) -> bool:
+    return (
+        target is not None
+        and target.qualname == rewrite.target_qualname
+        and (rewrite.file_path is None or target.file_path == rewrite.file_path)
+    )
+
+
 def _is_sorted_tuple_opportunity(key: RefactorImpactKey) -> bool:
     return key.kind == "mapping" and key.label == "sorted_tuple"
 
@@ -859,6 +1131,7 @@ def _sorted_tuple_call_replacement(source: str, node: ast.Call) -> str | None:
 _DescriptorAssignmentBuilder = Callable[
     [ast.FunctionDef | ast.AsyncFunctionDef], str | None
 ]
+_ClassStatementSelector = Callable[[ast.ClassDef], tuple[ast.stmt, ...]]
 
 
 def _descriptor_property_rewrites(
@@ -913,6 +1186,148 @@ def _descriptor_property_rewrites(
             )
         )
     return _non_overlapping_planned_rewrites(rewrites, source_index)
+
+
+def _class_statement_deletion_rewrites(
+    candidate: CodemodCandidate,
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    *,
+    statement_selector: _ClassStatementSelector,
+    rationale: str,
+) -> tuple[PlannedSourceRewrite, ...]:
+    nodes_by_target_id = _ast_nodes_by_target_id(source_index, source_by_path)
+    rewrites: list[PlannedSourceRewrite] = []
+    for target_id in candidate.target_ids:
+        target = source_index.target_by_id.get(target_id)
+        node = nodes_by_target_id.get(target_id)
+        if target is None or not isinstance(node, ast.ClassDef):
+            continue
+        statements = statement_selector(node)
+        if not statements:
+            continue
+        source = source_by_path.get(target.file_path)
+        if source is None:
+            continue
+        class_start, class_end = _node_line_offsets(source, node)
+        replacements = tuple(
+            (*_node_line_offsets(source, statement), "") for statement in statements
+        )
+        rewrites.append(
+            PlannedSourceRewrite(
+                target_id=target_id,
+                replacement_source=_source_with_replacements_in_span(
+                    source,
+                    class_start,
+                    class_end,
+                    replacements,
+                ),
+                rationale=rationale,
+            )
+        )
+    return _non_overlapping_planned_rewrites(rewrites, source_index)
+
+
+def _derivable_detector_declaration_assignments(
+    node: ast.ClassDef,
+    detector_ids: frozenset[str],
+) -> tuple[ast.stmt, ...]:
+    statements = []
+    if "derivable_detector_id" in detector_ids:
+        statements.extend(_derivable_detector_id_assignment(node))
+    if "derivable_candidate_collector" in detector_ids:
+        statements.extend(_derivable_candidate_collector_assignment(node))
+    return tuple(statements)
+
+
+def _derivable_detector_id_assignment(node: ast.ClassDef) -> tuple[ast.stmt, ...]:
+    if not _class_declares_finding_spec(node):
+        return ()
+    expected_detector_id = _detector_id_from_class_name(node.name)
+    if expected_detector_id is None:
+        return ()
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        if _name_id(statement.targets[0]) != "detector_id":
+            continue
+        if (
+            isinstance(statement.value, ast.Constant)
+            and statement.value.value == expected_detector_id
+        ):
+            return (statement,)
+    return ()
+
+
+def _derivable_candidate_collector_assignment(
+    node: ast.ClassDef,
+) -> tuple[ast.stmt, ...]:
+    if not _class_declares_finding_spec(node):
+        return ()
+    if not _has_derived_candidate_collector_base(node):
+        return ()
+    expected_collector_name = _candidate_collector_name_from_class_name(node.name)
+    if expected_collector_name is None:
+        return ()
+    for statement in node.body:
+        targets: tuple[ast.expr, ...]
+        value: ast.expr | None
+        if isinstance(statement, ast.Assign):
+            targets = tuple(statement.targets)
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = (statement.target,)
+            value = statement.value
+        else:
+            continue
+        if len(targets) != 1 or _name_id(targets[0]) != "candidate_collector":
+            continue
+        if value is not None and _name_id(value) == expected_collector_name:
+            return (statement,)
+    return ()
+
+
+def _class_declares_finding_spec(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(statement, ast.Assign)
+        and any(_name_id(target) == "finding_spec" for target in statement.targets)
+        for statement in node.body
+    )
+
+
+def _has_derived_candidate_collector_base(node: ast.ClassDef) -> bool:
+    return bool(
+        {
+            "DerivedCandidateCollectorMixin",
+            "ModuleCollectorCandidateDetector",
+            "ConfiguredModuleCollectorCandidateDetector",
+            "CrossModuleCollectorCandidateDetector",
+            "ConfiguredCrossModuleCollectorCandidateDetector",
+        }
+        & {_base_name(base) for base in node.bases}
+    )
+
+
+def _base_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Subscript):
+        return _base_name(node.value)
+    return None
+
+
+def _detector_id_from_class_name(class_name: str) -> str | None:
+    if not class_name.endswith("Detector"):
+        return None
+    stem = class_name.removesuffix("Detector")
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower()
+
+
+def _candidate_collector_name_from_class_name(class_name: str) -> str | None:
+    detector_id = _detector_id_from_class_name(class_name)
+    return None if detector_id is None else f"_{detector_id}_candidates"
 
 
 def _source_location_descriptor_assignment(

@@ -56,6 +56,8 @@ from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.codemod import (
+    AuthorityBoundaryPlan,
+    AuthorityBoundaryRewrite,
     CodemodAutomationLevel,
     CodemodBackend,
     CancelableCompositionKind,
@@ -64,6 +66,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodStrategyRegistry,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
+    codemod_candidates_with_supplied_authority_boundaries,
     detect_cancelable_composition_signals,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
@@ -418,6 +421,85 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
 
 
+def test_supplied_authority_boundary_turns_advisory_candidate_into_simulation(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Collapse repeated class family",
+        "Repeated behavior has one grammar.",
+        "certified grammar compression",
+        "same orbit under renaming",
+    ).build(
+        "orbit_detector",
+        "manual family compresses through one supplied authority",
+        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+    )
+    source_index = build_source_index(modules, (finding,))
+    impact_ranking = build_refactor_impact_ranking(
+        (finding,),
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=5,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
+    boundary_candidates = codemod_candidates_with_supplied_authority_boundaries(
+        candidates,
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        (
+            AuthorityBoundaryPlan(
+                boundary_id="alpha-run-authority",
+                detector_ids=("orbit_detector",),
+                rewrites=(
+                    AuthorityBoundaryRewrite(
+                        file_path=module_path.as_posix(),
+                        target_qualname="Alpha.run",
+                        replacement_source=(
+                            "    def run(self, value):\n"
+                            "        return AlphaRunAuthority.run(value)\n"
+                        ),
+                    ),
+                ),
+                reason="Route Alpha.run through the supplied authority boundary.",
+            ),
+        ),
+    )
+
+    candidate = boundary_candidates[0]
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SIMULATABLE_REWRITE
+    )
+    assert (
+        candidate.applicability.simulation_status
+        == CodemodSimulationStatus.READY_TO_SIMULATE
+    )
+    assert candidate.applicability.safe_to_apply is False
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert "return AlphaRunAuthority.run(value)" in rewritten
+
+
 def test_sorted_tuple_codemod_builder_plans_safe_mechanical_rewrite(
     tmp_path: Path,
 ) -> None:
@@ -668,6 +750,201 @@ def test_zipped_source_location_descriptor_codemod_builder_replaces_property(
     assert "@property" not in rewritten
     assert "def evidence_locations" not in rewritten
     assert "def keep_behavior" in rewritten
+
+
+def test_derivable_detector_id_codemod_builder_deletes_redundant_assignment(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRuleDetector(IssueDetector):\n"
+        '    detector_id = "local_rule"\n'
+        "    finding_spec = HighConfidenceFindingSpec(\n"
+        "        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n"
+        '        title="Local rule",\n'
+        '        why="Local rule",\n'
+        '        capability_gap="local rule",\n'
+        '        relation_context="local rule",\n'
+        "    )\n"
+        "    detector_priority = 10\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "derivable_detector_id"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.applicability.strategy_id
+        == "derivable-detector-declarations-delete-mechanical"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert 'detector_id = "local_rule"' not in rewritten
+    assert "class LocalRuleDetector(IssueDetector):" in rewritten
+    assert "finding_spec = HighConfidenceFindingSpec(" in rewritten
+    assert "detector_priority = 10" in rewritten
+
+
+def test_derivable_candidate_collector_codemod_builder_deletes_redundant_assignment(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):\n"
+        "    candidate_collector = _local_rule_candidates\n"
+        "    finding_spec = HighConfidenceFindingSpec(\n"
+        "        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n"
+        '        title="Local rule",\n'
+        '        why="Local rule",\n'
+        '        capability_gap="local rule",\n'
+        '        relation_context="local rule",\n'
+        "    )\n"
+        "    detector_priority = 10\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "derivable_candidate_collector"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.applicability.strategy_id
+        == "derivable-detector-declarations-delete-mechanical"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert "candidate_collector = _local_rule_candidates" not in rewritten
+    assert "class LocalRuleDetector(ModuleCollectorCandidateDetector" in rewritten
+    assert "finding_spec = HighConfidenceFindingSpec(" in rewritten
+    assert "detector_priority = 10" in rewritten
+
+
+def test_derivable_detector_declaration_codemod_builder_merges_class_deletions(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):\n"
+        '    detector_id = "local_rule"\n'
+        "    candidate_collector = _local_rule_candidates\n"
+        "    finding_spec = HighConfidenceFindingSpec(\n"
+        "        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n"
+        '        title="Local rule",\n'
+        '        why="Local rule",\n'
+        '        capability_gap="local rule",\n'
+        '        relation_context="local rule",\n'
+        "    )\n"
+        "    detector_priority = 10\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id
+        in {"derivable_detector_id", "derivable_candidate_collector"}
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.applicability.strategy_id
+        == "derivable-detector-declarations-delete-mechanical"
+        and item.applicability.planned_rewrite_count == 1
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert candidate.applicability.safe_to_apply is True
+    assert 'detector_id = "local_rule"' not in rewritten
+    assert "candidate_collector = _local_rule_candidates" not in rewritten
+    assert simulation.applied_rewrite_count == 1
+    assert "finding_spec = HighConfidenceFindingSpec(" in rewritten
+    assert "detector_priority = 10" in rewritten
 
 
 def test_detects_generic_cancelable_product_composition_signal(
