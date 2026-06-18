@@ -115,6 +115,18 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "codemod_candidates_with_supplied_authority_boundaries",
     ),
+    "simulate_codemod_candidates": (
+        "nominal_refactor_advisor.codemod",
+        "simulate_codemod_candidates",
+    ),
+    "format_codemod_unified_diff": (
+        "nominal_refactor_advisor.codemod",
+        "format_codemod_unified_diff",
+    ),
+    "apply_codemod_simulation": (
+        "nominal_refactor_advisor.codemod",
+        "apply_codemod_simulation",
+    ),
     "simulate_planned_rewrites": (
         "nominal_refactor_advisor.codemod",
         "simulate_planned_rewrites",

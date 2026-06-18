@@ -15,6 +15,7 @@ materializes a rewrite.
 from __future__ import annotations
 
 import ast
+import difflib
 import hashlib
 import importlib.util
 import re
@@ -22,6 +23,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
@@ -773,6 +775,63 @@ def codemod_candidates_with_supplied_authority_boundaries(
         source_by_path,
         builders=(SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
     )
+
+
+def simulate_codemod_candidates(
+    candidates: Iterable[CodemodCandidate],
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    *,
+    backend: CodemodBackend | None = None,
+) -> CodemodSimulationReport:
+    """Simulate every planned rewrite attached to the supplied candidates."""
+
+    return simulate_planned_rewrites(
+        source_index,
+        (rewrite for candidate in candidates for rewrite in candidate.planned_rewrites),
+        source_by_path,
+        backend=backend,
+    )
+
+
+def format_codemod_unified_diff(
+    simulation: CodemodSimulationReport,
+    source_by_path: Mapping[str, str],
+    *,
+    fromfile_prefix: str = "a/",
+    tofile_prefix: str = "b/",
+) -> str:
+    """Render a unified diff for a simulated codemod report."""
+
+    diff_lines: list[str] = []
+    for file_path in simulation.changed_file_paths:
+        original_source = source_by_path[file_path]
+        rewritten_source = simulation.rewritten_sources[file_path]
+        diff_lines.extend(
+            difflib.unified_diff(
+                original_source.splitlines(keepends=True),
+                rewritten_source.splitlines(keepends=True),
+                fromfile=_prefixed_diff_path(fromfile_prefix, file_path),
+                tofile=_prefixed_diff_path(tofile_prefix, file_path),
+            )
+        )
+    return "".join(diff_lines)
+
+
+def apply_codemod_simulation(
+    simulation: CodemodSimulationReport,
+    *,
+    encoding: str = "utf-8",
+) -> tuple[str, ...]:
+    """Write simulated codemod sources to their files and return changed paths."""
+
+    for file_path, source in simulation.rewritten_sources.items():
+        Path(file_path).write_text(source, encoding=encoding)
+    return simulation.changed_file_paths
+
+
+def _prefixed_diff_path(prefix: str, file_path: str) -> str:
+    return f"{prefix}{file_path.removeprefix('/')}" if prefix else file_path
 
 
 @dataclass(frozen=True)

@@ -55,6 +55,7 @@ from nominal_refactor_advisor.cli import _require_single_root_mode
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
+from nominal_refactor_advisor.cli import load_authority_boundary_plans
 from nominal_refactor_advisor.codemod import (
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
@@ -64,10 +65,13 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationStatus,
     CodemodStrategy,
     CodemodStrategyRegistry,
+    apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
     detect_cancelable_composition_signals,
+    format_codemod_unified_diff,
+    simulate_codemod_candidates,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
@@ -480,11 +484,14 @@ def test_supplied_authority_boundary_turns_advisory_candidate_into_simulation(
     )
 
     candidate = boundary_candidates[0]
-    simulation = candidate.simulate(
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    simulation = simulate_codemod_candidates(
+        (candidate,),
         source_index,
-        {module_path.as_posix(): module_path.read_text()},
+        source_by_path,
         backend=CodemodBackend.AST_SPAN,
     )
+    diff = format_codemod_unified_diff(simulation, source_by_path)
     rewritten = simulation.rewritten_sources[module_path.as_posix()]
 
     assert (
@@ -497,7 +504,10 @@ def test_supplied_authority_boundary_turns_advisory_candidate_into_simulation(
     )
     assert candidate.applicability.safe_to_apply is False
     assert candidate.applicability.planned_rewrite_count == 1
+    assert "+        return AlphaRunAuthority.run(value)" in diff
     assert "return AlphaRunAuthority.run(value)" in rewritten
+    assert apply_codemod_simulation(simulation) == (module_path.as_posix(),)
+    assert "return AlphaRunAuthority.run(value)" in module_path.read_text()
 
 
 def test_sorted_tuple_codemod_builder_plans_safe_mechanical_rewrite(
@@ -6500,6 +6510,10 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--fail-on-proof-regression",
             "--calibrate",
             "calibration.json",
+            "--codemod-plan",
+            "codemod-plan.json",
+            "--codemod-diff",
+            "--codemod-apply",
             "--fail-on-calibration-regression",
             "--exclude-pattern",
             "14",
@@ -6513,9 +6527,48 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.prove_economics is True
     assert args.fail_on_proof_regression is True
     assert args.calibrate == Path("calibration.json")
+    assert args.codemod_plan == Path("codemod-plan.json")
+    assert args.codemod_diff is True
+    assert args.codemod_apply is True
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
+
+
+def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "authority_boundaries": [
+                    {
+                        "boundary_id": "alpha-run",
+                        "detector_ids": ["orbit_detector"],
+                        "opportunity_kinds": ["ast-target"],
+                        "rewrites": [
+                            {
+                                "file_path": "pkg/mod.py",
+                                "target_qualname": "Alpha.run",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return AlphaRunAuthority.run(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plans = load_authority_boundary_plans(plan_path)
+
+    assert len(plans) == 1
+    assert plans[0].boundary_id == "alpha-run"
+    assert plans[0].detector_ids == ("orbit_detector",)
+    assert plans[0].opportunity_kinds == ("ast-target",)
+    assert plans[0].rewrites[0].target_qualname == "Alpha.run"
 
 
 def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:
@@ -6537,6 +6590,53 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
     payload = json.loads(result.stdout)
     assert "findings" in payload
     assert "source_index" in payload
+
+
+def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nclass LocalRuleDetector(IssueDetector):\n    detector_id = "local_rule"\n    finding_spec = HighConfidenceFindingSpec(\n        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n        title="Local rule",\n        why="Local rule",\n        capability_gap="local rule",\n        relation_context="local rule",\n    )\n',
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        str(tmp_path),
+        "--impact-ranking-min-findings",
+        "1",
+        "--impact-ranking-depth",
+        "0",
+        "--codemod-diff",
+    ]
+
+    diff_result = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert diff_result.returncode == 0, diff_result.stderr
+    assert '-    detector_id = "local_rule"' in diff_result.stdout
+    assert 'detector_id = "local_rule"' in module_path.read_text()
+
+    apply_result = subprocess.run(
+        [*command[:-1], "--codemod-apply", "--json"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(apply_result.stdout)
+
+    assert apply_result.returncode == 0, apply_result.stderr
+    assert payload["applied"] is True
+    assert payload["applied_rewrite_count"] == 1
+    assert 'detector_id = "local_rule"' not in module_path.read_text()
+    assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
 
 
 def test_single_root_modes_reject_multiple_paths() -> None:

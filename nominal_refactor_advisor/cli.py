@@ -29,9 +29,16 @@ from .calibration import (
     run_calibration_manifest,
 )
 from .codemod import (
+    AuthorityBoundaryPlan,
+    AuthorityBoundaryRewrite,
     CodemodCandidate,
+    CodemodSimulationReport,
+    apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
+    codemod_candidates_with_supplied_authority_boundaries,
+    format_codemod_unified_diff,
+    simulate_codemod_candidates,
 )
 from .detectors import DetectorConfig
 from .economics import (
@@ -226,6 +233,24 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             help="Load findings from a Lean advisor export JSON file.",
         ),
+        CliArgumentSpec(
+            flags=("--codemod-plan",),
+            value_type=Path,
+            help=(
+                "Load caller-supplied authority boundary codemod plan JSON. "
+                "Plans enable simulatable rewrites for advisory candidates."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-diff",),
+            action="store_true",
+            help="Emit a unified diff for all currently planned codemod rewrites.",
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-apply",),
+            action="store_true",
+            help="Write all simulated codemod rewrites to disk after validation.",
+        ),
     )
     + _config_argument_specs()
     + (
@@ -290,6 +315,108 @@ def _json_payload(
             candidate.to_dict() for candidate in codemod_candidates
         )
     return payload
+
+
+def _authority_boundary_plans_from_json_payload(
+    payload: object,
+) -> tuple[AuthorityBoundaryPlan, ...]:
+    plan_rows = (
+        payload.get("authority_boundaries") if isinstance(payload, dict) else payload
+    )
+    if not isinstance(plan_rows, list):
+        raise ValueError("codemod plan must be a list or contain authority_boundaries")
+    return tuple(_authority_boundary_plan_from_json(row) for row in plan_rows)
+
+
+def _authority_boundary_plan_from_json(row: object) -> AuthorityBoundaryPlan:
+    if not isinstance(row, dict):
+        raise ValueError("authority boundary plan rows must be objects")
+    rewrites = row.get("rewrites")
+    if not isinstance(rewrites, list):
+        raise ValueError("authority boundary plan requires rewrites list")
+    boundary_id = row.get("boundary_id")
+    if not isinstance(boundary_id, str) or not boundary_id:
+        raise ValueError("authority boundary plan requires boundary_id")
+    return AuthorityBoundaryPlan(
+        boundary_id=boundary_id,
+        rewrites=tuple(
+            _authority_boundary_rewrite_from_json(item) for item in rewrites
+        ),
+        detector_ids=_string_tuple_json_field(row, "detector_ids"),
+        opportunity_kinds=_string_tuple_json_field(row, "opportunity_kinds"),
+        opportunity_labels=_string_tuple_json_field(row, "opportunity_labels"),
+        reason=_optional_string_json_field(row, "reason"),
+    )
+
+
+def _authority_boundary_rewrite_from_json(row: object) -> AuthorityBoundaryRewrite:
+    if not isinstance(row, dict):
+        raise ValueError("authority boundary rewrites must be objects")
+    replacement_source = row.get("replacement_source")
+    if not isinstance(replacement_source, str):
+        raise ValueError("authority boundary rewrite requires replacement_source")
+    return AuthorityBoundaryRewrite(
+        replacement_source=replacement_source,
+        target_id=_optional_string_json_field(row, "target_id") or None,
+        target_qualname=_optional_string_json_field(row, "target_qualname") or None,
+        file_path=_optional_string_json_field(row, "file_path") or None,
+        rationale=_optional_string_json_field(row, "rationale"),
+    )
+
+
+def _string_tuple_json_field(
+    row: dict[str, object], field_name: str
+) -> tuple[str, ...]:
+    if field_name not in row or row[field_name] is None:
+        return ()
+    value = row[field_name]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must be a list of strings")
+    return tuple(value)
+
+
+def _optional_string_json_field(row: dict[str, object], field_name: str) -> str:
+    value = row.get(field_name, "")
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    return value
+
+
+def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ...]:
+    """Load caller-supplied authority boundary plans from JSON."""
+
+    return _authority_boundary_plans_from_json_payload(
+        json.loads(path.read_text(encoding="utf-8"))
+    )
+
+
+def codemod_simulation_payload(
+    simulation: CodemodSimulationReport,
+    *,
+    applied: bool = False,
+) -> dict[str, object]:
+    """Return JSON-ready metadata for a codemod simulation/apply run."""
+
+    return {
+        "backend": simulation.backend.value,
+        "applied": applied,
+        "applied_rewrite_count": simulation.applied_rewrite_count,
+        "changed_file_paths": simulation.changed_file_paths,
+        "rewrites": tuple(
+            {
+                "target_id": rewrite.target_id,
+                "file_path": rewrite.file_path,
+                "qualname": rewrite.qualname,
+                "operation": rewrite.operation.value,
+                "line": rewrite.line,
+                "end_line": rewrite.end_line,
+                "rationale": rewrite.rationale,
+            }
+            for rewrite in simulation.rewrites
+        ),
+    }
 
 
 def format_plans_markdown(plans: list[RefactorPlan]) -> str:
@@ -721,6 +848,14 @@ def main() -> int:
     args = parser.parse_args()
 
     config = DetectorConfig.from_namespace(args)
+    codemod_requested = (
+        args.codemod_plan is not None or args.codemod_diff or args.codemod_apply
+    )
+    if codemod_requested and not args.include_impact_ranking:
+        parser.error("--codemod-* options require impact ranking")
+    if codemod_requested and args.import_lean_export is not None:
+        parser.error("--codemod-* options require parsed Python source paths")
+
     if args.calibrate is not None:
         calibration_report = run_calibration_manifest(args.calibrate, config=config)
         if args.json:
@@ -798,6 +933,11 @@ def main() -> int:
         if args.include_change_budget
         else None
     )
+    authority_boundary_plans = (
+        load_authority_boundary_plans(args.codemod_plan)
+        if args.codemod_plan is not None
+        else ()
+    )
     impact_ranking = None
     if args.include_impact_ranking:
         source_index = build_source_index(modules, findings)
@@ -821,8 +961,49 @@ def main() -> int:
             source_index,
             source_by_path,
         )
+        if authority_boundary_plans:
+            codemod_candidates = codemod_candidates_with_supplied_authority_boundaries(
+                codemod_candidates,
+                source_index,
+                source_by_path,
+                authority_boundary_plans,
+            )
     else:
         codemod_candidates = None
+        source_index = None
+        source_by_path = {}
+
+    if args.codemod_diff or args.codemod_apply:
+        if codemod_candidates is None or source_index is None:
+            parser.error("--codemod-diff/--codemod-apply require codemod candidates")
+        simulation = simulate_codemod_candidates(
+            codemod_candidates,
+            source_index,
+            source_by_path,
+        )
+        applied = False
+        if args.codemod_apply:
+            apply_codemod_simulation(simulation)
+            applied = True
+        if args.json:
+            print(
+                json.dumps(
+                    codemod_simulation_payload(simulation, applied=applied), indent=2
+                )
+            )
+        elif args.codemod_diff:
+            print(
+                format_codemod_unified_diff(simulation, source_by_path),
+                end="",
+            )
+        else:
+            print(
+                "Codemod apply complete: "
+                f"{simulation.applied_rewrite_count} rewrite(s), "
+                f"{len(simulation.changed_file_paths)} file(s)."
+            )
+        return 0
+
     if args.json:
         json_findings = [] if args.plans_only else findings
         print(
