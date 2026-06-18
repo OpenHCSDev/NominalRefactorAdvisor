@@ -28,6 +28,7 @@ from ..record_algebra import (
 from ._base import *
 from ._helpers import *
 from ._helpers import (
+    _accessor_wrapper_groups,
     _autoregister_meta_rent_candidates,
     _projection_helper_groups,
     _semantic_inheritance_family_ssot_candidates,

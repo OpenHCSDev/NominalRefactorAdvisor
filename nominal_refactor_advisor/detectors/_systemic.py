@@ -19,6 +19,7 @@ from ..semantic_description_length import (
 
 from ._base import *
 from ._helpers import *
+from ._helpers import _facade_only_nominal_authority_candidates
 
 def _closed_axis_conversion_matrix_compression_certificate(
     candidate: ClosedAxisConversionMatrixCandidate,
