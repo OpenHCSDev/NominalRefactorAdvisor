@@ -51,6 +51,22 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "CodemodStrategyRegistry",
     ),
+    "CodemodRewriteBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodRewriteBuilder",
+    ),
+    "SortedTupleWrapperCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "SortedTupleWrapperCodemodBuilder",
+    ),
+    "SourceLocationEvidencePropertyCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "SourceLocationEvidencePropertyCodemodBuilder",
+    ),
+    "ZippedSourceLocationEvidencePropertyCodemodBuilder": (
+        "nominal_refactor_advisor.codemod",
+        "ZippedSourceLocationEvidencePropertyCodemodBuilder",
+    ),
     "CancelableCompositionSignal": (
         "nominal_refactor_advisor.codemod",
         "CancelableCompositionSignal",
@@ -66,6 +82,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "codemod_candidates_from_impact_ranking": (
         "nominal_refactor_advisor.codemod",
         "codemod_candidates_from_impact_ranking",
+    ),
+    "codemod_candidates_with_automated_rewrites": (
+        "nominal_refactor_advisor.codemod",
+        "codemod_candidates_with_automated_rewrites",
     ),
     "simulate_planned_rewrites": (
         "nominal_refactor_advisor.codemod",

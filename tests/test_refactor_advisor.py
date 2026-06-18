@@ -63,6 +63,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodStrategy,
     CodemodStrategyRegistry,
     codemod_candidates_from_impact_ranking,
+    codemod_candidates_with_automated_rewrites,
     detect_cancelable_composition_signals,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
@@ -415,6 +416,258 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     assert simulation.applied_rewrite_count == 1
     assert simulation.changed_file_paths == (module_path.as_posix(),)
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
+
+
+def test_sorted_tuple_codemod_builder_plans_safe_mechanical_rewrite(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Planner:\n"
+        "    def ordered_payload(self, items):\n"
+        "        return sorted_tuple({item.name for item in items}, "
+        "key=str.lower, reverse=True)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "sorted_tuple_wrapper_use"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        candidates,
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.opportunity_key.label == "sorted_tuple"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert candidate.applicability.safe_to_apply is True
+    assert (
+        candidate.applicability.simulation_status
+        == CodemodSimulationStatus.READY_TO_SIMULATE
+    )
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert (
+        "        return tuple(sorted({item.name for item in items}, key=str.lower, reverse=True))"
+        in rewritten
+    )
+
+
+def test_sorted_tuple_codemod_builder_skips_overlapping_nested_targets(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef ordered_payload(items):\n"
+        "    names = sorted_tuple({item.name for item in items})\n\n"
+        "    def ordered_inner(rows):\n"
+        "        return sorted_tuple({row.name for row in rows}, key=str.lower)\n\n"
+        "    return names, ordered_inner(items)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "sorted_tuple_wrapper_use"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.opportunity_key.label == "sorted_tuple"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert "names = tuple(sorted({item.name for item in items}))" in rewritten
+    assert (
+        "return tuple(sorted({row.name for row in rows}, key=str.lower))" in rewritten
+    )
+
+
+def test_source_location_descriptor_codemod_builder_replaces_property(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n"
+        "    @property\n"
+        "    def evidence(self):\n"
+        "        return SourceLocation(self.file_path, self.lineno, self.qualname)\n\n"
+        "    def keep_behavior(self):\n"
+        "        return self.qualname\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "source_location_evidence_property"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.applicability.strategy_id
+        == "source-location-evidence-property-mechanical"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert (
+        '    evidence = SourceLocationEvidenceProperty("file_path", "lineno", "qualname")'
+        in rewritten
+    )
+    assert "@property" not in rewritten
+    assert "def evidence" not in rewritten
+    assert "def keep_behavior" in rewritten
+
+
+def test_zipped_source_location_descriptor_codemod_builder_replaces_property(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n"
+        "    @property\n"
+        "    def evidence_locations(self):\n"
+        "        return tuple(\n"
+        "            SourceLocation(self.file_path, line, function_name)\n"
+        "            for line, function_name in zip(\n"
+        "                self.line_numbers, self.function_names, strict=True\n"
+        "            )\n"
+        "        )\n\n"
+        "    def keep_behavior(self):\n"
+        "        return self.function_names\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "zipped_source_location_evidence_property"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+    automated_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+    )
+
+    candidate = next(
+        item
+        for item in automated_candidates
+        if item.applicability.strategy_id
+        == "zipped-source-location-evidence-property-mechanical"
+    )
+    simulation = candidate.simulate(
+        source_index,
+        {module_path.as_posix(): module_path.read_text()},
+        backend=CodemodBackend.AST_SPAN,
+    )
+    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+
+    assert (
+        candidate.applicability.automation_level
+        == CodemodAutomationLevel.SAFE_MECHANICAL
+    )
+    assert candidate.applicability.planned_rewrite_count == 1
+    assert (
+        '    evidence_locations = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names", "file_path")'
+        in rewritten
+    )
+    assert "@property" not in rewritten
+    assert "def evidence_locations" not in rewritten
+    assert "def keep_behavior" in rewritten
 
 
 def test_detects_generic_cancelable_product_composition_signal(
@@ -7374,6 +7627,61 @@ def test_json_and_markdown_expose_codemod_applicability(
     assert "Codemod applicability:" in markdown
     assert "advisory_only" in markdown
     assert "no_rewrite_plan" in markdown
+
+
+def test_json_payload_auto_attaches_safe_codemod_options(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef ordered_payload(items):\n"
+        "    return sorted_tuple({item.name for item in items}, key=str.lower)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "sorted_tuple_wrapper_use"
+    ]
+    source_index = build_source_index(modules, findings)
+    impact_ranking = build_refactor_impact_ranking(
+        findings,
+        source_index,
+        search_budget=RefactorImpactSearchBudget(
+            reported_opportunity_count=10,
+            minimum_covered_findings=1,
+            trajectory_depth=0,
+            frontier_width=3,
+        ),
+    )
+
+    payload = _json_payload(findings, [], modules, impact_ranking=impact_ranking)
+    codemod_candidates = cast(
+        tuple[dict[str, object], ...],
+        payload["codemod_candidates"],
+    )
+    safe_candidate = next(
+        candidate
+        for candidate in codemod_candidates
+        if cast(dict[str, object], candidate["opportunity_key"])["label"]
+        == "sorted_tuple"
+    )
+    applicability = cast(dict[str, object], safe_candidate["applicability"])
+    markdown = format_codemod_applicability_markdown(
+        codemod_candidates_with_automated_rewrites(
+            codemod_candidates_from_impact_ranking(impact_ranking, source_index),
+            source_index,
+            {str(module.path): module.source for module in modules},
+        )
+    )
+
+    assert applicability["automation_level"] == "safe_mechanical"
+    assert applicability["simulation_status"] == "ready_to_simulate"
+    assert applicability["safe_to_apply"] is True
+    assert applicability["planned_rewrite_count"] == 1
+    assert "safe mechanical: 1" in markdown
+    assert "1 planned rewrite(s)" in markdown
 
 
 def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:

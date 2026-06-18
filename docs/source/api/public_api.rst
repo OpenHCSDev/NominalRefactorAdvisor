@@ -34,7 +34,7 @@ field-forwarding wrappers as factorable product morphisms when they preserve
 common fields and do not own an invariant.
 
 .. automodule:: nominal_refactor_advisor.codemod
-   :members: PlannedSourceRewrite, CodemodStrategy, CodemodStrategyRegistry, CodemodApplicability, CodemodCandidate, CodemodSimulationReport, codemod_candidates_from_impact_ranking, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
+   :members: PlannedSourceRewrite, CodemodStrategy, CodemodStrategyRegistry, CodemodRewriteBuilder, SortedTupleWrapperCodemodBuilder, SourceLocationEvidencePropertyCodemodBuilder, ZippedSourceLocationEvidencePropertyCodemodBuilder, CodemodApplicability, CodemodCandidate, CodemodSimulationReport, codemod_candidates_from_impact_ranking, codemod_candidates_with_automated_rewrites, simulate_planned_rewrites, CancelableCompositionSignal, detect_cancelable_composition_signals
 
 
 Result Records And Taxonomy

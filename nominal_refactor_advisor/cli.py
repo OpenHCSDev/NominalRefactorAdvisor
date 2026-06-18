@@ -28,7 +28,11 @@ from .calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
-from .codemod import CodemodCandidate, codemod_candidates_from_impact_ranking
+from .codemod import (
+    CodemodCandidate,
+    codemod_candidates_from_impact_ranking,
+    codemod_candidates_with_automated_rewrites,
+)
 from .detectors import DetectorConfig
 from .economics import (
     EconomicsProofReport,
@@ -276,6 +280,11 @@ def _json_payload(
                 impact_ranking,
                 source_index,
             )
+            codemod_candidates = codemod_candidates_with_automated_rewrites(
+                codemod_candidates,
+                source_index,
+                {str(module.path): module.source for module in modules},
+            )
     if codemod_candidates is not None:
         payload["codemod_candidates"] = tuple(
             candidate.to_dict() for candidate in codemod_candidates
@@ -484,6 +493,9 @@ def format_codemod_applicability_markdown(
             for candidate in candidates
         )
     )
+    safe_count = sum(
+        (candidate.applicability.safe_to_apply for candidate in candidates)
+    )
     ready_count = sum(
         (
             candidate.applicability.simulation_status.value == "ready_to_simulate"
@@ -494,6 +506,7 @@ def format_codemod_applicability_markdown(
     lines.append(
         "   - Candidates: "
         f"{len(candidates)}; advisory-only: {advisory_count}; "
+        f"safe mechanical: {safe_count}; "
         f"planned rewrites: {planned_count}; ready to simulate: {ready_count}"
     )
     for index, candidate in enumerate(candidates[:10], start=1):
@@ -503,6 +516,7 @@ def format_codemod_applicability_markdown(
             f"`{candidate.opportunity_key.label}` -> "
             f"{candidate.target_count} target(s), "
             f"{candidate.predicted_removed_finding_count} finding(s), "
+            f"{applicability.planned_rewrite_count} planned rewrite(s), "
             f"simulation {applicability.simulation_status.value}"
         )
         lines.append(f"     strategy: {applicability.strategy_id}")
@@ -787,6 +801,7 @@ def main() -> int:
     impact_ranking = None
     if args.include_impact_ranking:
         source_index = build_source_index(modules, findings)
+        source_by_path = {str(module.path): module.source for module in modules}
         impact_ranking = build_refactor_impact_ranking(
             findings,
             source_index,
@@ -800,6 +815,11 @@ def main() -> int:
         codemod_candidates = codemod_candidates_from_impact_ranking(
             impact_ranking,
             source_index,
+        )
+        codemod_candidates = codemod_candidates_with_automated_rewrites(
+            codemod_candidates,
+            source_index,
+            source_by_path,
         )
     else:
         codemod_candidates = None

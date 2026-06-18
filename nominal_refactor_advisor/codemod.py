@@ -17,7 +17,8 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
-from collections.abc import Iterable, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 
@@ -191,6 +192,39 @@ class CodemodStrategyRegistry:
 DEFAULT_CODEMOD_STRATEGY_REGISTRY = CodemodStrategyRegistry()
 
 
+SORTED_TUPLE_WRAPPER_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="sorted-tuple-wrapper-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "`sorted_tuple(items, ...)` is mechanically equivalent to "
+        "`tuple(sorted(items, ...))` for supported explicit arguments."
+    ),
+)
+
+
+SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="source-location-evidence-property-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "An exact @property returning SourceLocation(self.file, self.line, self.symbol) "
+        "can be replaced by SourceLocationEvidenceProperty descriptor data."
+    ),
+)
+
+
+ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
+    strategy_id="zipped-source-location-evidence-property-mechanical",
+    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
+    safe_to_apply=True,
+    reason=(
+        "An exact @property returning zipped SourceLocation tuples can be replaced "
+        "by ZippedSourceLocationEvidenceProperty descriptor data."
+    ),
+)
+
+
 @dataclass(frozen=True)
 class SimulatedSourceRewrite:
     """Resolved source span and replacement preview for one planned rewrite."""
@@ -323,6 +357,184 @@ class CodemodCandidate:
             source_by_path,
             backend=backend,
         )
+
+
+class CodemodRewriteBuilder(ABC):
+    """Build planned source rewrites for candidates with mechanical semantics."""
+
+    @property
+    @abstractmethod
+    def strategy(self) -> CodemodStrategy:
+        raise NotImplementedError
+
+    @abstractmethod
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        raise NotImplementedError
+
+    def apply(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> CodemodCandidate:
+        rewrites = self.build_rewrites(candidate, source_index, source_by_path)
+        if not rewrites:
+            return candidate
+        return replace(
+            candidate,
+            planned_rewrites=(*candidate.planned_rewrites, *rewrites),
+            strategy=self.strategy,
+        )
+
+
+class SortedTupleWrapperCodemodBuilder(CodemodRewriteBuilder):
+    """Plan safe replacements from sorted_tuple(...) to tuple(sorted(...))."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return SORTED_TUPLE_WRAPPER_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if not _is_sorted_tuple_opportunity(candidate.opportunity_key):
+            return ()
+        nodes_by_target_id = _function_nodes_by_target_id(source_index, source_by_path)
+        rewrites: list[PlannedSourceRewrite] = []
+        for target_id in candidate.target_ids:
+            target = source_index.target_by_id.get(target_id)
+            node = nodes_by_target_id.get(target_id)
+            if target is None or node is None:
+                continue
+            source = source_by_path.get(target.file_path)
+            if source is None:
+                continue
+            replacement_source = _rewrite_sorted_tuple_calls_in_target(source, node)
+            if replacement_source is None:
+                continue
+            rewrites.append(
+                PlannedSourceRewrite(
+                    target_id=target_id,
+                    replacement_source=replacement_source,
+                    rationale=(
+                        "Replace project-local sorted_tuple wrapper with "
+                        "standard tuple(sorted(...)) expression."
+                    ),
+                )
+            )
+        return _non_overlapping_planned_rewrites(
+            rewrites,
+            source_index,
+        )
+
+
+class SourceLocationEvidencePropertyCodemodBuilder(CodemodRewriteBuilder):
+    """Plan descriptor replacements for exact SourceLocation evidence properties."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        if (
+            "source_location_evidence_property"
+            not in candidate.opportunity.detector_ids
+        ):
+            return ()
+        return _descriptor_property_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            descriptor_assignment_builder=_source_location_descriptor_assignment,
+            rationale=(
+                "Replace boilerplate SourceLocation evidence property with "
+                "SourceLocationEvidenceProperty descriptor data."
+            ),
+        )
+
+
+class ZippedSourceLocationEvidencePropertyCodemodBuilder(CodemodRewriteBuilder):
+    """Plan descriptor replacements for exact zipped SourceLocation properties."""
+
+    @property
+    def strategy(self) -> CodemodStrategy:
+        return ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        if (
+            "zipped_source_location_evidence_property"
+            not in candidate.opportunity.detector_ids
+        ):
+            return ()
+        return _descriptor_property_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            descriptor_assignment_builder=_zipped_source_location_descriptor_assignment,
+            rationale=(
+                "Replace boilerplate zipped SourceLocation evidence property with "
+                "ZippedSourceLocationEvidenceProperty descriptor data."
+            ),
+        )
+
+
+DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
+    SortedTupleWrapperCodemodBuilder(),
+    SourceLocationEvidencePropertyCodemodBuilder(),
+    ZippedSourceLocationEvidencePropertyCodemodBuilder(),
+)
+
+
+def codemod_candidates_with_automated_rewrites(
+    candidates: Iterable[CodemodCandidate],
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    *,
+    builders: Iterable[CodemodRewriteBuilder] = DEFAULT_CODEMOD_REWRITE_BUILDERS,
+) -> tuple[CodemodCandidate, ...]:
+    """Attach available safe mechanical rewrites to advisor candidates."""
+
+    rewrite_builders = tuple(builders)
+    automated_candidates = []
+    for candidate in candidates:
+        automated = candidate
+        for builder in rewrite_builders:
+            automated = builder.apply(automated, source_index, source_by_path)
+            if automated is not candidate:
+                break
+        automated_candidates.append(automated)
+    return sorted_tuple(
+        automated_candidates,
+        key=lambda item: (
+            -item.load_bearing_score,
+            -item.predicted_removed_finding_count,
+            item.opportunity_key.kind,
+            item.opportunity_key.value,
+            item.target_ids,
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -582,7 +794,424 @@ def _opportunity_pattern_ids(
     return tuple(pattern_ids)
 
 
+def _is_sorted_tuple_opportunity(key: RefactorImpactKey) -> bool:
+    return key.kind == "mapping" and key.label == "sorted_tuple"
+
+
+class _SortedTupleCallRewriter(ast.NodeVisitor):
+    def __init__(self, source: str) -> None:
+        self.source = source
+        self.replacements: list[tuple[int, int, str]] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if _call_name(node.func) == "sorted_tuple":
+            replacement = _sorted_tuple_call_replacement(self.source, node)
+            if replacement is not None:
+                self.replacements.append(
+                    (*_node_offsets(self.source, node), replacement)
+                )
+            return
+        self.generic_visit(node)
+
+
+def _rewrite_sorted_tuple_calls_in_target(
+    source: str,
+    node: _FunctionNode,
+) -> str | None:
+    rewriter = _SortedTupleCallRewriter(source)
+    rewriter.visit(node)
+    replacements = _outermost_replacements(rewriter.replacements)
+    if not replacements:
+        return None
+
+    target_start, target_end = _node_line_offsets(source, node)
+    target_source = source[target_start:target_end]
+    for start, end, replacement in sorted(replacements, reverse=True):
+        relative_start = start - target_start
+        relative_end = end - target_start
+        target_source = (
+            f"{target_source[:relative_start]}"
+            f"{replacement}"
+            f"{target_source[relative_end:]}"
+        )
+    return target_source
+
+
+def _sorted_tuple_call_replacement(source: str, node: ast.Call) -> str | None:
+    if len(node.args) != 1:
+        return None
+    if len({keyword.arg for keyword in node.keywords}) != len(node.keywords):
+        return None
+    item_source = ast.get_source_segment(source, node.args[0])
+    if item_source is None:
+        return None
+    sorted_arguments = [item_source]
+    for keyword in node.keywords:
+        if keyword.arg not in {"key", "reverse"}:
+            return None
+        value_source = ast.get_source_segment(source, keyword.value)
+        if value_source is None:
+            return None
+        sorted_arguments.append(f"{keyword.arg}={value_source}")
+    return f"tuple(sorted({', '.join(sorted_arguments)}))"
+
+
+_DescriptorAssignmentBuilder = Callable[
+    [ast.FunctionDef | ast.AsyncFunctionDef], str | None
+]
+
+
+def _descriptor_property_rewrites(
+    candidate: CodemodCandidate,
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    *,
+    descriptor_assignment_builder: _DescriptorAssignmentBuilder,
+    rationale: str,
+) -> tuple[PlannedSourceRewrite, ...]:
+    nodes_by_target_id = _ast_nodes_by_target_id(source_index, source_by_path)
+    replacements_by_class_target_id: dict[str, list[tuple[int, int, str]]] = {}
+    for target_id in candidate.target_ids:
+        target = source_index.target_by_id.get(target_id)
+        node = nodes_by_target_id.get(target_id)
+        if target is None or not isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        assignment = descriptor_assignment_builder(node)
+        if assignment is None:
+            continue
+        class_target = _containing_class_target(source_index, target_id)
+        if class_target is None:
+            continue
+        source = source_by_path.get(target.file_path)
+        if source is None:
+            continue
+        start, end = _decorated_node_line_offsets(source, node)
+        replacements_by_class_target_id.setdefault(class_target.target_id, []).append(
+            (start, end, f"{_line_indent(source, start)}{assignment}\n")
+        )
+
+    rewrites = []
+    for class_target_id, replacements in replacements_by_class_target_id.items():
+        class_target = source_index.target_by_id[class_target_id]
+        class_node = nodes_by_target_id.get(class_target_id)
+        source = source_by_path.get(class_target.file_path)
+        if source is None or not isinstance(class_node, ast.ClassDef):
+            continue
+        class_start, class_end = _node_line_offsets(source, class_node)
+        rewrites.append(
+            PlannedSourceRewrite(
+                target_id=class_target_id,
+                replacement_source=_source_with_replacements_in_span(
+                    source,
+                    class_start,
+                    class_end,
+                    replacements,
+                ),
+                rationale=rationale,
+            )
+        )
+    return _non_overlapping_planned_rewrites(rewrites, source_index)
+
+
+def _source_location_descriptor_assignment(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    if not _is_plain_property_method(node):
+        return None
+    returned = _single_return_value(node)
+    if (
+        not isinstance(returned, ast.Call)
+        or _call_name(returned.func) != "SourceLocation"
+    ):
+        return None
+    if len(returned.args) != 3 or returned.keywords:
+        return None
+    attribute_names = tuple(
+        _self_attribute_name(argument) for argument in returned.args
+    )
+    if any(name is None for name in attribute_names):
+        return None
+    file_attribute_name, line_attribute_name, symbol_attribute_name = attribute_names
+    return (
+        f"{node.name} = SourceLocationEvidenceProperty("
+        f'"{file_attribute_name}", "{line_attribute_name}", "{symbol_attribute_name}")'
+    )
+
+
+def _zipped_source_location_descriptor_assignment(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    if not _is_plain_property_method(node):
+        return None
+    returned = _single_return_value(node)
+    if not isinstance(returned, ast.Call) or _call_name(returned.func) != "tuple":
+        return None
+    if len(returned.args) != 1 or returned.keywords:
+        return None
+    generator = returned.args[0]
+    if not isinstance(generator, ast.GeneratorExp):
+        return None
+    source_location_call = generator.elt
+    if (
+        not isinstance(source_location_call, ast.Call)
+        or _call_name(source_location_call.func) != "SourceLocation"
+        or len(source_location_call.args) != 3
+        or source_location_call.keywords
+    ):
+        return None
+    file_attribute_name = _self_attribute_name(source_location_call.args[0])
+    line_variable_name = _name_id(source_location_call.args[1])
+    symbol_variable_name = _name_id(source_location_call.args[2])
+    if (
+        file_attribute_name is None
+        or line_variable_name is None
+        or symbol_variable_name is None
+    ):
+        return None
+    comprehension = generator.generators[0] if len(generator.generators) == 1 else None
+    if (
+        comprehension is None
+        or comprehension.ifs
+        or comprehension.is_async
+        or not isinstance(comprehension.target, ast.Tuple)
+    ):
+        return None
+    target_names = tuple(_name_id(item) for item in comprehension.target.elts)
+    zip_call = comprehension.iter
+    if not isinstance(zip_call, ast.Call) or _call_name(zip_call.func) != "zip":
+        return None
+    if len(zip_call.args) != 2 or not _has_strict_true_keyword(zip_call):
+        return None
+    zipped_attribute_names = tuple(
+        _self_attribute_name(argument) for argument in zip_call.args
+    )
+    if any(name is None for name in (*target_names, *zipped_attribute_names)):
+        return None
+    bindings = dict(zip(target_names, zipped_attribute_names, strict=True))
+    line_numbers_attribute_name = bindings.get(line_variable_name)
+    symbol_names_attribute_name = bindings.get(symbol_variable_name)
+    if line_numbers_attribute_name is None or symbol_names_attribute_name is None:
+        return None
+    return (
+        f"{node.name} = ZippedSourceLocationEvidenceProperty("
+        f'"{line_numbers_attribute_name}", "{symbol_names_attribute_name}", '
+        f'"{file_attribute_name}")'
+    )
+
+
+def _is_plain_property_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    return (
+        len(node.decorator_list) == 1
+        and _call_name(node.decorator_list[0]) == "property"
+        and len(node.args.args) == 1
+        and node.args.args[0].arg == "self"
+        and not node.args.posonlyargs
+        and not node.args.vararg
+        and not node.args.kwonlyargs
+        and not node.args.kwarg
+    )
+
+
+def _single_return_value(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ast.expr | None:
+    body = _trim_docstring_body(node.body)
+    if len(body) != 1 or not isinstance(body[0], ast.Return):
+        return None
+    return body[0].value
+
+
+def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
+    if (
+        body
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def _self_attribute_name(node: ast.expr) -> str | None:
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ):
+        return node.attr
+    return None
+
+
+def _name_id(node: ast.expr) -> str | None:
+    return node.id if isinstance(node, ast.Name) else None
+
+
+def _has_strict_true_keyword(call: ast.Call) -> bool:
+    return (
+        len(call.keywords) == 1
+        and call.keywords[0].arg == "strict"
+        and isinstance(call.keywords[0].value, ast.Constant)
+        and call.keywords[0].value.value is True
+    )
+
+
+def _containing_class_target(
+    source_index: SourceIndex,
+    target_id: str,
+) -> AstTargetDigest | None:
+    target = source_index.target_by_id.get(target_id)
+    if target is None or "." not in target.qualname:
+        return None
+    class_qualname = target.qualname.rsplit(".", 1)[0]
+    candidates = [
+        candidate
+        for candidate in source_index.targets_by_file.get(target.file_path, ())
+        if candidate.node_type == "class"
+        and candidate.qualname == class_qualname
+        and candidate.line <= target.line <= candidate.end_line
+    ]
+    return min(candidates, key=lambda item: item.end_line - item.line, default=None)
+
+
+def _source_with_replacements_in_span(
+    source: str,
+    span_start: int,
+    span_end: int,
+    replacements: Iterable[tuple[int, int, str]],
+) -> str:
+    span_source = source[span_start:span_end]
+    for start, end, replacement in sorted(replacements, reverse=True):
+        relative_start = start - span_start
+        relative_end = end - span_start
+        span_source = (
+            f"{span_source[:relative_start]}"
+            f"{replacement}"
+            f"{span_source[relative_end:]}"
+        )
+    return span_source
+
+
+def _node_offsets(source: str, node: ast.AST) -> tuple[int, int]:
+    if (
+        not hasattr(node, "lineno")
+        or not hasattr(node, "col_offset")
+        or not hasattr(node, "end_lineno")
+        or not hasattr(node, "end_col_offset")
+    ):
+        raise ValueError(f"AST node {type(node).__name__} has no source span")
+    line_offsets = _line_offsets(source)
+    return (
+        line_offsets[node.lineno - 1] + node.col_offset,
+        line_offsets[node.end_lineno - 1] + node.end_col_offset,
+    )
+
+
+def _decorated_node_line_offsets(source: str, node: ast.AST) -> tuple[int, int]:
+    decorator_lines = [
+        decorator.lineno
+        for decorator in getattr(node, "decorator_list", ())
+        if hasattr(decorator, "lineno")
+    ]
+    start_line = min((*decorator_lines, node.lineno))
+    line_offsets = _line_offsets(source)
+    lines = source.splitlines(keepends=True)
+    end_offset = (
+        line_offsets[node.end_lineno]
+        if node.end_lineno < len(line_offsets)
+        else sum(len(line) for line in lines)
+    )
+    return line_offsets[start_line - 1], end_offset
+
+
+def _node_line_offsets(source: str, node: ast.AST) -> tuple[int, int]:
+    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+        raise ValueError(f"AST node {type(node).__name__} has no source line span")
+    line_offsets = _line_offsets(source)
+    lines = source.splitlines(keepends=True)
+    end_offset = (
+        line_offsets[node.end_lineno]
+        if node.end_lineno < len(line_offsets)
+        else sum(len(line) for line in lines)
+    )
+    return line_offsets[node.lineno - 1], end_offset
+
+
+def _line_indent(source: str, offset: int) -> str:
+    line_start = source.rfind("\n", 0, offset) + 1
+    line_end = source.find("\n", offset)
+    if line_end == -1:
+        line_end = len(source)
+    line = source[line_start:line_end]
+    return line[: len(line) - len(line.lstrip())]
+
+
+def _line_offsets(source: str) -> tuple[int, ...]:
+    offsets = []
+    offset = 0
+    for line in source.splitlines(keepends=True):
+        offsets.append(offset)
+        offset += len(line)
+    if not offsets:
+        offsets.append(0)
+    return tuple(offsets)
+
+
+def _outermost_replacements(
+    replacements: Iterable[tuple[int, int, str]],
+) -> tuple[tuple[int, int, str], ...]:
+    outermost = []
+    previous_end = -1
+    for start, end, replacement in sorted(replacements):
+        if start < previous_end:
+            continue
+        outermost.append((start, end, replacement))
+        previous_end = end
+    return tuple(outermost)
+
+
+def _non_overlapping_planned_rewrites(
+    rewrites: Iterable[PlannedSourceRewrite],
+    source_index: SourceIndex,
+) -> tuple[PlannedSourceRewrite, ...]:
+    rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = {}
+    for rewrite in rewrites:
+        target = source_index.target_by_id[rewrite.target_id]
+        rewrites_by_file.setdefault(target.file_path, []).append(rewrite)
+
+    selected: list[PlannedSourceRewrite] = []
+    for file_path, file_rewrites in rewrites_by_file.items():
+        previous_end = -1
+        ordered = sorted(
+            file_rewrites,
+            key=lambda item: (
+                source_index.target_by_id[item.target_id].line,
+                -source_index.target_by_id[item.target_id].end_line,
+                source_index.target_by_id[item.target_id].qualname,
+            ),
+        )
+        for rewrite in ordered:
+            target = source_index.target_by_id[rewrite.target_id]
+            start = target.line - 1
+            end = target.end_line
+            if start < previous_end:
+                continue
+            selected.append(rewrite)
+            previous_end = end
+
+    return sorted_tuple(
+        selected,
+        key=lambda item: (
+            source_index.target_by_id[item.target_id].file_path,
+            source_index.target_by_id[item.target_id].line,
+            source_index.target_by_id[item.target_id].qualname,
+        ),
+    )
+
+
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+_TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
 @dataclass(frozen=True)
@@ -592,13 +1221,16 @@ class _ProductForward:
     field_names: tuple[str, ...]
 
 
-class _FunctionNodeIndexer(ast.NodeVisitor):
+class _AstTargetNodeIndexer(ast.NodeVisitor):
     def __init__(self) -> None:
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
-        self.nodes_by_geometry: dict[tuple[str, int, int], _FunctionNode] = {}
+        self.nodes_by_geometry: dict[tuple[str, int, int], _TargetNode] = {}
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
+        end_line = node.end_lineno or node.lineno
+        self.nodes_by_geometry[(qualname, node.lineno, end_line)] = node
         self.class_stack.append(node.name)
         self.generic_visit(node)
         self.class_stack.pop()
@@ -618,26 +1250,38 @@ class _FunctionNodeIndexer(ast.NodeVisitor):
         self.function_stack.pop()
 
 
-def _function_nodes_by_target_id(
+def _ast_nodes_by_target_id(
     source_index: SourceIndex,
     source_by_path: Mapping[str, str],
-) -> dict[str, _FunctionNode]:
-    nodes_by_file_geometry: dict[str, dict[tuple[str, int, int], _FunctionNode]] = {}
+) -> dict[str, _TargetNode]:
+    nodes_by_file_geometry: dict[str, dict[tuple[str, int, int], _TargetNode]] = {}
     for file_path, source in source_by_path.items():
         tree = ast.parse(source, filename=file_path)
-        indexer = _FunctionNodeIndexer()
+        indexer = _AstTargetNodeIndexer()
         indexer.visit(tree)
         nodes_by_file_geometry[file_path] = indexer.nodes_by_geometry
 
-    nodes_by_target_id: dict[str, _FunctionNode] = {}
+    nodes_by_target_id: dict[str, _TargetNode] = {}
     for target in source_index.ast_targets:
-        if target.node_type not in {"function", "method"}:
-            continue
         geometry = (target.qualname, target.line, target.end_line)
         node = nodes_by_file_geometry.get(target.file_path, {}).get(geometry)
         if node is not None:
             nodes_by_target_id[target.target_id] = node
     return nodes_by_target_id
+
+
+def _function_nodes_by_target_id(
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+) -> dict[str, _FunctionNode]:
+    return {
+        target_id: node
+        for target_id, node in _ast_nodes_by_target_id(
+            source_index,
+            source_by_path,
+        ).items()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
 
 
 def _cancelable_composition_signal_for_target(
