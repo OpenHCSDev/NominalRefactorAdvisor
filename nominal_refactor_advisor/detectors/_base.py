@@ -487,6 +487,10 @@ class DetectorConfig:
         2,
         "Minimum shared concrete role cases before surfacing a generic role-case table.",
     )
+    min_local_role_case_logic_cases: int = detector_config_option(
+        2,
+        "Minimum concrete role cases in one broad behavior surface before surfacing local role-case logic.",
+    )
     min_boundary_fanout_sites: int = detector_config_option(
         4,
         "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",

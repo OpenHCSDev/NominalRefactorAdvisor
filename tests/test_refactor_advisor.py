@@ -4516,6 +4516,18 @@ def test_role_surface_drift_ignores_role_specific_channel_usage(
     assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
 
 
+def test_role_surface_drift_ignores_explicit_semantics_carrier(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/viewer.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass ViewerRequest:\n    component_axis_semantics: object\n\n\ndef project_layout(request):\n    layout = request.component_axis_semantics.layout\n    return layout\n\n\ndef color_policy(request):\n    return Target(\n        color_role=request.component_axis_semantics.role_policy,\n    )\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
+
+
 def test_detects_generic_role_case_table_under_shared_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -4550,6 +4562,30 @@ def test_generic_role_case_table_ignores_single_owner_table(tmp_path: Path) -> N
     assert not any(
         finding.detector_id == "generic_role_case_table" for finding in findings
     )
+
+
+def test_detects_local_role_case_logic_under_broad_axis(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/layout.py",
+        '\nclass WidgetAxisPresenter:\n    def axis_label(self, axis_name, value):\n        prefixes = {\n            "alpha": "A",\n            "beta": "B",\n            "gamma": "G",\n        }\n        if axis_name == "delta":\n            return f"Delta {value}"\n        prefix = prefixes.get(axis_name, axis_name)\n        return f"{prefix} {value}"\n',
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "local_role_case_logic"
+        )
+    )
+    assert finding.pattern_id == PatternId.LOCAL_VALUE_AUTHORITY
+    assert "WidgetAxisPresenter.axis_label" in finding.summary
+    assert "alpha" in finding.summary
+    assert "beta" in finding.summary
+    assert "axis" in finding.summary
+    assert "nominal axis authority" in finding.summary
+    assert "role-axis authority" in (finding.codemod_patch or "")
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
 
 
 def test_detects_repeated_guard_validator_family(tmp_path: Path) -> None:
