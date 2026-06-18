@@ -7341,6 +7341,27 @@ def test_detects_autoregister_family_priority_axis_ordering(
     assert "Delete the `priority` class axis" in (finding.codemod_patch or "")
 
 
+def test_detects_autoregister_family_precedence_axis_ordering(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass SelectionOutcome(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "outcome_key"\n    __skip_if_no_key__ = True\n    outcome_key: ClassVar[str | None] = None\n    precedence: ClassVar[int]\n\n    @classmethod\n    def ordered(cls):\n        return tuple(\n            sorted(\n                cls.__registry__.values(),\n                key=lambda registered_type: registered_type.precedence,\n            )\n        )\n\n    @abstractmethod\n    def matches(self, value):\n        raise NotImplementedError\n\n\nclass MatchedOutcome(SelectionOutcome):\n    outcome_key = "matched"\n    precedence = 0\n\n    def matches(self, value):\n        return value == "matched"\n\n\nclass AmbiguousOutcome(SelectionOutcome):\n    outcome_key = "ambiguous"\n    precedence = 1\n\n    def matches(self, value):\n        return value == "ambiguous"\n',
+    )
+
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "autoregister_explicit_priority_ordering"
+    )
+
+    assert "SelectionOutcome" in finding.summary
+    assert "precedence" in finding.summary
+    assert "MRO" in finding.title
+    assert "Delete the `precedence` class axis" in (finding.codemod_patch or "")
+
+
 def test_detects_external_autoregister_registry_priority_sort(
     tmp_path: Path,
 ) -> None:
