@@ -3209,6 +3209,39 @@ def test_detects_typing_protocol_contracts(tmp_path: Path) -> None:
     assert "ContractName.register" in (finding.scaffold or "")
 
 
+def test_detects_role_guarded_surface_access_for_role_owned_semantics(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/roles.py",
+        "\nclass AvoidWidgetsWindow:\n    def position_avoid_widgets(self):\n        raise NotImplementedError\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "\nfrom pkg.roles import AvoidWidgetsWindow\n\n\ndef place_window(window):\n    if isinstance(window, AvoidWidgetsWindow):\n        return tuple(window.position_avoid_widgets())\n    return ()\n\n\ndef inspect_window(window):\n    if isinstance(window, AvoidWidgetsWindow):\n        return window.windowTitle()\n    return None\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "role_guarded_surface_access"
+        )
+    )
+    assert finding.pattern_id == PatternId.NOMINAL_INTERFACE_WITNESS
+    assert "place_window" in finding.summary
+    assert "position_avoid_widgets" in finding.summary
+    assert "inspect_window" not in finding.summary
+    assert "Inheritance is appropriate" in finding.why
+    assert "role-owned semantics" in finding.title
+    assert "role-typed" in (finding.codemod_patch or "")
+    assert "pass that value/request explicitly" in (finding.codemod_patch or "")
+
+
 def test_detects_oversized_orchestration_hub(tmp_path: Path) -> None:
     branch_body = "\n".join(
         (
@@ -8466,6 +8499,24 @@ def test_detects_dangling_private_method(tmp_path: Path) -> None:
     assert "Cleanup._stale_export" in finding.summary
     assert "no repository-visible method reference" in finding.summary
     assert "ABC hook" in (finding.scaffold or "")
+
+
+def test_keeps_detector_override_hook_private_method(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom nominal_refactor_advisor.detectors import IssueDetector\n\n\nclass CustomDetector(IssueDetector):\n    def _collect_findings(self, modules, config):\n        del config\n        findings = []\n        for module in modules:\n            for node in module.module.body:\n                if node.__class__.__name__ == 'ClassDef':\n                    findings.append(node.name)\n        return findings\n",
+    )
+
+    findings = analyze_path(tmp_path)
+
+    assert not any(
+        (
+            finding.detector_id == "dangling_private_method"
+            and "CustomDetector._collect_findings" in finding.summary
+        )
+        for finding in findings
+    )
 
 
 def test_keeps_referenced_private_function(tmp_path: Path) -> None:

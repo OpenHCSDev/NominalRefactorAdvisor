@@ -2806,12 +2806,16 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
         return findings
 
 
-@dataclass(frozen=True)
-class IsinstanceFamilyScatterCandidate:
+@dataclass(frozen=True, slots=True)
+class RuntimeSubjectFunctionCandidate:
     file_path: str
     line: int
     qualname: str
     subject_expression: str
+
+
+@dataclass(frozen=True, slots=True)
+class IsinstanceFamilyScatterCandidate(RuntimeSubjectFunctionCandidate):
     type_names: tuple[str, ...]
     site_count: int
     line_numbers: tuple[int, ...]
@@ -3002,11 +3006,7 @@ class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
 
 
 @dataclass(frozen=True, slots=True)
-class RoleGuardedSurfaceAccessCandidate:
-    file_path: str
-    line: int
-    qualname: str
-    subject_expression: str
+class RoleGuardedSurfaceAccessCandidate(RuntimeSubjectFunctionCandidate):
     role_type_name: str
     guard_expression: str
     accessed_members: tuple[str, ...]
@@ -3027,7 +3027,7 @@ def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
             for target in statement.targets:
                 if isinstance(target, ast.Name):
                     members.add(target.id)
-    return sorted_tuple(members)
+    return tuple(sorted(members))
 
 
 def _role_surface_members_by_type_name(
@@ -3044,7 +3044,7 @@ def _role_surface_members_by_type_name(
             surfaces[node.name].update(members)
             surfaces[f"{module.module_name}.{node.name}"].update(members)
     return {
-        type_name: sorted_tuple(members)
+        type_name: tuple(sorted(members))
         for type_name, members in sorted(surfaces.items())
     }
 
@@ -3103,60 +3103,126 @@ def _accessed_declared_members(
     return sorted_tuple(accessed)
 
 
+def _role_guarded_surface_access_candidates_for_function(
+    module: ParsedModule,
+    qualname: str,
+    function: NamedFunctionNode,
+    role_surfaces: dict[str, tuple[str, ...]],
+) -> Iterable[RoleGuardedSurfaceAccessCandidate]:
+    for node in ast.walk(function):
+        if not isinstance(node, ast.If):
+            continue
+        for subject_expression, type_name, guard_expression in _isinstance_guard_bindings(node.test):
+            if type_name not in role_surfaces:
+                continue
+            declared_members = role_surfaces[type_name]
+            accessed_members = _accessed_declared_members(
+                node.body,
+                subject_expression=subject_expression,
+                declared_members=declared_members,
+            )
+            if len(accessed_members) == 0:
+                continue
+            yield RoleGuardedSurfaceAccessCandidate(
+                file_path=str(module.path),
+                line=node.lineno,
+                qualname=qualname,
+                subject_expression=subject_expression,
+                role_type_name=type_name,
+                guard_expression=guard_expression,
+                accessed_members=accessed_members,
+                declared_members=declared_members,
+            )
+
+
 def _role_guarded_surface_access_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
     role_surfaces = _role_surface_members_by_type_name(modules)
-    candidates: list[RoleGuardedSurfaceAccessCandidate] = []
-    for module in modules:
-        for qualname, function in _iter_named_functions(module):
-            for node in ast.walk(function):
-                if not isinstance(node, ast.If):
-                    continue
-                for subject_expression, type_name, guard_expression in _isinstance_guard_bindings(node.test):
-                    if type_name not in role_surfaces:
-                        continue
-                    declared_members = role_surfaces[type_name]
-                    accessed_members = _accessed_declared_members(
-                        node.body,
-                        subject_expression=subject_expression,
-                        declared_members=declared_members,
-                    )
-                    if len(accessed_members) == 0:
-                        continue
-                    candidates.append(
-                        RoleGuardedSurfaceAccessCandidate(
-                            file_path=str(module.path),
-                            line=node.lineno,
-                            qualname=qualname,
-                            subject_expression=subject_expression,
-                            role_type_name=type_name,
-                            guard_expression=guard_expression,
-                            accessed_members=accessed_members,
-                            declared_members=declared_members,
-                        )
-                    )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.line,
-            item.qualname,
-            item.subject_expression,
-            item.role_type_name,
+    return tuple(
+        sorted(
+            (
+                candidate
+                for module in modules
+                for candidate in _collect_named_function_candidates(
+                    module,
+                    _role_guarded_surface_access_candidates_for_function,
+                    role_surfaces,
+                )
+            ),
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.qualname,
+                item.subject_expression,
+                item.role_type_name,
+            ),
+        )
+    )
+
+
+def _role_guarded_surface_access_summary(
+    candidate: RoleGuardedSurfaceAccessCandidate,
+) -> str:
+    accessed_summary = ", ".join(candidate.accessed_members)
+    return (
+        f"`{candidate.qualname}` checks `{candidate.guard_expression}` "
+        f"and then accesses role-owned member(s) {accessed_summary} "
+        f"on `{candidate.subject_expression}`."
+    )
+
+
+def _role_guarded_surface_access_evidence(
+    candidate: RoleGuardedSurfaceAccessCandidate,
+) -> tuple[SourceLocation, ...]:
+    return (
+        SourceLocation(
+            candidate.file_path,
+            candidate.line,
+            (
+                f"{candidate.qualname}:"
+                f"{candidate.subject_expression}:"
+                f"{candidate.role_type_name}"
+            ),
         ),
     )
 
 
+def _role_guarded_surface_access_scaffold(
+    candidate: RoleGuardedSurfaceAccessCandidate,
+) -> str:
+    return (
+        "@dataclass(frozen=True)\n"
+        "class SemanticOperationRequest:\n"
+        "    target: object\n"
+        "    role_owned_value: object\n\n"
+        "# Build this request at the owner/call boundary, or type the callee "
+        f"parameter as `{candidate.role_type_name}` if the role itself is required. "
+        "Keep inheritance when it is the contract; do not use it as a hidden "
+        "capability channel for a generic helper."
+    )
+
+
+def _role_guarded_surface_access_patch(
+    candidate: RoleGuardedSurfaceAccessCandidate,
+) -> str:
+    return (
+        f"# Replace the `{candidate.guard_expression}` block in "
+        f"`{candidate.qualname}` with one explicit semantic input.\n"
+        "# If the operation semantically requires the role, make the callee "
+        "role-typed and fail before calling. If it only needs the value currently "
+        "pulled from the role, pass that value/request explicitly from the owner."
+    )
+
+
 class RoleGuardedSurfaceAccessDetector(IssueDetector):
-    detector_id = "role_guarded_surface_access"
     detector_priority = -25
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Runtime role guard leaks role-owned semantics into the caller",
-        "An `isinstance` guard proves a nominal role and the guarded block immediately consumes members declared on that same role. That leaves the caller responsible for discovering and interpreting optional role semantics instead of making the semantic value explicit at the boundary or requiring the role as the declared contract.",
-        "explicit request/value boundary or role-typed parameter owns the semantic relation",
-        "caller-side role probe followed by role-surface member access",
+        "An `isinstance` guard proves a nominal role and the guarded block immediately consumes members declared on that same role. Inheritance is appropriate when that role is the declared contract; the smell is using inheritance as an optional side channel that lets a general caller discover and interpret role semantics it should have received explicitly.",
+        "role-typed contract when the role is required, or explicit request/value boundary when only the role-owned value is required",
+        "caller-side optional role probe followed by role-surface member access",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -3173,51 +3239,20 @@ class RoleGuardedSurfaceAccessDetector(IssueDetector):
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        findings: list[RefactorFinding] = []
-        for candidate in _role_guarded_surface_access_candidates(modules):
-            accessed_summary = ", ".join(candidate.accessed_members)
-            findings.append(
-                self.build_finding(
-                    (
-                        f"`{candidate.qualname}` checks `{candidate.guard_expression}` "
-                        f"and then accesses role-owned member(s) {accessed_summary} "
-                        f"on `{candidate.subject_expression}`."
-                    ),
-                    (
-                        SourceLocation(
-                            candidate.file_path,
-                            candidate.line,
-                            (
-                                f"{candidate.qualname}:"
-                                f"{candidate.subject_expression}:"
-                                f"{candidate.role_type_name}"
-                            ),
-                        ),
-                    ),
-                    scaffold=(
-                        "@dataclass(frozen=True)\n"
-                        "class SemanticOperationRequest:\n"
-                        "    target: object\n"
-                        "    role_owned_value: object\n\n"
-                        "# Build this request at the owner/call boundary, or type the callee "
-                        f"parameter as `{candidate.role_type_name}` if the role itself is required. "
-                        "The central helper should not discover the role and pull its semantics."
-                    ),
-                    codemod_patch=(
-                        f"# Replace the `{candidate.guard_expression}` block in "
-                        f"`{candidate.qualname}` with one explicit semantic input.\n"
-                        "# Either require the parameter to implement the role up front and fail "
-                        "before calling, or pass the extracted role-owned value/request from the "
-                        "caller that owns that relationship."
-                    ),
-                    metrics=DispatchCountMetrics(
-                        dispatch_site_count=1,
-                        dispatch_axis=candidate.subject_expression,
-                        literal_cases=(candidate.role_type_name,),
-                    ),
-                )
+        return [
+            self.build_finding(
+                _role_guarded_surface_access_summary(candidate),
+                _role_guarded_surface_access_evidence(candidate),
+                scaffold=_role_guarded_surface_access_scaffold(candidate),
+                codemod_patch=_role_guarded_surface_access_patch(candidate),
+                metrics=DispatchCountMetrics(
+                    dispatch_site_count=1,
+                    dispatch_axis=candidate.subject_expression,
+                    literal_cases=(candidate.role_type_name,),
+                ),
             )
-        return findings
+            for candidate in _role_guarded_surface_access_candidates(modules)
+        ]
 
 
 _LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(
@@ -6406,6 +6441,50 @@ def _unreferenced_private_function_candidates(
     )
 
 
+_DETECTOR_OVERRIDE_HOOK_NAMES = frozenset(("_collect_findings", "_findings_for_module"))
+_DETECTOR_BASE_NAME_SUFFIXES = (
+    "CandidateDetector",
+    "IssueDetector",
+    "ModuleDetector",
+)
+
+
+def _class_base_names_by_qualname(module: ast.Module) -> dict[str, tuple[str, ...]]:
+    base_names_by_qualname: dict[str, tuple[str, ...]] = {}
+    class_stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            class_stack.append(node.name)
+            base_names_by_qualname[".".join(class_stack)] = tuple(
+                base_name
+                for base in node.bases
+                for base_name in (_ast_terminal_name(base),)
+                if base_name is not None
+            )
+            self.generic_visit(node)
+            class_stack.pop()
+
+    Visitor().visit(module)
+    return base_names_by_qualname
+
+
+def _is_detector_override_hook(
+    module: ParsedModule,
+    owner_name: str,
+    method_name: str,
+) -> bool:
+    if method_name not in _DETECTOR_OVERRIDE_HOOK_NAMES:
+        return False
+    base_names_by_qualname = _class_base_names_by_qualname(module.module)
+    if owner_name not in base_names_by_qualname:
+        return False
+    return any(
+        base_name.endswith(_DETECTOR_BASE_NAME_SUFFIXES)
+        for base_name in base_names_by_qualname[owner_name]
+    )
+
+
 def _dangling_private_method_candidates(
     module: ParsedModule,
     config: DetectorConfig,
@@ -6421,6 +6500,9 @@ def _dangling_private_method_candidates(
             continue
         if not _is_private_symbol_name(function.name):
             continue
+        owner_name = qualname.rsplit(".", 1)[0]
+        if _is_detector_override_hook(module, owner_name, function.name):
+            continue
         if _has_external_protocol_shape(function):
             continue
         line_count = _function_line_count(function)
@@ -6431,7 +6513,6 @@ def _dangling_private_method_candidates(
             > 0
         ):
             continue
-        owner_name = qualname.rsplit(".", 1)[0]
         candidates.append(
             DanglingPrivateMethodCandidate(
                 file_path=str(module.path),
