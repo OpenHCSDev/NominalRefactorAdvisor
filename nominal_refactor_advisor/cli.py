@@ -59,7 +59,11 @@ from .impact_ranking import (
 from .models import AnalysisReport, RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
 from .patterns import PATTERN_SPECS
-from .planner import build_refactor_plans
+from .planner import (
+    RefactorExecutionPlanReport,
+    build_refactor_execution_plan,
+    build_refactor_plans,
+)
 from .scan_prediction import (
     ScanPredictionReport,
     ScanTiming,
@@ -141,6 +145,14 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--include-plans",),
             action="store_true",
             help="Also synthesize subsystem-level composed refactor plans.",
+        ),
+        CliArgumentSpec(
+            flags=("--include-execution-plan",),
+            action="store_true",
+            help=(
+                "Also emit graph-grounded execution classes that batch findings "
+                "into refactor work queues."
+            ),
         ),
         CliArgumentSpec(
             flags=("--plans-only",),
@@ -278,6 +290,7 @@ def _json_payload(
     timing: ScanTiming | None = None,
     impact_ranking: RefactorImpactRankingReport | None = None,
     codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
+    execution_plan: RefactorExecutionPlanReport | None = None,
 ) -> dict[str, object]:
     report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
     graph = build_observation_graph(modules)
@@ -301,6 +314,8 @@ def _json_payload(
         payload["economics"] = economics.to_dict()
     if change_budget is not None:
         payload["change_budget"] = change_budget.to_dict()
+    if execution_plan is not None:
+        payload["execution_plan"] = execution_plan.to_dict()
     if impact_ranking is not None:
         payload["impact_ranking"] = impact_ranking.to_dict()
         if codemod_candidates is None:
@@ -503,6 +518,74 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
     return "\n".join(lines)
 
 
+def format_execution_plan_markdown(
+    execution_plan: RefactorExecutionPlanReport,
+) -> str:
+    if not execution_plan.classes:
+        return "No graph execution classes."
+    lines = [
+        "Graph execution classes:",
+        (
+            "   - Summary: "
+            f"{execution_plan.total_finding_count} finding(s), "
+            f"{execution_plan.connected_component_count} connected component(s), "
+            f"{execution_plan.parallel_group_count} parallel group(s)"
+        ),
+    ]
+    for index, execution_class in enumerate(execution_plan.classes, start=1):
+        primary = PATTERN_SPECS[execution_class.primary_pattern_id]
+        order = " -> ".join(
+            (
+                f"Pattern {pattern_id.value}"
+                for pattern_id in execution_class.application_order
+            )
+        )
+        lines.append(f"{index}. {execution_class.subsystem}")
+        lines.append(f"   - Class id: {execution_class.class_id}")
+        lines.append(f"   - Parallel group: {execution_class.parallel_group}")
+        lines.append(f"   - Batch priority: {execution_class.batch_priority}")
+        lines.append(
+            "   - Graph: "
+            f"{execution_class.finding_count} finding(s), "
+            f"{execution_class.internal_edge_count} internal edge(s), "
+            f"weight {execution_class.internal_edge_weight}, "
+            f"density {execution_class.graph_density}"
+        )
+        lines.append(
+            "   - Surface: "
+            f"{execution_class.evidence_file_count} file(s), "
+            f"{execution_class.evidence_site_count} evidence site(s), "
+            f"{execution_class.symbol_root_count} symbol root(s)"
+        )
+        lines.append(
+            f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
+        )
+        lines.append(f"   - Application order: {order}")
+        lines.append(f"   - First batch move: {execution_class.first_batch_move}")
+        lines.append(f"   - Codemod hint: {execution_class.first_codemod_hint}")
+        for title in execution_class.supporting_findings[:5]:
+            lines.append(f"   - Supporting finding: {title}")
+        for item in execution_class.evidence[:5]:
+            lines.append(f"   - Evidence: {item.file_path}:{item.line} `{item.symbol}`")
+    if execution_plan.edges:
+        lines.append("   - Strongest graph edges:")
+        strongest_edges = sorted(
+            execution_plan.edges,
+            key=lambda edge: (
+                -edge.weight,
+                edge.left_finding_id,
+                edge.right_finding_id,
+            ),
+        )[:5]
+        for edge in strongest_edges:
+            lines.append(
+                "   - Edge: "
+                f"{edge.left_finding_id} <-> {edge.right_finding_id}; "
+                f"weight {edge.weight}; {'; '.join(edge.reasons)}"
+            )
+    return "\n".join(lines)
+
+
 def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
     return f"{name} +{budget.added}/-{budget.deleted} " f"(net {budget.net_added:+d})"
 
@@ -674,6 +757,7 @@ class MarkdownReportRenderer(ABC):
         self,
         findings: list[RefactorFinding],
         plans: list[RefactorPlan] | None = None,
+        execution_plan: RefactorExecutionPlanReport | None = None,
         economics: RecommendationEconomics | None = None,
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
@@ -685,6 +769,8 @@ class MarkdownReportRenderer(ABC):
             sections.append(self.findings(findings))
         elif not plans:
             sections.append("No refactoring findings.")
+        if execution_plan is not None:
+            sections.append(format_execution_plan_markdown(execution_plan))
         if plans is not None:
             sections.append(format_plans_markdown(plans))
         if economics is not None:
@@ -920,10 +1006,14 @@ def main() -> int:
         parse_seconds = 0.0
         analysis_seconds = 0.0
     plans = None
+    execution_plan = None
     planning_seconds = 0.0
-    if args.include_plans or args.plans_only:
+    if args.include_plans or args.plans_only or args.include_execution_plan:
         started = perf_counter()
-        plans = build_refactor_plans(findings, root)
+        if args.include_plans or args.plans_only:
+            plans = build_refactor_plans(findings, root)
+        if args.include_execution_plan or args.plans_only:
+            execution_plan = build_refactor_execution_plan(findings, root)
         planning_seconds = round(perf_counter() - started, 3)
     timing = ScanTiming(
         parse_seconds=parse_seconds,
@@ -1025,13 +1115,20 @@ def main() -> int:
                     timing=timing,
                     impact_ranking=impact_ranking,
                     codemod_candidates=codemod_candidates,
+                    execution_plan=execution_plan,
                 ),
                 indent=2,
             )
         )
     else:
         if args.plans_only:
-            sections = [format_plans_markdown(plans or [])]
+            sections = [
+                format_execution_plan_markdown(
+                    execution_plan
+                    or build_refactor_execution_plan(findings, root)
+                ),
+                format_plans_markdown(plans or []),
+            ]
             if economics is not None:
                 sections.append(format_economics_markdown(economics, change_budget))
             if impact_ranking is not None:
@@ -1047,6 +1144,7 @@ def main() -> int:
                 MARKDOWN_RENDERER.report(
                     findings,
                     plans,
+                    execution_plan=execution_plan,
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,

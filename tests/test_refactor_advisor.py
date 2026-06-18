@@ -126,7 +126,10 @@ from nominal_refactor_advisor.observation_graph import (
     build_observation_graph,
 )
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.planner import build_refactor_plans
+from nominal_refactor_advisor.planner import (
+    build_refactor_execution_plan,
+    build_refactor_plans,
+)
 from nominal_refactor_advisor.record_algebra import product_record
 from nominal_refactor_advisor.scan_prediction import (
     ScanTiming,
@@ -2256,6 +2259,63 @@ def test_planner_ranks_by_certified_description_length_savings(
     )
 
     assert [plan.outcome.description_length_savings for plan in plans] == [8, 3]
+
+
+def test_execution_plan_groups_findings_by_weighted_graph(
+    tmp_path: Path,
+) -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Collapse threaded context",
+        "Repeated threaded parameters should have one authority.",
+        "single authoritative context",
+        "shared parameter fanout",
+    )
+    certificate = _object_family_certificate(
+        8,
+        shared_objects=("Context",),
+        semantic_axes=("source",),
+    )
+    same_file = tmp_path / "pkg" / "runtime.py"
+    independent_file = tmp_path / "other" / "cache.py"
+    findings = [
+        spec.build(
+            "threaded_a",
+            "alpha context fanout",
+            (SourceLocation(str(same_file), 10, "Alpha.run"),),
+            compression_certificate=certificate,
+        ),
+        spec.build(
+            "threaded_b",
+            "beta context fanout",
+            (SourceLocation(str(same_file), 30, "Beta.run"),),
+            compression_certificate=certificate,
+        ),
+        spec.build(
+            "threaded_c",
+            "cache context fanout",
+            (SourceLocation(str(independent_file), 5, "Cache.run"),),
+            compression_certificate=certificate,
+        ),
+    ]
+
+    report = build_refactor_execution_plan(findings, tmp_path)
+
+    assert report.total_finding_count == 3
+    assert report.connected_component_count == 2
+    assert report.parallel_group_count == 1
+    assert len(report.edges) == 1
+    assert report.edges[0].weight >= 3
+    assert "shared evidence file" in report.edges[0].reasons[0]
+    grouped_class = next(
+        execution_class
+        for execution_class in report.classes
+        if execution_class.finding_count == 2
+    )
+    assert grouped_class.internal_edge_count == 1
+    assert grouped_class.graph_density == 1.0
+    assert grouped_class.first_batch_move
+    assert grouped_class.first_codemod_hint
 
 
 def test_planner_derives_local_minimum_escape_from_findings(
@@ -9976,6 +10036,39 @@ def test_markdown_output_can_include_subsystem_plans(tmp_path: Path) -> None:
     assert "Outcome:" in output
     assert "Action:" in output
     assert "Action sites:" in output
+
+
+def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Collapse execution batch",
+        "Repeated findings should be executed as one graph class.",
+        "graph execution class",
+        "shared source evidence",
+    )
+    finding = spec.build(
+        "batch_detector",
+        "batch context",
+        (SourceLocation(str(tmp_path / "pkg" / "runtime.py"), 7, "Runtime.run"),),
+    )
+    execution_plan = build_refactor_execution_plan([finding], tmp_path)
+
+    output = MARKDOWN_RENDERER.report(
+        [finding],
+        execution_plan=execution_plan,
+    )
+    payload = _json_payload(
+        [finding],
+        [],
+        [],
+        execution_plan=execution_plan,
+    )
+
+    assert "Graph execution classes:" in output
+    assert "First batch move:" in output
+    assert "Codemod hint:" in output
+    assert "execution_plan" in payload
+    assert payload["execution_plan"]["connected_component_count"] == 1
 
 
 def test_detects_manual_family_roster_for_detector_registry(tmp_path: Path) -> None:

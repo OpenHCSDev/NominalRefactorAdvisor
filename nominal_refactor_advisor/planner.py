@@ -15,6 +15,7 @@ from .record_algebra import (
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+import hashlib
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
@@ -29,6 +30,7 @@ from .models import (
     STRONG_HEURISTIC,
     OutcomeEstimate,
     RefactorAction,
+    SemanticRecord,
     RefactorFinding,
     RefactorPlan,
     RefactorTrajectorySummary,
@@ -52,6 +54,57 @@ materialize_product_record(product_record_spec('_FindingCluster', 'subsystem: st
 materialize_product_record(product_record_spec('_PatternTrajectoryPolicy', 'pattern_id: PatternId; phase: RefactorPhase'))
 materialize_product_record(product_record_spec('_RegistryNormalFormPolicy', 'detector_id: str; stage_order: int; normal_form: str; stage_label: str; step_template: str; blocks_metaclass: bool', defaults={'blocks_metaclass': False}))
 # fmt: on
+
+
+@dataclass(frozen=True)
+class RefactorExecutionEdge(SemanticRecord):
+    """Weighted graph edge joining findings into one execution class."""
+
+    left_finding_id: str
+    right_finding_id: str
+    weight: int
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RefactorExecutionClassSurface(SemanticRecord):
+    """Shared graph-connected execution-class surface."""
+
+    class_id: str
+    subsystem: str
+    finding_ids: tuple[str, ...]
+    finding_count: int
+    evidence_file_count: int
+    evidence_site_count: int
+    symbol_root_count: int
+    internal_edge_count: int
+    internal_edge_weight: int
+    graph_density: float
+    batch_priority: int
+    primary_pattern_id: PatternId
+    application_order: tuple[PatternId, ...]
+    first_batch_move: str
+    first_codemod_hint: str
+    supporting_findings: tuple[str, ...]
+    evidence: tuple[SourceLocation, ...]
+
+
+@dataclass(frozen=True)
+class RefactorExecutionClass(RefactorExecutionClassSurface):
+    """One graph-connected batch to refactor as a single work queue item."""
+
+    parallel_group: int
+
+
+@dataclass(frozen=True)
+class RefactorExecutionPlanReport(SemanticRecord):
+    """Graph-grounded execution plan derived from findings and subsystem plans."""
+
+    classes: tuple[RefactorExecutionClass, ...]
+    edges: tuple[RefactorExecutionEdge, ...]
+    total_finding_count: int
+    connected_component_count: int
+    parallel_group_count: int
 
 
 _PATTERN_TRAJECTORY_POLICY_ROWS = (
@@ -825,6 +878,53 @@ def build_refactor_plans(
     )
 
 
+def build_refactor_execution_plan(
+    findings: list[RefactorFinding], root: Path
+) -> RefactorExecutionPlanReport:
+    """Build a graph-grounded execution queue from advisor findings.
+
+    Findings are observation vertices. Edges are weighted by shared evidence,
+    shared capabilities, pattern synergy, directory locality, and shared symbol
+    roots. Connected components become execution classes so agents can refactor
+    a whole bug class rather than chasing the highest-ranked individual symptom.
+    """
+
+    if not findings:
+        return RefactorExecutionPlanReport(
+            classes=(),
+            edges=(),
+            total_finding_count=0,
+            connected_component_count=0,
+            parallel_group_count=0,
+        )
+    finding_tuple = tuple(findings)
+    edges = _execution_graph_edges(finding_tuple, root)
+    clusters = _cluster_findings(findings, root)
+    class_inputs = [
+        _execution_class_input(cluster, root, edges) for cluster in clusters
+    ]
+    ordered_inputs = sorted(
+        class_inputs,
+        key=lambda row: (
+            -row.batch_priority,
+            row.subsystem,
+            row.finding_ids,
+        ),
+    )
+    parallel_groups = _assign_parallel_groups(ordered_inputs)
+    execution_classes = tuple(
+        _execution_class_from_input(row, parallel_group=parallel_groups[index])
+        for index, row in enumerate(ordered_inputs)
+    )
+    return RefactorExecutionPlanReport(
+        classes=execution_classes,
+        edges=edges,
+        total_finding_count=len(findings),
+        connected_component_count=len(execution_classes),
+        parallel_group_count=len(set(parallel_groups)) if parallel_groups else 0,
+    )
+
+
 def _cluster_findings(
     findings: list[RefactorFinding], root: Path
 ) -> list[_FindingCluster]:
@@ -846,7 +946,8 @@ def _cluster_findings(
             parents[right_root] = left_root
 
     for left_index, right_index in combinations(range(len(findings)), 2):
-        if _relation_score(findings[left_index], findings[right_index], root) >= 3:
+        relation = _finding_relation(findings[left_index], findings[right_index], root)
+        if relation.weight >= 3:
             union(left_index, right_index)
 
     grouped: dict[int, list[RefactorFinding]] = defaultdict(list)
@@ -876,21 +977,83 @@ def _cluster_findings(
 
 
 def _relation_score(left: RefactorFinding, right: RefactorFinding, root: Path) -> int:
+    return _finding_relation(left, right, root).weight
+
+
+@dataclass(frozen=True)
+class _FindingRelation:
+    weight: int
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ExecutionClassInput(RefactorExecutionClassSurface):
+    file_paths: frozenset[Path]
+
+
+def _finding_relation(
+    left: RefactorFinding, right: RefactorFinding, root: Path
+) -> _FindingRelation:
     score = 0
+    reasons: list[str] = []
     left_paths = set(_evidence_paths(left))
     right_paths = set(_evidence_paths(right))
-    if left_paths & right_paths:
+    shared_paths = left_paths & right_paths
+    if shared_paths:
         score += 3
+        reasons.append(
+            "shared evidence file: "
+            + ", ".join(str(path) for path in sorted(shared_paths))
+        )
     common_depth = _max_common_dir_depth(left_paths, right_paths, root)
     if common_depth:
-        score += min(common_depth, 2)
-    if set(left.capability_tags) & set(right.capability_tags):
+        depth_weight = min(common_depth, 2)
+        score += depth_weight
+        reasons.append(f"common directory depth {common_depth} (+{depth_weight})")
+    shared_capabilities = set(left.capability_tags) & set(right.capability_tags)
+    if shared_capabilities:
         score += 1
+        reasons.append(
+            "shared capabilities: "
+            + ", ".join(sorted(tag.label for tag in shared_capabilities))
+        )
     if _patterns_are_synergistic(left.pattern_id, right.pattern_id):
         score += 1
-    if _shared_symbol_roots(left, right):
+        reasons.append(
+            f"synergistic patterns {left.pattern_id.value}/{right.pattern_id.value}"
+        )
+    shared_roots = _symbol_roots(left) & _symbol_roots(right)
+    if shared_roots:
         score += 1
-    return score
+        reasons.append("shared symbol roots: " + ", ".join(sorted(shared_roots)))
+    return _FindingRelation(weight=score, reasons=tuple(reasons))
+
+
+def _execution_graph_edges(
+    findings: tuple[RefactorFinding, ...],
+    root: Path,
+) -> tuple[RefactorExecutionEdge, ...]:
+    edges: list[RefactorExecutionEdge] = []
+    for left, right in combinations(findings, 2):
+        relation = _finding_relation(left, right, root)
+        if relation.weight < 3:
+            continue
+        left_id = left.stable_id
+        right_id = right.stable_id
+        if right_id < left_id:
+            left_id, right_id = right_id, left_id
+        edges.append(
+            RefactorExecutionEdge(
+                left_finding_id=left_id,
+                right_finding_id=right_id,
+                weight=relation.weight,
+                reasons=relation.reasons,
+            )
+        )
+    return sorted_tuple(
+        edges,
+        key=lambda edge: (edge.left_finding_id, edge.right_finding_id),
+    )
 
 
 def _patterns_are_synergistic(left: PatternId, right: PatternId) -> bool:
@@ -945,6 +1108,146 @@ def _subsystem_name(findings: tuple[RefactorFinding, ...], root: Path) -> str:
     if first.parent != Path("."):
         return str(first.parent)
     return first.stem
+
+
+def _execution_class_input(
+    cluster: _FindingCluster,
+    root: Path,
+    edges: tuple[RefactorExecutionEdge, ...],
+) -> _ExecutionClassInput:
+    plan = _plan_for_cluster(cluster)
+    finding_ids = sorted_tuple(finding.stable_id for finding in cluster.findings)
+    finding_id_set = frozenset(finding_ids)
+    internal_edges = tuple(
+        edge
+        for edge in edges
+        if edge.left_finding_id in finding_id_set
+        and edge.right_finding_id in finding_id_set
+    )
+    file_paths = frozenset(_evidence_paths_for_findings(cluster.findings))
+    symbol_roots = frozenset(
+        root_symbol
+        for finding in cluster.findings
+        for root_symbol in _symbol_roots(finding)
+    )
+    possible_edge_count = len(finding_ids) * max(len(finding_ids) - 1, 0) // 2
+    internal_edge_weight = sum(edge.weight for edge in internal_edges)
+    graph_density = (
+        0.0
+        if possible_edge_count == 0
+        else round(len(internal_edges) / possible_edge_count, 3)
+    )
+    batch_priority = _execution_batch_priority(
+        plan,
+        finding_count=len(finding_ids),
+        internal_edge_weight=internal_edge_weight,
+    )
+    return _ExecutionClassInput(
+        class_id=_execution_class_id(finding_ids),
+        subsystem=cluster.subsystem,
+        finding_ids=finding_ids,
+        finding_count=len(finding_ids),
+        evidence_file_count=len(file_paths),
+        evidence_site_count=len(cluster.evidence),
+        symbol_root_count=len(symbol_roots),
+        internal_edge_count=len(internal_edges),
+        internal_edge_weight=internal_edge_weight,
+        graph_density=graph_density,
+        batch_priority=batch_priority,
+        primary_pattern_id=plan.primary_pattern_id,
+        application_order=plan.application_order,
+        first_batch_move=_first_batch_move(plan),
+        first_codemod_hint=_first_codemod_hint(plan),
+        supporting_findings=plan.supporting_findings,
+        evidence=cluster.evidence,
+        file_paths=file_paths,
+    )
+
+
+def _execution_class_id(finding_ids: tuple[str, ...]) -> str:
+    payload = "|".join(finding_ids)
+    return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
+
+
+def _evidence_paths_for_findings(findings: tuple[RefactorFinding, ...]) -> set[Path]:
+    return {path for finding in findings for path in _evidence_paths(finding)}
+
+
+def _execution_batch_priority(
+    plan: RefactorPlan,
+    *,
+    finding_count: int,
+    internal_edge_weight: int,
+) -> int:
+    outcome = plan.outcome
+    return (
+        outcome.description_length_savings * 10
+        + max(outcome.loci_of_change_before - outcome.loci_of_change_after, 0)
+        + internal_edge_weight
+        + finding_count
+    )
+
+
+def _first_batch_move(plan: RefactorPlan) -> str:
+    if plan.plan_steps:
+        return plan.plan_steps[0]
+    if plan.actions:
+        return plan.actions[0].description
+    return plan.summary
+
+
+def _first_codemod_hint(plan: RefactorPlan) -> str:
+    for action in plan.actions:
+        if action.statement_operation:
+            return f"{action.statement_operation}: {action.description}"
+    if plan.actions:
+        return plan.actions[0].description
+    return "No mechanical codemod candidate; establish the nominal authority first."
+
+
+def _assign_parallel_groups(rows: list[_ExecutionClassInput]) -> tuple[int, ...]:
+    group_file_paths: list[set[Path]] = []
+    assigned_groups: list[int] = []
+    for row in rows:
+        row_paths = set(row.file_paths)
+        assigned_group = 0
+        for group_index, existing_paths in enumerate(group_file_paths, start=1):
+            if row_paths.isdisjoint(existing_paths):
+                existing_paths.update(row_paths)
+                assigned_group = group_index
+                break
+        if assigned_group == 0:
+            group_file_paths.append(row_paths)
+            assigned_group = len(group_file_paths)
+        assigned_groups.append(assigned_group)
+    return tuple(assigned_groups)
+
+
+def _execution_class_from_input(
+    row: _ExecutionClassInput,
+    *,
+    parallel_group: int,
+) -> RefactorExecutionClass:
+    return RefactorExecutionClass(
+        class_id=row.class_id,
+        subsystem=row.subsystem,
+        finding_ids=row.finding_ids,
+        finding_count=row.finding_count,
+        evidence_file_count=row.evidence_file_count,
+        evidence_site_count=row.evidence_site_count,
+        symbol_root_count=row.symbol_root_count,
+        internal_edge_count=row.internal_edge_count,
+        internal_edge_weight=row.internal_edge_weight,
+        graph_density=row.graph_density,
+        batch_priority=row.batch_priority,
+        parallel_group=parallel_group,
+        primary_pattern_id=row.primary_pattern_id,
+        application_order=row.application_order,
+        first_batch_move=row.first_batch_move,
+        first_codemod_hint=row.first_codemod_hint,
+        supporting_findings=row.supporting_findings,
+        evidence=row.evidence,
+    )
 
 
 def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:

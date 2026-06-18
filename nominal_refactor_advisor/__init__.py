@@ -74,6 +74,22 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.planner",
         "build_refactor_plans",
     ),
+    "build_refactor_execution_plan": (
+        "nominal_refactor_advisor.planner",
+        "build_refactor_execution_plan",
+    ),
+    "RefactorExecutionPlanReport": (
+        "nominal_refactor_advisor.planner",
+        "RefactorExecutionPlanReport",
+    ),
+    "RefactorExecutionClass": (
+        "nominal_refactor_advisor.planner",
+        "RefactorExecutionClass",
+    ),
+    "RefactorExecutionEdge": (
+        "nominal_refactor_advisor.planner",
+        "RefactorExecutionEdge",
+    ),
     "CodemodCandidate": ("nominal_refactor_advisor.codemod", "CodemodCandidate"),
     "CodemodApplicability": (
         "nominal_refactor_advisor.codemod",
