@@ -6992,6 +6992,109 @@ def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> Non
     )
 
 
+def test_detects_declared_field_extraction_fanout(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+class DeclaredFieldAuthority:
+    @staticmethod
+    def values_declared_by_type(target_type, source):
+        return {}
+
+
+class PoseCarrier:
+    pass
+
+
+class RepairCarrier:
+    pass
+
+
+def build_pose(active_pose_domain):
+    return RuntimeCarrier(
+        **DeclaredFieldAuthority.values_declared_by_type(
+            PoseCarrier,
+            active_pose_domain,
+        )
+    )
+
+
+def build_repair(active_pose_domain, repair_domain):
+    return RuntimeCarrier(
+        **DeclaredFieldAuthority.values_declared_by_type(
+            PoseCarrier,
+            active_pose_domain,
+        ),
+        **DeclaredFieldAuthority.values_declared_by_type(
+            RepairCarrier,
+            repair_domain,
+        ),
+    )
+""",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        finding
+        for finding in findings
+        if finding.detector_id == "declared_field_extraction_fanout"
+    )
+    assert finding.compression_certificate is not None
+    assert finding.compression_certificate.pays_rent
+    assert "materialization authority" in finding.capability_gap
+    assert "PoseCarrier" in finding.metrics.plan_field_names
+
+
+def test_declared_field_extraction_fanout_is_ssot_plan(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def declared_values_by_type(target_type, source):
+    return {}
+
+
+class LeftCarrier:
+    pass
+
+
+class RightCarrier:
+    pass
+
+
+def left(source):
+    return Target(**declared_values_by_type(LeftCarrier, source))
+
+
+def right(source):
+    return Target(**declared_values_by_type(RightCarrier, source))
+
+
+def both(left_source, right_source):
+    return Target(
+        **declared_values_by_type(LeftCarrier, left_source),
+        **declared_values_by_type(RightCarrier, right_source),
+    )
+""",
+    )
+    findings = analyze_path(tmp_path)
+    execution_plan = build_refactor_execution_plan(list(findings), tmp_path)
+    authority_classes = [
+        item
+        for item in execution_plan.classes
+        if "declared_field_extraction_fanout" in item.supporting_findings
+        or any(
+            finding.detector_id == "declared_field_extraction_fanout"
+            and finding.stable_id in item.finding_ids
+            for finding in findings
+        )
+    ]
+    assert authority_classes
+    assert authority_classes[0].batch_priority > 0
+
+
 def test_detects_single_owner_builder_call_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

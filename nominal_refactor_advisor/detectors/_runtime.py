@@ -14,6 +14,11 @@ import tempfile
 from dataclasses import dataclass
 from typing import Callable, Generic, TypeAlias, TypeVar
 
+from ..factorization import (
+    FactorizationEngine,
+    FactorizationLattice,
+    FactorizationPlan,
+)
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
@@ -4474,6 +4479,305 @@ class RepeatedBuilderCallDetector(IssueDetector):
                 )
             )
         return findings
+
+
+_DECLARED_FIELD_EXTRACTION_REQUIRED_TOKENS = frozenset(("declared", "type"))
+_DECLARED_FIELD_EXTRACTION_PAYLOAD_TOKENS = frozenset(
+    ("field", "fields", "value", "values")
+)
+
+
+@dataclass(frozen=True)
+class DeclaredFieldExtractionSite:
+    """One call-site that manually extracts declared values for a nominal target."""
+
+    file_path: str
+    lineno: int
+    ordinal: int
+    owner_symbol: str
+    callee_name: str
+    target_type: str
+    source_expression: str
+
+    @property
+    def object_name(self) -> str:
+        return (
+            f"{self.file_path}:{self.lineno}:"
+            f"{self.ordinal}:"
+            f"{self.owner_symbol}:{self.target_type}:{self.source_expression}"
+        )
+
+    @property
+    def source_location(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.lineno, self.owner_symbol)
+
+    @property
+    def axis_values(self) -> dict[str, str]:
+        return {
+            "callee_name": self.callee_name,
+            "target_type": self.target_type,
+            "source_expression": self.source_expression,
+            "owner_symbol": self.owner_symbol,
+            "file_path": self.file_path,
+        }
+
+
+class DeclaredFieldExtractionFanoutDetector(IssueDetector):
+    detector_id = "declared_field_extraction_fanout"
+    finding_spec = certified_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Declared-field extraction should become a construction authority",
+        "Manual declared-field extraction by nominal type is a transitional "
+        "refactor state: call sites unpack a carrier surface instead of routing "
+        "construction through one typed materialization authority.",
+        "single typed construction/materialization authority for the declared "
+        "field family",
+        "declared-field extraction is repeated across a finite product of target, "
+        "source, and owner axes",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        sites = sorted_tuple(
+            (
+                site
+                for module in modules
+                for site in _declared_field_extraction_sites(module)
+            ),
+            key=lambda item: (item.file_path, item.lineno, item.owner_symbol),
+        )
+        if len(sites) < config.min_declared_field_extraction_sites:
+            return []
+        site_by_object_name = {site.object_name: site for site in sites}
+        plans = _declared_field_extraction_authority_plans(
+            sites,
+            minimum_site_count=config.min_declared_field_extraction_sites,
+        )
+        return [
+            self._finding_for_plan(plan, site_by_object_name)
+            for plan in plans
+            if self._plan_is_authority_boundary(plan)
+        ]
+
+    def _finding_for_plan(
+        self,
+        plan: FactorizationPlan,
+        site_by_object_name: dict[str, DeclaredFieldExtractionSite],
+    ) -> RefactorFinding:
+        sites = tuple(
+            site_by_object_name[object_name] for object_name in plan.orbit.object_names
+        )
+        target_types = sorted_tuple({site.target_type for site in sites})
+        source_expressions = sorted_tuple({site.source_expression for site in sites})
+        owner_symbols = sorted_tuple({site.owner_symbol for site in sites})
+        callee_names = sorted_tuple({site.callee_name for site in sites})
+        evidence = tuple(site.source_location for site in sites[:8])
+        summary_subject = _declared_field_extraction_summary_subject(plan)
+        return self.build_finding(
+            (
+                f"{summary_subject} manually extracts {len(target_types)} nominal "
+                f"target type(s) through {len(sites)} declared-field call site(s)."
+            ),
+            evidence,
+            capability_gap=(
+                "one fail-loud typed materialization authority or coercion authority "
+                "that derives the declared field mapping instead of spreading "
+                "unpacking at call sites"
+            ),
+            relation_context=plan.normal_form,
+            scaffold=_declared_field_extraction_scaffold(
+                target_types, source_expressions
+            ),
+            codemod_patch=_declared_field_extraction_patch(
+                sites[0].file_path,
+                callee_names,
+                target_types,
+            ),
+            compression_certificate=plan.compression_certificate,
+            metrics=MappingMetrics.from_field_names(
+                mapping_site_count=len(sites),
+                mapping_name="/".join(callee_names),
+                field_names=target_types,
+                source_name="/".join(owner_symbols),
+                identity_field_names=source_expressions,
+            ),
+        )
+
+    @staticmethod
+    def _plan_is_authority_boundary(plan: FactorizationPlan) -> bool:
+        shared_axis_names = frozenset(plan.orbit.shared_axis_names)
+        return bool(
+            "callee_name" in shared_axis_names
+            and (
+                "target_type" in shared_axis_names
+                or "owner_symbol" in shared_axis_names
+                or len(plan.orbit.rows) >= 3
+            )
+        )
+
+
+def _declared_field_extraction_authority_plans(
+    sites: tuple[DeclaredFieldExtractionSite, ...],
+    *,
+    minimum_site_count: int,
+) -> tuple[FactorizationPlan, ...]:
+    """Return non-overlapping paid construction-authority plans for extraction sites."""
+
+    engine = FactorizationEngine.from_mappings(
+        (site.object_name, site.axis_values) for site in sites
+    )
+    plans = tuple(
+        plan
+        for plan in engine.candidate_plans(
+            "declared_field_materialization_authority",
+            minimum_object_count=minimum_site_count,
+        )
+        if "callee_name" in plan.orbit.shared_axis_names
+    )
+    best_nodes = FactorizationLattice.from_plans(plans).best_antichain()
+    return tuple(node.plan for node in best_nodes)
+
+
+def _declared_field_extraction_sites(
+    module: ParsedModule,
+) -> tuple[DeclaredFieldExtractionSite, ...]:
+    sites: list[DeclaredFieldExtractionSite] = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.class_stack: list[str] = []
+            self.function_stack: list[str] = []
+
+        @property
+        def owner_symbol(self) -> str:
+            if self.function_stack:
+                return ".".join((*self.class_stack, *self.function_stack))
+            if self.class_stack:
+                return ".".join(self.class_stack)
+            return "<module>"
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            self.class_stack.append(node.name)
+            self.generic_visit(node)
+            self.class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.function_stack.append(node.name)
+            self.generic_visit(node)
+            self.function_stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_Call(self, node: ast.Call) -> None:
+            site = _declared_field_extraction_site(
+                module,
+                node,
+                self.owner_symbol,
+                len(sites),
+            )
+            if site is not None:
+                sites.append(site)
+            self.generic_visit(node)
+
+    Visitor().visit(module.module)
+    return tuple(sites)
+
+
+def _declared_field_extraction_site(
+    module: ParsedModule,
+    node: ast.Call,
+    owner_symbol: str,
+    ordinal: int,
+) -> DeclaredFieldExtractionSite | None:
+    callee_name = _declared_field_extraction_callee_name(node)
+    if callee_name is None or len(node.args) < 2:
+        return None
+    return DeclaredFieldExtractionSite(
+        file_path=str(module.path),
+        lineno=node.lineno,
+        ordinal=ordinal,
+        owner_symbol=owner_symbol,
+        callee_name=callee_name,
+        target_type=_unparse_expression(node.args[0]),
+        source_expression=_unparse_expression(node.args[1]),
+    )
+
+
+def _declared_field_extraction_callee_name(node: ast.Call) -> str | None:
+    callee_name = _terminal_call_name(node.func)
+    if callee_name is None:
+        return None
+    tokens = frozenset(_runtime_semantic_identifier_tokens(callee_name))
+    if not _DECLARED_FIELD_EXTRACTION_REQUIRED_TOKENS <= tokens:
+        return None
+    if not (tokens & _DECLARED_FIELD_EXTRACTION_PAYLOAD_TOKENS):
+        return None
+    return callee_name
+
+
+def _terminal_call_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Name):
+        return node.id
+    return None
+
+
+def _unparse_expression(node: ast.AST) -> str:
+    return ast.unparse(node)
+
+
+def _declared_field_extraction_summary_subject(plan: FactorizationPlan) -> str:
+    shared_axes = dict(plan.orbit.shared_signature)
+    if "target_type" in shared_axes:
+        return f"`{shared_axes['target_type']}`"
+    if "owner_symbol" in shared_axes:
+        return f"`{shared_axes['owner_symbol']}`"
+    if "callee_name" in shared_axes:
+        return f"`{shared_axes['callee_name']}`"
+    return "Declared-field extraction"
+
+
+def _declared_field_extraction_scaffold(
+    target_types: tuple[str, ...],
+    source_expressions: tuple[str, ...],
+) -> str:
+    target_preview = ", ".join(target_types[:3]) or "TargetCarrier"
+    source_preview = source_expressions[0] if source_expressions else "source"
+    return (
+        "@dataclass(frozen=True)\n"
+        "class DeclaredFieldMaterializationAuthority:\n"
+        "    target_types: tuple[type[object], ...]\n\n"
+        "    def materialize(\n"
+        "        self,\n"
+        "        target_type: type[object],\n"
+        "        source: object,\n"
+        "    ) -> object:\n"
+        "        # Fail loud unless target_type is declared by this authority.\n"
+        "        ...\n\n"
+        f"# Targets: {target_preview}\n"
+        f"# Replace call-site unpacking from `{source_preview}` with "
+        "authority.materialize(...)."
+    )
+
+
+def _declared_field_extraction_patch(
+    target_file: str,
+    callee_names: tuple[str, ...],
+    target_types: tuple[str, ...],
+) -> str:
+    callee_preview = ", ".join(callee_names) or "declared-field extractor"
+    target_preview = ", ".join(target_types[:4]) or "the nominal target family"
+    return (
+        f"# In {target_file}, replace repeated `{callee_preview}` unpacking with one "
+        "typed materialization authority.\n"
+        f"# Authority owns target family: {target_preview}.\n"
+        "# Delete call-site **declared-field extraction once construction routes "
+        "through the authority."
+    )
 
 
 _EXTERNAL_DECLARATIVE_BUILDER_CALLS = frozenset(

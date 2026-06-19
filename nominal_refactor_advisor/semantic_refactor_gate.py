@@ -29,6 +29,7 @@ SSOT_AUTHORITY_DETECTOR_IDS = frozenset(
         "distributed_boundary_fanout",
         "role_surface_drift",
         "mirrored_constructor_validation",
+        "declared_field_extraction_fanout",
         "repeated_builder_calls",
         "repeated_export_dicts",
         "semantic_inheritance_family_ssot",
