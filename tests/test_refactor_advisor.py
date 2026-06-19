@@ -2954,6 +2954,36 @@ class RepairRequest(ProgressEmitterCarrier):
     )
 
 
+def test_carrier_composition_retreat_ignores_collection_element_specs(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+from collections.abc import Iterable
+
+
+@dataclass(frozen=True)
+class ObjectiveFrontierStartSpec:
+    score: float
+
+
+@dataclass(frozen=True)
+class FrontierRequest:
+    objective_frontier_start_specs: Iterable[ObjectiveFrontierStartSpec]
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+        for finding in findings
+    )
+
+
 def test_available_nominal_carrier_reuse_handles_slots_and_separate_roots(
     tmp_path: Path,
 ) -> None:

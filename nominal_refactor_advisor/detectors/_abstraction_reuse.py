@@ -469,6 +469,8 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
 
 
 def _semantic_carrier_type_names(annotation_text: str) -> tuple[str, ...]:
+    if "[" in annotation_text:
+        return ()
     return sorted_tuple(
         name
         for name in _annotation_type_names(annotation_text)
