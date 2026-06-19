@@ -9207,6 +9207,43 @@ def test_ignores_nonmirrored_import_fallback(tmp_path: Path) -> None:
     )
 
 
+def test_detects_runtime_namespace_bridge(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/split_runtime.py",
+        '\nfrom pkg.exports import runtime_bridge_namespace as _runtime_bridge_namespace\nfrom pkg import source as _source\n\nglobals().update(_runtime_bridge_namespace(vars(_source)))\n\nif "RuntimeCarrier" not in globals():\n    class RuntimeCarrier:\n        pass\n',
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "runtime_namespace_bridge"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_SCHEMA
+    assert "runtime namespace bridge" in finding.summary
+    assert "RuntimeCarrier" in {e.symbol for e in finding.evidence}
+    assert "missing names raise" in (finding.codemod_patch or "")
+
+
+def test_detects_raw_globals_update_bridge(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef install(namespace):\n    globals().update(namespace)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "runtime_namespace_bridge"
+        )
+    )
+    assert "globals update" in finding.summary
+
+
 def test_detects_mirrored_constructor_validation(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

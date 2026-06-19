@@ -2604,6 +2604,141 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
         return findings
 
 
+@dataclass(frozen=True)
+class RuntimeNamespaceBridgeSite:
+    line: int
+    symbol: str
+    bridge_kind: str
+
+
+def _call_symbol(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        owner = _call_symbol(node.value)
+        return f"{owner}.{node.attr}" if owner else node.attr
+    return ""
+
+
+def _is_globals_call(node: ast.AST) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "globals"
+        and not node.args
+        and not node.keywords
+    )
+
+
+def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
+    return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
+        "runtime_bridge_namespace"
+    )
+
+
+def _globals_guard_symbol(node: ast.If) -> str | None:
+    test = node.test
+    if not isinstance(test, ast.Compare):
+        return None
+    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.NotIn):
+        return None
+    if len(test.comparators) != 1 or not _is_globals_call(test.comparators[0]):
+        return None
+    if isinstance(test.left, ast.Constant) and isinstance(test.left.value, str):
+        return test.left.value
+    return None
+
+
+class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
+    detector_id = "runtime_namespace_bridge"
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Runtime namespace bridges should be replaced with explicit authorities",
+        "Copying another module namespace into globals, or conditionally defining names only when globals lacks them, creates a hidden compatibility layer. Split modules should import their dependencies explicitly and publish one authoritative public surface so missing names fail loudly.",
+        "explicit import/authority boundary with no globals namespace copying",
+        "module mutates globals or guards definitions through a namespace bridge",
+        _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        sites: list[RuntimeNamespaceBridgeSite] = []
+
+        class Visitor(ast.NodeVisitor):
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                for alias in node.names:
+                    if alias.name == "runtime_bridge_namespace":
+                        sites.append(
+                            RuntimeNamespaceBridgeSite(
+                                line=int(node.lineno),
+                                symbol=alias.asname or alias.name,
+                                bridge_kind="runtime_bridge_namespace import",
+                            )
+                        )
+                self.generic_visit(node)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "update"
+                    and _is_globals_call(node.func.value)
+                ):
+                    bridge_kind = "globals update"
+                    if any(_is_runtime_bridge_namespace_call(arg) for arg in node.args):
+                        bridge_kind = "runtime_bridge_namespace globals update"
+                    sites.append(
+                        RuntimeNamespaceBridgeSite(
+                            line=int(node.lineno),
+                            symbol=ast.unparse(node),
+                            bridge_kind=bridge_kind,
+                        )
+                    )
+                self.generic_visit(node)
+
+            def visit_If(self, node: ast.If) -> None:
+                guarded_symbol = _globals_guard_symbol(node)
+                if guarded_symbol is not None:
+                    sites.append(
+                        RuntimeNamespaceBridgeSite(
+                            line=int(node.lineno),
+                            symbol=guarded_symbol,
+                            bridge_kind="guarded globals definition",
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        if not sites:
+            return []
+        bridge_kinds = sorted_tuple(site.bridge_kind for site in sites)
+        evidence = tuple(
+            SourceLocation(str(module.path), site.line, site.symbol)
+            for site in sites[:12]
+        )
+        return [
+            self.build_finding(
+                (
+                    f"`{module.path}` has {len(sites)} runtime namespace bridge "
+                    f"site(s): {', '.join(bridge_kinds)}."
+                ),
+                evidence,
+                scaffold=(
+                    "# Replace namespace bridge imports with explicit imports from the true owner module.\n"
+                    "# Delete `globals().update(...)` compatibility transport and publish one public authority/export surface.\n"
+                    "# Replace `if name not in globals()` guards with unconditional definitions or fail-loud imports."
+                ),
+                codemod_patch=(
+                    "# Remove runtime namespace copying in this module.\n"
+                    "# Add explicit imports for every required dependency, then let missing names raise at import time."
+                ),
+                capability_gap="no runtime namespace bridge or guarded globals definition remains",
+            )
+        ]
+
+
 _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
     (
         "action",
