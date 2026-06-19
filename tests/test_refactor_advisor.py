@@ -8596,6 +8596,81 @@ def test_json_and_markdown_expose_codemod_applicability(
     )
     assert "agent action:" in markdown
 
+    gated_markdown = MARKDOWN_RENDERER.report(
+        [finding],
+        impact_ranking=impact_ranking,
+        codemod_candidates=codemod_candidates,
+    )
+    raw_markdown = MARKDOWN_RENDERER.report(
+        [finding],
+        impact_ranking=impact_ranking,
+        codemod_candidates=codemod_candidates,
+        raw_findings=True,
+    )
+    gate_payload = cast(dict[str, object], payload["semantic_refactor_gate"])
+
+    assert gated_markdown.startswith("Semantic refactor gate:")
+    assert "Forbidden mode: do not patch individual findings independently" in (
+        gated_markdown
+    )
+    assert "Raw finding evidence suppressed:" in gated_markdown
+    assert f"Stable id: {finding.stable_id}" not in gated_markdown
+    assert "Raw finding evidence (supporting only):" in raw_markdown
+    assert f"Stable id: {finding.stable_id}" in raw_markdown
+    assert gate_payload["active"] is True
+    assert gate_payload["policy"] == "authority_boundary_first"
+    assert gate_payload["raw_findings_default"] == "suppressed_when_active"
+
+
+def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candidates() -> None:
+    spec = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Authority boundary",
+        "source of truth drift must be collapsed",
+        "single authority boundary",
+        "same fact family has multiple writable surfaces",
+    )
+    critical = spec.build(
+        "role_surface_drift",
+        "`payload` declares one role but is used as another authority surface.",
+        (SourceLocation("module.py", 10, "Scope.payload"),),
+    )
+    cleanup = spec.build(
+        "trivial_forwarding_wrapper",
+        "`Scope.port` forwards to `request.port`.",
+        (SourceLocation("module.py", 20, "Scope.port"),),
+    )
+
+    markdown = MARKDOWN_RENDERER.report(
+        [cleanup, critical],
+        codemod_candidates=(),
+    )
+
+    assert markdown.startswith("Semantic refactor gate:")
+    assert "SSOT/authority-boundary findings outrank cleanup-only wrapper findings" in markdown
+    assert "SSOT-critical signals: 1" in markdown
+    assert "Cleanup-only signals: 1; defer" in markdown
+    assert "No impact-ranked target was generated" in markdown
+    assert "Raw finding evidence suppressed:" in markdown
+
+
+def test_no_impact_ranking_requires_raw_findings_acknowledgement() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--no-impact-ranking",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "--no-impact-ranking disables the semantic refactor gate" in result.stderr
+    assert "--raw-findings" in result.stderr
+
 
 def test_semantic_codemod_applicability_stops_only_for_uncertain_findings(
     tmp_path: Path,

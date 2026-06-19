@@ -69,6 +69,11 @@ from .scan_prediction import (
     ScanTiming,
     build_scan_prediction_report,
 )
+from .semantic_refactor_gate import (
+    SemanticRefactorGateMode,
+    SemanticRefactorGateModeError,
+    SemanticRefactorGateReport,
+)
 from .source_index import build_source_index
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
@@ -142,6 +147,15 @@ _CLI_ARGUMENT_SPECS = (
             help="Emit JSON instead of Markdown.",
         ),
         CliArgumentSpec(
+            flags=("--raw-findings",),
+            action="store_true",
+            help=(
+                "Show full raw finding details even when semantic refactor gate "
+                "is active. Raw findings are supporting evidence, not the default "
+                "work queue."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--include-plans",),
             action="store_true",
             help="Also synthesize subsystem-level composed refactor plans.",
@@ -180,7 +194,11 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--no-impact-ranking",),
             action="store_false",
             dest="include_impact_ranking",
-            help="Skip load-bearing refactor opportunity ranking.",
+            help=(
+                "Skip load-bearing refactor opportunity ranking. Requires "
+                "--raw-findings on normal scans because this disables the "
+                "semantic refactor gate."
+            ),
         ),
         CliArgumentSpec(
             flags=("--prove-economics",),
@@ -328,6 +346,11 @@ def _json_payload(
                 source_index,
                 {str(module.path): module.source for module in modules},
             )
+    payload["semantic_refactor_gate"] = SemanticRefactorGateReport.from_optional_scan(
+        codemod_candidates,
+        impact_ranking=impact_ranking,
+        findings=tuple(findings),
+    ).to_dict()
     if codemod_candidates is not None:
         payload["codemod_candidates"] = tuple(
             candidate.to_dict() for candidate in codemod_candidates
@@ -742,6 +765,27 @@ def format_codemod_applicability_markdown(
     return "\n".join(lines)
 
 
+def format_raw_findings_suppressed_markdown(findings: list[RefactorFinding]) -> str:
+    return "\n".join(
+        (
+            "Raw finding evidence suppressed:",
+            (
+                "   - Full finding details are hidden because semantic refactor "
+                "gate is active."
+            ),
+            (
+                "   - Use the gate, impact ranking, and implementation guidance "
+                "as the work queue."
+            ),
+            (
+                "   - Use --raw-findings when the gate requests SSOT evidence "
+                "inspection, otherwise only after the authority boundary is chosen."
+            ),
+            f"   - Suppressed finding count: {len(findings)}",
+        )
+    )
+
+
 class MarkdownReportRenderer(ABC):
     """Shared markdown rendering algorithm with one layout hook."""
 
@@ -763,12 +807,21 @@ class MarkdownReportRenderer(ABC):
         timing: ScanTiming | None = None,
         impact_ranking: RefactorImpactRankingReport | None = None,
         codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
+        raw_findings: bool = False,
     ) -> str:
         sections: list[str] = []
-        if findings:
-            sections.append(self.findings(findings))
-        elif not plans:
-            sections.append("No refactoring findings.")
+        semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
+            codemod_candidates,
+            impact_ranking=impact_ranking,
+            findings=tuple(findings),
+        )
+        if semantic_gate_report.active:
+            sections.append(semantic_gate_report.markdown())
+        if not semantic_gate_report.active:
+            if findings:
+                sections.append(self.findings(findings))
+            elif not plans:
+                sections.append("No refactoring findings.")
         if execution_plan is not None:
             sections.append(format_execution_plan_markdown(execution_plan))
         if plans is not None:
@@ -779,6 +832,13 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_impact_ranking_markdown(impact_ranking))
         if codemod_candidates is not None:
             sections.append(format_codemod_applicability_markdown(codemod_candidates))
+        if semantic_gate_report.active:
+            if raw_findings and findings:
+                sections.append(
+                    "Raw finding evidence (supporting only):\n" + self.findings(findings)
+                )
+            elif findings:
+                sections.append(format_raw_findings_suppressed_markdown(findings))
         if timing is not None:
             sections.append(format_timing_markdown(timing))
         return self.join_sections(sections)
@@ -993,6 +1053,14 @@ def main() -> int:
             fail_on_proof_regression=args.fail_on_proof_regression,
         )
 
+    try:
+        SemanticRefactorGateMode.from_flags(
+            include_impact_ranking=args.include_impact_ranking,
+            raw_findings=args.raw_findings,
+        ).require_authority_boundary_mode()
+    except SemanticRefactorGateModeError as error:
+        parser.error(str(error))
+
     if args.import_lean_export is None:
         started = perf_counter()
         modules = parse_python_module_roots(roots)
@@ -1122,13 +1190,23 @@ def main() -> int:
         )
     else:
         if args.plans_only:
-            sections = [
-                format_execution_plan_markdown(
-                    execution_plan
-                    or build_refactor_execution_plan(findings, root)
-                ),
-                format_plans_markdown(plans or []),
-            ]
+            sections = []
+            semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
+                codemod_candidates,
+                impact_ranking=impact_ranking,
+                findings=tuple(findings),
+            )
+            if semantic_gate_report.active:
+                sections.append(semantic_gate_report.markdown())
+            sections.extend(
+                (
+                    format_execution_plan_markdown(
+                        execution_plan
+                        or build_refactor_execution_plan(findings, root)
+                    ),
+                    format_plans_markdown(plans or []),
+                )
+            )
             if economics is not None:
                 sections.append(format_economics_markdown(economics, change_budget))
             if impact_ranking is not None:
@@ -1150,6 +1228,7 @@ def main() -> int:
                     timing=timing,
                     impact_ranking=impact_ranking,
                     codemod_candidates=codemod_candidates,
+                    raw_findings=args.raw_findings,
                 )
             )
     return 0
