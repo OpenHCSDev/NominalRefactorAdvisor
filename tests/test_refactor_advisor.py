@@ -1014,6 +1014,7 @@ EFFECT_STEP_AMORTIZATION_DETECTOR_ID = "effect_step_amortization"
 EFFECT_STEP_IMPLEMENTATION_LEAK_DETECTOR_ID = "effect_step_implementation_leak"
 AVAILABLE_ABSTRACTION_REUSE_DETECTOR_ID = "available_abstraction_reuse"
 AVAILABLE_CARRIER_REUSE_DETECTOR_ID = "available_carrier_reuse"
+CARRIER_COMPOSITION_RETREAT_DETECTOR_ID = "carrier_composition_retreat"
 PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID = "parallel_primitive_carrier"
 FAIL_SOFT_EFFECT_PIPELINE_DETECTOR_ID = "fail_soft_effect_pipeline"
 FAIL_SOFT_FALLBACK_DETECTOR_ID = "fail_soft_fallback"
@@ -2887,6 +2888,68 @@ class ObjectLabelSourceDomain:
     findings = analyze_path(tmp_path)
     assert not any(
         finding.detector_id == AVAILABLE_CARRIER_REUSE_DETECTOR_ID
+        for finding in findings
+    )
+
+
+def test_carrier_composition_retreat_flags_composed_semantic_carrier(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    progress_emitter: ProgressEmitterCarrier
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    finding = next(
+        item
+        for item in findings
+        if item.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
+    )
+
+    assert "RepairRequest.progress_emitter" in finding.summary
+    assert "ProgressEmitterCarrier" in finding.summary
+    assert "direct inheritance" in (finding.codemod_patch or "")
+
+
+def test_carrier_composition_retreat_allows_inherited_semantic_carrier(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "sample.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProgressEmitterCarrier:
+    emit_progress_payload: object
+
+
+@dataclass(frozen=True)
+class RepairRequest(ProgressEmitterCarrier):
+    pose_index: int
+""",
+    )
+
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == CARRIER_COMPOSITION_RETREAT_DETECTOR_ID
         for finding in findings
     )
 

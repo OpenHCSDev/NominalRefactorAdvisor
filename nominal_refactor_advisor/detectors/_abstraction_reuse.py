@@ -139,6 +139,18 @@ class AvailableCarrierReuseCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class CarrierCompositionRetreatCandidate:
+    file_path: str
+    module_name: str
+    line: int
+    class_name: str
+    field_name: str
+    carrier_type_name: str
+    base_names: tuple[str, ...]
+    nominal_ancestor_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CapabilitySignature:
     atoms: frozenset[str]
     call_names: frozenset[str]
@@ -442,6 +454,79 @@ def _carrier_surfaces_with_ancestors(
             ),
             key=lambda surface: (surface.file_path, surface.line, surface.class_name),
         )
+    )
+
+
+def _is_dataclass_class(node: ast.ClassDef) -> bool:
+    for decorator in node.decorator_list:
+        if isinstance(decorator, ast.Name) and decorator.id == "dataclass":
+            return True
+        if isinstance(decorator, ast.Call):
+            func = decorator.func
+            if isinstance(func, ast.Name) and func.id == "dataclass":
+                return True
+    return False
+
+
+def _semantic_carrier_type_names(annotation_text: str) -> tuple[str, ...]:
+    return sorted_tuple(
+        name
+        for name in _annotation_type_names(annotation_text)
+        if name.endswith(_CARRIER_NAME_SUFFIXES)
+    )
+
+
+def _carrier_composition_retreat_candidates(
+    modules: Sequence[ParsedModule],
+) -> tuple[CarrierCompositionRetreatCandidate, ...]:
+    base_lookup: dict[str, set[str]] = defaultdict(set)
+    class_nodes: list[tuple[ParsedModule, ast.ClassDef]] = []
+    for module in modules:
+        for node in ast.walk(module.module):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            class_nodes.append((module, node))
+            base_lookup[node.name].update(
+                HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node)
+            )
+    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
+
+    candidates: list[CarrierCompositionRetreatCandidate] = []
+    for module, node in class_nodes:
+        if not _public_name(node.name) or not _is_dataclass_class(node):
+            continue
+        base_names = tuple(sorted(base_lookup[node.name]))
+        inherited_names = set(base_names) | set(ancestor_names_by_class[node.name])
+        for field_name, annotation_text in _carrier_field_type_map(node):
+            carrier_type_names = _semantic_carrier_type_names(annotation_text)
+            if not carrier_type_names:
+                continue
+            for carrier_type_name in carrier_type_names:
+                if carrier_type_name == node.name or carrier_type_name in inherited_names:
+                    continue
+                candidates.append(
+                    CarrierCompositionRetreatCandidate(
+                        file_path=str(module.path),
+                        module_name=module.module_name,
+                        line=node.lineno,
+                        class_name=node.name,
+                        field_name=field_name,
+                        carrier_type_name=carrier_type_name,
+                        base_names=base_names,
+                        nominal_ancestor_names=(
+                            ancestor_names_by_class[node.name]
+                        ),
+                    )
+                )
+    return sorted_tuple(
+        candidates,
+        key=lambda candidate: (
+            candidate.file_path,
+            candidate.line,
+            candidate.class_name,
+            candidate.field_name,
+            candidate.carrier_type_name,
+        ),
     )
 
 
@@ -1203,6 +1288,69 @@ class AvailableCarrierReuseDetector(IssueDetector):
                         identity_field_names=tuple(
                             candidate.shared_field_names or candidate.shared_roles
                         ),
+                    ),
+                )
+            )
+        return findings
+
+
+class CarrierCompositionRetreatDetector(IssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Carrier-valued dataclass field masks semantic inheritance",
+        "A dataclass stores a nominal carrier/boundary/state/context as a regular field while not inheriting it. That is usually a retreat from load-bearing nominal identity: downstream code must unpack a composed object instead of relying on the type lattice.",
+        "inheritance-compatible nominal boundary instead of carrier composition",
+        "dataclass field annotation references a semantic carrier outside the inheritance closure",
+        (
+            CapabilityTag.NOMINAL_IDENTITY,
+            CapabilityTag.UNIT_RATE_COHERENCE,
+            CapabilityTag.PROVENANCE,
+        ),
+        (
+            ObservationTag.NORMALIZED_AST,
+            ObservationTag.KEYWORD_MAPPING,
+        ),
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        for candidate in _carrier_composition_retreat_candidates(modules):
+            findings.append(
+                self.build_finding(
+                    (
+                        f"`{candidate.class_name}.{candidate.field_name}` stores "
+                        f"`{candidate.carrier_type_name}` as a field instead of "
+                        "inheriting it."
+                    ),
+                    (
+                        SourceLocation(
+                            candidate.file_path,
+                            candidate.line,
+                            f"{candidate.class_name}.{candidate.field_name}",
+                        ),
+                    ),
+                    scaffold=(
+                        f"class {candidate.class_name}({candidate.carrier_type_name}, ...):\n"
+                        "    # keep only genuine local residue here\n"
+                        "    ..."
+                    ),
+                    codemod_patch=(
+                        f"# Replace `{candidate.field_name}: {candidate.carrier_type_name}` "
+                        f"on `{candidate.class_name}` with direct inheritance from "
+                        f"`{candidate.carrier_type_name}`.\n"
+                        "# If dataclass frozen/mutable settings block inheritance, normalize "
+                        "the carrier family configuration instead of hiding the carrier behind "
+                        "a composed field."
+                    ),
+                    metrics=MappingMetrics.from_field_names(
+                        mapping_site_count=1,
+                        mapping_name="carrier_composition_retreat",
+                        field_names=(candidate.field_name,),
+                        source_name=candidate.carrier_type_name,
+                        identity_field_names=(candidate.field_name,),
                     ),
                 )
             )
