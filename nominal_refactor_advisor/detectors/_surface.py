@@ -791,12 +791,80 @@ _BOUNDARY_FANOUT_STOPWORDS = frozenset(
 )
 
 
+_BOUNDARY_LOCAL_WRAPPER_TOKENS = frozenset(
+    {
+        "boundary",
+        "boundaries",
+        "carrier",
+        "carriers",
+        "context",
+        "contexts",
+        "query",
+        "queries",
+        "record",
+        "records",
+        "request",
+        "requests",
+        "scope",
+        "scopes",
+        "wrapper",
+        "wrappers",
+    }
+)
+
+_BOUNDARY_IDENTITY_DETAIL_TOKENS = frozenset(
+    {
+        "id",
+        "ids",
+        "identity",
+        "identities",
+        "value",
+        "values",
+    }
+)
+
+_BOUNDARY_OWNER_CLASS_TOKENS = frozenset(
+    {
+        "adapter",
+        "authority",
+        "context",
+        "coordinator",
+        "manager",
+        "orchestrator",
+        "request",
+        "resolver",
+        "runtime",
+        "scope",
+        "service",
+        "session",
+    }
+)
+
+_BOUNDARY_TRANSPORT_CLASS_TOKENS = frozenset(
+    {
+        "cache",
+        "key",
+        "keys",
+        "query",
+        "queries",
+        "record",
+        "records",
+        "request",
+        "requests",
+    }
+)
+
+
 @dataclass(frozen=True)
-class DistributedBoundaryDeclaration:
+class DistributedBoundarySurface:
     file_path: str
     line: int
-    class_name: str
     field_name: str
+
+
+@dataclass(frozen=True)
+class DistributedBoundaryDeclaration(DistributedBoundarySurface):
+    class_name: str
 
     @property
     def evidence(self) -> SourceLocation:
@@ -808,11 +876,8 @@ class DistributedBoundaryDeclaration:
 
 
 @dataclass(frozen=True)
-class DistributedBoundaryUse:
-    file_path: str
-    line: int
+class DistributedBoundaryUse(DistributedBoundarySurface):
     symbol: str
-    field_name: str
     use_kind: str
     context_tokens: tuple[str, ...]
 
@@ -844,6 +909,29 @@ class DistributedBoundaryFanoutCandidate:
             *(declaration.evidence for declaration in self.declarations[:3]),
             *(use_site.evidence for use_site in self.forwarding_sites[:3]),
             *(use_site.evidence for use_site in self.projection_sites[:3]),
+        )
+
+    @property
+    def site_count(self) -> int:
+        return (
+            len(self.declarations)
+            + len(self.forwarding_sites)
+            + len(self.projection_sites)
+        )
+
+
+@dataclass(frozen=True)
+class BoundaryLocalWrapperCollapseCandidate:
+    original: DistributedBoundaryFanoutCandidate
+    wrapper: DistributedBoundaryFanoutCandidate
+    core_tokens: tuple[str, ...]
+    owner_class_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            *self.original.evidence[:4],
+            *self.wrapper.evidence[:4],
         )
 
 
@@ -908,6 +996,31 @@ def _boundary_identifier_tokens(name: str) -> tuple[str, ...]:
         token
         for token in re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower().split("_")
         if token and token not in _BOUNDARY_FANOUT_STOPWORDS
+    )
+
+
+def _boundary_raw_identifier_tokens(name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower().split("_")
+        if token
+    )
+
+
+def _boundary_core_semantic_tokens(name: str) -> tuple[str, ...]:
+    return tuple(
+        token
+        for token in _boundary_raw_identifier_tokens(name)
+        if token
+        and token not in _BOUNDARY_FANOUT_STOPWORDS
+        and token not in _BOUNDARY_LOCAL_WRAPPER_TOKENS
+        and token not in _BOUNDARY_IDENTITY_DETAIL_TOKENS
+    )
+
+
+def _boundary_has_local_wrapper_token(name: str) -> bool:
+    return bool(
+        set(_boundary_raw_identifier_tokens(name)) & _BOUNDARY_LOCAL_WRAPPER_TOKENS
     )
 
 
@@ -1055,7 +1168,7 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
                 None,
             )
             self._record(
-                line=getattr(node, "lineno", 0),
+                line=node.lineno,
                 field_name=cast(str, node.arg),
                 use_kind="keyword_forwarded",
                 context_tokens=(
@@ -1188,6 +1301,99 @@ def _distributed_boundary_fanout_candidates(
     return tuple(candidates)
 
 
+def _boundary_owner_class_names(
+    original: DistributedBoundaryFanoutCandidate,
+    wrapper: DistributedBoundaryFanoutCandidate,
+) -> tuple[str, ...]:
+    owner_names: list[tuple[str, bool]] = []
+    seen: set[str] = set()
+    declarations = (*original.declarations, *wrapper.declarations)
+    for declaration in declarations:
+        class_tokens = set(_boundary_raw_identifier_tokens(declaration.class_name))
+        if not (class_tokens & _BOUNDARY_OWNER_CLASS_TOKENS):
+            continue
+        if declaration.class_name in seen:
+            continue
+        seen.add(declaration.class_name)
+        owner_names.append(
+            (
+                declaration.class_name,
+                bool(class_tokens & _BOUNDARY_TRANSPORT_CLASS_TOKENS),
+            )
+        )
+    if owner_names:
+        non_transport_names = tuple(
+            sorted(name for name, is_transport in owner_names if not is_transport)
+        )
+        if non_transport_names:
+            return non_transport_names
+        return tuple(sorted(name for name, _ in owner_names))
+    return tuple(
+        sorted(
+            {
+                declaration.class_name
+                for declaration in declarations
+            }
+        )
+    )
+
+
+def _boundary_local_wrapper_pairs(
+    candidates: tuple[DistributedBoundaryFanoutCandidate, ...],
+    config: DetectorConfig,
+) -> tuple[BoundaryLocalWrapperCollapseCandidate, ...]:
+    candidates_by_core: dict[
+        tuple[str, ...], list[DistributedBoundaryFanoutCandidate]
+    ] = defaultdict(list)
+    for candidate in candidates:
+        core_tokens = _boundary_core_semantic_tokens(candidate.field_name)
+        if not core_tokens:
+            continue
+        candidates_by_core[core_tokens].append(candidate)
+
+    wrapper_candidates: list[BoundaryLocalWrapperCollapseCandidate] = []
+    seen_pairs: set[tuple[str, str, tuple[str, ...]]] = set()
+    for core_tokens, core_candidates in sorted(candidates_by_core.items()):
+        if len(core_candidates) < 2:
+            continue
+        for wrapper in core_candidates:
+            if not _boundary_has_local_wrapper_token(wrapper.field_name):
+                continue
+            if wrapper.site_count < config.min_local_wrapper_fanout_sites:
+                continue
+            for original in core_candidates:
+                if original is wrapper:
+                    continue
+                if original.site_count < config.min_boundary_fanout_sites:
+                    continue
+                pair_key = (original.field_name, wrapper.field_name, core_tokens)
+                if pair_key in seen_pairs:
+                    continue
+                seen_pairs.add(pair_key)
+                wrapper_candidates.append(
+                    BoundaryLocalWrapperCollapseCandidate(
+                        original=original,
+                        wrapper=wrapper,
+                        core_tokens=core_tokens,
+                        owner_class_names=_boundary_owner_class_names(
+                            original,
+                            wrapper,
+                        ),
+                    )
+                )
+    return tuple(wrapper_candidates)
+
+
+def _boundary_local_wrapper_collapse_candidates(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[BoundaryLocalWrapperCollapseCandidate, ...]:
+    return _boundary_local_wrapper_pairs(
+        _distributed_boundary_fanout_candidates(modules, config),
+        config,
+    )
+
+
 class DistributedBoundaryFanoutDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[DistributedBoundaryFanoutCandidate]
 ):
@@ -1225,6 +1431,94 @@ class DistributedBoundaryFanoutDetector(
                 source_name="distributed_boundary_fanout",
             ),
         )
+
+
+@dataclass(frozen=True)
+class BoundaryLocalWrapperFindingRenderer:
+    """Render local-wrapper compliance findings from one semantic authority."""
+
+    def summary(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> str:
+        core = ", ".join(candidate.core_tokens)
+        owners = ", ".join(candidate.owner_class_names[:6])
+        return (
+            f"`{candidate.wrapper.field_name}` appears to locally wrap "
+            f"`{candidate.original.field_name}` for semantic core {core!r}, but "
+            f"the original still has {candidate.original.site_count} fanout sites "
+            f"and the wrapper has {candidate.wrapper.site_count}; candidate owner "
+            f"boundary: {owners}."
+        )
+
+    def evidence(
+        self,
+        candidate: BoundaryLocalWrapperCollapseCandidate,
+    ) -> tuple[SourceLocation, ...]:
+        return candidate.evidence[:8]
+
+    def scaffold(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> str:
+        core_name = _boundary_pascal_name("_".join(candidate.core_tokens))
+        owner_hint = ", ".join(candidate.owner_class_names[:4]) or "the execution owner"
+        return (
+            "@dataclass(frozen=True)\n"
+            f"class {core_name}ExecutionScope:\n"
+            "    # Own the complete co-varying semantic family here.\n"
+            "    ...\n\n"
+            f"# Candidate authority boundary: {owner_hint}.\n"
+            f"# Move `{candidate.original.field_name}` and "
+            f"`{candidate.wrapper.field_name}` consumers to this owner-level scope;\n"
+            "# do not keep a carrier field threaded through transport records."
+        )
+
+    def codemod_patch(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> str:
+        owner_hint = ", ".join(candidate.owner_class_names[:4]) or "the least common owner"
+        return (
+            f"# `{candidate.wrapper.field_name}` is a local wrapper around the still-live "
+            f"`{candidate.original.field_name}` boundary.\n"
+            f"# Move the boundary to {owner_hint}, then delete the wrapper field from "
+            "intermediate request/cache/query records.\n"
+            "# Success condition: the before/after fanout graph no longer has sibling "
+            f"`{candidate.original.field_name}` and `{candidate.wrapper.field_name}` "
+            "Pattern 16 findings for the same semantic core."
+        )
+
+    def metrics(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> MappingMetrics:
+        return MappingMetrics.from_field_names(
+            mapping_site_count=(
+                candidate.original.site_count + candidate.wrapper.site_count
+            ),
+            mapping_name=candidate.wrapper.field_name,
+            field_names=(
+                candidate.original.field_name,
+                candidate.wrapper.field_name,
+                *candidate.core_tokens,
+            ),
+            source_name="boundary_local_wrapper_collapse",
+            identity_field_names=candidate.core_tokens,
+        )
+
+
+BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER = BoundaryLocalWrapperFindingRenderer()
+
+
+declare_candidate_rule_detector(
+    BoundaryLocalWrapperCollapseCandidate,
+    high_confidence_certified_spec(
+        PatternId.AUTHORITATIVE_CONTEXT,
+        "Local boundary wrapper should move to the real authority boundary",
+        "A carrier-style field was introduced around an existing distributed boundary, but both the original primitive boundary and the wrapper boundary still fan out through declarations, forwarding, or projections. That is a local containment failure, not the authoritative context collapse requested by Pattern 16.",
+        "one owner-level execution/context record that consumes the full semantic family directly",
+        "a wrapper-name fanout coexists with the original boundary fanout for the same semantic core",
+        _AUTHORITATIVE_NOMINAL_IDENTITY_PROVENANCE_CAPABILITY_TAGS,
+        _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
+    ),
+    summary=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.summary,
+    evidence=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.evidence,
+    scaffold=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.scaffold,
+    codemod_patch=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.codemod_patch,
+    metrics=BOUNDARY_LOCAL_WRAPPER_FINDING_RENDERER.metrics,
+    detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
+    candidate_collector=_boundary_local_wrapper_collapse_candidates,
+    detector_priority=-1,
+)
 
 
 def default_detectors() -> tuple[IssueDetector, ...]:

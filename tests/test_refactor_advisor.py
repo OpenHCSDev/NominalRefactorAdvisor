@@ -4707,6 +4707,44 @@ def test_distributed_boundary_fanout_suggests_projection_request_for_axis_roles(
     assert "projection-step object" in (finding.codemod_patch or "")
 
 
+def test_boundary_local_wrapper_collapse_detects_renamed_scope_fanout(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/local_wrapper.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RuntimeAdapter:\n    axis_id: str\n\n    @property\n    def axis_scope(self):\n        return RuntimeAxisScope(self.axis_id)\n\n\n@dataclass(frozen=True)\nclass PlaneResolution:\n    axis_id: str\n    matched_indexes: tuple[int, ...]\n\n\n@dataclass(frozen=True)\nclass RuntimeAxisScope:\n    value: str\n\n    def records(self, store):\n        return store.find(axis_id=self.value)\n\n\n@dataclass(frozen=True)\nclass ArtifactQuery:\n    axis_scope: RuntimeAxisScope\n\n\n@dataclass(frozen=True)\nclass CacheKey:\n    axis_scope: RuntimeAxisScope\n\n\ndef resolve_plane(adapter):\n    return PlaneResolution(axis_id=adapter.axis_id, matched_indexes=(0,))\n\n\ndef query_records(adapter, store):\n    return store.find(axis_id=adapter.axis_id)\n\n\ndef project_axis(adapter):\n    axis_key = adapter.axis_id\n    return axis_key\n\n\ndef artifact_query(adapter):\n    return ArtifactQuery(axis_scope=adapter.axis_scope)\n\n\ndef cache_key(adapter):\n    return CacheKey(axis_scope=adapter.axis_scope)\n\n\ndef project_scope(query):\n    runtime_scope = query.axis_scope\n    return runtime_scope\n",
+    )
+    finding = next(
+        (
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "boundary_local_wrapper_collapse"
+        )
+    )
+    assert finding.pattern_id == PatternId.AUTHORITATIVE_CONTEXT
+    assert "axis_scope" in finding.summary
+    assert "axis_id" in finding.summary
+    assert "locally wrap" in finding.summary
+    assert "local wrapper" in (finding.codemod_patch or "")
+    assert "Success condition" in (finding.codemod_patch or "")
+
+
+def test_boundary_local_wrapper_collapse_ignores_completed_scope_collapse(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/completed_scope.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass RuntimeExecutionScope:\n    axis_token: str\n\n    def records(self, store):\n        return store.find(axis_token=self.axis_token)\n\n\n@dataclass(frozen=True)\nclass ArtifactQuery:\n    execution_scope: RuntimeExecutionScope\n\n\n@dataclass(frozen=True)\nclass CacheKey:\n    execution_scope: RuntimeExecutionScope\n\n\ndef artifact_query(scope):\n    return ArtifactQuery(execution_scope=scope)\n\n\ndef cache_key(scope):\n    return CacheKey(execution_scope=scope)\n\n\ndef project_scope(query):\n    runtime_scope = query.execution_scope\n    return runtime_scope\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "boundary_local_wrapper_collapse"
+        for finding in findings
+    )
+
+
 def test_role_surface_drift_ignores_role_specific_channel_usage(
     tmp_path: Path,
 ) -> None:

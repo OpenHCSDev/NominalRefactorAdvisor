@@ -495,6 +495,10 @@ class DetectorConfig:
         4,
         "Minimum declaration/forward/projection sites before surfacing distributed boundary fanout.",
     )
+    min_local_wrapper_fanout_sites: int = detector_config_option(
+        4,
+        "Minimum live carrier-boundary sites before surfacing a local-wrapper containment failure.",
+    )
     min_orchestration_function_lines: int = 150
     min_orchestration_branches: int = 15
     min_orchestration_calls: int = 50
