@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeAlias
+from typing import ClassVar, TypeAlias
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -37,10 +37,12 @@ from .impact_ranking import (
 from .models import ImpactDelta, SourceLocation
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .semantic_match import Maybe
 from .source_index import AstTargetDigest, SourceIndex
 
 JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | dict[str, "JsonValue"]
+JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
+JsonValue: TypeAlias = JsonScalar | JsonArray | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
 
 
@@ -102,15 +104,46 @@ class ArchitectureGuardViolationKind(StrEnum):
     FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
 
 
+_COMPOSITION_KIND_LOAD_BEARING_BONUS = {
+    CancelableCompositionKind.PACK_UNPACK_FORWARD: 75,
+    CancelableCompositionKind.PRODUCT_PACK_FORWARD: 25,
+}
+
+
 class RefactorRecipeOperationKind(StrEnum):
     """Agent-facing codemod DSL operation kinds."""
 
+    ADD_CLASS_BASE = "add_class_base"
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
+    DELETE_TARGET = "delete_target"
+    ENSURE_IMPORT = "ensure_import"
+    EXTRACT_AUTHORITY = "extract_authority"
+    INSERT_AFTER_TARGET = "insert_after_target"
+    INSERT_AFTER_IMPORTS = "insert_after_imports"
+    INSERT_BEFORE_TARGET = "insert_before_target"
+    REMOVE_CLASS_BASE = "remove_class_base"
     REPLACE_FUNCTION_BODY = "replace_function_body"
+    REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
+    REPLACE_TEXT = "replace_text"
 
 
-def _refactor_recipe_operation_key(name: str, cls: type[object]) -> str:
-    return class_name_registry_key(name.removesuffix("Operation"), cls)
+class SourceNodeDecoratorPolicy(StrEnum):
+    """Whether source node spans include decorators."""
+
+    EXCLUDE = "exclude"
+    INCLUDE = "include"
+
+
+SOURCE_PAYLOAD_FIELD = "source"
+AUTHORITY_SOURCE_PAYLOAD_FIELD = "authority_source"
+CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
+IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
+OLD_SOURCE_PAYLOAD_FIELD = "old_source"
+NEW_SOURCE_PAYLOAD_FIELD = "new_source"
+
+
+def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
+    return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
 @dataclass(frozen=True)
@@ -131,6 +164,30 @@ class CodemodStrategy:
     automation_level: CodemodAutomationLevel
     reason: str
     safe_to_apply: bool = False
+
+
+class CodemodStrategySpec(ABC, metaclass=AutoRegisterMeta):
+    """Nominal declaration for codemod strategy metadata."""
+
+    __registry__: ClassVar[dict[str, type["CodemodStrategySpec"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+
+    registry_key_suffix: ClassVar[str] = "CodemodStrategySpec"
+    strategy_id: ClassVar[str]
+    automation_level: ClassVar[CodemodAutomationLevel]
+    reason: ClassVar[str]
+    safe_to_apply: ClassVar[bool] = False
+
+    @classmethod
+    def build_strategy(cls) -> CodemodStrategy:
+        return CodemodStrategy(
+            strategy_id=cls.strategy_id,
+            automation_level=cls.automation_level,
+            safe_to_apply=cls.safe_to_apply,
+            reason=cls.reason,
+        )
 
 
 @dataclass(frozen=True)
@@ -279,46 +336,7 @@ class CodemodApplicability:
 
     @property
     def agent_action(self) -> str:
-        if self.actionability is CodemodActionability.SEMANTIC_AGENT_REFACTOR:
-            if self.simulation_status is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED:
-                return (
-                    "Confidence is sufficient: inspect the source-index targets, "
-                    "design the semantic authority boundary, and implement the "
-                    "refactor; stop only if domain semantics are genuinely "
-                    "ambiguous."
-                )
-            return (
-                "Confidence is sufficient and a rewrite plan exists: simulate the "
-                "plan, inspect the diff, and carry the semantic refactor through "
-                "unless source evidence contradicts it."
-            )
-        if self.actionability is CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW:
-            return (
-                "Resolve the finding uncertainty before rewriting: inspect the "
-                "evidence and stop only while the semantic authority boundary is "
-                "genuinely unclear."
-            )
-        if self.actionability is CodemodActionability.SIMULATABLE_REWRITE:
-            return (
-                "A caller-supplied semantic rewrite plan is available: simulate it, "
-                "inspect the diff, and apply only after the planned authority "
-                "boundary matches the source evidence."
-            )
-        if self.automation_level is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED:
-            if self.simulation_status is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED:
-                return (
-                    "Inspect the targets and implement the semantic refactor with "
-                    "an explicit rewrite plan; stop only for unresolved domain "
-                    "ambiguity."
-                )
-            return (
-                "Review the supplied rewrite plan, simulate it, and carry the "
-                "semantic refactor through unless the plan contradicts source "
-                "evidence."
-            )
-        if self.safe_to_apply:
-            return "Safe mechanical rewrite is available after reviewing the diff."
-        return "Simulate the supplied rewrite plan before applying it."
+        return CodemodAgentActionPolicy.message_for(self)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -335,27 +353,119 @@ class CodemodApplicability:
         }
 
 
-SEMANTIC_ADVISORY_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="semantic-structural-agent-refactor",
-    automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
-    safe_to_apply=False,
-    reason=(
+class CodemodAgentActionPolicy(ABC, metaclass=AutoRegisterMeta):
+    """Registered renderer for one codemod actionability posture."""
+
+    __registry__: ClassVar[dict[CodemodActionability, type["CodemodAgentActionPolicy"]]]
+    __registry__ = {}
+    __registry_key__ = "actionability"
+    __skip_if_no_key__ = True
+
+    actionability: ClassVar[CodemodActionability]
+
+    @classmethod
+    def message_for(cls, applicability: CodemodApplicability) -> str:
+        return cls.__registry__[applicability.actionability].agent_action(applicability)
+
+    @classmethod
+    @abstractmethod
+    def agent_action(cls, applicability: CodemodApplicability) -> str:
+        raise NotImplementedError
+
+
+class StaticCodemodAgentActionPolicy(CodemodAgentActionPolicy):
+    """Policy whose agent action text does not depend on candidate state."""
+
+    message: ClassVar[str]
+
+    @classmethod
+    def agent_action(cls, applicability: CodemodApplicability) -> str:
+        del applicability
+        return cls.message
+
+
+class SafeMechanicalCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
+    """Agent action for safe mechanical codemods."""
+
+    actionability = CodemodActionability.SAFE_MECHANICAL
+    message = "Safe mechanical rewrite is available after reviewing the diff."
+
+
+class SimulatableCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
+    """Agent action for caller-supplied simulatable rewrites."""
+
+    actionability = CodemodActionability.SIMULATABLE_REWRITE
+    message = (
+        "A caller-supplied semantic rewrite plan is available: simulate it, "
+        "inspect the diff, and apply only after the planned authority boundary "
+        "matches the source evidence."
+    )
+
+
+class SemanticUncertaintyCodemodAgentActionPolicy(StaticCodemodAgentActionPolicy):
+    """Agent action for findings below the semantic rewrite confidence gate."""
+
+    actionability = CodemodActionability.SEMANTIC_UNCERTAINTY_REVIEW
+    message = (
+        "Resolve the finding uncertainty before rewriting: inspect the evidence "
+        "and stop only while the semantic authority boundary is genuinely unclear."
+    )
+
+
+class SemanticRefactorCodemodAgentActionPolicy(CodemodAgentActionPolicy):
+    """Agent action for high-confidence semantic refactors."""
+
+    actionability = CodemodActionability.SEMANTIC_AGENT_REFACTOR
+    rewrite_plan_required_message = (
+        "Confidence is sufficient: inspect the source-index targets, design the "
+        "semantic authority boundary, and implement the refactor; stop only if "
+        "domain semantics are genuinely ambiguous."
+    )
+    ready_to_simulate_message = (
+        "Confidence is sufficient and a rewrite plan exists: simulate the plan, "
+        "inspect the diff, and carry the semantic refactor through unless source "
+        "evidence contradicts it."
+    )
+
+    @classmethod
+    def agent_action(cls, applicability: CodemodApplicability) -> str:
+        if (
+            applicability.simulation_status
+            is CodemodSimulationStatus.REWRITE_PLAN_REQUIRED
+        ):
+            return cls.rewrite_plan_required_message
+        return cls.ready_to_simulate_message
+
+
+class SemanticAdvisoryCodemodStrategySpec(CodemodStrategySpec):
+    """Default strategy for semantic findings without executable rewrites."""
+
+    strategy_id = "semantic-structural-agent-refactor"
+    automation_level = CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+    reason = (
         "Semantic structural findings identify source targets and refactor shape, "
         "but the authority boundary must be designed from source semantics rather "
         "than generated by a blind mechanical rewrite."
-    ),
-)
+    )
 
 
-MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="mixed-semantic-structural-agent-refactor",
-    automation_level=CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED,
-    safe_to_apply=False,
-    reason=(
+class MixedSemanticAdvisoryCodemodStrategySpec(CodemodStrategySpec):
+    """Strategy for opportunities spanning multiple semantic pattern families."""
+
+    strategy_id = "mixed-semantic-structural-agent-refactor"
+    automation_level = CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
+    reason = (
         "The opportunity spans multiple semantic pattern families, so the advisor "
         "requires the agent to inspect the shared authority boundary and supply an "
         "explicit rewrite plan."
-    ),
+    )
+
+
+SEMANTIC_ADVISORY_CODEMOD_STRATEGY = (
+    SemanticAdvisoryCodemodStrategySpec.build_strategy()
+)
+MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY = (
+    MixedSemanticAdvisoryCodemodStrategySpec.build_strategy()
 )
 
 
@@ -369,7 +479,10 @@ class CodemodStrategyRegistry:
         fallback_strategy: CodemodStrategy = SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
         mixed_strategy: CodemodStrategy = MIXED_SEMANTIC_ADVISORY_CODEMOD_STRATEGY,
     ) -> None:
-        self._pattern_strategies = dict(pattern_strategies or {})
+        if pattern_strategies is None:
+            self._pattern_strategies = {}
+        else:
+            self._pattern_strategies = dict(pattern_strategies)
         self._fallback_strategy = fallback_strategy
         self._mixed_strategy = mixed_strategy
 
@@ -470,70 +583,95 @@ def _candidate_confidence_basis(candidate: "CodemodCandidate") -> str:
     return f"confidence={confidence_levels}; certification={certification_levels}"
 
 
-SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="source-location-evidence-property-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
+class SourceLocationEvidencePropertyCodemodStrategySpec(CodemodStrategySpec):
+    """Mechanical strategy for SourceLocation evidence descriptor rewrites."""
+
+    strategy_id = "source-location-evidence-property-mechanical"
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
+    safe_to_apply = True
+    reason = (
         "An exact @property returning SourceLocation(self.file, self.line, self.symbol) "
         "can be replaced by SourceLocationEvidenceProperty descriptor data."
-    ),
-)
+    )
 
 
-ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="zipped-source-location-evidence-property-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
+class ZippedSourceLocationEvidencePropertyCodemodStrategySpec(CodemodStrategySpec):
+    """Mechanical strategy for zipped SourceLocation descriptor rewrites."""
+
+    strategy_id = "zipped-source-location-evidence-property-mechanical"
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
+    safe_to_apply = True
+    reason = (
         "An exact @property returning zipped SourceLocation tuples can be replaced "
         "by ZippedSourceLocationEvidenceProperty descriptor data."
-    ),
-)
+    )
 
 
-DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="derivable-detector-id-delete-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
+class DerivableDetectorIdCodemodStrategySpec(CodemodStrategySpec):
+    """Mechanical strategy for deleting class-name-derived detector ids."""
+
+    strategy_id = "derivable-detector-id-delete-mechanical"
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
+    safe_to_apply = True
+    reason = (
         "A detector_id class assignment whose literal exactly matches the "
         "IssueDetector class-name derivation can be deleted."
-    ),
-)
+    )
 
 
-DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="derivable-candidate-collector-delete-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
+class DerivableCandidateCollectorCodemodStrategySpec(CodemodStrategySpec):
+    """Mechanical strategy for deleting class-name-derived collectors."""
+
+    strategy_id = "derivable-candidate-collector-delete-mechanical"
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
+    safe_to_apply = True
+    reason = (
         "A candidate_collector class assignment whose name exactly matches the "
         "collector-base class-name derivation can be deleted."
-    ),
-)
+    )
 
 
-DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="derivable-detector-declarations-delete-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
+class DerivableDetectorDeclarationsCodemodStrategySpec(CodemodStrategySpec):
+    """Mechanical strategy for deleting all derivable detector declarations."""
+
+    strategy_id = "derivable-detector-declarations-delete-mechanical"
+    automation_level = CodemodAutomationLevel.SAFE_MECHANICAL
+    safe_to_apply = True
+    reason = (
         "Detector class declarations that exactly match class-name-derived "
         "detector_id or candidate_collector conventions can be deleted."
-    ),
-)
+    )
 
 
-SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="supplied-authority-boundary-rewrite",
-    automation_level=CodemodAutomationLevel.SIMULATABLE_REWRITE,
-    safe_to_apply=False,
-    reason=(
+class SuppliedAuthorityBoundaryCodemodStrategySpec(CodemodStrategySpec):
+    """Strategy for caller-authored semantic authority boundary rewrites."""
+
+    strategy_id = "supplied-authority-boundary-rewrite"
+    automation_level = CodemodAutomationLevel.SIMULATABLE_REWRITE
+    reason = (
         "The caller supplied the semantic authority boundary, so the advisor can "
         "resolve and simulate explicit source rewrites without claiming the "
         "boundary choice was mechanically derived."
-    ),
+    )
+
+
+SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = (
+    SourceLocationEvidencePropertyCodemodStrategySpec.build_strategy()
+)
+ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = (
+    ZippedSourceLocationEvidencePropertyCodemodStrategySpec.build_strategy()
+)
+DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY = (
+    DerivableDetectorIdCodemodStrategySpec.build_strategy()
+)
+DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY = (
+    DerivableCandidateCollectorCodemodStrategySpec.build_strategy()
+)
+DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY = (
+    DerivableDetectorDeclarationsCodemodStrategySpec.build_strategy()
+)
+SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = (
+    SuppliedAuthorityBoundaryCodemodStrategySpec.build_strategy()
 )
 
 
@@ -571,6 +709,11 @@ class SourceRewriteTarget:
     qualname: str | None = None
     source_path: str | None = None
 
+    @classmethod
+    def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
+        payload = SourceRewritePlanPayload(fields)
+        return payload.source_target()
+
     def optional_identifier(
         self,
         source_index: SourceIndex,
@@ -587,11 +730,33 @@ class SourceRewriteTarget:
                 return self.target_identifier
             return None
         if self.qualname is None:
-            return None
+            return self._optional_module_identifier(
+                source_index,
+                eligible_identifiers,
+            )
         matching_identifiers = [
             target_identifier
             for target_identifier in sorted(eligible_identifiers)
             if self.matches_target(source_index.target_by_id.get(target_identifier))
+        ]
+        if len(matching_identifiers) != 1:
+            return None
+        return matching_identifiers[0]
+
+    def _optional_module_identifier(
+        self,
+        source_index: SourceIndex,
+        eligible_identifiers: set[str],
+    ) -> str | None:
+        if self.source_path is None:
+            return None
+        matching_identifiers = [
+            target_identifier
+            for target_identifier in sorted(eligible_identifiers)
+            for target in (source_index.target_by_id.get(target_identifier),)
+            if target is not None
+            and target.is_module
+            and target.file_path == self.source_path
         ]
         if len(matching_identifiers) != 1:
             return None
@@ -619,6 +784,7 @@ class SourceRewriteTarget:
             "file_path": self.source_path,
         }
 
+
 @dataclass(frozen=True)
 class SourceRewritePlanPayload:
     """Typed reader for source rewrite plan payloads."""
@@ -645,12 +811,118 @@ class SourceRewritePlanPayload:
             return ""
         return value
 
+    def required_object(self, field_name: str) -> Mapping[str, JsonValue]:
+        value = self.fields.get(field_name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Expected object field {field_name!r}")
+        return value
+
+    def required_array(self, field_name: str) -> tuple[JsonValue, ...]:
+        value = self.fields.get(field_name)
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected array field {field_name!r}")
+        return tuple(value)
+
     def source_target(self) -> SourceRewriteTarget:
         return SourceRewriteTarget(
             target_identifier=self.optional_string("target_id"),
             qualname=self.optional_string("target_qualname"),
             source_path=self.optional_string("file_path"),
         )
+
+
+@dataclass(frozen=True)
+class RecipeCallReplacement:
+    """One exact call-site replacement inside an authority extraction recipe."""
+
+    target: SourceRewriteTarget
+    old_source: str
+    new_source: str
+
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "RecipeCallReplacement":
+        if not isinstance(value, Mapping):
+            raise ValueError("Call replacement entries must be objects")
+        payload = SourceRewritePlanPayload(value)
+        return cls(
+            target=SourceRewriteTarget.from_mapping(value),
+            old_source=payload.required_string(OLD_SOURCE_PAYLOAD_FIELD),
+            new_source=payload.required_string(NEW_SOURCE_PAYLOAD_FIELD),
+        )
+
+    @staticmethod
+    def tuple_from_payload(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> "OperationConstructorValue":
+        return tuple(
+            RecipeCallReplacement.from_json_value(value)
+            for value in payload.required_array(field_name)
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            **self.target.to_dict(),
+            OLD_SOURCE_PAYLOAD_FIELD: self.old_source,
+            NEW_SOURCE_PAYLOAD_FIELD: self.new_source,
+        }
+
+    def line_replacement(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        rationale: str,
+    ) -> SourceLineReplacement:
+        target_identifier = self.target.required_identifier(source_index)
+        target_digest = source_index.target_by_id[target_identifier]
+        return SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
+            self.old_source,
+            self.new_source,
+            rationale=rationale
+            or f"Replace source text inside {target_digest.qualname!r}.",
+        )
+
+
+OperationConstructorValue: TypeAlias = JsonValue | tuple[RecipeCallReplacement, ...]
+
+
+class OperationPayloadReader:
+    """Constructor-value readers for recipe operation payload bindings."""
+
+    @staticmethod
+    def required_string(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> OperationConstructorValue:
+        return payload.required_string(field_name)
+
+
+@dataclass(frozen=True)
+class OperationPayloadBinding:
+    """Declarative JSON-to-constructor binding for one operation payload field."""
+
+    field_name: str
+    constructor_argument_name: str
+    value_projector: Callable[["RefactorRecipeOperation"], JsonValue]
+    constructor_value_reader: Callable[
+        [SourceRewritePlanPayload, str], OperationConstructorValue
+    ] = OperationPayloadReader.required_string
+
+    def constructor_kwargs(
+        self, payload: SourceRewritePlanPayload
+    ) -> dict[str, OperationConstructorValue]:
+        return {
+            self.constructor_argument_name: self.constructor_value_reader(
+                payload,
+                self.field_name,
+            )
+        }
+
+    def payload_items(
+        self, operation: "RefactorRecipeOperation"
+    ) -> tuple[tuple[str, JsonValue], ...]:
+        return ((self.field_name, self.value_projector(operation)),)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -745,6 +1017,142 @@ class SourceLineReplacement:
 
 
 @dataclass(frozen=True)
+class SourceOffsetReplacement:
+    """Replacement of one character-offset span inside a source string."""
+
+    start_offset: int
+    end_offset: int
+    replacement_source: str
+
+
+@dataclass(frozen=True)
+class SourceNodeSpan:
+    """AST statement span projected into source line coordinates."""
+
+    node: ast.stmt
+    decorator_policy: SourceNodeDecoratorPolicy = SourceNodeDecoratorPolicy.EXCLUDE
+
+    @property
+    def start_line(self) -> int:
+        if self.decorator_policy is SourceNodeDecoratorPolicy.INCLUDE and isinstance(
+            self.node,
+            (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef),
+        ):
+            decorator_lines = tuple(
+                decorator.lineno for decorator in self.node.decorator_list
+            )
+            return min((*decorator_lines, self.node.lineno))
+        return self.node.lineno
+
+    @property
+    def end_line(self) -> int:
+        return self.node.end_lineno or self.node.lineno
+
+
+@dataclass(frozen=True)
+class SourceTextGeometry:
+    """Line and offset geometry for source-index anchored rewrites."""
+
+    source: str
+
+    @property
+    def lines(self) -> tuple[str, ...]:
+        return tuple(self.source.splitlines(keepends=True))
+
+    @property
+    def line_offsets(self) -> tuple[int, ...]:
+        offsets = []
+        offset = 0
+        for line in self.lines:
+            offsets.append(offset)
+            offset += len(line)
+        if not offsets:
+            offsets.append(0)
+        return tuple(offsets)
+
+    @property
+    def end_offset(self) -> int:
+        return sum(len(line) for line in self.lines)
+
+    def node_span_offsets(self, span: SourceNodeSpan) -> tuple[int, int]:
+        return self._line_span_offsets(span.start_line, span.end_line)
+
+    def line_indent(self, offset: int) -> str:
+        line_start = self.source.rfind("\n", 0, offset) + 1
+        line_end = self.source.find("\n", offset)
+        if line_end == -1:
+            line_end = len(self.source)
+        line = self.source[line_start:line_end]
+        return line[: len(line) - len(line.lstrip())]
+
+    def source_with_replacements_in_span(
+        self,
+        span_start: int,
+        span_end: int,
+        replacements: Iterable[SourceOffsetReplacement],
+    ) -> str:
+        span_source = self.source[span_start:span_end]
+        for replacement in sorted(
+            replacements,
+            key=lambda item: (item.start_offset, item.end_offset),
+            reverse=True,
+        ):
+            relative_start = replacement.start_offset - span_start
+            relative_end = replacement.end_offset - span_start
+            span_source = (
+                f"{span_source[:relative_start]}"
+                f"{replacement.replacement_source}"
+                f"{span_source[relative_end:]}"
+            )
+        return span_source
+
+    def _line_span_offsets(self, start_line: int, end_line: int) -> tuple[int, int]:
+        line_offsets = self.line_offsets
+        end_offset = (
+            line_offsets[end_line] if end_line < len(line_offsets) else self.end_offset
+        )
+        return line_offsets[start_line - 1], end_offset
+
+
+@dataclass(frozen=True)
+class ModuleImportInsertionPoint:
+    """Insertion line after a module docstring and leading import block."""
+
+    source: str
+    file_path: str
+
+    @property
+    def line_number(self) -> int:
+        module = ast.parse(self.source, filename=self.file_path)
+        body = module.body
+        if not body:
+            return 1
+        index = self._first_statement_index_after_docstring(body)
+        if index:
+            previous_statement = body[index - 1]
+            insertion_line = previous_statement.end_lineno or previous_statement.lineno
+        else:
+            insertion_line = 0
+        while index < len(body) and isinstance(
+            body[index], (ast.Import, ast.ImportFrom)
+        ):
+            insertion_line = body[index].end_lineno or body[index].lineno
+            index += 1
+        return insertion_line + 1
+
+    @staticmethod
+    def _first_statement_index_after_docstring(body: list[ast.stmt]) -> int:
+        first = body[0]
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            return 1
+        return 0
+
+
+@dataclass(frozen=True)
 class SourceTargetEditor:
     """Line-oriented editor for one source-index target span."""
 
@@ -770,6 +1178,46 @@ class SourceTargetEditor:
             end_index = replacement.end_line - self.target.line + 1
             lines[start_index:end_index] = list(replacement.replacement_lines)
         return "".join(lines)
+
+    def exact_text_replacement(
+        self,
+        old_source: str,
+        new_source: str,
+        *,
+        rationale: str = "",
+    ) -> SourceLineReplacement:
+        target_source = "".join(self.target_lines)
+        match_count = target_source.count(old_source)
+        if match_count != 1:
+            raise ValueError(
+                f"Expected exactly one match for source text in "
+                f"{self.target.qualname!r}; found {match_count}"
+            )
+        start_offset = target_source.index(old_source)
+        end_offset = start_offset + len(old_source)
+        target_line_offsets = SourceTextGeometry(target_source).line_offsets
+        start_index = self._line_index_for_offset(start_offset, target_line_offsets)
+        end_index = self._line_index_for_offset(
+            max(start_offset, end_offset - 1),
+            target_line_offsets,
+        )
+        span_lines = self.target_lines[start_index : end_index + 1]
+        span_source = "".join(span_lines)
+        relative_start = start_offset - target_line_offsets[start_index]
+        relative_end = end_offset - target_line_offsets[start_index]
+        replacement_source = (
+            f"{span_source[:relative_start]}"
+            f"{new_source}"
+            f"{span_source[relative_end:]}"
+        )
+        return SourceLineReplacement(
+            file_path=self.target.file_path,
+            start_line=self.target.line + start_index,
+            end_line=self.target.line + end_index,
+            replacement_lines=SourceTargetEditor.source_lines(replacement_source),
+            rationale=rationale
+            or f"Replace source text inside {self.target.qualname!r}.",
+        )
 
     def _ordered_replacements(
         self,
@@ -812,6 +1260,15 @@ class SourceTargetEditor:
             source = f"{source}\n"
         return tuple(source.splitlines(keepends=True))
 
+    @staticmethod
+    def _line_index_for_offset(offset: int, line_offsets: tuple[int, ...]) -> int:
+        index = 0
+        for candidate_index, line_offset in enumerate(line_offsets):
+            if line_offset > offset:
+                break
+            index = candidate_index
+        return index
+
 
 @dataclass(frozen=True, kw_only=True)
 class RefactorRecipeOperation(
@@ -822,13 +1279,14 @@ class RefactorRecipeOperation(
     """Agent-authored codemod operation compiled through source-index geometry."""
 
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = staticmethod(_refactor_recipe_operation_key)
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "Operation"
 
     @classmethod
     def operation_kind(cls) -> RefactorRecipeOperationKind:
         return RefactorRecipeOperationKind(
-            _refactor_recipe_operation_key(cls.__name__, cls)
+            _suffix_trimmed_class_name_registry_key(cls.__name__, cls)
         )
 
     @classmethod
@@ -855,17 +1313,30 @@ class RefactorRecipeOperation(
         }
 
     @classmethod
-    @abstractmethod
     def from_operation_payload(
         cls,
         target: SourceRewriteTarget,
         payload: SourceRewritePlanPayload,
     ) -> "RefactorRecipeOperation":
-        raise NotImplementedError
+        constructor_kwargs: dict[str, OperationConstructorValue] = {}
+        for binding in cls.payload_bindings():
+            constructor_kwargs.update(binding.constructor_kwargs(payload))
+        return cls(
+            target=target,
+            rationale=payload.string_or_empty("rationale"),
+            **constructor_kwargs,
+        )
 
-    @abstractmethod
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        return ()
+
     def operation_payload(self) -> JsonObject:
-        raise NotImplementedError
+        return {
+            key: value
+            for binding in type(self).payload_bindings()
+            for key, value in binding.payload_items(self)
+        }
 
     @abstractmethod
     def line_replacements(
@@ -893,25 +1364,91 @@ class RefactorRecipeOperation(
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteClassAssignmentOperation(RefactorRecipeOperation):
-    """Delete one class-level assignment by attribute name."""
+class StringPayloadOperation(RefactorRecipeOperation, ABC):
+    """Recipe operation whose JSON payload has one semantic string operand."""
 
-    attribute_name: str
+    payload_field_name: ClassVar[str]
+    payload_value: str
 
     @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
-    ) -> "DeleteClassAssignmentOperation":
-        return cls(
-            target=target,
-            attribute_name=payload.required_string("attribute_name"),
-            rationale=payload.string_or_empty("rationale"),
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        return (
+            OperationPayloadBinding(
+                field_name=cls.payload_field_name,
+                constructor_argument_name="payload_value",
+                value_projector=StringPayloadOperation.payload_value_from_operation,
+            ),
         )
 
-    def operation_payload(self) -> JsonObject:
-        return {"attribute_name": self.attribute_name}
+    @staticmethod
+    def payload_value_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, StringPayloadOperation):
+            raise TypeError("String payload binding requires StringPayloadOperation")
+        return operation.payload_value
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceTextOperation(RefactorRecipeOperation):
+    """Replace one exact text fragment inside a source-index target."""
+
+    old_source: str
+    new_source: str
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=OLD_SOURCE_PAYLOAD_FIELD,
+                constructor_argument_name="old_source",
+                value_projector=ReplaceTextOperation.old_source_from_operation,
+            ),
+            OperationPayloadBinding(
+                field_name=NEW_SOURCE_PAYLOAD_FIELD,
+                constructor_argument_name="new_source",
+                value_projector=ReplaceTextOperation.new_source_from_operation,
+            ),
+        )
+
+    @staticmethod
+    def old_source_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceTextOperation):
+            raise TypeError("old_source binding requires ReplaceTextOperation")
+        return operation.old_source
+
+    @staticmethod
+    def new_source_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ReplaceTextOperation):
+            raise TypeError("new_source binding requires ReplaceTextOperation")
+        return operation.new_source
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        return (
+            SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
+                self.old_source,
+                self.new_source,
+                rationale=self.rationale
+                or f"Replace source text inside {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteClassAssignmentOperation(StringPayloadOperation):
+    """Delete one class-level assignment by attribute name."""
+
+    payload_field_name = "attribute_name"
 
     def line_replacements(
         self,
@@ -927,14 +1464,12 @@ class DeleteClassAssignmentOperation(RefactorRecipeOperation):
                 f"Target {target_digest.qualname!r} is not a class definition"
             )
         assignments = tuple(
-            statement
-            for statement in node.body
-            if self._matches_assignment(statement)
+            statement for statement in node.body if self._matches_assignment(statement)
         )
         if not assignments:
             raise ValueError(
                 f"Class {target_digest.qualname!r} has no assignment "
-                f"for {self.attribute_name!r}"
+                f"for {self.payload_value!r}"
             )
         return tuple(
             SourceLineReplacement(
@@ -942,7 +1477,7 @@ class DeleteClassAssignmentOperation(RefactorRecipeOperation):
                 start_line=assignment.lineno,
                 end_line=assignment.end_lineno or assignment.lineno,
                 rationale=self.rationale
-                or f"Delete class assignment {self.attribute_name!r}.",
+                or f"Delete class assignment {self.payload_value!r}.",
             )
             for assignment in assignments
         )
@@ -950,36 +1485,346 @@ class DeleteClassAssignmentOperation(RefactorRecipeOperation):
     def _matches_assignment(self, statement: ast.stmt) -> bool:
         if isinstance(statement, ast.Assign):
             return any(
-                isinstance(target, ast.Name) and target.id == self.attribute_name
+                isinstance(target, ast.Name) and target.id == self.payload_value
                 for target in statement.targets
             )
         return (
             isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
-            and statement.target.id == self.attribute_name
+            and statement.target.id == self.payload_value
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFunctionBodyOperation(RefactorRecipeOperation):
-    """Replace a function or method body while preserving its signature."""
+class DeleteTargetOperation(RefactorRecipeOperation):
+    """Delete one source-index target."""
 
-    body_source: str
-
-    @classmethod
-    def from_operation_payload(
-        cls,
-        target: SourceRewriteTarget,
-        payload: SourceRewritePlanPayload,
-    ) -> "ReplaceFunctionBodyOperation":
-        return cls(
-            target=target,
-            body_source=payload.required_string("body_source"),
-            rationale=payload.string_or_empty("rationale"),
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_by_path
+        target_identifier = self.target.required_identifier(source_index)
+        target_digest = source_index.target_by_id[target_identifier]
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=target_digest.line,
+                end_line=target_digest.end_line,
+                rationale=self.rationale
+                or f"Delete target {target_digest.qualname!r}.",
+            ),
         )
 
-    def operation_payload(self) -> JsonObject:
-        return {"body_source": self.body_source}
+
+@dataclass(frozen=True, kw_only=True)
+class ExtractAuthorityOperation(RefactorRecipeOperation):
+    """Replace a helper target with a nominal authority and route call sites."""
+
+    authority_source: str
+    call_replacements: tuple[RecipeCallReplacement, ...] = ()
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=AUTHORITY_SOURCE_PAYLOAD_FIELD,
+                constructor_argument_name="authority_source",
+                value_projector=ExtractAuthorityOperation.authority_source_from_operation,
+            ),
+            OperationPayloadBinding(
+                field_name=CALL_REPLACEMENTS_PAYLOAD_FIELD,
+                constructor_argument_name="call_replacements",
+                value_projector=ExtractAuthorityOperation.call_replacements_from_operation,
+                constructor_value_reader=RecipeCallReplacement.tuple_from_payload,
+            ),
+        )
+
+    @staticmethod
+    def authority_source_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractAuthorityOperation):
+            raise TypeError(
+                "authority_source binding requires ExtractAuthorityOperation"
+            )
+        return operation.authority_source
+
+    @staticmethod
+    def call_replacements_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ExtractAuthorityOperation):
+            raise TypeError(
+                "call_replacements binding requires ExtractAuthorityOperation"
+            )
+        return tuple(
+            replacement.to_dict() for replacement in operation.call_replacements
+        )
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        target_identifier = self.target.required_identifier(source_index)
+        target_digest = source_index.target_by_id[target_identifier]
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=target_digest.line,
+                end_line=target_digest.line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.authority_source
+                ),
+                rationale=self.rationale
+                or f"Insert authority before {target_digest.qualname!r}.",
+            ),
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=target_digest.line,
+                end_line=target_digest.end_line,
+                rationale=self.rationale
+                or f"Delete helper target {target_digest.qualname!r}.",
+            ),
+            *(
+                replacement.line_replacement(
+                    source_index,
+                    source_by_path,
+                    rationale=self.rationale,
+                )
+                for replacement in self.call_replacements
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class InsertBeforeTargetOperation(StringPayloadOperation):
+    """Insert source immediately before a source-index target."""
+
+    payload_field_name = SOURCE_PAYLOAD_FIELD
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=target_digest.line,
+                end_line=target_digest.line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                rationale=self.rationale
+                or f"Insert source before {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class InsertAfterTargetOperation(StringPayloadOperation):
+    """Insert source immediately after a source-index target."""
+
+    payload_field_name = SOURCE_PAYLOAD_FIELD
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=target_digest.end_line + 1,
+                end_line=target_digest.end_line,
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                rationale=self.rationale
+                or f"Insert source after {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class InsertAfterImportsOperation(StringPayloadOperation):
+    """Insert source after a module docstring and leading import block."""
+
+    payload_field_name = SOURCE_PAYLOAD_FIELD
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("insert_after_imports requires file_path")
+        source_path = self.target.source_path
+        source = source_by_path[source_path]
+        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=insertion_line,
+                end_line=insertion_line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                rationale=self.rationale
+                or f"Insert source imports into {source_path!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class EnsureImportOperation(StringPayloadOperation):
+    """Insert import source after leading imports unless it already exists."""
+
+    payload_field_name = IMPORT_SOURCE_PAYLOAD_FIELD
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("ensure_import requires file_path")
+        source_path = self.target.source_path
+        source = source_by_path[source_path]
+        import_lines = SourceTargetEditor.source_lines(self.payload_value)
+        if self._source_already_contains_import(source, import_lines):
+            return ()
+        insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=insertion_line,
+                end_line=insertion_line - 1,
+                replacement_lines=import_lines,
+                rationale=self.rationale
+                or f"Ensure import source exists in {source_path!r}.",
+            ),
+        )
+
+    @staticmethod
+    def _source_already_contains_import(
+        source: str,
+        import_lines: tuple[str, ...],
+    ) -> bool:
+        existing_lines = frozenset(source.splitlines(keepends=True))
+        return all(line in existing_lines for line in import_lines if line.strip())
+
+
+@dataclass(frozen=True, kw_only=True)
+class AddClassBaseOperation(StringPayloadOperation):
+    """Add one base class to a single-line class declaration."""
+
+    payload_field_name = "base_name"
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a class definition"
+            )
+        if self.payload_value in _class_base_source_names(node):
+            return ()
+        editor = SourceTargetEditor(source_by_path, target_digest)
+        original_line = editor.file_lines[node.lineno - 1]
+        replacement_line = ClassHeaderSourceAuthority(
+            original_line,
+            node.name,
+        ).with_added_base(self.payload_value)
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=node.lineno,
+                end_line=node.lineno,
+                replacement_lines=(replacement_line,),
+                rationale=self.rationale
+                or f"Add base {self.payload_value!r} to {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class RemoveClassBaseOperation(StringPayloadOperation):
+    """Remove one base class from a single-line class declaration."""
+
+    payload_field_name = "base_name"
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a class definition"
+            )
+        if self.payload_value not in _class_base_source_names(node):
+            return ()
+        editor = SourceTargetEditor(source_by_path, target_digest)
+        original_line = editor.file_lines[node.lineno - 1]
+        replacement_line = ClassHeaderSourceAuthority(
+            original_line,
+            node.name,
+        ).without_base(self.payload_value)
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=node.lineno,
+                end_line=node.lineno,
+                replacement_lines=(replacement_line,),
+                rationale=self.rationale
+                or f"Remove base {self.payload_value!r} from {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionSignatureOperation(StringPayloadOperation):
+    """Replace a single-line function signature while preserving its body."""
+
+    payload_field_name = "signature_source"
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError(f"Target {target_digest.qualname!r} is not a function")
+        editor = SourceTargetEditor(source_by_path, target_digest)
+        original_line = editor.file_lines[node.lineno - 1]
+        replacement_line = FunctionSignatureSourceAuthority(
+            original_line,
+        ).replacement_line(self.payload_value)
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=node.lineno,
+                end_line=node.lineno,
+                replacement_lines=(replacement_line,),
+                rationale=self.rationale
+                or f"Replace signature of {target_digest.qualname!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionBodyOperation(StringPayloadOperation):
+    """Replace a function or method body while preserving its signature."""
+
+    payload_field_name = "body_source"
 
     def line_replacements(
         self,
@@ -1016,12 +1861,162 @@ class ReplaceFunctionBodyOperation(RefactorRecipeOperation):
         body_start: int,
     ) -> tuple[str, ...]:
         body_indent = editor.indentation_for_line(body_start)
-        body_lines = SourceTargetEditor.source_lines(self.body_source)
+        body_lines = SourceTargetEditor.source_lines(self.payload_value)
         if not body_lines:
             raise ValueError("Replacement function body must not be empty")
         return tuple(
             body_indent + line if line.strip() else line for line in body_lines
         )
+
+
+def _class_base_source_names(node: ast.ClassDef) -> frozenset[str]:
+    return frozenset(ast.unparse(base) for base in node.bases)
+
+
+@dataclass(frozen=True)
+class SingleLogicalLineSource:
+    """Parsed single source line preserving indentation and newline."""
+
+    indent: str
+    body: str
+    newline: str
+
+    @classmethod
+    def parse(cls, original_line: str, role: str) -> "SingleLogicalLineSource":
+        body = original_line.rstrip("\r\n")
+        newline = original_line[len(body) :]
+        stripped_body = body.lstrip()
+        indent = body[: len(body) - len(stripped_body)]
+        if "\n" in stripped_body or "\r" in stripped_body:
+            raise ValueError(f"{role} operation requires one source line")
+        return cls(indent=indent, body=stripped_body, newline=newline)
+
+    def rebuild(self, body: str) -> str:
+        return f"{self.indent}{body}{self.newline}"
+
+
+@dataclass(frozen=True)
+class ClassHeaderParts:
+    """Parsed base-list surface of one single-line class header."""
+
+    class_prefix: str
+    base_items: tuple[str, ...]
+    close_suffix: str
+
+    @classmethod
+    def parse(cls, header_body: str) -> "ClassHeaderParts":
+        colon_index = header_body.rfind(":")
+        before_colon = header_body[:colon_index]
+        after_colon = header_body[colon_index:]
+        if "(" not in before_colon:
+            return cls(before_colon, (), after_colon)
+        open_index = before_colon.find("(")
+        close_index = before_colon.rfind(")")
+        if close_index < open_index:
+            raise ValueError("Class base operation requires a closed base list")
+        class_prefix = before_colon[:open_index]
+        base_source = before_colon[open_index + 1 : close_index]
+        close_suffix = f"{before_colon[close_index:]}{after_colon}"
+        return cls(
+            class_prefix=f"{class_prefix}(",
+            base_items=tuple(
+                item.strip() for item in base_source.split(",") if item.strip()
+            ),
+            close_suffix=close_suffix,
+        )
+
+    def with_added_base(self, base_name: str) -> "ClassHeaderParts":
+        insert_index = self.first_keyword_index()
+        return ClassHeaderParts(
+            class_prefix=self.class_prefix,
+            base_items=(
+                *self.base_items[:insert_index],
+                base_name,
+                *self.base_items[insert_index:],
+            ),
+            close_suffix=self.close_suffix,
+        )
+
+    def without_base(self, base_name: str) -> "ClassHeaderParts":
+        return ClassHeaderParts(
+            class_prefix=self.class_prefix,
+            base_items=tuple(item for item in self.base_items if item != base_name),
+            close_suffix=self.close_suffix,
+        )
+
+    def first_keyword_index(self) -> int:
+        for index, item in enumerate(self.base_items):
+            if "=" in item:
+                return index
+        return len(self.base_items)
+
+    def rebuild(self, header_body: str) -> str:
+        if self.base_items:
+            return self._body_from_items()
+        return f"{self.class_prefix.removesuffix('(')}{self._suffix_after_colon(header_body)}"
+
+    def _body_from_items(self) -> str:
+        if self.class_prefix.endswith("("):
+            return f"{self.class_prefix}{', '.join(self.base_items)}{self.close_suffix}"
+        return f"{self.class_prefix}({', '.join(self.base_items)}){self.close_suffix}"
+
+    @staticmethod
+    def _suffix_after_colon(header_body: str) -> str:
+        return header_body[header_body.rfind(":") :]
+
+
+@dataclass(frozen=True)
+class ClassHeaderSourceAuthority:
+    """Rewrite bases in one single-line class header."""
+
+    original_line: str
+    class_name: str
+
+    @property
+    def header(self) -> SingleLogicalLineSource:
+        line = SingleLogicalLineSource.parse(self.original_line, "class header")
+        if ":" not in line.body:
+            raise ValueError("Class base operation requires a single-line class header")
+        if not line.body.startswith(f"class {self.class_name}"):
+            raise ValueError(f"Class header does not start with {self.class_name!r}")
+        return line
+
+    @property
+    def parts(self) -> ClassHeaderParts:
+        return ClassHeaderParts.parse(self.header.body)
+
+    def with_added_base(self, base_name: str) -> str:
+        header = self.header
+        return header.rebuild(
+            self.parts.with_added_base(base_name).rebuild(header.body)
+        )
+
+    def without_base(self, base_name: str) -> str:
+        header = self.header
+        return header.rebuild(self.parts.without_base(base_name).rebuild(header.body))
+
+
+@dataclass(frozen=True)
+class FunctionSignatureSourceAuthority:
+    """Rewrite one single-line function signature."""
+
+    original_line: str
+
+    def replacement_line(self, signature_source: str) -> str:
+        line = SingleLogicalLineSource.parse(
+            self.original_line,
+            "function signature",
+        )
+        if ":" not in line.body:
+            raise ValueError(
+                "Function signature replacement requires a single-line def"
+            )
+        stripped_signature = signature_source.strip()
+        if not stripped_signature.endswith(":"):
+            raise ValueError("Replacement function signature must end with ':'")
+        if not stripped_signature.startswith(("def ", "async def ")):
+            raise ValueError("Replacement function signature must start with def")
+        return line.rebuild(stripped_signature)
 
 
 @dataclass(frozen=True)
@@ -1191,6 +2186,162 @@ class RefactorRecipe:
         )
         return replace(self, rewrites=(*self.rewrites, rewrite))
 
+    def insert_before_target(
+        self,
+        target_qualname: str,
+        source: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = InsertBeforeTargetOperation(
+            target=SourceRewriteTarget(
+                qualname=target_qualname,
+                source_path=source_path,
+            ),
+            payload_value=source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def insert_after_target(
+        self,
+        target_qualname: str,
+        source: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = InsertAfterTargetOperation(
+            target=SourceRewriteTarget(
+                qualname=target_qualname,
+                source_path=source_path,
+            ),
+            payload_value=source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def insert_after_imports(
+        self,
+        source_path: str,
+        source: str,
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = InsertAfterImportsOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            payload_value=source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def ensure_import(
+        self,
+        source_path: str,
+        import_source: str,
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = EnsureImportOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            payload_value=import_source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def delete_target(
+        self,
+        target_qualname: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DeleteTargetOperation(
+            target=SourceRewriteTarget(
+                qualname=target_qualname,
+                source_path=source_path,
+            ),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def extract_authority(
+        self,
+        helper_qualname: str,
+        authority_source: str,
+        *,
+        call_replacements: Iterable[RecipeCallReplacement] = (),
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ExtractAuthorityOperation(
+            target=SourceRewriteTarget(
+                qualname=helper_qualname,
+                source_path=source_path,
+            ),
+            authority_source=authority_source,
+            call_replacements=tuple(call_replacements),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def add_class_base(
+        self,
+        class_qualname: str,
+        base_name: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = AddClassBaseOperation(
+            target=SourceRewriteTarget(
+                qualname=class_qualname,
+                source_path=source_path,
+            ),
+            payload_value=base_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def remove_class_base(
+        self,
+        class_qualname: str,
+        base_name: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = RemoveClassBaseOperation(
+            target=SourceRewriteTarget(
+                qualname=class_qualname,
+                source_path=source_path,
+            ),
+            payload_value=base_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def replace_text(
+        self,
+        target_qualname: str,
+        old_source: str,
+        new_source: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ReplaceTextOperation(
+            target=SourceRewriteTarget(
+                qualname=target_qualname,
+                source_path=source_path,
+            ),
+            old_source=old_source,
+            new_source=new_source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def delete_class_assignment(
         self,
         class_qualname: str,
@@ -1204,7 +2355,25 @@ class RefactorRecipe:
                 qualname=class_qualname,
                 source_path=source_path,
             ),
-            attribute_name=attribute_name,
+            payload_value=attribute_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def replace_function_signature(
+        self,
+        function_qualname: str,
+        signature_source: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ReplaceFunctionSignatureOperation(
+            target=SourceRewriteTarget(
+                qualname=function_qualname,
+                source_path=source_path,
+            ),
+            payload_value=signature_source,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -1222,7 +2391,7 @@ class RefactorRecipe:
                 qualname=function_qualname,
                 source_path=source_path,
             ),
-            body_source=body_source,
+            payload_value=body_source,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -1315,6 +2484,29 @@ class CodemodPlanDocument:
             for rewrite in recipe.source_rewrite_batch(source_index, source_by_path)
         )
 
+    def simulate(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "CodemodPlanDocumentSimulation":
+        simulation = simulate_planned_rewrites(
+            source_index,
+            self.source_rewrite_batch(source_index, source_by_path),
+            source_by_path,
+            backend=backend,
+        )
+        guard_report = self.guard_suite.evaluate(
+            source_index,
+            source_by_path_with_simulation(source_by_path, simulation),
+        )
+        return CodemodPlanDocumentSimulation(
+            document=self,
+            simulation=simulation,
+            architecture_guard_report=guard_report,
+        )
+
     def to_dict(self) -> JsonObject:
         return {
             "authority_boundaries": tuple(
@@ -1351,12 +2543,21 @@ class CodemodSimulationReport:
 
 
 @dataclass(frozen=True)
-class RefactorRecipeSimulation:
-    """Simulation result for one refactor recipe."""
+class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
+    """Shared result envelope for executable source rewrite simulations."""
 
-    recipe: RefactorRecipe
+    __registry__: ClassVar[dict[str, type["SourceRewriteSimulationResult"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __skip_if_no_key__ = True
+
+    registry_key: ClassVar[str]
     simulation: CodemodSimulationReport
     architecture_guard_report: ArchitectureGuardReport
+
+    @property
+    @abstractmethod
+    def guard_subject(self) -> str:
+        raise NotImplementedError
 
     @property
     def is_clean(self) -> bool:
@@ -1379,18 +2580,53 @@ class RefactorRecipeSimulation:
     def apply(self, *, require_clean: bool = True) -> tuple[str, ...]:
         if require_clean and not self.is_clean:
             raise ValueError(
-                f"Recipe {self.recipe.recipe_id!r} still violates "
+                f"{self.guard_subject} still violates "
                 f"{self.architecture_guard_report.violation_count} "
                 "architecture guard(s)"
             )
         return apply_codemod_simulation(self.simulation)
 
-    def to_dict(self) -> JsonObject:
+    def simulation_payload(self) -> JsonObject:
         return {
-            "recipe": self.recipe.to_dict(),
             "simulation": self.simulation.to_dict(),
             "architecture_guard_report": self.architecture_guard_report.to_dict(),
             "is_clean": self.is_clean,
+        }
+
+
+@dataclass(frozen=True)
+class RefactorRecipeSimulation(SourceRewriteSimulationResult):
+    """Simulation result for one refactor recipe."""
+
+    registry_key = "recipe"
+    recipe: RefactorRecipe
+
+    @property
+    def guard_subject(self) -> str:
+        return f"Recipe {self.recipe.recipe_id!r}"
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "recipe": self.recipe.to_dict(),
+            **self.simulation_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
+    """Simulation result for an entire codemod plan document."""
+
+    registry_key = "plan_document"
+    document: CodemodPlanDocument
+
+    @property
+    def guard_subject(self) -> str:
+        return "Codemod plan document"
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "document": self.document.to_dict(),
+            **self.simulation_payload(),
         }
 
 
@@ -1496,13 +2732,287 @@ class CodemodCandidate:
         )
 
 
-class CodemodRewriteBuilder(ABC):
+_DescriptorAssignmentBuilder = Callable[
+    [ast.FunctionDef | ast.AsyncFunctionDef], str | None
+]
+_ClassStatementSelector = Callable[[ast.ClassDef], tuple[ast.stmt, ...]]
+
+
+@dataclass(frozen=True)
+class AstExpressionProjection:
+    """Nominal projections from an AST expression into source-level names."""
+
+    node: ast.expr
+
+    def base_name(self) -> str | None:
+        if isinstance(self.node, ast.Name):
+            return self.node.id
+        if isinstance(self.node, ast.Attribute):
+            return self.node.attr
+        if isinstance(self.node, ast.Subscript):
+            return AstExpressionProjection(self.node.value).base_name()
+        return None
+
+    def self_attribute_name(self) -> str | None:
+        if (
+            isinstance(self.node, ast.Attribute)
+            and isinstance(self.node.value, ast.Name)
+            and self.node.value.id == "self"
+        ):
+            return self.node.attr
+        return None
+
+    def attribute_projection(self) -> tuple[str, str] | None:
+        if not isinstance(self.node, ast.Attribute):
+            return None
+        return ast.unparse(self.node.value), self.node.attr
+
+    def field_from_carrier_attribute(self, carrier_variable_name: str) -> str | None:
+        projected = self.attribute_projection()
+        if projected is None:
+            return None
+        source_name, field_name = projected
+        if source_name != carrier_variable_name:
+            return None
+        return field_name
+
+
+def _derivable_detector_id_assignment(node: ast.ClassDef) -> tuple[ast.stmt, ...]:
+    if not _class_declares_finding_spec(node):
+        return ()
+    expected_detector_id = _detector_id_from_class_name(node.name)
+    if expected_detector_id is None:
+        return ()
+    for statement in node.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        if _name_id(statement.targets[0]) != "detector_id":
+            continue
+        if (
+            isinstance(statement.value, ast.Constant)
+            and statement.value.value == expected_detector_id
+        ):
+            return (statement,)
+    return ()
+
+
+def _derivable_candidate_collector_assignment(
+    node: ast.ClassDef,
+) -> tuple[ast.stmt, ...]:
+    if not _class_declares_finding_spec(node):
+        return ()
+    if not _has_derived_candidate_collector_base(node):
+        return ()
+    expected_collector_name = _candidate_collector_name_from_class_name(node.name)
+    if expected_collector_name is None:
+        return ()
+    for statement in node.body:
+        targets: tuple[ast.expr, ...]
+        value: ast.expr | None
+        if isinstance(statement, ast.Assign):
+            targets = tuple(statement.targets)
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = (statement.target,)
+            value = statement.value
+        else:
+            continue
+        if len(targets) != 1 or _name_id(targets[0]) != "candidate_collector":
+            continue
+        if value is not None and _name_id(value) == expected_collector_name:
+            return (statement,)
+    return ()
+
+
+def _source_location_descriptor_assignment(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    if not PlainPropertyMethodAuthority(node).matches:
+        return None
+    returned = _single_return_value(node)
+    if (
+        not isinstance(returned, ast.Call)
+        or _call_name(returned.func) != "SourceLocation"
+    ):
+        return None
+    if len(returned.args) != 3 or returned.keywords:
+        return None
+    attribute_names = tuple(
+        AstExpressionProjection(argument).self_attribute_name()
+        for argument in returned.args
+    )
+    if any(name is None for name in attribute_names):
+        return None
+    file_attribute_name, line_attribute_name, symbol_attribute_name = attribute_names
+    return (
+        f"{node.name} = SourceLocationEvidenceProperty("
+        f'"{file_attribute_name}", "{line_attribute_name}", "{symbol_attribute_name}")'
+    )
+
+
+def _zipped_source_location_descriptor_assignment(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str | None:
+    if not PlainPropertyMethodAuthority(node).matches:
+        return None
+    returned = _single_return_value(node)
+    if not isinstance(returned, ast.Call) or _call_name(returned.func) != "tuple":
+        return None
+    if len(returned.args) != 1 or returned.keywords:
+        return None
+    generator = returned.args[0]
+    if not isinstance(generator, ast.GeneratorExp):
+        return None
+    source_location_call = generator.elt
+    if (
+        not isinstance(source_location_call, ast.Call)
+        or _call_name(source_location_call.func) != "SourceLocation"
+        or len(source_location_call.args) != 3
+        or source_location_call.keywords
+    ):
+        return None
+    file_attribute_name = AstExpressionProjection(
+        source_location_call.args[0]
+    ).self_attribute_name()
+    line_variable_name = _name_id(source_location_call.args[1])
+    symbol_variable_name = _name_id(source_location_call.args[2])
+    if (
+        file_attribute_name is None
+        or line_variable_name is None
+        or symbol_variable_name is None
+    ):
+        return None
+    if len(generator.generators) != 1:
+        return None
+    comprehension = generator.generators[0]
+    if (
+        comprehension.ifs
+        or comprehension.is_async
+        or not isinstance(comprehension.target, ast.Tuple)
+    ):
+        return None
+    target_names = tuple(_name_id(item) for item in comprehension.target.elts)
+    zip_call = comprehension.iter
+    if not isinstance(zip_call, ast.Call) or _call_name(zip_call.func) != "zip":
+        return None
+    if len(zip_call.args) != 2 or not _has_strict_true_keyword(zip_call):
+        return None
+    zipped_attribute_names = tuple(
+        AstExpressionProjection(argument).self_attribute_name()
+        for argument in zip_call.args
+    )
+    if any(name is None for name in (*target_names, *zipped_attribute_names)):
+        return None
+    bindings = dict(zip(target_names, zipped_attribute_names, strict=True))
+    line_numbers_attribute_name = bindings.get(line_variable_name)
+    symbol_names_attribute_name = bindings.get(symbol_variable_name)
+    if line_numbers_attribute_name is None or symbol_names_attribute_name is None:
+        return None
+    return (
+        f"{node.name} = ZippedSourceLocationEvidenceProperty("
+        f'"{line_numbers_attribute_name}", "{symbol_names_attribute_name}", '
+        f'"{file_attribute_name}")'
+    )
+
+
+class DescriptorAssignmentAuthority(ABC, metaclass=AutoRegisterMeta):
+    """Registered authority for turning descriptor-like methods into assignments."""
+
+    __registry__: ClassVar[dict[str, type["DescriptorAssignmentAuthority"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
+    assignment_builder: ClassVar[_DescriptorAssignmentBuilder]
+
+    @classmethod
+    def assignment(cls, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+        return cls.assignment_builder(node)
+
+
+class SourceLocationDescriptorAssignmentAuthority(DescriptorAssignmentAuthority):
+    """Projection authority for exact SourceLocation evidence properties."""
+
+    assignment_builder = staticmethod(_source_location_descriptor_assignment)
+
+
+class ZippedSourceLocationDescriptorAssignmentAuthority(
+    DescriptorAssignmentAuthority,
+):
+    """Projection authority for exact zipped SourceLocation evidence properties."""
+
+    assignment_builder = staticmethod(_zipped_source_location_descriptor_assignment)
+
+
+class DetectorDeclarationSelector(ABC, metaclass=AutoRegisterMeta):
+    """Registered selector for derivable detector class declarations."""
+
+    __registry__: ClassVar[dict[str, type["DetectorDeclarationSelector"]]] = {}
+    __registry_key__ = "detector_id"
+    __skip_if_no_key__ = True
+
+    detector_id: ClassVar[str]
+    statement_selector: ClassVar[_ClassStatementSelector]
+
+    @classmethod
+    def select_for_detector_ids(
+        cls,
+        node: ast.ClassDef,
+        detector_ids: frozenset[str],
+    ) -> tuple[ast.stmt, ...]:
+        return tuple(
+            statement
+            for detector_id in sorted(detector_ids)
+            for selector_type in (cls.__registry__.get(detector_id),)
+            if selector_type is not None
+            for statement in selector_type.select(node)
+        )
+
+    @classmethod
+    def select(cls, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
+        return cls.statement_selector(node)
+
+
+class DerivableDetectorIdDeclarationSelector(DetectorDeclarationSelector):
+    """Select detector_id assignments derivable from the detector class name."""
+
+    detector_id = "derivable_detector_id"
+    statement_selector = staticmethod(_derivable_detector_id_assignment)
+
+
+class DerivableCandidateCollectorDeclarationSelector(DetectorDeclarationSelector):
+    """Select candidate_collector assignments derivable from detector class name."""
+
+    detector_id = "derivable_candidate_collector"
+    statement_selector = staticmethod(_derivable_candidate_collector_assignment)
+
+
+class CodemodRewriteBuilder(ABC, metaclass=AutoRegisterMeta):
     """Build planned source rewrites for candidates with mechanical semantics."""
 
+    __registry__: ClassVar[dict[str, type["CodemodRewriteBuilder"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "CodemodBuilder"
+    default_enabled: ClassVar[bool] = True
+    registry_order: ClassVar[int] = 100
+    rewrite_strategy: ClassVar[CodemodStrategy]
+
+    @classmethod
+    def default_builders(cls) -> tuple["CodemodRewriteBuilder", ...]:
+        return tuple(
+            builder_type()
+            for builder_type in sorted(
+                cls.__registry__.values(),
+                key=lambda item: (item.registry_order, item.__name__),
+            )
+            if builder_type.default_enabled
+        )
+
     @property
-    @abstractmethod
     def strategy(self) -> CodemodStrategy:
-        raise NotImplementedError
+        return type(self).rewrite_strategy
 
     @abstractmethod
     def build_rewrites(
@@ -1529,172 +3039,173 @@ class CodemodRewriteBuilder(ABC):
         )
 
 
-class SourceLocationEvidencePropertyCodemodBuilder(CodemodRewriteBuilder):
+class DescriptorPropertyCodemodBuilder(ABC):
+    """Shared rewrite algorithm for descriptor-backed evidence properties."""
+
+    detector_id: ClassVar[str]
+    descriptor_assignment_authority: ClassVar[type[DescriptorAssignmentAuthority]]
+    rewrite_rationale: ClassVar[str]
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if candidate.opportunity_key.kind != "ast-target":
+            return ()
+        if self.detector_id not in candidate.opportunity.detector_ids:
+            return ()
+        return _descriptor_property_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            descriptor_assignment_builder=type(
+                self
+            ).descriptor_assignment_authority.assignment,
+            rationale=self.rewrite_rationale,
+        )
+
+
+class ClassStatementDeletionCodemodBuilder(ABC):
+    """Shared rewrite algorithm for deleting derivable class statements."""
+
+    detector_ids: ClassVar[frozenset[str]]
+    rewrite_rationale: ClassVar[str]
+    statement_selector: ClassVar[type[DetectorDeclarationSelector] | None] = None
+
+    def candidate_matches(self, candidate: CodemodCandidate) -> bool:
+        return candidate.opportunity_key.kind == "ast-target" and bool(
+            self.detector_ids & frozenset(candidate.opportunity.detector_ids)
+        )
+
+    @abstractmethod
+    def selected_statements(
+        self,
+        node: ast.ClassDef,
+        candidate: CodemodCandidate,
+    ) -> tuple[ast.stmt, ...]:
+        del candidate
+        selector = type(self).statement_selector
+        if selector is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must declare a statement selector"
+            )
+        return selector.select(node)
+
+    def build_rewrites(
+        self,
+        candidate: CodemodCandidate,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if not self.candidate_matches(candidate):
+            return ()
+        return _class_statement_deletion_rewrites(
+            candidate,
+            source_index,
+            source_by_path,
+            statement_selector=lambda node: self.selected_statements(node, candidate),
+            rationale=self.rewrite_rationale,
+        )
+
+
+class SourceLocationEvidencePropertyCodemodBuilder(
+    DescriptorPropertyCodemodBuilder,
+    CodemodRewriteBuilder,
+):
     """Plan descriptor replacements for exact SourceLocation evidence properties."""
 
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        if (
-            "source_location_evidence_property"
-            not in candidate.opportunity.detector_ids
-        ):
-            return ()
-        return _descriptor_property_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            descriptor_assignment_builder=_source_location_descriptor_assignment,
-            rationale=(
-                "Replace boilerplate SourceLocation evidence property with "
-                "SourceLocationEvidenceProperty descriptor data."
-            ),
-        )
+    registry_order = 10
+    rewrite_strategy = SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+    detector_id = "source_location_evidence_property"
+    descriptor_assignment_authority = SourceLocationDescriptorAssignmentAuthority
+    rewrite_rationale = (
+        "Replace boilerplate SourceLocation evidence property with "
+        "SourceLocationEvidenceProperty descriptor data."
+    )
 
 
-class ZippedSourceLocationEvidencePropertyCodemodBuilder(CodemodRewriteBuilder):
+class ZippedSourceLocationEvidencePropertyCodemodBuilder(
+    DescriptorPropertyCodemodBuilder,
+    CodemodRewriteBuilder,
+):
     """Plan descriptor replacements for exact zipped SourceLocation properties."""
 
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        if (
-            "zipped_source_location_evidence_property"
-            not in candidate.opportunity.detector_ids
-        ):
-            return ()
-        return _descriptor_property_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            descriptor_assignment_builder=_zipped_source_location_descriptor_assignment,
-            rationale=(
-                "Replace boilerplate zipped SourceLocation evidence property with "
-                "ZippedSourceLocationEvidenceProperty descriptor data."
-            ),
-        )
+    registry_order = 20
+    rewrite_strategy = ZIPPED_SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY
+    detector_id = "zipped_source_location_evidence_property"
+    descriptor_assignment_authority = ZippedSourceLocationDescriptorAssignmentAuthority
+    rewrite_rationale = (
+        "Replace boilerplate zipped SourceLocation evidence property with "
+        "ZippedSourceLocationEvidenceProperty descriptor data."
+    )
 
 
-class DerivableDetectorIdCodemodBuilder(CodemodRewriteBuilder):
+class DerivableDetectorIdCodemodBuilder(
+    ClassStatementDeletionCodemodBuilder,
+    CodemodRewriteBuilder,
+):
     """Plan deletion of redundant detector_id class assignments."""
 
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        if "derivable_detector_id" not in candidate.opportunity.detector_ids:
-            return ()
-        return _class_statement_deletion_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            statement_selector=_derivable_detector_id_assignment,
-            rationale=(
-                "Delete redundant detector_id; IssueDetector derives the registry "
-                "key from the detector class name."
-            ),
-        )
+    registry_order = 40
+    rewrite_strategy = DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY
+    detector_ids = frozenset(("derivable_detector_id",))
+    statement_selector = DerivableDetectorIdDeclarationSelector
+    rewrite_rationale = (
+        "Delete redundant detector_id; IssueDetector derives the registry key "
+        "from the detector class name."
+    )
 
 
-class DerivableCandidateCollectorCodemodBuilder(CodemodRewriteBuilder):
+class DerivableCandidateCollectorCodemodBuilder(
+    ClassStatementDeletionCodemodBuilder,
+    CodemodRewriteBuilder,
+):
     """Plan deletion of redundant candidate_collector class assignments."""
 
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        if "derivable_candidate_collector" not in candidate.opportunity.detector_ids:
-            return ()
-        return _class_statement_deletion_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            statement_selector=_derivable_candidate_collector_assignment,
-            rationale=(
-                "Delete redundant candidate_collector; the collector base derives "
-                "the hook from the detector class name."
-            ),
-        )
+    registry_order = 50
+    rewrite_strategy = DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY
+    detector_ids = frozenset(("derivable_candidate_collector",))
+    statement_selector = DerivableCandidateCollectorDeclarationSelector
+    rewrite_rationale = (
+        "Delete redundant candidate_collector; the collector base derives "
+        "the hook from the detector class name."
+    )
 
 
-class DerivableDetectorDeclarationsCodemodBuilder(CodemodRewriteBuilder):
+class DerivableDetectorDeclarationsCodemodBuilder(
+    ClassStatementDeletionCodemodBuilder,
+    CodemodRewriteBuilder,
+):
     """Plan deletion of redundant detector declaration class assignments."""
 
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY
+    registry_order = 30
+    rewrite_strategy = DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY
+    detector_ids = frozenset(("derivable_detector_id", "derivable_candidate_collector"))
+    rewrite_rationale = (
+        "Delete redundant detector declarations derived from the detector class name."
+    )
 
-    def build_rewrites(
+    def selected_statements(
         self,
+        node: ast.ClassDef,
         candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if candidate.opportunity_key.kind != "ast-target":
-            return ()
-        detector_ids = frozenset(candidate.opportunity.detector_ids)
-        if not (
-            detector_ids & {"derivable_detector_id", "derivable_candidate_collector"}
-        ):
-            return ()
-        return _class_statement_deletion_rewrites(
-            candidate,
-            source_index,
-            source_by_path,
-            statement_selector=lambda node: _derivable_detector_declaration_assignments(
-                node,
-                detector_ids,
-            ),
-            rationale=(
-                "Delete redundant detector declarations derived from the detector "
-                "class name."
-            ),
+    ) -> tuple[ast.stmt, ...]:
+        return _derivable_detector_declaration_assignments(
+            node,
+            frozenset(candidate.opportunity.detector_ids),
         )
 
 
 class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
     """Attach caller-supplied rewrites once the authority boundary is declared."""
 
+    default_enabled = False
+    rewrite_strategy = SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY
+
     def __init__(self, plans: Iterable[AuthorityBoundaryPlan]) -> None:
         self._plans = tuple(plans)
-
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY
 
     def build_rewrites(
         self,
@@ -1730,11 +3241,7 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
 
 
 DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
-    SourceLocationEvidencePropertyCodemodBuilder(),
-    ZippedSourceLocationEvidencePropertyCodemodBuilder(),
-    DerivableDetectorDeclarationsCodemodBuilder(),
-    DerivableDetectorIdCodemodBuilder(),
-    DerivableCandidateCollectorCodemodBuilder(),
+    CodemodRewriteBuilder.default_builders()
 )
 
 
@@ -1818,8 +3325,8 @@ def format_codemod_unified_diff(
             difflib.unified_diff(
                 original_source.splitlines(keepends=True),
                 rewritten_source.splitlines(keepends=True),
-                fromfile=_prefixed_diff_path(fromfile_prefix, file_path),
-                tofile=_prefixed_diff_path(tofile_prefix, file_path),
+                fromfile=DiffPathPrefixAuthority(fromfile_prefix).path(file_path),
+                tofile=DiffPathPrefixAuthority(tofile_prefix).path(file_path),
             )
         )
     return "".join(diff_lines)
@@ -1846,8 +3353,16 @@ def source_by_path_with_simulation(
     return {**source_by_path, **simulation.rewritten_sources}
 
 
-def _prefixed_diff_path(prefix: str, file_path: str) -> str:
-    return f"{prefix}{file_path.removeprefix('/')}" if prefix else file_path
+@dataclass(frozen=True)
+class DiffPathPrefixAuthority:
+    """Render diff paths with an optional prefix."""
+
+    prefix: str
+
+    def path(self, file_path: str) -> str:
+        if not self.prefix:
+            return file_path
+        return f"{self.prefix}{file_path.removeprefix('/')}"
 
 
 @dataclass(frozen=True)
@@ -1875,15 +3390,10 @@ class CancelableCompositionSignal:
 
     @property
     def load_bearing_score(self) -> int:
-        immediate_unpack_bonus = (
-            75
-            if self.composition_kind == CancelableCompositionKind.PACK_UNPACK_FORWARD
-            else 25
-        )
         return (
             self.field_count * 50
             + self.covered_finding_count * 100
-            + immediate_unpack_bonus
+            + _COMPOSITION_KIND_LOAD_BEARING_BONUS[self.composition_kind]
         )
 
     @property
@@ -1896,18 +3406,19 @@ def codemod_candidates_from_impact_ranking(
     source_index: SourceIndex,
     *,
     include_trajectory_steps: bool = True,
-    strategy_registry: CodemodStrategyRegistry | None = None,
+    strategy_registry: CodemodStrategyRegistry = DEFAULT_CODEMOD_STRATEGY_REGISTRY,
 ) -> tuple[CodemodCandidate, ...]:
     """Project impact-ranking opportunities into source-index codemod candidates."""
 
-    registry = strategy_registry or DEFAULT_CODEMOD_STRATEGY_REGISTRY
     candidates_by_id: dict[str, CodemodCandidate] = {}
+    candidate_collector = OpportunityCandidateCollector(
+        source_index,
+        strategy_registry,
+    )
     for opportunity in impact_ranking.opportunities:
-        candidate = _candidate_from_opportunity(
+        candidate = candidate_collector.candidate_from_opportunity(
             opportunity,
-            source_index,
             CodemodCandidateOrigin.IMPACT_OPPORTUNITY,
-            registry,
         )
         if candidate is not None:
             candidates_by_id[candidate.candidate_id] = candidate
@@ -1915,14 +3426,13 @@ def codemod_candidates_from_impact_ranking(
     if include_trajectory_steps:
         for trajectory in impact_ranking.trajectories:
             for step in trajectory.steps:
-                candidate = _candidate_from_opportunity(
+                candidate = candidate_collector.candidate_from_opportunity(
                     step.opportunity,
-                    source_index,
                     CodemodCandidateOrigin.TRAJECTORY_STEP,
-                    registry,
                 )
                 if candidate is not None:
-                    candidates_by_id.setdefault(candidate.candidate_id, candidate)
+                    if candidate.candidate_id not in candidates_by_id:
+                        candidates_by_id[candidate.candidate_id] = candidate
 
     return sorted_tuple(
         candidates_by_id.values(),
@@ -1948,12 +3458,14 @@ def detect_cancelable_composition_signals(
     ).function_nodes_by_target_identifier()
     signals = []
     for target in source_index.ast_targets:
-        if target.node_type not in {"function", "method"}:
+        if not target.is_function_like:
             continue
         node = nodes_by_target_id.get(target.target_id)
         if node is None:
             continue
-        signal = _cancelable_composition_signal_for_target(source_index, target, node)
+        signal = CancelableCompositionSignalTargetAuthority(
+            source_index, target, node
+        ).signal()
         if signal is not None:
             signals.append(signal)
     return sorted_tuple(
@@ -2215,26 +3727,32 @@ class NonOverlappingPlannedRewriteSelector:
                 self.source_index.target_by_id[item.target_id].line,
                 self.source_index.target_by_id[item.target_id].qualname,
             ),
-    )
+        )
 
 
-def _candidate_from_opportunity(
-    opportunity: RefactorImpactOpportunity,
-    source_index: SourceIndex,
-    origin: CodemodCandidateOrigin,
-    strategy_registry: CodemodStrategyRegistry,
-) -> CodemodCandidate | None:
-    target_ids = source_index.target_ids_for_finding_ids(
-        opportunity.covered_finding_ids
-    )
-    if not target_ids:
-        return None
-    return CodemodCandidate(
-        origin=origin,
-        opportunity=opportunity,
-        target_ids=target_ids,
-        strategy=strategy_registry.strategy_for_opportunity(opportunity),
-    )
+@dataclass(frozen=True)
+class OpportunityCandidateCollector:
+    """Project impact opportunities into codemod candidates."""
+
+    source_index: SourceIndex
+    strategy_registry: CodemodStrategyRegistry
+
+    def candidate_from_opportunity(
+        self,
+        opportunity: RefactorImpactOpportunity,
+        origin: CodemodCandidateOrigin,
+    ) -> CodemodCandidate | None:
+        target_ids = self.source_index.target_ids_for_finding_ids(
+            opportunity.covered_finding_ids
+        )
+        if not target_ids:
+            return None
+        return CodemodCandidate(
+            origin=origin,
+            opportunity=opportunity,
+            target_ids=target_ids,
+            strategy=self.strategy_registry.strategy_for_opportunity(opportunity),
+        )
 
 
 def _candidate_id(
@@ -2274,12 +3792,6 @@ def _authority_boundary_target_id(
     )
 
 
-_DescriptorAssignmentBuilder = Callable[
-    [ast.FunctionDef | ast.AsyncFunctionDef], str | None
-]
-_ClassStatementSelector = Callable[[ast.ClassDef], tuple[ast.stmt, ...]]
-
-
 def _descriptor_property_rewrites(
     candidate: CodemodCandidate,
     source_index: SourceIndex,
@@ -2292,7 +3804,7 @@ def _descriptor_property_rewrites(
         source_index,
         source_by_path,
     ).nodes_by_target_identifier()
-    replacements_by_class_target_id: dict[str, list[tuple[int, int, str]]] = {}
+    replacements_by_class_target_id: dict[str, list[SourceOffsetReplacement]] = {}
     for target_id in candidate.target_ids:
         target = source_index.target_by_id.get(target_id)
         node = nodes_by_target_id.get(target_id)
@@ -2309,9 +3821,21 @@ def _descriptor_property_rewrites(
         source = source_by_path.get(target.file_path)
         if source is None:
             continue
-        start, end = _decorated_node_line_offsets(source, node)
-        replacements_by_class_target_id.setdefault(class_target.target_id, []).append(
-            (start, end, f"{_line_indent(source, start)}{assignment}\n")
+        geometry = SourceTextGeometry(source)
+        start, end = geometry.node_span_offsets(
+            SourceNodeSpan(
+                node,
+                decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
+            )
+        )
+        if class_target.target_id not in replacements_by_class_target_id:
+            replacements_by_class_target_id[class_target.target_id] = []
+        replacements_by_class_target_id[class_target.target_id].append(
+            SourceOffsetReplacement(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=f"{geometry.line_indent(start)}{assignment}\n",
+            )
         )
 
     rewrites = []
@@ -2321,12 +3845,12 @@ def _descriptor_property_rewrites(
         source = source_by_path.get(class_target.file_path)
         if source is None or not isinstance(class_node, ast.ClassDef):
             continue
-        class_start, class_end = _node_line_offsets(source, class_node)
+        geometry = SourceTextGeometry(source)
+        class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(class_node))
         rewrites.append(
             PlannedSourceRewrite(
                 target_id=class_target_id,
-                replacement_source=_source_with_replacements_in_span(
-                    source,
+                replacement_source=geometry.source_with_replacements_in_span(
                     class_start,
                     class_end,
                     replacements,
@@ -2361,15 +3885,21 @@ def _class_statement_deletion_rewrites(
         source = source_by_path.get(target.file_path)
         if source is None:
             continue
-        class_start, class_end = _node_line_offsets(source, node)
+        geometry = SourceTextGeometry(source)
+        class_start, class_end = geometry.node_span_offsets(SourceNodeSpan(node))
         replacements = tuple(
-            (*_node_line_offsets(source, statement), "") for statement in statements
+            SourceOffsetReplacement(
+                start_offset=start,
+                end_offset=end,
+                replacement_source="",
+            )
+            for statement in statements
+            for start, end in (geometry.node_span_offsets(SourceNodeSpan(statement)),)
         )
         rewrites.append(
             PlannedSourceRewrite(
                 target_id=target_id,
-                replacement_source=_source_with_replacements_in_span(
-                    source,
+                replacement_source=geometry.source_with_replacements_in_span(
                     class_start,
                     class_end,
                     replacements,
@@ -2384,59 +3914,7 @@ def _derivable_detector_declaration_assignments(
     node: ast.ClassDef,
     detector_ids: frozenset[str],
 ) -> tuple[ast.stmt, ...]:
-    statements = []
-    if "derivable_detector_id" in detector_ids:
-        statements.extend(_derivable_detector_id_assignment(node))
-    if "derivable_candidate_collector" in detector_ids:
-        statements.extend(_derivable_candidate_collector_assignment(node))
-    return tuple(statements)
-
-
-def _derivable_detector_id_assignment(node: ast.ClassDef) -> tuple[ast.stmt, ...]:
-    if not _class_declares_finding_spec(node):
-        return ()
-    expected_detector_id = _detector_id_from_class_name(node.name)
-    if expected_detector_id is None:
-        return ()
-    for statement in node.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        if _name_id(statement.targets[0]) != "detector_id":
-            continue
-        if (
-            isinstance(statement.value, ast.Constant)
-            and statement.value.value == expected_detector_id
-        ):
-            return (statement,)
-    return ()
-
-
-def _derivable_candidate_collector_assignment(
-    node: ast.ClassDef,
-) -> tuple[ast.stmt, ...]:
-    if not _class_declares_finding_spec(node):
-        return ()
-    if not _has_derived_candidate_collector_base(node):
-        return ()
-    expected_collector_name = _candidate_collector_name_from_class_name(node.name)
-    if expected_collector_name is None:
-        return ()
-    for statement in node.body:
-        targets: tuple[ast.expr, ...]
-        value: ast.expr | None
-        if isinstance(statement, ast.Assign):
-            targets = tuple(statement.targets)
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign):
-            targets = (statement.target,)
-            value = statement.value
-        else:
-            continue
-        if len(targets) != 1 or _name_id(targets[0]) != "candidate_collector":
-            continue
-        if value is not None and _name_id(value) == expected_collector_name:
-            return (statement,)
-    return ()
+    return DetectorDeclarationSelector.select_for_detector_ids(node, detector_ids)
 
 
 def _class_declares_finding_spec(node: ast.ClassDef) -> bool:
@@ -2456,18 +3934,8 @@ def _has_derived_candidate_collector_base(node: ast.ClassDef) -> bool:
             "CrossModuleCollectorCandidateDetector",
             "ConfiguredCrossModuleCollectorCandidateDetector",
         }
-        & {_base_name(base) for base in node.bases}
+        & {AstExpressionProjection(base).base_name() for base in node.bases}
     )
-
-
-def _base_name(node: ast.expr) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    if isinstance(node, ast.Subscript):
-        return _base_name(node.value)
-    return None
 
 
 def _detector_id_from_class_name(class_name: str) -> str | None:
@@ -2482,103 +3950,24 @@ def _candidate_collector_name_from_class_name(class_name: str) -> str | None:
     return None if detector_id is None else f"_{detector_id}_candidates"
 
 
-def _source_location_descriptor_assignment(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> str | None:
-    if not _is_plain_property_method(node):
-        return None
-    returned = _single_return_value(node)
-    if (
-        not isinstance(returned, ast.Call)
-        or _call_name(returned.func) != "SourceLocation"
-    ):
-        return None
-    if len(returned.args) != 3 or returned.keywords:
-        return None
-    attribute_names = tuple(
-        _self_attribute_name(argument) for argument in returned.args
-    )
-    if any(name is None for name in attribute_names):
-        return None
-    file_attribute_name, line_attribute_name, symbol_attribute_name = attribute_names
-    return (
-        f"{node.name} = SourceLocationEvidenceProperty("
-        f'"{file_attribute_name}", "{line_attribute_name}", "{symbol_attribute_name}")'
-    )
+@dataclass(frozen=True)
+class PlainPropertyMethodAuthority:
+    """Recognize simple @property accessors that return derived descriptors."""
 
+    node: ast.FunctionDef | ast.AsyncFunctionDef
 
-def _zipped_source_location_descriptor_assignment(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> str | None:
-    if not _is_plain_property_method(node):
-        return None
-    returned = _single_return_value(node)
-    if not isinstance(returned, ast.Call) or _call_name(returned.func) != "tuple":
-        return None
-    if len(returned.args) != 1 or returned.keywords:
-        return None
-    generator = returned.args[0]
-    if not isinstance(generator, ast.GeneratorExp):
-        return None
-    source_location_call = generator.elt
-    if (
-        not isinstance(source_location_call, ast.Call)
-        or _call_name(source_location_call.func) != "SourceLocation"
-        or len(source_location_call.args) != 3
-        or source_location_call.keywords
-    ):
-        return None
-    file_attribute_name = _self_attribute_name(source_location_call.args[0])
-    line_variable_name = _name_id(source_location_call.args[1])
-    symbol_variable_name = _name_id(source_location_call.args[2])
-    if (
-        file_attribute_name is None
-        or line_variable_name is None
-        or symbol_variable_name is None
-    ):
-        return None
-    comprehension = generator.generators[0] if len(generator.generators) == 1 else None
-    if (
-        comprehension is None
-        or comprehension.ifs
-        or comprehension.is_async
-        or not isinstance(comprehension.target, ast.Tuple)
-    ):
-        return None
-    target_names = tuple(_name_id(item) for item in comprehension.target.elts)
-    zip_call = comprehension.iter
-    if not isinstance(zip_call, ast.Call) or _call_name(zip_call.func) != "zip":
-        return None
-    if len(zip_call.args) != 2 or not _has_strict_true_keyword(zip_call):
-        return None
-    zipped_attribute_names = tuple(
-        _self_attribute_name(argument) for argument in zip_call.args
-    )
-    if any(name is None for name in (*target_names, *zipped_attribute_names)):
-        return None
-    bindings = dict(zip(target_names, zipped_attribute_names, strict=True))
-    line_numbers_attribute_name = bindings.get(line_variable_name)
-    symbol_names_attribute_name = bindings.get(symbol_variable_name)
-    if line_numbers_attribute_name is None or symbol_names_attribute_name is None:
-        return None
-    return (
-        f"{node.name} = ZippedSourceLocationEvidenceProperty("
-        f'"{line_numbers_attribute_name}", "{symbol_names_attribute_name}", '
-        f'"{file_attribute_name}")'
-    )
-
-
-def _is_plain_property_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return (
-        len(node.decorator_list) == 1
-        and _call_name(node.decorator_list[0]) == "property"
-        and len(node.args.args) == 1
-        and node.args.args[0].arg == "self"
-        and not node.args.posonlyargs
-        and not node.args.vararg
-        and not node.args.kwonlyargs
-        and not node.args.kwarg
-    )
+    @property
+    def matches(self) -> bool:
+        return (
+            len(self.node.decorator_list) == 1
+            and _call_name(self.node.decorator_list[0]) == "property"
+            and len(self.node.args.args) == 1
+            and self.node.args.args[0].arg == "self"
+            and not self.node.args.posonlyargs
+            and not self.node.args.vararg
+            and not self.node.args.kwonlyargs
+            and not self.node.args.kwarg
+        )
 
 
 def _single_return_value(
@@ -2601,16 +3990,6 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-def _self_attribute_name(node: ast.expr) -> str | None:
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-    ):
-        return node.attr
-    return None
-
-
 def _name_id(node: ast.expr) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
 
@@ -2628,90 +4007,37 @@ def _containing_class_target(
     source_index: SourceIndex,
     target_id: str,
 ) -> AstTargetDigest | None:
-    target = source_index.target_by_id.get(target_id)
-    if target is None or "." not in target.qualname:
+    if target_id not in source_index.target_by_id:
+        return None
+    target = source_index.target_by_id[target_id]
+    if "." not in target.qualname:
         return None
     class_qualname = target.qualname.rsplit(".", 1)[0]
+    if target.file_path not in source_index.targets_by_file:
+        return None
     candidates = [
         candidate
-        for candidate in source_index.targets_by_file.get(target.file_path, ())
-        if candidate.node_type == "class"
+        for candidate in source_index.targets_by_file[target.file_path]
+        if candidate.is_class
         and candidate.qualname == class_qualname
         and candidate.line <= target.line <= candidate.end_line
     ]
-    return min(candidates, key=lambda item: item.end_line - item.line, default=None)
-
-
-def _source_with_replacements_in_span(
-    source: str,
-    span_start: int,
-    span_end: int,
-    replacements: Iterable[tuple[int, int, str]],
-) -> str:
-    span_source = source[span_start:span_end]
-    for start, end, replacement in sorted(replacements, reverse=True):
-        relative_start = start - span_start
-        relative_end = end - span_start
-        span_source = (
-            f"{span_source[:relative_start]}"
-            f"{replacement}"
-            f"{span_source[relative_end:]}"
-        )
-    return span_source
-
-
-def _decorated_node_line_offsets(source: str, node: ast.AST) -> tuple[int, int]:
-    decorator_lines = [
-        decorator.lineno
-        for decorator in getattr(node, "decorator_list", ())
-        if hasattr(decorator, "lineno")
-    ]
-    start_line = min((*decorator_lines, node.lineno))
-    line_offsets = _line_offsets(source)
-    lines = source.splitlines(keepends=True)
-    end_offset = (
-        line_offsets[node.end_lineno]
-        if node.end_lineno < len(line_offsets)
-        else sum(len(line) for line in lines)
-    )
-    return line_offsets[start_line - 1], end_offset
-
-
-def _node_line_offsets(source: str, node: ast.AST) -> tuple[int, int]:
-    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
-        raise ValueError(f"AST node {type(node).__name__} has no source line span")
-    line_offsets = _line_offsets(source)
-    lines = source.splitlines(keepends=True)
-    end_offset = (
-        line_offsets[node.end_lineno]
-        if node.end_lineno < len(line_offsets)
-        else sum(len(line) for line in lines)
-    )
-    return line_offsets[node.lineno - 1], end_offset
-
-
-def _line_indent(source: str, offset: int) -> str:
-    line_start = source.rfind("\n", 0, offset) + 1
-    line_end = source.find("\n", offset)
-    if line_end == -1:
-        line_end = len(source)
-    line = source[line_start:line_end]
-    return line[: len(line) - len(line.lstrip())]
-
-
-def _line_offsets(source: str) -> tuple[int, ...]:
-    offsets = []
-    offset = 0
-    for line in source.splitlines(keepends=True):
-        offsets.append(offset)
-        offset += len(line)
-    if not offsets:
-        offsets.append(0)
-    return tuple(offsets)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda item: item.end_line - item.line)
 
 
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+
+
+@dataclass(frozen=True)
+class AstTargetGeometryKey:
+    """Stable key joining source-index target geometry to parsed AST nodes."""
+
+    qualname: str
+    line: int
+    end_line: int
 
 
 @dataclass(frozen=True)
@@ -2725,12 +4051,17 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
     def __init__(self) -> None:
         self.class_stack: list[str] = []
         self.function_stack: list[str] = []
-        self.nodes_by_geometry: dict[tuple[str, int, int], _TargetNode] = {}
+        self.nodes_by_geometry: dict[AstTargetGeometryKey, _TargetNode] = {}
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
-        end_line = node.end_lineno or node.lineno
-        self.nodes_by_geometry[(qualname, node.lineno, end_line)] = node
+        self.nodes_by_geometry[
+            AstTargetGeometryKey(
+                qualname=qualname,
+                line=node.lineno,
+                end_line=node.end_lineno or node.lineno,
+            )
+        ] = node
         self.class_stack.append(node.name)
         self.generic_visit(node)
         self.class_stack.pop()
@@ -2742,11 +4073,34 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
 
     def _visit_function(self, node: _FunctionNode) -> None:
         qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
-        end_line = node.end_lineno or node.lineno
-        self.nodes_by_geometry[(qualname, node.lineno, end_line)] = node
+        self.nodes_by_geometry[
+            AstTargetGeometryKey(
+                qualname=qualname,
+                line=node.lineno,
+                end_line=node.end_lineno or node.lineno,
+            )
+        ] = node
         self.function_stack.append(node.name)
         self.generic_visit(node)
         self.function_stack.pop()
+
+
+@dataclass(frozen=True)
+class AstTargetNodeGeometryIndex:
+    """Parsed AST nodes keyed by source-index target geometry."""
+
+    nodes_by_file: Mapping[str, Mapping[AstTargetGeometryKey, _TargetNode]]
+
+    def node_for_target(self, target: AstTargetDigest) -> _TargetNode | None:
+        file_nodes = self.nodes_by_file.get(target.file_path)
+        if file_nodes is None:
+            return None
+        geometry = AstTargetGeometryKey(
+            qualname=target.qualname,
+            line=target.line,
+            end_line=target.end_line,
+        )
+        return file_nodes.get(geometry)
 
 
 @dataclass(frozen=True)
@@ -2757,14 +4111,10 @@ class AstTargetNodeIndex:
     source_by_path: Mapping[str, str]
 
     def nodes_by_target_identifier(self) -> dict[str, _TargetNode]:
-        nodes_by_file_geometry = self.nodes_by_file_geometry()
+        geometry_index = self.nodes_by_file_geometry()
         nodes_by_target_identifier: dict[str, _TargetNode] = {}
         for target in self.source_index.ast_targets:
-            file_nodes = nodes_by_file_geometry.get(target.file_path)
-            if file_nodes is None:
-                continue
-            geometry = (target.qualname, target.line, target.end_line)
-            node = file_nodes.get(geometry)
+            node = geometry_index.node_for_target(target)
             if node is not None:
                 nodes_by_target_identifier[target.target_id] = node
         return nodes_by_target_identifier
@@ -2778,59 +4128,65 @@ class AstTargetNodeIndex:
 
     def nodes_by_file_geometry(
         self,
-    ) -> dict[str, dict[tuple[str, int, int], _TargetNode]]:
-        nodes_by_file_geometry: dict[str, dict[tuple[str, int, int], _TargetNode]] = {}
+    ) -> AstTargetNodeGeometryIndex:
+        nodes_by_file_geometry: dict[str, dict[AstTargetGeometryKey, _TargetNode]] = {}
         for file_path, source in self.source_by_path.items():
             tree = ast.parse(source, filename=file_path)
             indexer = _AstTargetNodeIndexer()
             indexer.visit(tree)
             nodes_by_file_geometry[file_path] = indexer.nodes_by_geometry
-        return nodes_by_file_geometry
+        return AstTargetNodeGeometryIndex(nodes_by_file=nodes_by_file_geometry)
 
 
-def _cancelable_composition_signal_for_target(
-    source_index: SourceIndex,
-    target: AstTargetDigest,
-    node: _FunctionNode,
-) -> CancelableCompositionSignal | None:
-    pack_forward = _return_pack_forward(node)
-    if pack_forward is not None:
-        return _cancelable_signal(
-            source_index,
-            target,
-            CancelableCompositionKind.PRODUCT_PACK_FORWARD,
-            pack_forward,
+@dataclass(frozen=True)
+class CancelableCompositionSignalTargetAuthority:
+    """Build cancelable-composition signals for one function target."""
+
+    source_index: SourceIndex
+    target: AstTargetDigest
+    node: _FunctionNode
+
+    def signal(self) -> CancelableCompositionSignal | None:
+        pack_forward = self.product_pack_forward()
+        if pack_forward is not None:
+            return self.cancelable_signal(
+                CancelableCompositionKind.PRODUCT_PACK_FORWARD,
+                pack_forward,
+            )
+
+        pack_unpack_forward = self.pack_unpack_forward()
+        if pack_unpack_forward is not None:
+            return self.cancelable_signal(
+                CancelableCompositionKind.PACK_UNPACK_FORWARD,
+                pack_unpack_forward,
+            )
+        return None
+
+    def product_pack_forward(self) -> _ProductForward | None:
+        return _return_pack_forward(self.node)
+
+    def pack_unpack_forward(self) -> _ProductForward | None:
+        return _pack_then_unpack_forward(self.node)
+
+    def cancelable_signal(
+        self,
+        composition_kind: CancelableCompositionKind,
+        product_forward: _ProductForward,
+    ) -> CancelableCompositionSignal:
+        return CancelableCompositionSignal(
+            target_id=self.target.target_id,
+            file_path=self.target.file_path,
+            qualname=self.target.qualname,
+            line=self.target.line,
+            end_line=self.target.end_line,
+            composition_kind=composition_kind,
+            carrier_name=product_forward.carrier_name,
+            source_name=product_forward.source_name,
+            field_names=product_forward.field_names,
+            covered_finding_ids=self.source_index.finding_ids_for_target_id(
+                self.target.target_id
+            ),
         )
-
-    pack_unpack_forward = _pack_then_unpack_forward(node)
-    if pack_unpack_forward is not None:
-        return _cancelable_signal(
-            source_index,
-            target,
-            CancelableCompositionKind.PACK_UNPACK_FORWARD,
-            pack_unpack_forward,
-        )
-    return None
-
-
-def _cancelable_signal(
-    source_index: SourceIndex,
-    target: AstTargetDigest,
-    composition_kind: CancelableCompositionKind,
-    product_forward: _ProductForward,
-) -> CancelableCompositionSignal:
-    return CancelableCompositionSignal(
-        target_id=target.target_id,
-        file_path=target.file_path,
-        qualname=target.qualname,
-        line=target.line,
-        end_line=target.end_line,
-        composition_kind=composition_kind,
-        carrier_name=product_forward.carrier_name,
-        source_name=product_forward.source_name,
-        field_names=product_forward.field_names,
-        covered_finding_ids=source_index.finding_ids_for_target_id(target.target_id),
-    )
 
 
 def _return_pack_forward(node: _FunctionNode) -> _ProductForward | None:
@@ -2839,7 +4195,7 @@ def _return_pack_forward(node: _FunctionNode) -> _ProductForward | None:
     value = node.body[0].value
     if not isinstance(value, ast.Call):
         return None
-    return _product_forward_from_call(value)
+    return ProductForwardCallAuthority(value).product_forward()
 
 
 def _pack_then_unpack_forward(node: _FunctionNode) -> _ProductForward | None:
@@ -2856,7 +4212,7 @@ def _pack_then_unpack_forward(node: _FunctionNode) -> _ProductForward | None:
     if not isinstance(returned, ast.Return) or returned.value is None:
         return None
 
-    pack = _product_forward_from_call(assignment.value)
+    pack = ProductForwardCallAuthority(assignment.value).product_forward()
     if pack is None:
         return None
     unpacked_fields = _unpacked_fields_from_return(returned.value, assigned_name.id)
@@ -2872,45 +4228,99 @@ def _pack_then_unpack_forward(node: _FunctionNode) -> _ProductForward | None:
     )
 
 
-def _product_forward_from_call(call: ast.Call) -> _ProductForward | None:
-    carrier_name = _call_name(call.func)
-    if carrier_name is None:
-        return None
+@dataclass(frozen=True)
+class ProductForwardFieldProjection:
+    """Fields projected from one product carrier construction call."""
 
     source_name: str | None = None
-    field_names: list[str] = []
-    for argument in call.args:
-        projected = _attribute_projection(argument)
+    field_names: tuple[str, ...] = ()
+
+    @classmethod
+    def empty(cls) -> "ProductForwardFieldProjection":
+        return cls()
+
+    @property
+    def product_fields(self) -> tuple[str, ...]:
+        return sorted_tuple(set(self.field_names))
+
+    def with_positional_argument(
+        self,
+        argument: ast.expr,
+    ) -> "ProductForwardFieldProjection | None":
+        projected = AstExpressionProjection(argument).attribute_projection()
         if projected is None:
             return None
-        candidate_source_name, field_name = projected
-        source_name = _consistent_source_name(source_name, candidate_source_name)
-        if source_name is None:
-            return None
-        field_names.append(field_name)
+        return self.with_projected_field(*projected)
 
-    for keyword in call.keywords:
+    def with_keyword(
+        self,
+        keyword: ast.keyword,
+    ) -> "ProductForwardFieldProjection | None":
         if keyword.arg is None:
             return None
-        projected = _attribute_projection(keyword.value)
+        projected = AstExpressionProjection(keyword.value).attribute_projection()
         if projected is None:
             return None
         candidate_source_name, field_name = projected
         if keyword.arg != field_name:
             return None
-        source_name = _consistent_source_name(source_name, candidate_source_name)
+        return self.with_projected_field(candidate_source_name, field_name)
+
+    def with_projected_field(
+        self,
+        candidate_source_name: str,
+        field_name: str,
+    ) -> "ProductForwardFieldProjection | None":
+        source_name = _consistent_source_name(self.source_name, candidate_source_name)
         if source_name is None:
             return None
-        field_names.append(field_name)
+        return ProductForwardFieldProjection(
+            source_name=source_name,
+            field_names=(*self.field_names, field_name),
+        )
 
-    unique_fields = sorted_tuple(set(field_names))
-    if source_name is None or len(unique_fields) < 2:
-        return None
-    return _ProductForward(
-        carrier_name=carrier_name,
-        source_name=source_name,
-        field_names=unique_fields,
-    )
+    def product_forward(self, carrier_name: str) -> _ProductForward | None:
+        if self.source_name is None:
+            return None
+        unique_fields = self.product_fields
+        if len(unique_fields) < 2:
+            return None
+        return _ProductForward(
+            carrier_name=carrier_name,
+            source_name=self.source_name,
+            field_names=unique_fields,
+        )
+
+
+@dataclass(frozen=True)
+class ProductForwardCallAuthority:
+    """Project product-carrier construction calls into cancelable forward facts."""
+
+    call: ast.Call
+
+    def product_forward(self) -> _ProductForward | None:
+        return (
+            Maybe.of(_call_name(self.call.func))
+            .combine(
+                lambda carrier_name: self.field_projection(),
+                lambda carrier_name, projection: projection.product_forward(
+                    carrier_name
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def field_projection(self) -> ProductForwardFieldProjection | None:
+        projection = ProductForwardFieldProjection.empty()
+        for argument in self.call.args:
+            projection = projection.with_positional_argument(argument)
+            if projection is None:
+                return None
+        for keyword in self.call.keywords:
+            projection = projection.with_keyword(keyword)
+            if projection is None:
+                return None
+        return projection
 
 
 def _unpacked_fields_from_return(
@@ -2919,16 +4329,18 @@ def _unpacked_fields_from_return(
     if isinstance(value, ast.Call):
         fields: list[str] = []
         for argument in value.args:
-            field_name = _field_from_carrier_attribute(argument, carrier_variable_name)
+            field_name = AstExpressionProjection(argument).field_from_carrier_attribute(
+                carrier_variable_name
+            )
             if field_name is None:
                 return ()
             fields.append(field_name)
         for keyword in value.keywords:
             if keyword.arg is None:
                 return ()
-            field_name = _field_from_carrier_attribute(
-                keyword.value, carrier_variable_name
-            )
+            field_name = AstExpressionProjection(
+                keyword.value
+            ).field_from_carrier_attribute(carrier_variable_name)
             if field_name is None or keyword.arg != field_name:
                 return ()
             fields.append(field_name)
@@ -2937,30 +4349,14 @@ def _unpacked_fields_from_return(
     if isinstance(value, (ast.Tuple, ast.List)):
         fields = []
         for element in value.elts:
-            field_name = _field_from_carrier_attribute(element, carrier_variable_name)
+            field_name = AstExpressionProjection(element).field_from_carrier_attribute(
+                carrier_variable_name
+            )
             if field_name is None:
                 return ()
             fields.append(field_name)
         return sorted_tuple(set(fields))
     return ()
-
-
-def _field_from_carrier_attribute(
-    node: ast.expr, carrier_variable_name: str
-) -> str | None:
-    projected = _attribute_projection(node)
-    if projected is None:
-        return None
-    source_name, field_name = projected
-    if source_name != carrier_variable_name:
-        return None
-    return field_name
-
-
-def _attribute_projection(node: ast.expr) -> tuple[str, str] | None:
-    if not isinstance(node, ast.Attribute):
-        return None
-    return ast.unparse(node.value), node.attr
 
 
 def _call_name(node: ast.expr) -> str | None:
@@ -3123,9 +4519,11 @@ def _source_index_target_for_line(
     file_path: str,
     line: int,
 ) -> AstTargetDigest | None:
+    if file_path not in source_index.targets_by_file:
+        return None
     candidates = tuple(
         target
-        for target in source_index.targets_by_file.get(file_path, ())
+        for target in source_index.targets_by_file[file_path]
         if target.line <= line <= target.end_line
     )
     if not candidates:

@@ -546,6 +546,9 @@ def build_economics_proof_report(
     config: DetectorConfig | None = None,
     compare_ref: str = "HEAD",
     scan_budget_seconds: float = _DEFAULT_SCAN_BUDGET_SECONDS,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> EconomicsProofReport:
     """Run the standard proof scans for long-term advisor economics."""
 
@@ -554,9 +557,19 @@ def build_economics_proof_report(
     package_path = repo_root / "nominal_refactor_advisor"
     if not package_path.exists():
         package_path = root
-        parsed_modules = parse_python_modules(root)
+        parsed_modules = parse_python_modules(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
     else:
-        parsed_modules = parse_python_modules(repo_root)
+        parsed_modules = parse_python_modules(
+            repo_root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
     package_root = package_path.resolve()
     package_modules = [
         module

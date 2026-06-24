@@ -148,11 +148,21 @@ def build_scan_prediction_report(
     config: DetectorConfig | None = None,
     compare_ref: str = "HEAD",
     changed_paths: Iterable[str] | None = None,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> ScanPredictionReport:
     """Predict scan cost and finding shape for the changed Python module slice."""
 
     config = config or DetectorConfig()
-    module_tuple = tuple(parse_python_modules(root))
+    module_tuple = tuple(
+        parse_python_modules(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
+    )
     changed_path_tuple = sorted_tuple(
         changed_paths
         if changed_paths is not None

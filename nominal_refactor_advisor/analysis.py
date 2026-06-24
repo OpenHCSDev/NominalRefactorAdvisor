@@ -26,17 +26,43 @@ def analyze_modules(
 
 
 def analyze_path(
-    root: Path, config: DetectorConfig | None = None
+    root: Path,
+    config: DetectorConfig | None = None,
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
-    return analyze_modules(parse_python_modules(root), config)
+    return analyze_modules(
+        parse_python_modules(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        ),
+        config,
+    )
 
 
 def analyze_paths(
-    roots: tuple[Path, ...], config: DetectorConfig | None = None
+    roots: tuple[Path, ...],
+    config: DetectorConfig | None = None,
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
-    return analyze_modules(parse_python_module_roots(roots), config)
+    return analyze_modules(
+        parse_python_module_roots(
+            roots,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        ),
+        config,
+    )
 
 
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:
@@ -44,13 +70,43 @@ def analyze_lean_export(path: Path) -> list[RefactorFinding]:
     return findings_from_lean_export_path(path)
 
 
-def plan_path(root: Path, config: DetectorConfig | None = None) -> list[RefactorPlan]:
+def plan_path(
+    root: Path,
+    config: DetectorConfig | None = None,
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
+) -> list[RefactorPlan]:
     """Analyze a path and synthesize subsystem-level refactor plans."""
-    return build_refactor_plans(analyze_path(root, config), root)
+    return build_refactor_plans(
+        analyze_path(
+            root,
+            config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        ),
+        root,
+    )
 
 
 def plan_paths(
-    roots: tuple[Path, ...], config: DetectorConfig | None = None
+    roots: tuple[Path, ...],
+    config: DetectorConfig | None = None,
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> list[RefactorPlan]:
     """Analyze multiple paths and synthesize subsystem-level refactor plans."""
-    return build_refactor_plans(analyze_paths(roots, config), roots[0])
+    return build_refactor_plans(
+        analyze_paths(
+            roots,
+            config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        ),
+        roots[0],
+    )

@@ -100,6 +100,7 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
         "version",
     }
 )
+_DEFAULT_PARSE_CACHE_RELATIVE_PATH = Path(".nra-cache") / "ast"
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = (
@@ -174,6 +175,27 @@ _CLI_ARGUMENT_SPECS = (
                 "is active. Raw findings are supporting evidence, not the default "
                 "work queue."
             ),
+        ),
+        CliArgumentSpec(
+            flags=("--parse-workers",),
+            value_type=int,
+            default=1,
+            help="Number of concurrent parser workers for Python source loading.",
+        ),
+        CliArgumentSpec(
+            flags=("--cache-dir",),
+            value_type=Path,
+            help=(
+                "AST parse cache directory. Defaults to .nra-cache/ast under "
+                "the analysis root."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--no-cache",),
+            action="store_false",
+            dest="use_parse_cache",
+            default=True,
+            help="Disable the AST parse cache for this run.",
         ),
         CliArgumentSpec(
             flags=("--include-plans",),
@@ -1191,6 +1213,25 @@ def _require_single_root_mode(
         parser.error(f"{option_name} accepts exactly one path root")
 
 
+def _default_parse_cache_base(root: Path) -> Path:
+    if root.is_file():
+        return root.parent
+    return root
+
+
+def _parse_cache_dir(
+    root: Path,
+    *,
+    requested_cache_dir: Path | None,
+    use_parse_cache: bool,
+) -> Path | None:
+    if not use_parse_cache:
+        return None
+    if requested_cache_dir is not None:
+        return requested_cache_dir
+    return _default_parse_cache_base(root) / _DEFAULT_PARSE_CACHE_RELATIVE_PATH
+
+
 @dataclass(frozen=True)
 class ArchitectureGuardSourceEvaluator:
     """Evaluate architecture guards against an in-memory source projection."""
@@ -1269,7 +1310,18 @@ def main() -> int:
         parser.error("--codemod-* options require parsed Python source paths")
 
     if args.calibrate is not None:
-        calibration_report = run_calibration_manifest(args.calibrate, config=config)
+        parse_cache_dir = _parse_cache_dir(
+            args.calibrate.parent,
+            requested_cache_dir=args.cache_dir,
+            use_parse_cache=args.use_parse_cache,
+        )
+        calibration_report = run_calibration_manifest(
+            args.calibrate,
+            config=config,
+            cache_dir=parse_cache_dir,
+            use_parse_cache=args.use_parse_cache,
+            parse_workers=args.parse_workers,
+        )
         if args.json:
             print(json.dumps(calibration_report.to_dict(), indent=2))
         else:
@@ -1281,12 +1333,20 @@ def main() -> int:
 
     roots = tuple(Path(path) for path in args.paths)
     root = roots[0]
+    parse_cache_dir = _parse_cache_dir(
+        root,
+        requested_cache_dir=args.cache_dir,
+        use_parse_cache=args.use_parse_cache,
+    )
     if args.predict_scan:
         _require_single_root_mode(parser, roots, option_name="--predict-scan")
         prediction_report = build_scan_prediction_report(
             root,
             config=config,
             compare_ref=args.compare_ref,
+            cache_dir=parse_cache_dir,
+            use_parse_cache=args.use_parse_cache,
+            parse_workers=args.parse_workers,
         )
         if args.json:
             print(json.dumps(prediction_report.to_dict(), indent=2))
@@ -1301,6 +1361,9 @@ def main() -> int:
             config=config,
             compare_ref=args.compare_ref,
             scan_budget_seconds=args.scan_budget_seconds,
+            cache_dir=parse_cache_dir,
+            use_parse_cache=args.use_parse_cache,
+            parse_workers=args.parse_workers,
         )
         if args.json:
             print(json.dumps(proof_report.to_dict(), indent=2))
@@ -1321,7 +1384,12 @@ def main() -> int:
 
     if args.import_lean_export is None:
         started = perf_counter()
-        modules = parse_python_module_roots(roots)
+        modules = parse_python_module_roots(
+            roots,
+            cache_dir=parse_cache_dir,
+            use_parse_cache=args.use_parse_cache,
+            parse_workers=args.parse_workers,
+        )
         parse_seconds = round(perf_counter() - started, 3)
         started = perf_counter()
         findings = analyze_modules(modules, config)

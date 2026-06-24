@@ -432,6 +432,9 @@ def run_calibration_target(
     target: CalibrationTarget,
     *,
     config: DetectorConfig | None = None,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> CalibrationTargetResult:
     """Run one calibration target and return its proof result."""
 
@@ -442,7 +445,12 @@ def run_calibration_target(
             unavailable_reason=f"path does not exist: {path}",
         )
     started = perf_counter()
-    modules = parse_python_modules(path)
+    modules = parse_python_modules(
+        path,
+        cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+        parse_workers=parse_workers,
+    )
     findings = analyze_modules(modules, config)
     plans = build_refactor_plans(findings, path)
     elapsed = perf_counter() - started
@@ -465,6 +473,9 @@ def run_calibration_manifest(
     manifest_path: Path,
     *,
     config: DetectorConfig | None = None,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = 1,
 ) -> CalibrationReport:
     """Run all targets from a JSON calibration manifest."""
 
@@ -474,7 +485,13 @@ def run_calibration_manifest(
         manifest_path=str(manifest_path),
         target_results=tuple(
             (
-                run_calibration_target(target, config=detector_config)
+                run_calibration_target(
+                    target,
+                    config=detector_config,
+                    cache_dir=cache_dir,
+                    use_parse_cache=use_parse_cache,
+                    parse_workers=parse_workers,
+                )
                 for target in manifest.targets
             )
         ),

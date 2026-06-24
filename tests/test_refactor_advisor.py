@@ -66,11 +66,15 @@ from nominal_refactor_advisor.codemod import (
     CodemodActionability,
     CodemodAutomationLevel,
     CodemodBackend,
+    CodemodPlanDocument,
     CancelableCompositionKind,
+    CodemodRewriteBuilder,
     CodemodSimulationStatus,
     CodemodStrategy,
     CodemodStrategyRegistry,
+    DEFAULT_CODEMOD_REWRITE_BUILDERS,
     RefactorRecipe,
+    RecipeCallReplacement,
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
@@ -546,8 +550,7 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
     recipe = (
         RefactorRecipe(recipe_id="route-alpha-beta", reason="route through authority")
         .replace_target(
-            "    def run(self, value):\n"
-            "        return AlphaAuthority.run(value)\n",
+            "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
             qualname="Alpha.run",
             source_path=module_path.as_posix(),
         )
@@ -631,6 +634,323 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     rewritten = module_path.read_text()
     assert "detector_id" not in rewritten
     assert "return value + 1" in rewritten
+
+
+def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LegacyBase:\n"
+        "    pass\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        old_value = value\n"
+        "        return old_value\n\n\n"
+        "class LegacyWorker(ParseContext, LegacyBase):\n"
+        "    pass\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = (
+        RefactorRecipe(
+            recipe_id="context-mro-refactor",
+            reason="route parser state through a nominal context base",
+        )
+        .insert_before_target(
+            "Parser",
+            "class ParseContext:\n    pass\n\n",
+            source_path=module_path.as_posix(),
+        )
+        .add_class_base(
+            "Parser",
+            "ParseContext",
+            source_path=module_path.as_posix(),
+        )
+        .replace_function_signature(
+            "Parser.parse",
+            "def parse(self, value, *, context):",
+            source_path=module_path.as_posix(),
+        )
+        .replace_function_body(
+            "Parser.parse",
+            "return context.prepare(value)",
+            source_path=module_path.as_posix(),
+        )
+        .insert_after_target(
+            "Parser",
+            "\n\nclass ParserAuthority:\n    pass\n",
+            source_path=module_path.as_posix(),
+        )
+        .remove_class_base(
+            "LegacyWorker",
+            "LegacyBase",
+            source_path=module_path.as_posix(),
+        )
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert "+class ParseContext:" in diff
+    assert "+class Parser(ParseContext):" in diff
+    assert "+    def parse(self, value, *, context):" in diff
+    assert "+        return context.prepare(value)" in diff
+    assert "+class ParserAuthority:" in diff
+    assert "+class LegacyWorker(ParseContext):" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "class ParseContext:" in rewritten
+    assert "class Parser(ParseContext):" in rewritten
+    assert "def parse(self, value, *, context):" in rewritten
+    assert "return context.prepare(value)" in rewritten
+    assert "class ParserAuthority:" in rewritten
+    assert "class LegacyWorker(ParseContext):" in rewritten
+
+
+def test_refactor_recipe_inserts_after_module_imports(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '"""Parser module."""\n'
+        "import os\n\n"
+        "class Parser:\n"
+        "    def parse(self, source):\n"
+        "        return obsolete_helper(source)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(recipe_id="add-context-import").insert_after_imports(
+        module_path.as_posix(),
+        "from parser_context import ParseContext\n",
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+from parser_context import ParseContext" in diff
+    assert simulation.apply() == (module_path.as_posix(),)
+    rewritten = module_path.read_text()
+    assert (
+        '"""Parser module."""\n'
+        "import os\n"
+        "from parser_context import ParseContext\n\n"
+        "class Parser:"
+    ) in rewritten
+
+
+def test_refactor_recipe_ensures_import_and_deletes_target(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "import os\n\n"
+        "def obsolete_helper(value):\n"
+        "    return value\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, source):\n"
+        "        return obsolete_helper(source)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = (
+        RefactorRecipe(recipe_id="delete-obsolete-helper")
+        .ensure_import(
+            module_path.as_posix(), "from parser_context import ParseContext\n"
+        )
+        .replace_text(
+            "Parser.parse",
+            "obsolete_helper(source)",
+            "source",
+            source_path=module_path.as_posix(),
+        )
+        .delete_target("obsolete_helper", source_path=module_path.as_posix())
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+from parser_context import ParseContext" in diff
+    assert "+        return source" in diff
+    assert "-def obsolete_helper(value):" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "from parser_context import ParseContext" in rewritten
+    assert "obsolete_helper" not in rewritten
+    assert "return source" in rewritten
+
+    reparsed_index = build_source_index(parse_python_modules(tmp_path), ())
+    second_source_by_path = {module_path.as_posix(): module_path.read_text()}
+    second_simulation = (
+        RefactorRecipe(recipe_id="ensure-existing-import")
+        .ensure_import(
+            module_path.as_posix(), "from parser_context import ParseContext\n"
+        )
+        .simulate(
+            reparsed_index,
+            second_source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+    )
+    assert second_simulation.simulation.applied_rewrite_count == 0
+
+
+def test_refactor_recipe_extracts_authority(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def old_helper(value):\n"
+        "    return value.strip()\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        return old_helper(value)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(recipe_id="extract-helper-authority").extract_authority(
+        "old_helper",
+        (
+            "class HelperAuthority:\n"
+            "    @staticmethod\n"
+            "    def normalize(value):\n"
+            "        return value.strip()\n"
+        ),
+        source_path=module_path.as_posix(),
+        call_replacements=(
+            RecipeCallReplacement(
+                target=SourceRewriteTarget(
+                    qualname="Parser.parse",
+                    source_path=module_path.as_posix(),
+                ),
+                old_source="old_helper(value)",
+                new_source="HelperAuthority.normalize(value)",
+            ),
+        ),
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert "-def old_helper(value):" in diff
+    assert "+class HelperAuthority:" in diff
+    assert "+        return HelperAuthority.normalize(value)" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "def old_helper" not in rewritten
+    assert "class HelperAuthority" in rewritten
+    assert "HelperAuthority.normalize(value)" in rewritten
+
+
+def test_codemod_plan_document_simulates_and_applies_recipes(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def old_helper(value):\n"
+        "    return value.strip()\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        return old_helper(value)\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe(recipe_id="document-authority-extraction").extract_authority(
+                "old_helper",
+                (
+                    "class HelperAuthority:\n"
+                    "    @staticmethod\n"
+                    "    def normalize(value):\n"
+                    "        return value.strip()\n"
+                ),
+                source_path=module_path.as_posix(),
+                call_replacements=(
+                    RecipeCallReplacement(
+                        target=SourceRewriteTarget(
+                            qualname="Parser.parse",
+                            source_path=module_path.as_posix(),
+                        ),
+                        old_source="old_helper(value)",
+                        new_source="HelperAuthority.normalize(value)",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert "-def old_helper(value):" in diff
+    assert "+class HelperAuthority:" in diff
+    assert simulation.apply() == (module_path.as_posix(),)
+    rewritten = module_path.read_text()
+    assert "def old_helper" not in rewritten
+    assert "HelperAuthority.normalize(value)" in rewritten
+
+
+def test_default_codemod_rewrite_builders_derive_from_registry() -> None:
+    builder_names = tuple(
+        type(builder).__name__ for builder in DEFAULT_CODEMOD_REWRITE_BUILDERS
+    )
+    default_registry_names = tuple(
+        builder_type.__name__
+        for builder_type in sorted(
+            CodemodRewriteBuilder.__registry__.values(),
+            key=lambda item: (item.registry_order, item.__name__),
+        )
+        if builder_type.default_enabled
+    )
+
+    assert builder_names == default_registry_names
+    assert "SuppliedAuthorityBoundaryCodemodBuilder" not in builder_names
 
 
 def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
@@ -3429,6 +3749,43 @@ def test_parse_python_module_roots_combines_files_and_dedupes(
     )
 
     assert [module.path.name for module in modules] == ["alpha.py", "beta.py"]
+
+
+def test_parse_python_modules_reuses_ast_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    cache_dir = tmp_path / ".cache" / "ast"
+    parse_calls = 0
+    real_parse = ast.parse
+
+    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
+        nonlocal parse_calls
+        parse_calls += 1
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+
+    first_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
+    second_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
+
+    assert [module.module_name for module in first_modules] == ["mod"]
+    assert [module.module_name for module in second_modules] == ["mod"]
+    assert parse_calls == 1
+
+
+def test_parse_python_modules_parallel_order_is_deterministic(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/zeta.py", "\nclass Zeta:\n    pass\n")
+    _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/middle.py", "\nclass Middle:\n    pass\n")
+
+    modules = parse_python_module_roots((tmp_path,), parse_workers=4)
+
+    assert [module.module_name for module in modules] == [
+        "pkg.alpha",
+        "pkg.middle",
+        "pkg.zeta",
+    ]
 
 
 def test_analyze_paths_combines_cross_file_detector_evidence(tmp_path: Path) -> None:
@@ -7157,6 +7514,11 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--fail-on-proof-regression",
             "--calibrate",
             "calibration.json",
+            "--parse-workers",
+            "4",
+            "--cache-dir",
+            ".nra-cache/ast",
+            "--no-cache",
             "--codemod-plan",
             "codemod-plan.json",
             "--codemod-diff",
@@ -7174,6 +7536,9 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.prove_economics is True
     assert args.fail_on_proof_regression is True
     assert args.calibrate == Path("calibration.json")
+    assert args.parse_workers == 4
+    assert args.cache_dir == Path(".nra-cache/ast")
+    assert args.use_parse_cache is False
     assert args.codemod_plan == Path("codemod-plan.json")
     assert args.codemod_diff is True
     assert args.codemod_apply is True
@@ -7269,11 +7634,56 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                         ],
                         "operations": [
                             {
+                                "operation": "add_class_base",
+                                "target_qualname": "Alpha",
+                                "file_path": "pkg/mod.py",
+                                "base_name": "AlphaAuthorityBase",
+                            },
+                            {
                                 "operation": "delete_class_assignment",
                                 "target_qualname": "Alpha",
                                 "file_path": "pkg/mod.py",
                                 "attribute_name": "detector_id",
-                            }
+                            },
+                            {
+                                "operation": "ensure_import",
+                                "file_path": "pkg/mod.py",
+                                "import_source": (
+                                    "from alpha_authority import AlphaAuthorityBase\n"
+                                ),
+                            },
+                            {
+                                "operation": "replace_text",
+                                "target_qualname": "Alpha.run",
+                                "file_path": "pkg/mod.py",
+                                "old_source": "old_alpha(value)",
+                                "new_source": "AlphaAuthority.run(value)",
+                            },
+                            {
+                                "operation": "delete_target",
+                                "target_qualname": "obsolete_helper",
+                                "file_path": "pkg/mod.py",
+                            },
+                            {
+                                "operation": "extract_authority",
+                                "target_qualname": "legacy_helper",
+                                "file_path": "pkg/mod.py",
+                                "authority_source": (
+                                    "class LegacyHelperAuthority:\n"
+                                    "    def run(self, value):\n"
+                                    "        return value\n"
+                                ),
+                                "call_replacements": [
+                                    {
+                                        "target_qualname": "Alpha.run",
+                                        "file_path": "pkg/mod.py",
+                                        "old_source": "legacy_helper(value)",
+                                        "new_source": (
+                                            "LegacyHelperAuthority().run(value)"
+                                        ),
+                                    }
+                                ],
+                            },
                         ],
                     }
                 ],
@@ -7291,7 +7701,22 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].rewrites[0].target.qualname == "Alpha.run"
     assert document.recipes[0].operations[0].to_dict()["operation"] == (
+        "add_class_base"
+    )
+    assert document.recipes[0].operations[1].to_dict()["operation"] == (
         "delete_class_assignment"
+    )
+    assert document.recipes[0].operations[2].to_dict()["operation"] == "ensure_import"
+    assert document.recipes[0].operations[3].to_dict()["operation"] == "replace_text"
+    assert document.recipes[0].operations[4].to_dict()["operation"] == "delete_target"
+    assert document.recipes[0].operations[5].to_dict()["operation"] == (
+        "extract_authority"
+    )
+    assert (
+        document.recipes[0]
+        .operations[5]
+        .to_dict()["call_replacements"][0]["new_source"]
+        == "LegacyHelperAuthority().run(value)"
     )
     assert document.guard_suite.rules[0].rule_id == (
         "cellprofiler-declaration-boundary"
@@ -7379,9 +7804,7 @@ def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
-        "    def run(self, value):\n"
-        "        return value\n",
+        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -8782,6 +9205,47 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     assert set(source_index.to_dict()) == {"files", "ast_targets", "evidence"}
 
 
+def test_source_index_retains_all_matching_evidence_targets(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Outer:\n"
+            "    class Inner:\n"
+            "        def run(self):\n"
+            "            def nested():\n"
+            "                return 1\n"
+            "            return nested()\n"
+        ),
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.ABC_TEMPLATE_METHOD,
+        "Nested semantic path",
+        "All enclosing targets remain addressable.",
+        "parallel source paths preserved",
+        "same evidence line maps to every enclosing target",
+    ).build(
+        "source_index_detector",
+        "nested scope evidence",
+        (SourceLocation(str(module_path), 6, "unknown"),),
+    )
+
+    source_index = build_source_index(modules, (finding,))
+    target_qualnames = {
+        source_index.target_by_id[target_id].qualname
+        for target_id in source_index.evidence[0].target_ids
+    }
+
+    assert target_qualnames == {
+        "Outer",
+        "Outer.Inner",
+        "Outer.Inner.run",
+        "Outer.Inner.run.nested",
+    }
+
+
 def test_impact_ranking_preserves_public_output_shape_with_source_targets(
     tmp_path: Path,
 ) -> None:
@@ -9081,7 +9545,7 @@ def test_scan_prediction_branches_from_changed_python_slice(tmp_path: Path) -> N
     assert changed_branch.label == "changed_only"
     assert changed_branch.module_count == 1
     assert changed_branch.source_file_count == 1
-    assert changed_branch.ast_target_count == 1
+    assert changed_branch.ast_target_count == 2
     assert projection_branch.label == "repository_projection"
     assert projection_branch.module_count == 2
 

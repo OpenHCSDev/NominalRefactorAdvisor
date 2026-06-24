@@ -17,10 +17,14 @@ from .record_algebra import (
 import ast
 import copy
 import os
+import hashlib
+import pickle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+import sys
 from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -101,6 +105,152 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
         "venv",
     }
 )
+_AST_PARSE_CACHE_VERSION = 1
+_DEFAULT_PARSE_WORKERS = 1
+
+
+@dataclass(frozen=True, kw_only=True)
+class PythonModuleParseContext:
+    """Parse-time context shared by sequential and concurrent module loading."""
+
+    analysis_root: Path
+    cache_dir: Path | None = None
+    use_parse_cache: bool = True
+
+
+def _module_name_for_path(path: Path, analysis_root: Path) -> tuple[str, bool]:
+    relative = path.relative_to(analysis_root)
+    module_parts = list(relative.with_suffix("").parts)
+    is_package_init = bool(module_parts and module_parts[-1] == "__init__")
+    if is_package_init:
+        module_parts = module_parts[:-1]
+    if not module_parts:
+        return ("__init__", is_package_init)
+    return (".".join(module_parts), is_package_init)
+
+
+def _source_signature(source: str) -> str:
+    return hashlib.blake2s(source.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _cache_entry_path(cache_dir: Path, path: Path) -> Path:
+    token = hashlib.blake2s(
+        str(path.resolve()).encode("utf-8"), digest_size=16
+    ).hexdigest()
+    return cache_dir / f"{token}.pickle"
+
+
+def _load_cached_ast(
+    path: Path,
+    source_signature: str,
+    *,
+    cache_dir: Path | None = None,
+) -> ast.Module | None:
+    if cache_dir is None:
+        return None
+    try:
+        path_stat = path.stat()
+    except OSError:
+        return None
+    cache_path = _cache_entry_path(cache_dir, path)
+    try:
+        with cache_path.open("rb") as handle:
+            payload = cast(object, pickle.load(handle))
+    except (FileNotFoundError, OSError, pickle.PickleError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("version") != _AST_PARSE_CACHE_VERSION:
+        return None
+    if payload.get("path") != str(path.resolve()):
+        return None
+    if payload.get("source_signature") != source_signature:
+        return None
+    if payload.get("mtime_ns") != path_stat.st_mtime_ns:
+        return None
+    if payload.get("size") != path_stat.st_size:
+        return None
+    py_version = payload.get("python_version")
+    if not isinstance(py_version, tuple) or py_version != (
+        sys.version_info.major,
+        sys.version_info.minor,
+    ):
+        return None
+    module = payload.get("module")
+    if not isinstance(module, ast.AST):
+        return None
+    return cast(ast.Module, module)
+
+
+def _write_cached_ast(
+    path: Path,
+    module: ast.Module,
+    source_signature: str,
+    *,
+    cache_dir: Path | None = None,
+) -> None:
+    if cache_dir is None:
+        return
+    try:
+        path_stat = path.stat()
+    except OSError:
+        return
+    cache_entry = _cache_entry_path(cache_dir, path)
+    payload = {
+        "version": _AST_PARSE_CACHE_VERSION,
+        "path": str(path.resolve()),
+        "mtime_ns": path_stat.st_mtime_ns,
+        "size": path_stat.st_size,
+        "source_signature": source_signature,
+        "python_version": (sys.version_info.major, sys.version_info.minor),
+        "module": module,
+    }
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with cache_entry.open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    except OSError:
+        return
+
+
+def _parse_source_module(
+    path: Path,
+    *,
+    context: PythonModuleParseContext,
+) -> ParsedModule:
+    source = path.read_text(encoding="utf-8")
+    source_signature = _source_signature(source)
+    module = (
+        _load_cached_ast(path, source_signature, cache_dir=context.cache_dir)
+        if context.use_parse_cache
+        else None
+    )
+    if module is None:
+        module = ast.parse(source, filename=str(path))
+        if context.use_parse_cache:
+            _write_cached_ast(
+                path,
+                module,
+                source_signature,
+                cache_dir=context.cache_dir,
+            )
+    module_name, is_package_init = _module_name_for_path(
+        path,
+        analysis_root=context.analysis_root,
+    )
+    return ParsedModule(
+        path=path,
+        module_name=module_name,
+        is_package_init=is_package_init,
+        module=module,
+        source=source,
+    )
+
+
+def _effective_parse_workers(parse_workers: int) -> int:
+    if parse_workers <= 0:
+        return _DEFAULT_PARSE_WORKERS
+    return max(1, parse_workers)
 
 
 # fmt: off
@@ -539,6 +689,25 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
 
 
+def _parse_module_roots(
+    root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
+) -> list[ParsedModule]:
+    return [_parse_source_module(path, context=root_parser) for path in paths]
+
+
+def _parse_module_roots_concurrently(
+    root_parser: "PythonModuleRootParser", paths: tuple[Path, ...]
+) -> list[ParsedModule]:
+    parse_workers = _effective_parse_workers(root_parser.parse_workers)
+
+    def parse_path(path: Path) -> ParsedModule:
+        return _parse_source_module(path, context=root_parser)
+
+    with ThreadPoolExecutor(max_workers=parse_workers) as executor:
+        modules = list(executor.map(parse_path, paths))
+    return modules
+
+
 def _python_source_paths(root: Path) -> tuple[Path, ...]:
     if root.is_file():
         return (root,) if root.suffix == ".py" else ()
@@ -561,55 +730,85 @@ def _python_source_paths(root: Path) -> tuple[Path, ...]:
 
 
 @dataclass(frozen=True)
-class PythonModuleRootParser:
+class PythonModuleRootParser(PythonModuleParseContext):
     root: Path
-    analysis_root: Path
+    parse_workers: int = _DEFAULT_PARSE_WORKERS
 
     @classmethod
-    def for_root(cls, root: Path) -> PythonModuleRootParser:
-        return cls(root=root, analysis_root=root.parent if root.is_file() else root)
+    def for_root(
+        cls,
+        root: Path,
+        *,
+        cache_dir: Path | None = None,
+        use_parse_cache: bool = True,
+        parse_workers: int = _DEFAULT_PARSE_WORKERS,
+    ) -> PythonModuleRootParser:
+        return cls(
+            root=root,
+            analysis_root=root.parent if root.is_file() else root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
 
     @classmethod
-    def parse(cls, root: Path) -> list[ParsedModule]:
-        parser = cls.for_root(root)
+    def parse(
+        cls,
+        root: Path,
+        *,
+        cache_dir: Path | None = None,
+        use_parse_cache: bool = True,
+        parse_workers: int = _DEFAULT_PARSE_WORKERS,
+    ) -> list[ParsedModule]:
+        parser = cls.for_root(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
         return parser.parsed_modules()
 
-    def module_name_for_path(self, path: Path) -> tuple[str, bool]:
-        relative = path.relative_to(self.analysis_root)
-        module_parts = list(relative.with_suffix("").parts)
-        is_package_init = bool(module_parts and module_parts[-1] == "__init__")
-        if is_package_init:
-            module_parts = module_parts[:-1]
-        if not module_parts:
-            return ("__init__", is_package_init)
-        return (".".join(module_parts), is_package_init)
-
     def parsed_modules(self) -> list[ParsedModule]:
-        modules: list[ParsedModule] = []
-        for path in _python_source_paths(self.root):
-            source = path.read_text(encoding="utf-8")
-            module_name, is_package_init = self.module_name_for_path(path)
-            modules.append(
-                ParsedModule(
-                    path=path,
-                    module_name=module_name,
-                    is_package_init=is_package_init,
-                    module=ast.parse(source),
-                    source=source,
-                )
-            )
-        return modules
+        paths = _python_source_paths(self.root)
+        if self.parse_workers <= 1 or len(paths) <= 1:
+            return _parse_module_roots(self, paths)
+        return _parse_module_roots_concurrently(self, paths)
 
 
-parse_python_modules = PythonModuleRootParser.parse
+def parse_python_modules(
+    root: Path,
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = _DEFAULT_PARSE_WORKERS,
+) -> list[ParsedModule]:
+    """Parse one path (file or directory) into canonical ParsedModule records."""
+    return PythonModuleRootParser.parse(
+        root,
+        cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+        parse_workers=parse_workers,
+    )
 
 
-def parse_python_module_roots(roots: tuple[Path, ...]) -> list[ParsedModule]:
+def parse_python_module_roots(
+    roots: tuple[Path, ...],
+    *,
+    cache_dir: Path | None = None,
+    use_parse_cache: bool = True,
+    parse_workers: int = _DEFAULT_PARSE_WORKERS,
+) -> list[ParsedModule]:
     """Parse multiple file or directory roots into one de-duplicated module set."""
     modules: list[ParsedModule] = []
     seen_paths: set[Path] = set()
     for root in roots:
-        for module in PythonModuleRootParser.for_root(root).parsed_modules():
+        parser = PythonModuleRootParser.for_root(
+            root,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+        )
+        for module in parser.parsed_modules():
             normalized_path = module.path.resolve()
             if normalized_path in seen_paths:
                 continue
@@ -2178,9 +2377,7 @@ def _builder_call_shape(
                 field_pairs=(
                     positional_field_pairs(call, callee_name)
                     + tuple(
-                        (kw.arg, kw.value)
-                        for kw in call.keywords
-                        if kw.arg is not None
+                        (kw.arg, kw.value) for kw in call.keywords if kw.arg is not None
                     )
                 ),
             ),
