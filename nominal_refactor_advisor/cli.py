@@ -42,7 +42,9 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSimulationStatus,
     RefactorRecipe,
+    RefactorRecipeOperation,
     RefactorRecipeRewrite,
+    SourceRewritePlanItem,
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
@@ -387,13 +389,11 @@ class JsonPayloadBuilder:
         return payload
 
 
-@dataclass(frozen=True)
-class SourceRewritePlanRow:
+@dataclass(frozen=True, kw_only=True)
+class SourceRewritePlanRow(SourceRewritePlanItem):
     """Validated source rewrite row shared by recipe and boundary parsing."""
 
-    target: SourceRewriteTarget
     replacement_source: str
-    rationale: str = ""
 
 
 @dataclass(frozen=True)
@@ -477,6 +477,10 @@ class CodemodPlanJsonParser:
                 self.refactor_recipe_rewrite(item)
                 for item in self.array_field(payload, "rewrites")
             ),
+            operations=tuple(
+                self.refactor_recipe_operation(item)
+                for item in self.array_field(payload, "operations")
+            ),
             reason=self.optional_string_field(payload, "reason"),
         )
 
@@ -487,6 +491,10 @@ class CodemodPlanJsonParser:
             replacement_source=rewrite_row.replacement_source,
             rationale=rewrite_row.rationale,
         )
+
+    def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
+        payload = self.object_row(row, "refactor recipe operations")
+        return RefactorRecipeOperation.from_dict(payload)
 
     def source_rewrite_plan_row(
         self,
@@ -1362,7 +1370,8 @@ def main() -> int:
         source_index = build_source_index(modules, findings)
         source_by_path = {str(module.path): module.source for module in modules}
         recipe_rewrite_batch = codemod_plan_document.source_rewrite_batch(
-            source_index
+            source_index,
+            source_by_path,
         )
 
     if args.include_impact_ranking:

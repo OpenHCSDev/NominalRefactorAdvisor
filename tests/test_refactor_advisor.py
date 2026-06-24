@@ -585,6 +585,54 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
     assert "return BetaAuthority.render(value)" in rewritten
 
 
+def test_refactor_recipe_dsl_operations_compile_to_rewrites(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Detector:\n"
+        "    detector_id = 'manual_detector'\n"
+        "    finding_spec = object()\n\n"
+        "    def normalize(self, value):\n"
+        "        old_value = value\n"
+        "        return old_value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = (
+        RefactorRecipe(recipe_id="mechanical-dsl")
+        .delete_class_assignment(
+            "Detector",
+            "detector_id",
+            source_path=module_path.as_posix(),
+        )
+        .replace_function_body(
+            "Detector.normalize",
+            "return value + 1",
+            source_path=module_path.as_posix(),
+        )
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "-    detector_id = 'manual_detector'" in diff
+    assert "+        return value + 1" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "detector_id" not in rewritten
+    assert "return value + 1" in rewritten
+
+
 def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
     tmp_path: Path,
 ) -> None:
@@ -7219,6 +7267,14 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 ),
                             }
                         ],
+                        "operations": [
+                            {
+                                "operation": "delete_class_assignment",
+                                "target_qualname": "Alpha",
+                                "file_path": "pkg/mod.py",
+                                "attribute_name": "detector_id",
+                            }
+                        ],
                     }
                 ],
             }
@@ -7234,6 +7290,9 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.authority_boundaries[0].boundary_id == "alpha-run"
     assert document.recipes[0].recipe_id == "alpha-recipe"
     assert document.recipes[0].rewrites[0].target.qualname == "Alpha.run"
+    assert document.recipes[0].operations[0].to_dict()["operation"] == (
+        "delete_class_assignment"
+    )
     assert document.guard_suite.rules[0].rule_id == (
         "cellprofiler-declaration-boundary"
     )
@@ -7331,14 +7390,12 @@ def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
                 "recipes": [
                     {
                         "recipe_id": "alpha-route",
-                        "rewrites": [
+                        "operations": [
                             {
+                                "operation": "replace_function_body",
                                 "file_path": module_path.as_posix(),
                                 "target_qualname": "Alpha.run",
-                                "replacement_source": (
-                                    "    def run(self, value):\n"
-                                    "        return AlphaAuthority.run(value)\n"
-                                ),
+                                "body_source": "return AlphaAuthority.run(value)",
                             }
                         ],
                     }

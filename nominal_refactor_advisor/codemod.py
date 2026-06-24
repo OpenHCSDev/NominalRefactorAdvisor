@@ -26,6 +26,8 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TypeAlias
 
+from metaclass_registry import AutoRegisterMeta
+
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
     RefactorImpactKey,
@@ -34,6 +36,7 @@ from .impact_ranking import (
 )
 from .models import ImpactDelta, SourceLocation
 from .patterns import PatternId
+from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .source_index import AstTargetDigest, SourceIndex
 
 JsonScalar: TypeAlias = str | int | float | bool | None
@@ -97,6 +100,17 @@ class ArchitectureGuardViolationKind(StrEnum):
 
     FORBIDDEN_CALL = "forbidden_call"
     FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
+
+
+class RefactorRecipeOperationKind(StrEnum):
+    """Agent-facing codemod DSL operation kinds."""
+
+    DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
+    REPLACE_FUNCTION_BODY = "replace_function_body"
+
+
+def _refactor_recipe_operation_key(name: str, cls: type[object]) -> str:
+    return class_name_registry_key(name.removesuffix("Operation"), cls)
 
 
 @dataclass(frozen=True)
@@ -605,14 +619,53 @@ class SourceRewriteTarget:
             "file_path": self.source_path,
         }
 
-
 @dataclass(frozen=True)
-class AuthorityBoundaryRewrite:
+class SourceRewritePlanPayload:
+    """Typed reader for source rewrite plan payloads."""
+
+    fields: Mapping[str, JsonValue]
+
+    def required_string(self, field_name: str) -> str:
+        value = self.fields.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"Expected non-empty string field {field_name!r}")
+        return value
+
+    def optional_string(self, field_name: str) -> str | None:
+        value = self.fields.get(field_name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string field {field_name!r}")
+        return value
+
+    def string_or_empty(self, field_name: str) -> str:
+        value = self.optional_string(field_name)
+        if value is None:
+            return ""
+        return value
+
+    def source_target(self) -> SourceRewriteTarget:
+        return SourceRewriteTarget(
+            target_identifier=self.optional_string("target_id"),
+            qualname=self.optional_string("target_qualname"),
+            source_path=self.optional_string("file_path"),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewritePlanItem:
+    """Common target and rationale state for source rewrite plan items."""
+
+    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
+    rationale: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class AuthorityBoundaryRewrite(SourceRewritePlanItem):
     """Caller-supplied rewrite for one source-index target."""
 
     replacement_source: str
-    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
-    rationale: str = ""
 
     def to_dict(self) -> JsonObject:
         return {
@@ -658,13 +711,11 @@ class AuthorityBoundaryPlan:
         }
 
 
-@dataclass(frozen=True)
-class RefactorRecipeRewrite:
+@dataclass(frozen=True, kw_only=True)
+class RefactorRecipeRewrite(SourceRewritePlanItem):
     """One recipe step that replaces a source-index target."""
 
-    target: SourceRewriteTarget
     replacement_source: str
-    rationale: str = ""
 
     def planned_rewrite(self, source_index: SourceIndex) -> PlannedSourceRewrite:
         target_identifier = self.target.required_identifier(source_index)
@@ -683,11 +734,440 @@ class RefactorRecipeRewrite:
 
 
 @dataclass(frozen=True)
+class SourceLineReplacement:
+    """Replacement of one absolute line span in a source file."""
+
+    file_path: str
+    start_line: int
+    end_line: int
+    replacement_lines: tuple[str, ...] = ()
+    rationale: str = ""
+
+
+@dataclass(frozen=True)
+class SourceTargetEditor:
+    """Line-oriented editor for one source-index target span."""
+
+    sources: Mapping[str, str]
+    target: AstTargetDigest
+
+    @property
+    def file_lines(self) -> list[str]:
+        return self.sources[self.target.file_path].splitlines(keepends=True)
+
+    @property
+    def target_lines(self) -> list[str]:
+        return self.file_lines[self.target.line - 1 : self.target.end_line]
+
+    def replacement_source(
+        self,
+        replacements: Iterable[SourceLineReplacement],
+    ) -> str:
+        lines = self.target_lines
+        ordered_replacements = self._ordered_replacements(replacements)
+        for replacement in reversed(ordered_replacements):
+            start_index = replacement.start_line - self.target.line
+            end_index = replacement.end_line - self.target.line + 1
+            lines[start_index:end_index] = list(replacement.replacement_lines)
+        return "".join(lines)
+
+    def _ordered_replacements(
+        self,
+        replacements: Iterable[SourceLineReplacement],
+    ) -> tuple[SourceLineReplacement, ...]:
+        ordered_replacements = sorted_tuple(
+            replacements,
+            key=lambda item: (item.start_line, item.end_line, item.rationale),
+        )
+        previous_end = self.target.line - 1
+        for replacement in ordered_replacements:
+            if replacement.file_path != self.target.file_path:
+                raise ValueError(
+                    f"Replacement file {replacement.file_path!r} does not match "
+                    f"target file {self.target.file_path!r}"
+                )
+            if (
+                replacement.start_line < self.target.line
+                or replacement.end_line > self.target.end_line
+            ):
+                raise ValueError(
+                    f"Replacement {replacement.start_line}:{replacement.end_line} "
+                    f"is outside target {self.target.qualname!r}"
+                )
+            if replacement.start_line <= previous_end:
+                raise ValueError(
+                    f"Overlapping line replacements in {self.target.file_path!r} "
+                    f"at line {replacement.start_line}"
+                )
+            previous_end = replacement.end_line
+        return ordered_replacements
+
+    def indentation_for_line(self, line_number: int) -> str:
+        line = self.file_lines[line_number - 1]
+        return line[: len(line) - len(line.lstrip())]
+
+    @staticmethod
+    def source_lines(source: str) -> tuple[str, ...]:
+        if source and not source.endswith(("\n", "\r")):
+            source = f"{source}\n"
+        return tuple(source.splitlines(keepends=True))
+
+
+@dataclass(frozen=True, kw_only=True)
+class RefactorRecipeOperation(
+    SourceRewritePlanItem,
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
+    """Agent-authored codemod operation compiled through source-index geometry."""
+
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_refactor_recipe_operation_key)
+    __skip_if_no_key__ = True
+
+    @classmethod
+    def operation_kind(cls) -> RefactorRecipeOperationKind:
+        return RefactorRecipeOperationKind(
+            _refactor_recipe_operation_key(cls.__name__, cls)
+        )
+
+    @classmethod
+    def from_dict(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "RefactorRecipeOperation":
+        plan_payload = SourceRewritePlanPayload(payload)
+        operation_key = plan_payload.required_string("operation")
+        operation_type = cls.__registry__.get(operation_key)
+        if operation_type is None:
+            raise ValueError(f"Unsupported recipe operation: {operation_key}")
+        return operation_type.from_operation_payload(
+            plan_payload.source_target(),
+            plan_payload,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "operation": self.operation_kind().value,
+            **self.target.to_dict(),
+            **self.operation_payload(),
+            "rationale": self.rationale,
+        }
+
+    @classmethod
+    @abstractmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "RefactorRecipeOperation":
+        raise NotImplementedError
+
+    @abstractmethod
+    def operation_payload(self) -> JsonObject:
+        raise NotImplementedError
+
+    @abstractmethod
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        raise NotImplementedError
+
+    def target_node(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[str, AstTargetDigest, _TargetNode]:
+        target_identifier = self.target.required_identifier(source_index)
+        nodes_by_target_identifier = AstTargetNodeIndex(
+            source_index,
+            source_by_path,
+        ).nodes_by_target_identifier()
+        return (
+            target_identifier,
+            source_index.target_by_id[target_identifier],
+            nodes_by_target_identifier[target_identifier],
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteClassAssignmentOperation(RefactorRecipeOperation):
+    """Delete one class-level assignment by attribute name."""
+
+    attribute_name: str
+
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "DeleteClassAssignmentOperation":
+        return cls(
+            target=target,
+            attribute_name=payload.required_string("attribute_name"),
+            rationale=payload.string_or_empty("rationale"),
+        )
+
+    def operation_payload(self) -> JsonObject:
+        return {"attribute_name": self.attribute_name}
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(
+            source_index,
+            source_by_path,
+        )
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a class definition"
+            )
+        assignments = tuple(
+            statement
+            for statement in node.body
+            if self._matches_assignment(statement)
+        )
+        if not assignments:
+            raise ValueError(
+                f"Class {target_digest.qualname!r} has no assignment "
+                f"for {self.attribute_name!r}"
+            )
+        return tuple(
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=assignment.lineno,
+                end_line=assignment.end_lineno or assignment.lineno,
+                rationale=self.rationale
+                or f"Delete class assignment {self.attribute_name!r}.",
+            )
+            for assignment in assignments
+        )
+
+    def _matches_assignment(self, statement: ast.stmt) -> bool:
+        if isinstance(statement, ast.Assign):
+            return any(
+                isinstance(target, ast.Name) and target.id == self.attribute_name
+                for target in statement.targets
+            )
+        return (
+            isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == self.attribute_name
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceFunctionBodyOperation(RefactorRecipeOperation):
+    """Replace a function or method body while preserving its signature."""
+
+    body_source: str
+
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "ReplaceFunctionBodyOperation":
+        return cls(
+            target=target,
+            body_source=payload.required_string("body_source"),
+            rationale=payload.string_or_empty("rationale"),
+        )
+
+    def operation_payload(self) -> JsonObject:
+        return {"body_source": self.body_source}
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(
+            source_index,
+            source_by_path,
+        )
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError(f"Target {target_digest.qualname!r} is not a function")
+        if not node.body:
+            raise ValueError(f"Target {target_digest.qualname!r} has no body")
+        body_start = node.body[0].lineno
+        body_end = node.body[-1].end_lineno or node.body[-1].lineno
+        return (
+            SourceLineReplacement(
+                file_path=target_digest.file_path,
+                start_line=body_start,
+                end_line=body_end,
+                replacement_lines=self._replacement_lines(
+                    SourceTargetEditor(source_by_path, target_digest),
+                    body_start,
+                ),
+                rationale=self.rationale
+                or f"Replace body of {target_digest.qualname!r}.",
+            ),
+        )
+
+    def _replacement_lines(
+        self,
+        editor: SourceTargetEditor,
+        body_start: int,
+    ) -> tuple[str, ...]:
+        body_indent = editor.indentation_for_line(body_start)
+        body_lines = SourceTargetEditor.source_lines(self.body_source)
+        if not body_lines:
+            raise ValueError("Replacement function body must not be empty")
+        return tuple(
+            body_indent + line if line.strip() else line for line in body_lines
+        )
+
+
+@dataclass(frozen=True)
+class _RecipeReplacementGroup:
+    target_id: str
+    replacements: tuple[SourceLineReplacement, ...]
+
+
+@dataclass(frozen=True)
+class RefactorRecipeOperationCompiler:
+    """Compile declarative recipe operations into simulator-ready rewrites."""
+
+    source_index: SourceIndex
+    sources: Mapping[str, str]
+
+    def planned_rewrites(
+        self,
+        operations: Iterable[RefactorRecipeOperation],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        replacements = tuple(
+            replacement
+            for operation in operations
+            for replacement in operation.line_replacements(
+                self.source_index,
+                self.sources,
+            )
+        )
+        groups = self._merged_replacement_groups(replacements)
+        return tuple(self._planned_rewrite(group) for group in groups)
+
+    def _merged_replacement_groups(
+        self,
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> tuple[_RecipeReplacementGroup, ...]:
+        groups = [
+            _RecipeReplacementGroup(
+                target_id=self._smallest_enclosing_target_id((replacement,)),
+                replacements=(replacement,),
+            )
+            for replacement in replacements
+        ]
+        changed = True
+        while changed:
+            changed = False
+            merged_groups: list[_RecipeReplacementGroup] = []
+            for group in sorted(groups, key=self._group_sort_key):
+                if not merged_groups:
+                    merged_groups.append(group)
+                    continue
+                previous = merged_groups[-1]
+                if not self._target_spans_overlap(previous.target_id, group.target_id):
+                    merged_groups.append(group)
+                    continue
+                merged_groups[-1] = self._merge_groups(previous, group)
+                changed = True
+            groups = merged_groups
+        return sorted_tuple(groups, key=self._group_sort_key)
+
+    def _planned_rewrite(
+        self,
+        group: _RecipeReplacementGroup,
+    ) -> PlannedSourceRewrite:
+        target = self.source_index.target_by_id[group.target_id]
+        replacement_source = SourceTargetEditor(
+            self.sources,
+            target,
+        ).replacement_source(group.replacements)
+        return PlannedSourceRewrite(
+            target_id=group.target_id,
+            replacement_source=replacement_source,
+            rationale=_joined_rationales(
+                replacement.rationale for replacement in group.replacements
+            ),
+        )
+
+    def _merge_groups(
+        self,
+        first: _RecipeReplacementGroup,
+        second: _RecipeReplacementGroup,
+    ) -> _RecipeReplacementGroup:
+        replacements = (*first.replacements, *second.replacements)
+        return _RecipeReplacementGroup(
+            target_id=self._smallest_enclosing_target_id(replacements),
+            replacements=replacements,
+        )
+
+    def _smallest_enclosing_target_id(
+        self,
+        replacements: tuple[SourceLineReplacement, ...],
+    ) -> str:
+        file_paths = {replacement.file_path for replacement in replacements}
+        if len(file_paths) != 1:
+            raise ValueError("Recipe operation groups must not cross source files")
+        file_path = next(iter(file_paths))
+        start_line = min(replacement.start_line for replacement in replacements)
+        end_line = max(replacement.end_line for replacement in replacements)
+        enclosing_targets = [
+            target
+            for target in self.source_index.ast_targets
+            if target.file_path == file_path
+            and target.line <= start_line
+            and target.end_line >= end_line
+        ]
+        if not enclosing_targets:
+            raise ValueError(
+                f"No source-index target encloses {file_path!r} "
+                f"lines {start_line}:{end_line}"
+            )
+        return min(
+            enclosing_targets,
+            key=lambda target: (
+                target.end_line - target.line,
+                target.line,
+                target.qualname,
+            ),
+        ).target_id
+
+    def _target_spans_overlap(self, first_id: str, second_id: str) -> bool:
+        first = self.source_index.target_by_id[first_id]
+        second = self.source_index.target_by_id[second_id]
+        return (
+            first.file_path == second.file_path
+            and first.line <= second.end_line
+            and second.line <= first.end_line
+        )
+
+    def _group_sort_key(
+        self,
+        group: _RecipeReplacementGroup,
+    ) -> tuple[str, int, int, str]:
+        target = self.source_index.target_by_id[group.target_id]
+        return (target.file_path, target.line, target.end_line, target.qualname)
+
+
+def _joined_rationales(rationales: Iterable[str]) -> str:
+    unique_rationales = tuple(dict.fromkeys(item for item in rationales if item))
+    return " ".join(unique_rationales)
+
+
+@dataclass(frozen=True)
 class RefactorRecipe:
     """Executable batch of source rewrites and post-refactor invariants."""
 
     recipe_id: str
     rewrites: tuple[RefactorRecipeRewrite, ...] = ()
+    operations: tuple[RefactorRecipeOperation, ...] = ()
     reason: str = ""
 
     def replace_target(
@@ -711,11 +1191,61 @@ class RefactorRecipe:
         )
         return replace(self, rewrites=(*self.rewrites, rewrite))
 
+    def delete_class_assignment(
+        self,
+        class_qualname: str,
+        attribute_name: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DeleteClassAssignmentOperation(
+            target=SourceRewriteTarget(
+                qualname=class_qualname,
+                source_path=source_path,
+            ),
+            attribute_name=attribute_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def replace_function_body(
+        self,
+        function_qualname: str,
+        body_source: str,
+        *,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ReplaceFunctionBodyOperation(
+            target=SourceRewriteTarget(
+                qualname=function_qualname,
+                source_path=source_path,
+            ),
+            body_source=body_source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def source_rewrite_batch(
         self,
         source_index: SourceIndex,
+        source_by_path: Mapping[str, str] | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        return tuple(rewrite.planned_rewrite(source_index) for rewrite in self.rewrites)
+        rewrite_batch = tuple(
+            rewrite.planned_rewrite(source_index) for rewrite in self.rewrites
+        )
+        if not self.operations:
+            return rewrite_batch
+        if source_by_path is None:
+            raise ValueError("Recipe operations require source text")
+        operation_rewrites = RefactorRecipeOperationCompiler(
+            source_index,
+            source_by_path,
+        ).planned_rewrites(
+            self.operations,
+        )
+        return (*rewrite_batch, *operation_rewrites)
 
     def simulate(
         self,
@@ -731,7 +1261,7 @@ class RefactorRecipe:
             active_guard_suite = guard_suite
         simulation = simulate_planned_rewrites(
             source_index,
-            self.source_rewrite_batch(source_index),
+            self.source_rewrite_batch(source_index, source_by_path),
             source_by_path,
             backend=backend,
         )
@@ -749,6 +1279,7 @@ class RefactorRecipe:
         return {
             "recipe_id": self.recipe_id,
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
+            "operations": tuple(operation.to_dict() for operation in self.operations),
             "reason": self.reason,
         }
 
@@ -776,11 +1307,12 @@ class CodemodPlanDocument:
     def source_rewrite_batch(
         self,
         source_index: SourceIndex,
+        source_by_path: Mapping[str, str] | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         return tuple(
             rewrite
             for recipe in self.recipes
-            for rewrite in recipe.source_rewrite_batch(source_index)
+            for rewrite in recipe.source_rewrite_batch(source_index, source_by_path)
         )
 
     def to_dict(self) -> JsonObject:

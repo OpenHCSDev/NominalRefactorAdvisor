@@ -173,9 +173,37 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "RefactorRecipe",
     ),
+    "RefactorRecipeOperation": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipeOperation",
+    ),
+    "RefactorRecipeOperationKind": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipeOperationKind",
+    ),
     "RefactorRecipeRewrite": (
         "nominal_refactor_advisor.codemod",
         "RefactorRecipeRewrite",
+    ),
+    "SourceRewritePlanItem": (
+        "nominal_refactor_advisor.codemod",
+        "SourceRewritePlanItem",
+    ),
+    "DeleteClassAssignmentOperation": (
+        "nominal_refactor_advisor.codemod",
+        "DeleteClassAssignmentOperation",
+    ),
+    "ReplaceFunctionBodyOperation": (
+        "nominal_refactor_advisor.codemod",
+        "ReplaceFunctionBodyOperation",
+    ),
+    "SourceLineReplacement": (
+        "nominal_refactor_advisor.codemod",
+        "SourceLineReplacement",
+    ),
+    "RefactorRecipeOperationCompiler": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipeOperationCompiler",
     ),
     "RefactorRecipeSimulation": (
         "nominal_refactor_advisor.codemod",
