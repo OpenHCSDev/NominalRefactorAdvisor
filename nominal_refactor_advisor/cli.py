@@ -8,11 +8,13 @@ recommended way to analyze a path or synthesize subsystem plans from findings.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
+from typing import TypeAlias, cast
 
 from .analysis import (
     analyze_lean_export,
@@ -22,25 +24,34 @@ from .analysis import (
     plan_path,
     plan_paths,
 )
-from .ast_tools import parse_python_module_roots
+from .ast_tools import ParsedModule, parse_python_module_roots
 from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
     run_calibration_manifest,
 )
 from .codemod import (
+    ArchitectureGuardReport,
+    ArchitectureGuardRule,
+    ArchitectureGuardSuite,
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
     CodemodCandidate,
     CodemodAutomationLevel,
+    CodemodPlanDocument,
     CodemodSimulationReport,
     CodemodSimulationStatus,
+    RefactorRecipe,
+    RefactorRecipeRewrite,
+    SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
+    evaluate_architecture_guards,
     format_codemod_unified_diff,
-    simulate_codemod_candidates,
+    simulate_planned_rewrites,
+    source_by_path_with_simulation,
 )
 from .detectors import DetectorConfig
 from .economics import (
@@ -87,6 +98,13 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
         "version",
     }
 )
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = (
+    JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
+)
+JsonObject: TypeAlias = dict[str, JsonValue]
+JsonArray: TypeAlias = list[JsonValue]
 
 
 @dataclass(frozen=True)
@@ -299,165 +317,332 @@ _CLI_ARGUMENT_SPECS = (
 )
 
 
-def _json_payload(
-    findings: list[RefactorFinding],
-    plans: list[RefactorPlan],
-    modules: list,
-    economics: RecommendationEconomics | None = None,
-    change_budget: RepositoryChangeBudget | None = None,
-    timing: ScanTiming | None = None,
-    impact_ranking: RefactorImpactRankingReport | None = None,
-    codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
-    execution_plan: RefactorExecutionPlanReport | None = None,
-) -> dict[str, object]:
-    report = AnalysisReport(findings=tuple(findings), plans=tuple(plans))
-    graph = build_observation_graph(modules)
-    payload = report.to_dict()
-    payload["findings"] = [finding.to_dict() for finding in findings]
-    started = perf_counter()
-    source_index = build_source_index(modules, findings)
-    payload["source_index"] = source_index.to_dict()
-    if timing is not None:
-        timing = ScanTiming(
-            parse_seconds=timing.parse_seconds,
-            analysis_seconds=timing.analysis_seconds,
-            planning_seconds=timing.planning_seconds,
-            source_index_seconds=round(perf_counter() - started, 3),
-        )
-    payload["observations"] = [asdict(item) for item in graph.observations]
-    payload["fibers"] = [asdict(item) for item in graph.fibers]
-    if timing is not None:
-        payload["timing"] = timing.to_dict()
-    if economics is not None:
-        payload["economics"] = economics.to_dict()
-    if change_budget is not None:
-        payload["change_budget"] = change_budget.to_dict()
-    if execution_plan is not None:
-        payload["execution_plan"] = execution_plan.to_dict()
-    if impact_ranking is not None:
-        payload["impact_ranking"] = impact_ranking.to_dict()
-        if codemod_candidates is None:
-            codemod_candidates = codemod_candidates_from_impact_ranking(
-                impact_ranking,
-                source_index,
+@dataclass(frozen=True)
+class JsonPayloadBuilder:
+    """Build the JSON report payload for one advisor scan."""
+
+    findings: list[RefactorFinding]
+    plans: list[RefactorPlan]
+    modules: list[ParsedModule]
+    economics: RecommendationEconomics | None = None
+    change_budget: RepositoryChangeBudget | None = None
+    timing: ScanTiming | None = None
+    impact_ranking: RefactorImpactRankingReport | None = None
+    codemod_candidates: tuple[CodemodCandidate, ...] | None = None
+    execution_plan: RefactorExecutionPlanReport | None = None
+    scan_guard_report: ArchitectureGuardReport | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
+        graph = build_observation_graph(self.modules)
+        payload = report.to_dict()
+        payload["findings"] = [finding.to_dict() for finding in self.findings]
+        started = perf_counter()
+        source_index = build_source_index(self.modules, self.findings)
+        payload["source_index"] = source_index.to_dict()
+        timing = self.timing
+        if timing is not None:
+            timing = ScanTiming(
+                parse_seconds=timing.parse_seconds,
+                analysis_seconds=timing.analysis_seconds,
+                planning_seconds=timing.planning_seconds,
+                source_index_seconds=round(perf_counter() - started, 3),
             )
-            codemod_candidates = codemod_candidates_with_automated_rewrites(
+        payload["observations"] = [asdict(item) for item in graph.observations]
+        payload["fibers"] = [asdict(item) for item in graph.fibers]
+        if timing is not None:
+            payload["timing"] = timing.to_dict()
+        if self.economics is not None:
+            payload["economics"] = self.economics.to_dict()
+        if self.change_budget is not None:
+            payload["change_budget"] = self.change_budget.to_dict()
+        if self.execution_plan is not None:
+            payload["execution_plan"] = self.execution_plan.to_dict()
+        codemod_candidates = self.codemod_candidates
+        if self.impact_ranking is not None:
+            payload["impact_ranking"] = self.impact_ranking.to_dict()
+            if codemod_candidates is None:
+                codemod_candidates = codemod_candidates_from_impact_ranking(
+                    self.impact_ranking,
+                    source_index,
+                )
+                codemod_candidates = codemod_candidates_with_automated_rewrites(
+                    codemod_candidates,
+                    source_index,
+                    {str(module.path): module.source for module in self.modules},
+                )
+        payload["semantic_refactor_gate"] = (
+            SemanticRefactorGateReport.from_optional_scan(
                 codemod_candidates,
-                source_index,
-                {str(module.path): module.source for module in modules},
-            )
-    payload["semantic_refactor_gate"] = SemanticRefactorGateReport.from_optional_scan(
-        codemod_candidates,
-        impact_ranking=impact_ranking,
-        findings=tuple(findings),
-    ).to_dict()
-    if codemod_candidates is not None:
-        payload["codemod_candidates"] = tuple(
-            candidate.to_dict() for candidate in codemod_candidates
+                impact_ranking=self.impact_ranking,
+                findings=tuple(self.findings),
+            ).to_dict()
         )
-    return payload
+        if codemod_candidates is not None:
+            payload["codemod_candidates"] = tuple(
+                candidate.to_dict() for candidate in codemod_candidates
+            )
+        if self.scan_guard_report is not None:
+            payload["architecture_guard_report"] = self.scan_guard_report.to_dict()
+        return payload
 
 
-def _authority_boundary_plans_from_json_payload(
-    payload: object,
-) -> tuple[AuthorityBoundaryPlan, ...]:
-    plan_rows = (
-        payload.get("authority_boundaries") if isinstance(payload, dict) else payload
-    )
-    if not isinstance(plan_rows, list):
-        raise ValueError("codemod plan must be a list or contain authority_boundaries")
-    return tuple(_authority_boundary_plan_from_json(row) for row in plan_rows)
+@dataclass(frozen=True)
+class SourceRewritePlanRow:
+    """Validated source rewrite row shared by recipe and boundary parsing."""
+
+    target: SourceRewriteTarget
+    replacement_source: str
+    rationale: str = ""
 
 
-def _authority_boundary_plan_from_json(row: object) -> AuthorityBoundaryPlan:
-    if not isinstance(row, dict):
-        raise ValueError("authority boundary plan rows must be objects")
-    rewrites = row.get("rewrites")
-    if not isinstance(rewrites, list):
-        raise ValueError("authority boundary plan requires rewrites list")
-    boundary_id = row.get("boundary_id")
-    if not isinstance(boundary_id, str) or not boundary_id:
-        raise ValueError("authority boundary plan requires boundary_id")
-    return AuthorityBoundaryPlan(
-        boundary_id=boundary_id,
-        rewrites=tuple(
-            _authority_boundary_rewrite_from_json(item) for item in rewrites
-        ),
-        detector_ids=_string_tuple_json_field(row, "detector_ids"),
-        opportunity_kinds=_string_tuple_json_field(row, "opportunity_kinds"),
-        opportunity_labels=_string_tuple_json_field(row, "opportunity_labels"),
-        reason=_optional_string_json_field(row, "reason"),
-    )
+@dataclass(frozen=True)
+class CodemodPlanJsonParser:
+    """Decode codemod-plan JSON into nominal advisor plan records."""
 
+    authority_boundaries_field: str = "authority_boundaries"
+    recipes_field: str = "recipes"
+    architecture_guards_field: str = "architecture_guards"
 
-def _authority_boundary_rewrite_from_json(row: object) -> AuthorityBoundaryRewrite:
-    if not isinstance(row, dict):
-        raise ValueError("authority boundary rewrites must be objects")
-    replacement_source = row.get("replacement_source")
-    if not isinstance(replacement_source, str):
-        raise ValueError("authority boundary rewrite requires replacement_source")
-    return AuthorityBoundaryRewrite(
-        replacement_source=replacement_source,
-        target_id=_optional_string_json_field(row, "target_id") or None,
-        target_qualname=_optional_string_json_field(row, "target_qualname") or None,
-        file_path=_optional_string_json_field(row, "file_path") or None,
-        rationale=_optional_string_json_field(row, "rationale"),
-    )
+    def parse_document(self, payload: JsonObject | JsonArray) -> CodemodPlanDocument:
+        if isinstance(payload, dict):
+            return CodemodPlanDocument(
+                authority_boundaries=self.authority_boundaries(payload),
+                recipes=self.recipes(payload),
+                guard_suite=self.architecture_guard_suite(payload),
+            )
+        return CodemodPlanDocument(
+            authority_boundaries=tuple(
+                self.authority_boundary_plan(row) for row in payload
+            ),
+        )
 
+    def authority_boundaries(
+        self,
+        payload: JsonObject,
+    ) -> tuple[AuthorityBoundaryPlan, ...]:
+        return tuple(
+            self.authority_boundary_plan(row)
+            for row in self.array_field(payload, self.authority_boundaries_field)
+        )
 
-def _string_tuple_json_field(
-    row: dict[str, object], field_name: str
-) -> tuple[str, ...]:
-    if field_name not in row or row[field_name] is None:
-        return ()
-    value = row[field_name]
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"{field_name} must be a list of strings")
-    return tuple(value)
+    def recipes(
+        self,
+        payload: JsonObject,
+    ) -> tuple[RefactorRecipe, ...]:
+        return tuple(
+            self.refactor_recipe(row)
+            for row in self.array_field(payload, self.recipes_field)
+        )
 
+    def architecture_guard_suite(
+        self,
+        payload: JsonObject,
+    ) -> ArchitectureGuardSuite:
+        return ArchitectureGuardSuite(
+            tuple(
+                self.architecture_guard_rule(row)
+                for row in self.array_field(payload, self.architecture_guards_field)
+            )
+        )
 
-def _optional_string_json_field(row: dict[str, object], field_name: str) -> str:
-    value = row.get(field_name, "")
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
-    return value
+    def authority_boundary_plan(self, row: JsonValue) -> AuthorityBoundaryPlan:
+        payload = self.object_row(row, "authority boundary plan rows")
+        boundary_id = self.required_string_field(payload, "boundary_id")
+        return AuthorityBoundaryPlan(
+            boundary_id=boundary_id,
+            rewrites=tuple(
+                self.authority_boundary_rewrite(item)
+                for item in self.array_field(payload, "rewrites")
+            ),
+            detector_ids=self.string_tuple_field(payload, "detector_ids"),
+            opportunity_kinds=self.string_tuple_field(payload, "opportunity_kinds"),
+            opportunity_labels=self.string_tuple_field(payload, "opportunity_labels"),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def authority_boundary_rewrite(self, row: JsonValue) -> AuthorityBoundaryRewrite:
+        rewrite_row = self.source_rewrite_plan_row(row, "authority boundary rewrites")
+        return AuthorityBoundaryRewrite(
+            target=rewrite_row.target,
+            replacement_source=rewrite_row.replacement_source,
+            rationale=rewrite_row.rationale,
+        )
+
+    def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
+        payload = self.object_row(row, "refactor recipe rows")
+        return RefactorRecipe(
+            recipe_id=self.required_string_field(payload, "recipe_id"),
+            rewrites=tuple(
+                self.refactor_recipe_rewrite(item)
+                for item in self.array_field(payload, "rewrites")
+            ),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
+        rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
+        return RefactorRecipeRewrite(
+            target=rewrite_row.target,
+            replacement_source=rewrite_row.replacement_source,
+            rationale=rewrite_row.rationale,
+        )
+
+    def source_rewrite_plan_row(
+        self,
+        row: JsonValue,
+        row_role: str,
+    ) -> SourceRewritePlanRow:
+        payload = self.object_row(row, row_role)
+        return SourceRewritePlanRow(
+            target=self.source_rewrite_target(payload),
+            replacement_source=self.required_string_field(
+                payload,
+                "replacement_source",
+            ),
+            rationale=self.optional_string_field(payload, "rationale"),
+        )
+
+    def source_rewrite_target(self, payload: JsonObject) -> SourceRewriteTarget:
+        return SourceRewriteTarget(
+            target_identifier=self.optional_string_or_none_field(
+                payload,
+                "target_id",
+            ),
+            qualname=self.optional_string_or_none_field(
+                payload,
+                "target_qualname",
+            ),
+            source_path=self.optional_string_or_none_field(payload, "file_path"),
+        )
+
+    def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
+        payload = self.object_row(row, "architecture guard rules")
+        return ArchitectureGuardRule(
+            rule_id=self.required_string_field(payload, "rule_id"),
+            forbidden_call_names=self.string_tuple_field(
+                payload,
+                "forbidden_call_names",
+            ),
+            forbidden_literal_dispatch_subjects=self.string_tuple_field(
+                payload,
+                "forbidden_literal_dispatch_subjects",
+            ),
+            file_path_suffixes=self.string_tuple_field(payload, "file_path_suffixes"),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def object_row(self, value: JsonValue, row_role: str) -> JsonObject:
+        if not isinstance(value, dict):
+            raise ValueError(f"{row_role} must be objects")
+        return value
+
+    def array_field(self, row: JsonObject, field_name: str) -> tuple[JsonValue, ...]:
+        if field_name not in row or row[field_name] is None:
+            return ()
+        value = row[field_name]
+        if not isinstance(value, list):
+            raise ValueError(f"{field_name} must be a list")
+        return tuple(value)
+
+    def string_tuple_field(
+        self,
+        row: JsonObject,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        values = self.array_field(row, field_name)
+        if not all(isinstance(item, str) for item in values):
+            raise ValueError(f"{field_name} must be a list of strings")
+        return tuple(values)
+
+    def optional_string_field(self, row: JsonObject, field_name: str) -> str:
+        if field_name not in row or row[field_name] is None:
+            return ""
+        value = row[field_name]
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        return value
+
+    def optional_string_or_none_field(
+        self,
+        row: JsonObject,
+        field_name: str,
+    ) -> str | None:
+        value = self.optional_string_field(row, field_name)
+        if value:
+            return value
+        return None
+
+    def required_string_field(self, row: JsonObject, field_name: str) -> str:
+        value = self.optional_string_field(row, field_name)
+        if not value:
+            raise ValueError(f"{field_name} is required")
+        return value
 
 
 def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ...]:
     """Load caller-supplied authority boundary plans from JSON."""
 
-    return _authority_boundary_plans_from_json_payload(
-        json.loads(path.read_text(encoding="utf-8"))
+    return load_codemod_plan_document(path).authority_boundaries
+
+
+def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
+    """Load caller-supplied codemod rewrites and guard invariants from JSON."""
+
+    payload = cast(
+        JsonObject | JsonArray,
+        json.loads(path.read_text(encoding="utf-8")),
     )
+    return CodemodPlanJsonParser().parse_document(payload)
 
 
-def codemod_simulation_payload(
-    simulation: CodemodSimulationReport,
-    *,
-    applied: bool = False,
-) -> dict[str, object]:
-    """Return JSON-ready metadata for a codemod simulation/apply run."""
+@dataclass(frozen=True)
+class CodemodSimulationPayload:
+    """JSON-ready metadata for a codemod simulation/apply run."""
 
-    return {
-        "backend": simulation.backend.value,
-        "applied": applied,
-        "applied_rewrite_count": simulation.applied_rewrite_count,
-        "changed_file_paths": simulation.changed_file_paths,
-        "rewrites": tuple(
-            {
-                "target_id": rewrite.target_id,
-                "file_path": rewrite.file_path,
-                "qualname": rewrite.qualname,
-                "operation": rewrite.operation.value,
-                "line": rewrite.line,
-                "end_line": rewrite.end_line,
-                "rationale": rewrite.rationale,
-            }
-            for rewrite in simulation.rewrites
-        ),
-    }
+    simulation: CodemodSimulationReport
+    applied: bool = False
+    post_guard_report: ArchitectureGuardReport | None = None
+
+    def to_dict(self) -> JsonObject:
+        payload: JsonObject = {
+            "backend": self.simulation.backend.value,
+            "applied": self.applied,
+            "applied_rewrite_count": self.simulation.applied_rewrite_count,
+            "changed_file_paths": self.simulation.changed_file_paths,
+            "rewrites": tuple(
+                rewrite.to_dict() for rewrite in self.simulation.rewrites
+            ),
+        }
+        if self.post_guard_report is not None:
+            payload["architecture_guard_report"] = self.post_guard_report.to_dict()
+        return payload
+
+
+def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
+    """Render caller-supplied codemod completion guards."""
+
+    lines = [
+        "Architecture guard report:",
+        f"   - Rules: {len(report.rules)}",
+        f"   - Violations: {report.violation_count}",
+    ]
+    if report.is_clean:
+        lines.append("   - Status: clean")
+        return "\n".join(lines)
+    for index, violation in enumerate(report.violations, start=1):
+        lines.append(
+            (
+                f"   - {index}. {violation.rule_id} "
+                f"{violation.violation_kind.value} at "
+                f"{violation.location.file_path}:{violation.location.line} "
+                f"`{violation.location.symbol}`"
+            )
+        )
+        lines.append(f"     context: {violation.target_context.qualname}")
+        if violation.detail:
+            lines.append(f"     detail: {violation.detail}")
+    return "\n".join(lines)
 
 
 def format_plans_markdown(plans: list[RefactorPlan]) -> str:
@@ -807,6 +992,7 @@ class MarkdownReportRenderer(ABC):
         timing: ScanTiming | None = None,
         impact_ranking: RefactorImpactRankingReport | None = None,
         codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
+        architecture_guard_report: ArchitectureGuardReport | None = None,
         raw_findings: bool = False,
     ) -> str:
         sections: list[str] = []
@@ -832,10 +1018,15 @@ class MarkdownReportRenderer(ABC):
             sections.append(format_impact_ranking_markdown(impact_ranking))
         if codemod_candidates is not None:
             sections.append(format_codemod_applicability_markdown(codemod_candidates))
+        if architecture_guard_report is not None:
+            sections.append(
+                format_architecture_guard_markdown(architecture_guard_report)
+            )
         if semantic_gate_report.active:
             if raw_findings and findings:
                 sections.append(
-                    "Raw finding evidence (supporting only):\n" + self.findings(findings)
+                    "Raw finding evidence (supporting only):\n"
+                    + self.findings(findings)
                 )
             elif findings:
                 sections.append(format_raw_findings_suppressed_markdown(findings))
@@ -992,6 +1183,50 @@ def _require_single_root_mode(
         parser.error(f"{option_name} accepts exactly one path root")
 
 
+@dataclass(frozen=True)
+class ArchitectureGuardSourceEvaluator:
+    """Evaluate architecture guards against an in-memory source projection."""
+
+    modules: list[ParsedModule]
+    rules: tuple[ArchitectureGuardRule, ...]
+
+    def report_for_sources(
+        self,
+        source_by_path: dict[str, str],
+    ) -> ArchitectureGuardReport | None:
+        if not self.rules:
+            return None
+        guard_modules = self.modules_with_sources(source_by_path)
+        guard_source_index = build_source_index(guard_modules, ())
+        return evaluate_architecture_guards(
+            guard_source_index,
+            source_by_path,
+            self.rules,
+        )
+
+    def modules_with_sources(
+        self,
+        source_by_path: dict[str, str],
+    ) -> tuple[ParsedModule, ...]:
+        updated_modules = []
+        for parsed_module in self.modules:
+            file_path = str(parsed_module.path)
+            if file_path in source_by_path:
+                source = source_by_path[file_path]
+            else:
+                source = parsed_module.source
+            updated_modules.append(
+                ParsedModule(
+                    parsed_module.path,
+                    parsed_module.module_name,
+                    parsed_module.is_package_init,
+                    ast.parse(source, filename=file_path),
+                    source,
+                )
+            )
+        return tuple(updated_modules)
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -1005,8 +1240,23 @@ def main() -> int:
     codemod_requested = (
         args.codemod_plan is not None or args.codemod_diff or args.codemod_apply
     )
-    if codemod_requested and not args.include_impact_ranking:
-        parser.error("--codemod-* options require impact ranking")
+    codemod_plan_document = (
+        load_codemod_plan_document(args.codemod_plan)
+        if args.codemod_plan is not None
+        else CodemodPlanDocument()
+    )
+    if (
+        codemod_requested
+        and not args.include_impact_ranking
+        and not codemod_plan_document.has_recipes
+    ):
+        parser.error("--codemod-* options require impact ranking or recipe rewrites")
+    if (
+        codemod_requested
+        and not args.include_impact_ranking
+        and codemod_plan_document.has_authority_boundaries
+    ):
+        parser.error("authority-boundary codemod plans require impact ranking")
     if codemod_requested and args.import_lean_export is not None:
         parser.error("--codemod-* options require parsed Python source paths")
 
@@ -1099,15 +1349,23 @@ def main() -> int:
         if args.include_change_budget
         else None
     )
-    authority_boundary_plans = (
-        load_authority_boundary_plans(args.codemod_plan)
-        if args.codemod_plan is not None
-        else ()
+    authority_boundary_plans = codemod_plan_document.authority_boundaries
+    recipe_rewrite_batch = ()
+    architecture_guard_rules = codemod_plan_document.guard_suite.to_tuple()
+    architecture_guard_evaluator = ArchitectureGuardSourceEvaluator(
+        modules,
+        architecture_guard_rules,
     )
     impact_ranking = None
-    if args.include_impact_ranking:
+    architecture_guard_report = None
+    if args.include_impact_ranking or codemod_plan_document.has_recipes:
         source_index = build_source_index(modules, findings)
         source_by_path = {str(module.path): module.source for module in modules}
+        recipe_rewrite_batch = codemod_plan_document.source_rewrite_batch(
+            source_index
+        )
+
+    if args.include_impact_ranking:
         impact_ranking = build_refactor_impact_ranking(
             findings,
             source_index,
@@ -1134,19 +1392,65 @@ def main() -> int:
                 source_by_path,
                 authority_boundary_plans,
             )
+        architecture_guard_report = architecture_guard_evaluator.report_for_sources(
+            source_by_path
+        )
     else:
         codemod_candidates = None
-        source_index = None
-        source_by_path = {}
+        if not codemod_plan_document.has_recipes:
+            source_index = None
+            source_by_path = {}
 
     if args.codemod_diff or args.codemod_apply:
-        if codemod_candidates is None or source_index is None:
-            parser.error("--codemod-diff/--codemod-apply require codemod candidates")
-        simulation = simulate_codemod_candidates(
-            codemod_candidates,
+        if source_index is None:
+            parser.error(
+                "--codemod-diff/--codemod-apply require codemod candidates "
+                "or recipe rewrites"
+            )
+        candidate_rewrite_batch = (
+            tuple(
+                rewrite
+                for candidate in codemod_candidates
+                for rewrite in candidate.planned_rewrites
+            )
+            if codemod_candidates is not None
+            else ()
+        )
+        simulation = simulate_planned_rewrites(
             source_index,
+            (*candidate_rewrite_batch, *recipe_rewrite_batch),
             source_by_path,
         )
+        post_simulation_sources = source_by_path_with_simulation(
+            source_by_path,
+            simulation,
+        )
+        architecture_guard_report = architecture_guard_evaluator.report_for_sources(
+            post_simulation_sources
+        )
+        if (
+            architecture_guard_report is not None
+            and not architecture_guard_report.is_clean
+        ):
+            if args.json:
+                print(
+                    json.dumps(
+                        CodemodSimulationPayload(
+                            simulation,
+                            applied=False,
+                            post_guard_report=architecture_guard_report,
+                        ).to_dict(),
+                        indent=2,
+                    )
+                )
+            else:
+                if args.codemod_diff:
+                    print(
+                        format_codemod_unified_diff(simulation, source_by_path),
+                        end="",
+                    )
+                print(format_architecture_guard_markdown(architecture_guard_report))
+            return 1
         applied = False
         if args.codemod_apply:
             apply_codemod_simulation(simulation)
@@ -1154,7 +1458,12 @@ def main() -> int:
         if args.json:
             print(
                 json.dumps(
-                    codemod_simulation_payload(simulation, applied=applied), indent=2
+                    CodemodSimulationPayload(
+                        simulation,
+                        applied=applied,
+                        post_guard_report=architecture_guard_report,
+                    ).to_dict(),
+                    indent=2,
                 )
             )
         elif args.codemod_diff:
@@ -1174,17 +1483,18 @@ def main() -> int:
         json_findings = [] if args.plans_only else findings
         print(
             json.dumps(
-                _json_payload(
-                    json_findings,
-                    plans or [],
-                    modules,
+                JsonPayloadBuilder(
+                    findings=json_findings,
+                    plans=plans or [],
+                    modules=modules,
                     economics=economics,
                     change_budget=change_budget,
                     timing=timing,
                     impact_ranking=impact_ranking,
                     codemod_candidates=codemod_candidates,
                     execution_plan=execution_plan,
-                ),
+                    scan_guard_report=architecture_guard_report,
+                ).to_dict(),
                 indent=2,
             )
         )
@@ -1201,8 +1511,7 @@ def main() -> int:
             sections.extend(
                 (
                     format_execution_plan_markdown(
-                        execution_plan
-                        or build_refactor_execution_plan(findings, root)
+                        execution_plan or build_refactor_execution_plan(findings, root)
                     ),
                     format_plans_markdown(plans or []),
                 )
@@ -1214,6 +1523,10 @@ def main() -> int:
             if codemod_candidates is not None:
                 sections.append(
                     format_codemod_applicability_markdown(codemod_candidates)
+                )
+            if architecture_guard_report is not None:
+                sections.append(
+                    format_architecture_guard_markdown(architecture_guard_report)
                 )
             sections.append(format_timing_markdown(timing))
             print("\n\n".join(sections))
@@ -1228,6 +1541,7 @@ def main() -> int:
                     timing=timing,
                     impact_ranking=impact_ranking,
                     codemod_candidates=codemod_candidates,
+                    architecture_guard_report=architecture_guard_report,
                     raw_findings=args.raw_findings,
                 )
             )

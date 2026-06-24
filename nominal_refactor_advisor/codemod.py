@@ -21,9 +21,10 @@ import importlib.util
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import TypeAlias
 
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
@@ -31,9 +32,13 @@ from .impact_ranking import (
     RefactorImpactOpportunity,
     RefactorImpactRankingReport,
 )
-from .models import ImpactDelta
+from .models import ImpactDelta, SourceLocation
 from .patterns import PatternId
 from .source_index import AstTargetDigest, SourceIndex
+
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | tuple["JsonValue", ...] | dict[str, "JsonValue"]
+JsonObject: TypeAlias = dict[str, JsonValue]
 
 
 class RewriteOperation(StrEnum):
@@ -87,6 +92,13 @@ class CancelableCompositionKind(StrEnum):
     PACK_UNPACK_FORWARD = "pack_unpack_forward"
 
 
+class ArchitectureGuardViolationKind(StrEnum):
+    """Kinds of post-refactor architecture guard violations."""
+
+    FORBIDDEN_CALL = "forbidden_call"
+    FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
+
+
 @dataclass(frozen=True)
 class PlannedSourceRewrite:
     """One planned source rewrite against an AST target digest."""
@@ -105,6 +117,136 @@ class CodemodStrategy:
     automation_level: CodemodAutomationLevel
     reason: str
     safe_to_apply: bool = False
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardRule:
+    """Caller-supplied invariant for a completed authority-boundary refactor."""
+
+    rule_id: str
+    forbidden_call_names: tuple[str, ...] = ()
+    forbidden_literal_dispatch_subjects: tuple[str, ...] = ()
+    file_path_suffixes: tuple[str, ...] = ()
+    reason: str = ""
+
+    def applies_to_file(self, file_path: str) -> bool:
+        return not self.file_path_suffixes or any(
+            file_path.endswith(suffix) for suffix in self.file_path_suffixes
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "rule_id": self.rule_id,
+            "forbidden_call_names": self.forbidden_call_names,
+            "forbidden_literal_dispatch_subjects": (
+                self.forbidden_literal_dispatch_subjects
+            ),
+            "file_path_suffixes": self.file_path_suffixes,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardViolation:
+    """One concrete source location that violates an architecture guard rule."""
+
+    rule_id: str
+    violation_kind: ArchitectureGuardViolationKind
+    location: SourceLocation
+    target_context: "ArchitectureGuardViolationTarget"
+    detail: str = ""
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "rule_id": self.rule_id,
+            "violation_kind": self.violation_kind.value,
+            "file_path": self.location.file_path,
+            "line": self.location.line,
+            "symbol": self.location.symbol,
+            "target_id": self.target_context.target_identifier,
+            "qualname": self.target_context.qualname,
+            "detail": self.detail,
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardViolationTarget:
+    """Source-index target context for one architecture guard violation."""
+
+    target_identifier: str | None = None
+    qualname: str = "<module>"
+
+    @classmethod
+    def from_target(
+        cls,
+        target: AstTargetDigest | None,
+    ) -> "ArchitectureGuardViolationTarget":
+        if target is None:
+            return cls()
+        return cls(
+            target_identifier=target.target_id,
+            qualname=target.qualname,
+        )
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardReport:
+    """Result of checking caller-supplied codemod architecture invariants."""
+
+    rules: tuple[ArchitectureGuardRule, ...]
+    violations: tuple[ArchitectureGuardViolation, ...]
+
+    @property
+    def is_clean(self) -> bool:
+        return not self.violations
+
+    @property
+    def violation_count(self) -> int:
+        return len(self.violations)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "is_clean": self.is_clean,
+            "violation_count": self.violation_count,
+            "rules": tuple(rule.to_dict() for rule in self.rules),
+            "violations": tuple(violation.to_dict() for violation in self.violations),
+        }
+
+
+@dataclass(frozen=True)
+class ArchitectureGuardSuite:
+    """Nominal carrier for post-refactor architecture guard rules."""
+
+    rules: tuple[ArchitectureGuardRule, ...] = ()
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.rules
+
+    def with_rule(self, rule: ArchitectureGuardRule) -> "ArchitectureGuardSuite":
+        return replace(self, rules=(*self.rules, rule))
+
+    def merge(self, *suites: "ArchitectureGuardSuite") -> "ArchitectureGuardSuite":
+        return replace(
+            self,
+            rules=(
+                *self.rules,
+                *(rule for suite in suites for rule in suite.rules),
+            ),
+        )
+
+    def evaluate(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> ArchitectureGuardReport:
+        return evaluate_architecture_guards(source_index, source_by_path, self.rules)
+
+    def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
+        return self.rules
+
+    def to_dict(self) -> tuple[JsonObject, ...]:
+        return tuple(rule.to_dict() for rule in self.rules)
 
 
 @dataclass(frozen=True)
@@ -314,17 +456,6 @@ def _candidate_confidence_basis(candidate: "CodemodCandidate") -> str:
     return f"confidence={confidence_levels}; certification={certification_levels}"
 
 
-SORTED_TUPLE_WRAPPER_CODEMOD_STRATEGY = CodemodStrategy(
-    strategy_id="sorted-tuple-wrapper-mechanical",
-    automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
-    safe_to_apply=True,
-    reason=(
-        "`sorted_tuple(items, ...)` is mechanically equivalent to "
-        "`tuple(sorted(items, ...))` for supported explicit arguments."
-    ),
-)
-
-
 SOURCE_LOCATION_EVIDENCE_PROPERTY_CODEMOD_STRATEGY = CodemodStrategy(
     strategy_id="source-location-evidence-property-mechanical",
     automation_level=CodemodAutomationLevel.SAFE_MECHANICAL,
@@ -406,16 +537,89 @@ class SimulatedSourceRewrite:
     replacement_source: str
     rationale: str = ""
 
+    def to_dict(self) -> JsonObject:
+        return {
+            "target_id": self.target_id,
+            "file_path": self.file_path,
+            "qualname": self.qualname,
+            "operation": self.operation.value,
+            "line": self.line,
+            "end_line": self.end_line,
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(frozen=True)
+class SourceRewriteTarget:
+    """Source-index target selector for a planned rewrite."""
+
+    target_identifier: str | None = None
+    qualname: str | None = None
+    source_path: str | None = None
+
+    def optional_identifier(
+        self,
+        source_index: SourceIndex,
+        *,
+        eligible_target_identifiers: Iterable[str] | None = None,
+    ) -> str | None:
+        eligible_identifiers = (
+            set(eligible_target_identifiers)
+            if eligible_target_identifiers is not None
+            else set(source_index.target_by_id)
+        )
+        if self.target_identifier is not None:
+            if self.target_identifier in eligible_identifiers:
+                return self.target_identifier
+            return None
+        if self.qualname is None:
+            return None
+        matching_identifiers = [
+            target_identifier
+            for target_identifier in sorted(eligible_identifiers)
+            if self.matches_target(source_index.target_by_id.get(target_identifier))
+        ]
+        if len(matching_identifiers) != 1:
+            return None
+        return matching_identifiers[0]
+
+    def required_identifier(self, source_index: SourceIndex) -> str:
+        target_identifier = self.optional_identifier(source_index)
+        if target_identifier is not None:
+            return target_identifier
+        raise ValueError(
+            "Source rewrite target did not resolve to exactly one source-index target"
+        )
+
+    def matches_target(self, target: AstTargetDigest | None) -> bool:
+        return (
+            target is not None
+            and target.qualname == self.qualname
+            and (self.source_path is None or target.file_path == self.source_path)
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "target_id": self.target_identifier,
+            "target_qualname": self.qualname,
+            "file_path": self.source_path,
+        }
+
 
 @dataclass(frozen=True)
 class AuthorityBoundaryRewrite:
     """Caller-supplied rewrite for one source-index target."""
 
     replacement_source: str
-    target_id: str | None = None
-    target_qualname: str | None = None
-    file_path: str | None = None
+    target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
     rationale: str = ""
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "replacement_source": self.replacement_source,
+            **self.target.to_dict(),
+            "rationale": self.rationale,
+        }
 
 
 @dataclass(frozen=True)
@@ -443,6 +647,151 @@ class AuthorityBoundaryPlan:
             candidate.opportunity_key.label in self.opportunity_labels
         )
 
+    def to_dict(self) -> JsonObject:
+        return {
+            "boundary_id": self.boundary_id,
+            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
+            "detector_ids": self.detector_ids,
+            "opportunity_kinds": self.opportunity_kinds,
+            "opportunity_labels": self.opportunity_labels,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class RefactorRecipeRewrite:
+    """One recipe step that replaces a source-index target."""
+
+    target: SourceRewriteTarget
+    replacement_source: str
+    rationale: str = ""
+
+    def planned_rewrite(self, source_index: SourceIndex) -> PlannedSourceRewrite:
+        target_identifier = self.target.required_identifier(source_index)
+        return PlannedSourceRewrite(
+            target_id=target_identifier,
+            replacement_source=self.replacement_source,
+            rationale=self.rationale,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            **self.target.to_dict(),
+            "replacement_source": self.replacement_source,
+            "rationale": self.rationale,
+        }
+
+
+@dataclass(frozen=True)
+class RefactorRecipe:
+    """Executable batch of source rewrites and post-refactor invariants."""
+
+    recipe_id: str
+    rewrites: tuple[RefactorRecipeRewrite, ...] = ()
+    reason: str = ""
+
+    def replace_target(
+        self,
+        replacement_source: str,
+        *,
+        target_identifier: str | None = None,
+        qualname: str | None = None,
+        source_path: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        target = SourceRewriteTarget(
+            target_identifier=target_identifier,
+            qualname=qualname,
+            source_path=source_path,
+        )
+        rewrite = RefactorRecipeRewrite(
+            target=target,
+            replacement_source=replacement_source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, rewrites=(*self.rewrites, rewrite))
+
+    def source_rewrite_batch(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        return tuple(rewrite.planned_rewrite(source_index) for rewrite in self.rewrites)
+
+    def simulate(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        backend: CodemodBackend | None = None,
+        guard_suite: ArchitectureGuardSuite | None = None,
+    ) -> "RefactorRecipeSimulation":
+        if guard_suite is None:
+            active_guard_suite = ArchitectureGuardSuite()
+        else:
+            active_guard_suite = guard_suite
+        simulation = simulate_planned_rewrites(
+            source_index,
+            self.source_rewrite_batch(source_index),
+            source_by_path,
+            backend=backend,
+        )
+        guard_report = active_guard_suite.evaluate(
+            source_index,
+            source_by_path_with_simulation(source_by_path, simulation),
+        )
+        return RefactorRecipeSimulation(
+            recipe=self,
+            simulation=simulation,
+            architecture_guard_report=guard_report,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "recipe_id": self.recipe_id,
+            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodPlanDocument:
+    """Caller-supplied codemod plan plus post-refactor guard invariants."""
+
+    authority_boundaries: tuple[AuthorityBoundaryPlan, ...] = ()
+    recipes: tuple[RefactorRecipe, ...] = ()
+    guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
+
+    @property
+    def has_authority_boundaries(self) -> bool:
+        return bool(self.authority_boundaries)
+
+    @property
+    def has_recipes(self) -> bool:
+        return bool(self.recipes)
+
+    @property
+    def has_architecture_guards(self) -> bool:
+        return not self.guard_suite.is_empty
+
+    def source_rewrite_batch(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        return tuple(
+            rewrite
+            for recipe in self.recipes
+            for rewrite in recipe.source_rewrite_batch(source_index)
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "authority_boundaries": tuple(
+                boundary.to_dict() for boundary in self.authority_boundaries
+            ),
+            "recipes": tuple(recipe.to_dict() for recipe in self.recipes),
+            "architecture_guards": self.guard_suite.to_dict(),
+        }
+
 
 @dataclass(frozen=True)
 class CodemodSimulationReport:
@@ -459,6 +808,58 @@ class CodemodSimulationReport:
     @property
     def changed_file_paths(self) -> tuple[str, ...]:
         return tuple(sorted(self.rewritten_sources))
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "backend": self.backend.value,
+            "applied_rewrite_count": self.applied_rewrite_count,
+            "changed_file_paths": self.changed_file_paths,
+            "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
+        }
+
+
+@dataclass(frozen=True)
+class RefactorRecipeSimulation:
+    """Simulation result for one refactor recipe."""
+
+    recipe: RefactorRecipe
+    simulation: CodemodSimulationReport
+    architecture_guard_report: ArchitectureGuardReport
+
+    @property
+    def is_clean(self) -> bool:
+        return self.architecture_guard_report.is_clean
+
+    def unified_diff(
+        self,
+        source_by_path: Mapping[str, str],
+        *,
+        fromfile_prefix: str = "a/",
+        tofile_prefix: str = "b/",
+    ) -> str:
+        return format_codemod_unified_diff(
+            self.simulation,
+            source_by_path,
+            fromfile_prefix=fromfile_prefix,
+            tofile_prefix=tofile_prefix,
+        )
+
+    def apply(self, *, require_clean: bool = True) -> tuple[str, ...]:
+        if require_clean and not self.is_clean:
+            raise ValueError(
+                f"Recipe {self.recipe.recipe_id!r} still violates "
+                f"{self.architecture_guard_report.violation_count} "
+                "architecture guard(s)"
+            )
+        return apply_codemod_simulation(self.simulation)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "recipe": self.recipe.to_dict(),
+            "simulation": self.simulation.to_dict(),
+            "architecture_guard_report": self.architecture_guard_report.to_dict(),
+            "is_clean": self.is_clean,
+        }
 
 
 @dataclass(frozen=True)
@@ -593,50 +994,6 @@ class CodemodRewriteBuilder(ABC):
             candidate,
             planned_rewrites=(*candidate.planned_rewrites, *rewrites),
             strategy=self.strategy,
-        )
-
-
-class SortedTupleWrapperCodemodBuilder(CodemodRewriteBuilder):
-    """Plan safe replacements from sorted_tuple(...) to tuple(sorted(...))."""
-
-    @property
-    def strategy(self) -> CodemodStrategy:
-        return SORTED_TUPLE_WRAPPER_CODEMOD_STRATEGY
-
-    def build_rewrites(
-        self,
-        candidate: CodemodCandidate,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
-    ) -> tuple[PlannedSourceRewrite, ...]:
-        if not _is_sorted_tuple_opportunity(candidate.opportunity_key):
-            return ()
-        nodes_by_target_id = _function_nodes_by_target_id(source_index, source_by_path)
-        rewrites: list[PlannedSourceRewrite] = []
-        for target_id in candidate.target_ids:
-            target = source_index.target_by_id.get(target_id)
-            node = nodes_by_target_id.get(target_id)
-            if target is None or node is None:
-                continue
-            source = source_by_path.get(target.file_path)
-            if source is None:
-                continue
-            replacement_source = _rewrite_sorted_tuple_calls_in_target(source, node)
-            if replacement_source is None:
-                continue
-            rewrites.append(
-                PlannedSourceRewrite(
-                    target_id=target_id,
-                    replacement_source=replacement_source,
-                    rationale=(
-                        "Replace project-local sorted_tuple wrapper with "
-                        "standard tuple(sorted(...)) expression."
-                    ),
-                )
-            )
-        return _non_overlapping_planned_rewrites(
-            rewrites,
-            source_index,
         )
 
 
@@ -837,11 +1194,10 @@ class SuppliedAuthorityBoundaryCodemodBuilder(CodemodRewriteBuilder):
                         ),
                     )
                 )
-        return _non_overlapping_planned_rewrites(rewrites, source_index)
+        return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
 
 
 DEFAULT_CODEMOD_REWRITE_BUILDERS: tuple[CodemodRewriteBuilder, ...] = (
-    SortedTupleWrapperCodemodBuilder(),
     SourceLocationEvidencePropertyCodemodBuilder(),
     ZippedSourceLocationEvidencePropertyCodemodBuilder(),
     DerivableDetectorDeclarationsCodemodBuilder(),
@@ -949,6 +1305,15 @@ def apply_codemod_simulation(
     return simulation.changed_file_paths
 
 
+def source_by_path_with_simulation(
+    source_by_path: Mapping[str, str],
+    simulation: CodemodSimulationReport,
+) -> dict[str, str]:
+    """Return an in-memory source map after applying a simulation report."""
+
+    return {**source_by_path, **simulation.rewritten_sources}
+
+
 def _prefixed_diff_path(prefix: str, file_path: str) -> str:
     return f"{prefix}{file_path.removeprefix('/')}" if prefix else file_path
 
@@ -1045,7 +1410,10 @@ def detect_cancelable_composition_signals(
 ) -> tuple[CancelableCompositionSignal, ...]:
     """Detect generic pack/unpack/forward compositions worth factoring away."""
 
-    nodes_by_target_id = _function_nodes_by_target_id(source_index, source_by_path)
+    nodes_by_target_id = AstTargetNodeIndex(
+        source_index,
+        source_by_path,
+    ).function_nodes_by_target_identifier()
     signals = []
     for target in source_index.ast_targets:
         if target.node_type not in {"function", "method"}:
@@ -1067,6 +1435,44 @@ def detect_cancelable_composition_signals(
     )
 
 
+def evaluate_architecture_guards(
+    source_index: SourceIndex,
+    source_by_path: Mapping[str, str],
+    rules: Iterable[ArchitectureGuardRule],
+) -> ArchitectureGuardReport:
+    """Evaluate caller-supplied codemod invariants over current source text."""
+
+    rule_tuple = tuple(rules)
+    violations: list[ArchitectureGuardViolation] = []
+    for file_path, source in source_by_path.items():
+        active_rules = tuple(
+            rule for rule in rule_tuple if rule.applies_to_file(file_path)
+        )
+        if not active_rules:
+            continue
+        module = ast.parse(source, filename=file_path)
+        visitor = _ArchitectureGuardVisitor(
+            source_index,
+            file_path,
+            active_rules,
+        )
+        visitor.visit(module)
+        violations.extend(visitor.violations)
+    return ArchitectureGuardReport(
+        rules=rule_tuple,
+        violations=sorted_tuple(
+            violations,
+            key=lambda item: (
+                item.location.file_path,
+                item.location.line,
+                item.rule_id,
+                item.violation_kind,
+                item.location.symbol,
+            ),
+        ),
+    )
+
+
 def libcst_available() -> bool:
     """Return whether LibCST is importable in the current environment."""
 
@@ -1081,6 +1487,142 @@ def select_codemod_backend(*, prefer_libcst: bool = True) -> CodemodBackend:
     return CodemodBackend.AST_SPAN
 
 
+@dataclass(frozen=True)
+class ResolvedSourceRewrite:
+    """Planned rewrite paired with its source-index target geometry."""
+
+    rewrite: PlannedSourceRewrite
+    target: AstTargetDigest
+
+
+@dataclass(frozen=True)
+class SourceRewriteSimulationAuthority:
+    """Validate and simulate source-index anchored rewrite batches."""
+
+    source_index: SourceIndex
+    source_by_path: Mapping[str, str]
+    backend: CodemodBackend
+
+    def simulate(
+        self,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> CodemodSimulationReport:
+        resolved = self.resolved_rewrites(tuple(rewrites))
+        self.validate_non_overlapping(resolved)
+
+        sources = dict(self.source_by_path)
+        simulated: list[SimulatedSourceRewrite] = []
+        for file_path in sorted({item.target.file_path for item in resolved}):
+            file_rewrites = tuple(
+                item for item in resolved if item.target.file_path == file_path
+            )
+            lines = sources[file_path].splitlines(keepends=True)
+            for resolved_rewrite in sorted(
+                file_rewrites,
+                key=lambda item: (item.target.line, item.target.end_line),
+                reverse=True,
+            ):
+                simulated.append(self.apply_resolved_rewrite(lines, resolved_rewrite))
+            sources[file_path] = "".join(lines)
+            self.validate_source(sources[file_path], file_path)
+
+        changed_sources = {
+            file_path: sources[file_path]
+            for file_path in sorted({item.target.file_path for item in resolved})
+        }
+        return CodemodSimulationReport(
+            backend=self.backend,
+            rewrites=sorted_tuple(
+                simulated,
+                key=lambda item: (
+                    item.file_path,
+                    item.line,
+                    item.end_line,
+                    item.qualname,
+                ),
+            ),
+            rewritten_sources=changed_sources,
+        )
+
+    def resolved_rewrites(
+        self,
+        rewrites: tuple[PlannedSourceRewrite, ...],
+    ) -> tuple[ResolvedSourceRewrite, ...]:
+        resolved = []
+        for rewrite in rewrites:
+            if rewrite.operation != RewriteOperation.REPLACE_TARGET:
+                raise ValueError(f"Unsupported rewrite operation: {rewrite.operation}")
+            target = self.source_index.target_by_id.get(rewrite.target_id)
+            if target is None:
+                raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
+            if target.file_path not in self.source_by_path:
+                raise KeyError(f"Missing source text for {target.file_path!r}")
+            resolved.append(ResolvedSourceRewrite(rewrite=rewrite, target=target))
+        return tuple(resolved)
+
+    def validate_non_overlapping(
+        self,
+        resolved: tuple[ResolvedSourceRewrite, ...],
+    ) -> None:
+        spans_by_file: dict[str, list[tuple[int, int, str]]] = {}
+        for item in resolved:
+            target = item.target
+            if target.file_path not in spans_by_file:
+                spans_by_file[target.file_path] = []
+            spans_by_file[target.file_path].append(
+                (target.line - 1, target.end_line, target.target_id)
+            )
+        for file_path, spans in spans_by_file.items():
+            ordered_spans = sorted(spans)
+            _, previous_end, previous_id = ordered_spans[0]
+            for start, end, target_identifier in ordered_spans[1:]:
+                if start < previous_end:
+                    raise ValueError(
+                        "Overlapping rewrites for "
+                        f"{file_path!r}: {previous_id!r} and {target_identifier!r}"
+                    )
+                previous_end, previous_id = end, target_identifier
+
+    def apply_resolved_rewrite(
+        self,
+        lines: list[str],
+        resolved_rewrite: ResolvedSourceRewrite,
+    ) -> SimulatedSourceRewrite:
+        rewrite = resolved_rewrite.rewrite
+        target = resolved_rewrite.target
+        start_index = target.line - 1
+        end_index = target.end_line
+        if start_index < 0 or end_index > len(lines):
+            raise ValueError(f"Target {target.target_id!r} span is outside source")
+        original_source = "".join(lines[start_index:end_index])
+        replacement_lines = self.replacement_lines(rewrite.replacement_source)
+        lines[start_index:end_index] = replacement_lines
+        return SimulatedSourceRewrite(
+            target_id=target.target_id,
+            file_path=target.file_path,
+            qualname=target.qualname,
+            operation=rewrite.operation,
+            line=target.line,
+            end_line=target.end_line,
+            original_source=original_source,
+            replacement_source="".join(replacement_lines),
+            rationale=rewrite.rationale,
+        )
+
+    def replacement_lines(self, replacement_source: str) -> list[str]:
+        if replacement_source and not replacement_source.endswith(("\n", "\r")):
+            replacement_source = f"{replacement_source}\n"
+        return replacement_source.splitlines(keepends=True)
+
+    def validate_source(self, source: str, file_path: str) -> None:
+        if self.backend == CodemodBackend.LIBCST:
+            import libcst as cst
+
+            cst.parse_module(source)
+            return
+        ast.parse(source, filename=file_path)
+
+
 def simulate_planned_rewrites(
     source_index: SourceIndex,
     rewrites: Iterable[PlannedSourceRewrite],
@@ -1090,79 +1632,58 @@ def simulate_planned_rewrites(
 ) -> CodemodSimulationReport:
     """Simulate source-index target replacements over in-memory source text."""
 
-    selected_backend = backend or select_codemod_backend()
-    resolved = _resolve_rewrites(source_index, tuple(rewrites), source_by_path)
-    _validate_non_overlapping(resolved)
+    return SourceRewriteSimulationAuthority(
+        source_index=source_index,
+        source_by_path=source_by_path,
+        backend=backend or select_codemod_backend(),
+    ).simulate(rewrites)
 
-    sources = dict(source_by_path)
-    simulated: list[SimulatedSourceRewrite] = []
-    for file_path in sorted({target.file_path for _, target in resolved}):
-        file_rewrites = [
-            (rewrite, target)
-            for rewrite, target in resolved
-            if target.file_path == file_path
-        ]
-        lines = sources[file_path].splitlines(keepends=True)
-        for rewrite, target in sorted(
-            file_rewrites,
-            key=lambda item: (item[1].line, item[1].end_line),
-            reverse=True,
-        ):
-            start_index = target.line - 1
-            end_index = target.end_line
-            if start_index < 0 or end_index > len(lines):
-                raise ValueError(
-                    f"Target {target.target_id!r} span is outside {file_path!r}"
-                )
-            original_source = "".join(lines[start_index:end_index])
-            replacement_lines = _replacement_lines(rewrite.replacement_source)
-            lines[start_index:end_index] = replacement_lines
-            simulated.append(
-                SimulatedSourceRewrite(
-                    target_id=target.target_id,
-                    file_path=file_path,
-                    qualname=target.qualname,
-                    operation=rewrite.operation,
-                    line=target.line,
-                    end_line=target.end_line,
-                    original_source=original_source,
-                    replacement_source="".join(replacement_lines),
-                    rationale=rewrite.rationale,
-                )
+
+@dataclass(frozen=True)
+class NonOverlappingPlannedRewriteSelector:
+    """Select a deterministic non-overlapping subset of planned rewrites."""
+
+    source_index: SourceIndex
+
+    def select(
+        self,
+        rewrites: Iterable[PlannedSourceRewrite],
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = {}
+        for rewrite in rewrites:
+            target = self.source_index.target_by_id[rewrite.target_id]
+            if target.file_path not in rewrites_by_file:
+                rewrites_by_file[target.file_path] = []
+            rewrites_by_file[target.file_path].append(rewrite)
+
+        selected: list[PlannedSourceRewrite] = []
+        for file_rewrites in rewrites_by_file.values():
+            previous_end = -1
+            ordered = sorted(
+                file_rewrites,
+                key=lambda item: (
+                    self.source_index.target_by_id[item.target_id].line,
+                    -self.source_index.target_by_id[item.target_id].end_line,
+                    self.source_index.target_by_id[item.target_id].qualname,
+                ),
             )
-        sources[file_path] = "".join(lines)
-        _validate_source(sources[file_path], file_path, selected_backend)
+            for rewrite in ordered:
+                target = self.source_index.target_by_id[rewrite.target_id]
+                start = target.line - 1
+                end = target.end_line
+                if start < previous_end:
+                    continue
+                selected.append(rewrite)
+                previous_end = end
 
-    changed_sources = {
-        file_path: sources[file_path]
-        for file_path in sorted({target.file_path for _, target in resolved})
-    }
-    return CodemodSimulationReport(
-        backend=selected_backend,
-        rewrites=sorted_tuple(
-            simulated,
-            key=lambda item: (item.file_path, item.line, item.end_line, item.qualname),
-        ),
-        rewritten_sources=changed_sources,
+        return sorted_tuple(
+            selected,
+            key=lambda item: (
+                self.source_index.target_by_id[item.target_id].file_path,
+                self.source_index.target_by_id[item.target_id].line,
+                self.source_index.target_by_id[item.target_id].qualname,
+            ),
     )
-
-
-def _resolve_rewrites(
-    source_index: SourceIndex,
-    rewrites: tuple[PlannedSourceRewrite, ...],
-    source_by_path: Mapping[str, str],
-) -> tuple[tuple[PlannedSourceRewrite, AstTargetDigest], ...]:
-    resolved = []
-    for rewrite in rewrites:
-        if rewrite.operation != RewriteOperation.REPLACE_TARGET:
-            raise ValueError(f"Unsupported rewrite operation: {rewrite.operation}")
-        target = source_index.target_by_id.get(rewrite.target_id)
-        if target is None:
-            raise KeyError(f"Unknown source-index target id: {rewrite.target_id}")
-        if target.file_path not in source_by_path:
-            raise KeyError(f"Missing source text for {target.file_path!r}")
-        resolved.append((rewrite, target))
-    return tuple(resolved)
 
 
 def _candidate_from_opportunity(
@@ -1215,95 +1736,10 @@ def _authority_boundary_target_id(
     candidate: CodemodCandidate,
     source_index: SourceIndex,
 ) -> str | None:
-    candidate_target_ids = set(candidate.target_ids)
-    if rewrite.target_id is not None:
-        return rewrite.target_id if rewrite.target_id in candidate_target_ids else None
-    if rewrite.target_qualname is None:
-        return None
-    matching_target_ids = [
-        target_id
-        for target_id in candidate.target_ids
-        if _authority_boundary_target_matches(
-            rewrite,
-            source_index.target_by_id.get(target_id),
-        )
-    ]
-    if len(matching_target_ids) != 1:
-        return None
-    return matching_target_ids[0]
-
-
-def _authority_boundary_target_matches(
-    rewrite: AuthorityBoundaryRewrite,
-    target: AstTargetDigest | None,
-) -> bool:
-    return (
-        target is not None
-        and target.qualname == rewrite.target_qualname
-        and (rewrite.file_path is None or target.file_path == rewrite.file_path)
+    return rewrite.target.optional_identifier(
+        source_index,
+        eligible_target_identifiers=candidate.target_ids,
     )
-
-
-def _is_sorted_tuple_opportunity(key: RefactorImpactKey) -> bool:
-    return key.kind == "mapping" and key.label == "sorted_tuple"
-
-
-class _SortedTupleCallRewriter(ast.NodeVisitor):
-    def __init__(self, source: str) -> None:
-        self.source = source
-        self.replacements: list[tuple[int, int, str]] = []
-
-    def visit_Call(self, node: ast.Call) -> None:
-        if _call_name(node.func) == "sorted_tuple":
-            replacement = _sorted_tuple_call_replacement(self.source, node)
-            if replacement is not None:
-                self.replacements.append(
-                    (*_node_offsets(self.source, node), replacement)
-                )
-            return
-        self.generic_visit(node)
-
-
-def _rewrite_sorted_tuple_calls_in_target(
-    source: str,
-    node: _FunctionNode,
-) -> str | None:
-    rewriter = _SortedTupleCallRewriter(source)
-    rewriter.visit(node)
-    replacements = _outermost_replacements(rewriter.replacements)
-    if not replacements:
-        return None
-
-    target_start, target_end = _node_line_offsets(source, node)
-    target_source = source[target_start:target_end]
-    for start, end, replacement in sorted(replacements, reverse=True):
-        relative_start = start - target_start
-        relative_end = end - target_start
-        target_source = (
-            f"{target_source[:relative_start]}"
-            f"{replacement}"
-            f"{target_source[relative_end:]}"
-        )
-    return target_source
-
-
-def _sorted_tuple_call_replacement(source: str, node: ast.Call) -> str | None:
-    if len(node.args) != 1:
-        return None
-    if len({keyword.arg for keyword in node.keywords}) != len(node.keywords):
-        return None
-    item_source = ast.get_source_segment(source, node.args[0])
-    if item_source is None:
-        return None
-    sorted_arguments = [item_source]
-    for keyword in node.keywords:
-        if keyword.arg not in {"key", "reverse"}:
-            return None
-        value_source = ast.get_source_segment(source, keyword.value)
-        if value_source is None:
-            return None
-        sorted_arguments.append(f"{keyword.arg}={value_source}")
-    return f"tuple(sorted({', '.join(sorted_arguments)}))"
 
 
 _DescriptorAssignmentBuilder = Callable[
@@ -1320,7 +1756,10 @@ def _descriptor_property_rewrites(
     descriptor_assignment_builder: _DescriptorAssignmentBuilder,
     rationale: str,
 ) -> tuple[PlannedSourceRewrite, ...]:
-    nodes_by_target_id = _ast_nodes_by_target_id(source_index, source_by_path)
+    nodes_by_target_id = AstTargetNodeIndex(
+        source_index,
+        source_by_path,
+    ).nodes_by_target_identifier()
     replacements_by_class_target_id: dict[str, list[tuple[int, int, str]]] = {}
     for target_id in candidate.target_ids:
         target = source_index.target_by_id.get(target_id)
@@ -1363,7 +1802,7 @@ def _descriptor_property_rewrites(
                 rationale=rationale,
             )
         )
-    return _non_overlapping_planned_rewrites(rewrites, source_index)
+    return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
 
 
 def _class_statement_deletion_rewrites(
@@ -1374,7 +1813,10 @@ def _class_statement_deletion_rewrites(
     statement_selector: _ClassStatementSelector,
     rationale: str,
 ) -> tuple[PlannedSourceRewrite, ...]:
-    nodes_by_target_id = _ast_nodes_by_target_id(source_index, source_by_path)
+    nodes_by_target_id = AstTargetNodeIndex(
+        source_index,
+        source_by_path,
+    ).nodes_by_target_identifier()
     rewrites: list[PlannedSourceRewrite] = []
     for target_id in candidate.target_ids:
         target = source_index.target_by_id.get(target_id)
@@ -1403,7 +1845,7 @@ def _class_statement_deletion_rewrites(
                 rationale=rationale,
             )
         )
-    return _non_overlapping_planned_rewrites(rewrites, source_index)
+    return NonOverlappingPlannedRewriteSelector(source_index).select(rewrites)
 
 
 def _derivable_detector_declaration_assignments(
@@ -1686,21 +2128,6 @@ def _source_with_replacements_in_span(
     return span_source
 
 
-def _node_offsets(source: str, node: ast.AST) -> tuple[int, int]:
-    if (
-        not hasattr(node, "lineno")
-        or not hasattr(node, "col_offset")
-        or not hasattr(node, "end_lineno")
-        or not hasattr(node, "end_col_offset")
-    ):
-        raise ValueError(f"AST node {type(node).__name__} has no source span")
-    line_offsets = _line_offsets(source)
-    return (
-        line_offsets[node.lineno - 1] + node.col_offset,
-        line_offsets[node.end_lineno - 1] + node.end_col_offset,
-    )
-
-
 def _decorated_node_line_offsets(source: str, node: ast.AST) -> tuple[int, int]:
     decorator_lines = [
         decorator.lineno
@@ -1751,58 +2178,6 @@ def _line_offsets(source: str) -> tuple[int, ...]:
     return tuple(offsets)
 
 
-def _outermost_replacements(
-    replacements: Iterable[tuple[int, int, str]],
-) -> tuple[tuple[int, int, str], ...]:
-    outermost = []
-    previous_end = -1
-    for start, end, replacement in sorted(replacements):
-        if start < previous_end:
-            continue
-        outermost.append((start, end, replacement))
-        previous_end = end
-    return tuple(outermost)
-
-
-def _non_overlapping_planned_rewrites(
-    rewrites: Iterable[PlannedSourceRewrite],
-    source_index: SourceIndex,
-) -> tuple[PlannedSourceRewrite, ...]:
-    rewrites_by_file: dict[str, list[PlannedSourceRewrite]] = {}
-    for rewrite in rewrites:
-        target = source_index.target_by_id[rewrite.target_id]
-        rewrites_by_file.setdefault(target.file_path, []).append(rewrite)
-
-    selected: list[PlannedSourceRewrite] = []
-    for file_path, file_rewrites in rewrites_by_file.items():
-        previous_end = -1
-        ordered = sorted(
-            file_rewrites,
-            key=lambda item: (
-                source_index.target_by_id[item.target_id].line,
-                -source_index.target_by_id[item.target_id].end_line,
-                source_index.target_by_id[item.target_id].qualname,
-            ),
-        )
-        for rewrite in ordered:
-            target = source_index.target_by_id[rewrite.target_id]
-            start = target.line - 1
-            end = target.end_line
-            if start < previous_end:
-                continue
-            selected.append(rewrite)
-            previous_end = end
-
-    return sorted_tuple(
-        selected,
-        key=lambda item: (
-            source_index.target_by_id[item.target_id].file_path,
-            source_index.target_by_id[item.target_id].line,
-            source_index.target_by_id[item.target_id].qualname,
-        ),
-    )
-
-
 _FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 _TargetNode = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -1831,8 +2206,7 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._visit_function(node)
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def _visit_function(self, node: _FunctionNode) -> None:
         qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
@@ -1843,38 +2217,43 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
         self.function_stack.pop()
 
 
-def _ast_nodes_by_target_id(
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-) -> dict[str, _TargetNode]:
-    nodes_by_file_geometry: dict[str, dict[tuple[str, int, int], _TargetNode]] = {}
-    for file_path, source in source_by_path.items():
-        tree = ast.parse(source, filename=file_path)
-        indexer = _AstTargetNodeIndexer()
-        indexer.visit(tree)
-        nodes_by_file_geometry[file_path] = indexer.nodes_by_geometry
+@dataclass(frozen=True)
+class AstTargetNodeIndex:
+    """Source-index target ids mapped to parsed AST nodes."""
 
-    nodes_by_target_id: dict[str, _TargetNode] = {}
-    for target in source_index.ast_targets:
-        geometry = (target.qualname, target.line, target.end_line)
-        node = nodes_by_file_geometry.get(target.file_path, {}).get(geometry)
-        if node is not None:
-            nodes_by_target_id[target.target_id] = node
-    return nodes_by_target_id
+    source_index: SourceIndex
+    source_by_path: Mapping[str, str]
 
+    def nodes_by_target_identifier(self) -> dict[str, _TargetNode]:
+        nodes_by_file_geometry = self.nodes_by_file_geometry()
+        nodes_by_target_identifier: dict[str, _TargetNode] = {}
+        for target in self.source_index.ast_targets:
+            file_nodes = nodes_by_file_geometry.get(target.file_path)
+            if file_nodes is None:
+                continue
+            geometry = (target.qualname, target.line, target.end_line)
+            node = file_nodes.get(geometry)
+            if node is not None:
+                nodes_by_target_identifier[target.target_id] = node
+        return nodes_by_target_identifier
 
-def _function_nodes_by_target_id(
-    source_index: SourceIndex,
-    source_by_path: Mapping[str, str],
-) -> dict[str, _FunctionNode]:
-    return {
-        target_id: node
-        for target_id, node in _ast_nodes_by_target_id(
-            source_index,
-            source_by_path,
-        ).items()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    def function_nodes_by_target_identifier(self) -> dict[str, _FunctionNode]:
+        return {
+            target_identifier: node
+            for target_identifier, node in self.nodes_by_target_identifier().items()
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+
+    def nodes_by_file_geometry(
+        self,
+    ) -> dict[str, dict[tuple[str, int, int], _TargetNode]]:
+        nodes_by_file_geometry: dict[str, dict[tuple[str, int, int], _TargetNode]] = {}
+        for file_path, source in self.source_by_path.items():
+            tree = ast.parse(source, filename=file_path)
+            indexer = _AstTargetNodeIndexer()
+            indexer.visit(tree)
+            nodes_by_file_geometry[file_path] = indexer.nodes_by_geometry
+        return nodes_by_file_geometry
 
 
 def _cancelable_composition_signal_for_target(
@@ -2068,36 +2447,228 @@ def _consistent_source_name(current: str | None, candidate: str) -> str | None:
     return None
 
 
-def _validate_non_overlapping(
-    resolved: tuple[tuple[PlannedSourceRewrite, AstTargetDigest], ...],
-) -> None:
-    spans_by_file: dict[str, list[tuple[int, int, str]]] = {}
-    for _, target in resolved:
-        spans_by_file.setdefault(target.file_path, []).append(
-            (target.line - 1, target.end_line, target.target_id)
-        )
-    for file_path, spans in spans_by_file.items():
-        ordered_spans = sorted(spans)
-        _, previous_end, previous_id = ordered_spans[0]
-        for start, end, target_id in ordered_spans[1:]:
-            if start < previous_end:
-                raise ValueError(
-                    "Overlapping rewrites for "
-                    f"{file_path!r}: {previous_id!r} and {target_id!r}"
+class _ArchitectureGuardVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        source_index: SourceIndex,
+        file_path: str,
+        rules: tuple[ArchitectureGuardRule, ...],
+    ) -> None:
+        self.source_index = source_index
+        self.source_path = file_path
+        self.rules = rules
+        self.violations: list[ArchitectureGuardViolation] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        call_name = _call_name(node.func)
+        if call_name is not None:
+            self._append_forbidden_call_violations(node, call_name)
+            self._visit_inline_dict_get_dispatch(node)
+        self.generic_visit(node)
+
+    def visit_If(self, node: ast.If) -> None:
+        for rule in self.rules:
+            for subject in rule.forbidden_literal_dispatch_subjects:
+                if _test_has_literal_dispatch(node.test, subject):
+                    self._append_literal_dispatch_violation(
+                        node,
+                        subject,
+                        "comparison",
+                        rule,
+                    )
+        self.generic_visit(node)
+
+    def visit_Match(self, node: ast.Match) -> None:
+        subject = ast.unparse(node.subject)
+        for rule in self.rules:
+            if subject in rule.forbidden_literal_dispatch_subjects and any(
+                _match_case_has_literal_pattern(case) for case in node.cases
+            ):
+                self._append_literal_dispatch_violation(
+                    node,
+                    subject,
+                    "match/case",
+                    rule,
                 )
-            previous_end, previous_id = end, target_id
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if isinstance(node.value, ast.Dict) and _dict_has_literal_key(node.value):
+            self._append_literal_dispatch_violations(
+                node,
+                ast.unparse(node.slice),
+                "inline literal dict",
+            )
+        self.generic_visit(node)
+
+    def _visit_inline_dict_get_dispatch(self, node: ast.Call) -> None:
+        if not isinstance(node.func, ast.Attribute):
+            return
+        if node.func.attr != "get" or not isinstance(node.func.value, ast.Dict):
+            return
+        if not _dict_has_literal_key(node.func.value) or not node.args:
+            return
+        self._append_literal_dispatch_violations(
+            node,
+            ast.unparse(node.args[0]),
+            "inline literal dict",
+        )
+
+    def _append_forbidden_call_violations(
+        self,
+        node: ast.Call,
+        call_name: str,
+    ) -> None:
+        for rule in self.rules:
+            if call_name in rule.forbidden_call_names:
+                self._append_violation(
+                    rule,
+                    node,
+                    ArchitectureGuardViolationKind.FORBIDDEN_CALL,
+                    call_name,
+                    f"Forbidden call {call_name!r}: {rule.reason}",
+                )
+
+    def _append_literal_dispatch_violations(
+        self,
+        node: ast.expr | ast.stmt,
+        subject: str,
+        dispatch_kind: str,
+    ) -> None:
+        for rule in self.rules:
+            if subject in rule.forbidden_literal_dispatch_subjects:
+                self._append_literal_dispatch_violation(
+                    node,
+                    subject,
+                    dispatch_kind,
+                    rule,
+                )
+
+    def _append_literal_dispatch_violation(
+        self,
+        node: ast.expr | ast.stmt,
+        subject: str,
+        dispatch_kind: str,
+        rule: ArchitectureGuardRule,
+    ) -> None:
+        self._append_violation(
+            rule,
+            node,
+            ArchitectureGuardViolationKind.FORBIDDEN_LITERAL_DISPATCH,
+            subject,
+            (
+                f"Forbidden {dispatch_kind} literal dispatch over "
+                f"{subject!r}: {rule.reason}"
+            ),
+        )
+
+    def _append_violation(
+        self,
+        rule: ArchitectureGuardRule,
+        node: ast.expr | ast.stmt,
+        violation_kind: ArchitectureGuardViolationKind,
+        symbol: str,
+        detail: str,
+    ) -> None:
+        line = node.lineno
+        target = _source_index_target_for_line(
+            self.source_index, self.source_path, line
+        )
+        target_context = ArchitectureGuardViolationTarget.from_target(target)
+        self.violations.append(
+            ArchitectureGuardViolation(
+                rule_id=rule.rule_id,
+                violation_kind=violation_kind,
+                location=SourceLocation(self.source_path, line, symbol),
+                target_context=target_context,
+                detail=detail,
+            )
+        )
 
 
-def _replacement_lines(replacement_source: str) -> list[str]:
-    if replacement_source and not replacement_source.endswith(("\n", "\r")):
-        replacement_source = f"{replacement_source}\n"
-    return replacement_source.splitlines(keepends=True)
+def _source_index_target_for_line(
+    source_index: SourceIndex,
+    file_path: str,
+    line: int,
+) -> AstTargetDigest | None:
+    candidates = tuple(
+        target
+        for target in source_index.targets_by_file.get(file_path, ())
+        if target.line <= line <= target.end_line
+    )
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda target: (
+            target.end_line - target.line,
+            -target.line,
+            target.qualname,
+        ),
+    )
 
 
-def _validate_source(source: str, file_path: str, backend: CodemodBackend) -> None:
-    if backend == CodemodBackend.LIBCST:
-        import libcst as cst
+def _test_has_literal_dispatch(test: ast.AST, subject: str) -> bool:
+    for node in ast.walk(test):
+        if isinstance(node, ast.Compare) and _compare_is_literal_dispatch(
+            node,
+            subject,
+        ):
+            return True
+    return False
 
-        cst.parse_module(source)
-        return
-    ast.parse(source, filename=file_path)
+
+def _compare_is_literal_dispatch(compare: ast.Compare, subject: str) -> bool:
+    left_is_subject = ast.unparse(compare.left) == subject
+    if left_is_subject:
+        return any(
+            _operator_compares_to_literal(operator, comparator)
+            for operator, comparator in zip(compare.ops, compare.comparators)
+        )
+    return any(
+        isinstance(operator, (ast.Eq, ast.NotEq))
+        and ast.unparse(comparator) == subject
+        and _literal_dispatch_value(compare.left)
+        for operator, comparator in zip(compare.ops, compare.comparators)
+    )
+
+
+def _operator_compares_to_literal(operator: ast.cmpop, comparator: ast.expr) -> bool:
+    if isinstance(operator, (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)):
+        return _literal_dispatch_value(comparator)
+    if isinstance(operator, (ast.In, ast.NotIn)):
+        return _literal_dispatch_collection(comparator)
+    return False
+
+
+def _literal_dispatch_value(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(
+        node.value,
+        (str, int, float),
+    )
+
+
+def _literal_dispatch_collection(node: ast.AST) -> bool:
+    return isinstance(node, (ast.Tuple, ast.List, ast.Set)) and all(
+        _literal_dispatch_value(element) for element in node.elts
+    )
+
+
+def _match_case_has_literal_pattern(case: ast.match_case) -> bool:
+    return _match_pattern_has_literal(case.pattern)
+
+
+def _match_pattern_has_literal(pattern: ast.pattern) -> bool:
+    if isinstance(pattern, ast.MatchValue):
+        return _literal_dispatch_value(pattern.value)
+    if isinstance(pattern, ast.MatchSingleton):
+        return pattern.value is not None
+    if isinstance(pattern, ast.MatchOr):
+        return any(_match_pattern_has_literal(item) for item in pattern.patterns)
+    if isinstance(pattern, ast.MatchSequence):
+        return any(_match_pattern_has_literal(item) for item in pattern.patterns)
+    return False
+
+
+def _dict_has_literal_key(node: ast.Dict) -> bool:
+    return any(key is not None and _literal_dispatch_value(key) for key in node.keys)

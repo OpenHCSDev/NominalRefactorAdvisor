@@ -6703,8 +6703,7 @@ class RegistryConsumerSymbolProjection:
                     continue
                 receiver_attribute_refs = getattr(reference, "receiver_attribute_refs")
                 if any(
-                    receiver_name == family_name
-                    and attr_name in lookup_method_name_set
+                    receiver_name == family_name and attr_name in lookup_method_name_set
                     for receiver_name, attr_name in receiver_attribute_refs
                 ):
                     consumer_symbols.add(qualname)
@@ -10570,12 +10569,6 @@ _materialize_product_records((
 
 
 @dataclass(frozen=True)
-class SortedTupleWrapperUseCandidate(QualnameLineWitnessCandidate):
-    argument_count: int
-    keyword_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class RuntimeProductRecordSchemaCandidate(LineWitnessCandidate):
     callee_name: str
     declared_names: tuple[str, ...]
@@ -10975,8 +10968,6 @@ _materialize_product_records((
     _product_record_spec('InlineAstPredicateGrammarCandidate', 'ast_type_names: tuple[str, ...]; predicate_count: int; traversal_count: int; line_count: int', 'ClassMethodLineWitnessCandidate'),
     _product_record_spec('NamedFunctionCollectorBoilerplateCandidate', 'candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
     _product_record_spec('AstStreamCollectorBoilerplateCandidate', 'accumulator_name: str; stream_call_names: tuple[str, ...]; candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('ManualSortedTupleReturnCandidate', 'sorted_expression: str; key_expression: str | None; reverse_expression: str | None; line_count: int', 'QualnameLineWitnessCandidate'),
-    _product_record_spec('ManualSortedTupleExpressionCandidate', 'context_kind: str', 'ManualSortedTupleReturnCandidate'),
     _product_record_spec('SimplePropertyAliasClassCandidate', 'alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
     _product_record_spec('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', 'ClassMethodLineWitnessCandidate'),
     _product_record_spec('CollectionProjectionPropertyFamilyCandidate', 'property_names: tuple[str, ...]; line_numbers: tuple[int, ...]; collection_name: str; projected_attribute_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'ClassLineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")}),

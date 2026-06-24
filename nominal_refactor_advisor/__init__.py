@@ -121,6 +121,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "AuthorityBoundaryRewrite",
     ),
+    "SourceRewriteTarget": (
+        "nominal_refactor_advisor.codemod",
+        "SourceRewriteTarget",
+    ),
     "AuthorityBoundaryPlan": (
         "nominal_refactor_advisor.codemod",
         "AuthorityBoundaryPlan",
@@ -128,10 +132,6 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "CodemodRewriteBuilder": (
         "nominal_refactor_advisor.codemod",
         "CodemodRewriteBuilder",
-    ),
-    "SortedTupleWrapperCodemodBuilder": (
-        "nominal_refactor_advisor.codemod",
-        "SortedTupleWrapperCodemodBuilder",
     ),
     "SourceLocationEvidencePropertyCodemodBuilder": (
         "nominal_refactor_advisor.codemod",
@@ -165,6 +165,58 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "CancelableCompositionKind",
     ),
+    "CodemodPlanDocument": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodPlanDocument",
+    ),
+    "RefactorRecipe": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipe",
+    ),
+    "RefactorRecipeRewrite": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipeRewrite",
+    ),
+    "RefactorRecipeSimulation": (
+        "nominal_refactor_advisor.codemod",
+        "RefactorRecipeSimulation",
+    ),
+    "ResolvedSourceRewrite": (
+        "nominal_refactor_advisor.codemod",
+        "ResolvedSourceRewrite",
+    ),
+    "SourceRewriteSimulationAuthority": (
+        "nominal_refactor_advisor.codemod",
+        "SourceRewriteSimulationAuthority",
+    ),
+    "NonOverlappingPlannedRewriteSelector": (
+        "nominal_refactor_advisor.codemod",
+        "NonOverlappingPlannedRewriteSelector",
+    ),
+    "AstTargetNodeIndex": (
+        "nominal_refactor_advisor.codemod",
+        "AstTargetNodeIndex",
+    ),
+    "ArchitectureGuardRule": (
+        "nominal_refactor_advisor.codemod",
+        "ArchitectureGuardRule",
+    ),
+    "ArchitectureGuardViolation": (
+        "nominal_refactor_advisor.codemod",
+        "ArchitectureGuardViolation",
+    ),
+    "ArchitectureGuardViolationKind": (
+        "nominal_refactor_advisor.codemod",
+        "ArchitectureGuardViolationKind",
+    ),
+    "ArchitectureGuardReport": (
+        "nominal_refactor_advisor.codemod",
+        "ArchitectureGuardReport",
+    ),
+    "ArchitectureGuardSuite": (
+        "nominal_refactor_advisor.codemod",
+        "ArchitectureGuardSuite",
+    ),
     "PlannedSourceRewrite": (
         "nominal_refactor_advisor.codemod",
         "PlannedSourceRewrite",
@@ -193,6 +245,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "apply_codemod_simulation",
     ),
+    "source_by_path_with_simulation": (
+        "nominal_refactor_advisor.codemod",
+        "source_by_path_with_simulation",
+    ),
     "simulate_planned_rewrites": (
         "nominal_refactor_advisor.codemod",
         "simulate_planned_rewrites",
@@ -200,6 +256,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "detect_cancelable_composition_signals": (
         "nominal_refactor_advisor.codemod",
         "detect_cancelable_composition_signals",
+    ),
+    "evaluate_architecture_guards": (
+        "nominal_refactor_advisor.codemod",
+        "evaluate_architecture_guards",
     ),
     "CapabilityTag": ("nominal_refactor_advisor.taxonomy", "CapabilityTag"),
     "CertificationLevel": (

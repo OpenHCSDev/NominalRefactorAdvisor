@@ -1486,13 +1486,21 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
         evidence: list[SourceLocation] = []
         for node in _walk_nodes(module.module):
             if _materializes_class_with_type(node):
-                evidence.append(SourceLocation(str(module.path), node.lineno, getattr(node, "name", "type")))
+                evidence.append(
+                    SourceLocation(
+                        str(module.path), node.lineno, getattr(node, "name", "type")
+                    )
+                )
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
-                if _assignment_targets_public_classes(node) and _value_calls_materialize(
-                    node.value
-                ):
+                if _assignment_targets_public_classes(
+                    node
+                ) and _value_calls_materialize(node.value):
                     evidence.append(
-                        SourceLocation(str(module.path), node.lineno, "class-materialization-assignment")
+                        SourceLocation(
+                            str(module.path),
+                            node.lineno,
+                            "class-materialization-assignment",
+                        )
                     )
         return tuple(evidence)
 
@@ -1814,7 +1822,7 @@ declare_candidate_rule_detector(
         mapping_name=api_candidate.export_symbol,
         field_names=("module_public_bindings",),
     ),
-    candidate_collector=MANUAL_SORTED_TUPLE_BUILDER.public_api_surface_candidates,
+    candidate_collector=MANUAL_PUBLIC_API_SURFACE_BUILDER.public_api_surface_candidates,
 )
 
 

@@ -48,15 +48,19 @@ from nominal_refactor_advisor.calibration import (
 )
 from nominal_refactor_advisor.cli import _calibration_exit_code
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
+from nominal_refactor_advisor.cli import JsonPayloadBuilder
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
-from nominal_refactor_advisor.cli import _json_payload
 from nominal_refactor_advisor.cli import _proof_exit_code
 from nominal_refactor_advisor.cli import _require_single_root_mode
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.cli import load_authority_boundary_plans
+from nominal_refactor_advisor.cli import load_codemod_plan_document
 from nominal_refactor_advisor.codemod import (
+    ArchitectureGuardRule,
+    ArchitectureGuardSuite,
+    ArchitectureGuardViolationKind,
     AuthorityBoundaryPlan,
     AuthorityBoundaryRewrite,
     CodemodActionability,
@@ -66,11 +70,14 @@ from nominal_refactor_advisor.codemod import (
     CodemodSimulationStatus,
     CodemodStrategy,
     CodemodStrategyRegistry,
+    RefactorRecipe,
+    SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
     detect_cancelable_composition_signals,
+    evaluate_architecture_guards,
     format_codemod_unified_diff,
     simulate_codemod_candidates,
 )
@@ -477,11 +484,13 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
                 detector_ids=("orbit_detector",),
                 rewrites=(
                     AuthorityBoundaryRewrite(
-                        file_path=module_path.as_posix(),
-                        target_qualname="Alpha.run",
                         replacement_source=(
                             "    def run(self, value):\n"
                             "        return AlphaRunAuthority.run(value)\n"
+                        ),
+                        target=SourceRewriteTarget(
+                            source_path=module_path.as_posix(),
+                            qualname="Alpha.run",
                         ),
                     ),
                 ),
@@ -517,123 +526,118 @@ def test_supplied_authority_boundary_turns_semantic_candidate_into_simulation(
     assert "return AlphaRunAuthority.run(value)" in module_path.read_text()
 
 
-def test_sorted_tuple_codemod_builder_plans_safe_mechanical_rewrite(
+def test_refactor_recipe_simulates_and_applies_qualname_batch(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Planner:\n"
-        "    def ordered_payload(self, items):\n"
-        "        return sorted_tuple({item.name for item in items}, "
-        "key=str.lower, reverse=True)\n",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return value\n\n\n"
+        "class Beta:\n"
+        "    def render(self, value):\n"
+        "        return value\n",
     )
     modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "sorted_tuple_wrapper_use"
-    ]
-    source_index = build_source_index(modules, findings)
-    impact_ranking = build_refactor_impact_ranking(
-        findings,
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = (
+        RefactorRecipe(recipe_id="route-alpha-beta", reason="route through authority")
+        .replace_target(
+            "    def run(self, value):\n"
+            "        return AlphaAuthority.run(value)\n",
+            qualname="Alpha.run",
+            source_path=module_path.as_posix(),
+        )
+        .replace_target(
+            "    def render(self, value):\n"
+            "        return BetaAuthority.render(value)\n",
+            qualname="Beta.render",
+            source_path=module_path.as_posix(),
+        )
+    )
+
+    simulation = recipe.simulate(
         source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+        guard_suite=ArchitectureGuardSuite(
+            (
+                ArchitectureGuardRule(
+                    rule_id="no-old-alpha-call",
+                    forbidden_call_names=("old_alpha",),
+                    file_path_suffixes=("pkg/mod.py",),
+                ),
+            )
         ),
     )
-    candidates = codemod_candidates_from_impact_ranking(impact_ranking, source_index)
-    automated_candidates = codemod_candidates_with_automated_rewrites(
-        candidates,
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-    )
+    diff = simulation.unified_diff(source_by_path)
 
-    candidate = next(
-        item
-        for item in automated_candidates
-        if item.opportunity_key.label == "sorted_tuple"
-    )
-    simulation = candidate.simulate(
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        backend=CodemodBackend.AST_SPAN,
-    )
-    rewritten = simulation.rewritten_sources[module_path.as_posix()]
-
-    assert (
-        candidate.applicability.automation_level
-        == CodemodAutomationLevel.SAFE_MECHANICAL
-    )
-    assert candidate.applicability.safe_to_apply is True
-    assert (
-        candidate.applicability.simulation_status
-        == CodemodSimulationStatus.READY_TO_SIMULATE
-    )
-    assert candidate.applicability.planned_rewrite_count == 1
-    assert (
-        "        return tuple(sorted({item.name for item in items}, key=str.lower, reverse=True))"
-        in rewritten
-    )
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert "+        return AlphaAuthority.run(value)" in diff
+    assert "+        return BetaAuthority.render(value)" in diff
+    assert simulation.apply() == (module_path.as_posix(),)
+    rewritten = module_path.read_text()
+    assert "return AlphaAuthority.run(value)" in rewritten
+    assert "return BetaAuthority.render(value)" in rewritten
 
 
-def test_sorted_tuple_codemod_builder_skips_overlapping_nested_targets(
+def test_architecture_guard_reports_forbidden_calls_and_literal_dispatch(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\ndef ordered_payload(items):\n"
-        "    names = sorted_tuple({item.name for item in items})\n\n"
-        "    def ordered_inner(rows):\n"
-        "        return sorted_tuple({row.name for row in rows}, key=str.lower)\n\n"
-        "    return names, ordered_inner(items)\n",
+        "\nclass Generator:\n"
+        "    def generate(self, module, module_name):\n"
+        "        _ModuleSettingsBindingStrategy.for_module(module.name).bind(module)\n"
+        "        if module.name == 'SaveImages':\n"
+        "            return None\n"
+        "        match module_name:\n"
+        "            case 'GrayToColor':\n"
+        "                return None\n"
+        "        return {'TrackObjects': object()}[module_name]\n",
     )
     modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "sorted_tuple_wrapper_use"
-    ]
-    source_index = build_source_index(modules, findings)
-    impact_ranking = build_refactor_impact_ranking(
-        findings,
+    source_index = build_source_index(modules, ())
+    report = evaluate_architecture_guards(
         source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
+        {module_path.as_posix(): module_path.read_text()},
+        (
+            ArchitectureGuardRule(
+                rule_id="cellprofiler-declaration-boundary",
+                forbidden_call_names=("_ModuleSettingsBindingStrategy.for_module",),
+                forbidden_literal_dispatch_subjects=("module.name", "module_name"),
+                file_path_suffixes=("pkg/mod.py",),
+                reason="module semantics must route through declarations",
+            ),
         ),
     )
-    automated_candidates = codemod_candidates_with_automated_rewrites(
-        codemod_candidates_from_impact_ranking(impact_ranking, source_index),
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-    )
 
-    candidate = next(
-        item
-        for item in automated_candidates
-        if item.opportunity_key.label == "sorted_tuple"
-    )
-    simulation = candidate.simulate(
-        source_index,
-        {module_path.as_posix(): module_path.read_text()},
-        backend=CodemodBackend.AST_SPAN,
-    )
-    rewritten = simulation.rewritten_sources[module_path.as_posix()]
+    violation_kinds = tuple(item.violation_kind for item in report.violations)
+    symbols = tuple(item.location.symbol for item in report.violations)
 
-    assert candidate.applicability.planned_rewrite_count == 1
-    assert "names = tuple(sorted({item.name for item in items}))" in rewritten
+    assert report.is_clean is False
+    assert report.violation_count == 4
+    assert violation_kinds.count(ArchitectureGuardViolationKind.FORBIDDEN_CALL) == 1
     assert (
-        "return tuple(sorted({row.name for row in rows}, key=str.lower))" in rewritten
+        violation_kinds.count(ArchitectureGuardViolationKind.FORBIDDEN_LITERAL_DISPATCH)
+        == 3
     )
+    assert "_ModuleSettingsBindingStrategy.for_module" in symbols
+    assert symbols.count("module_name") == 2
+    assert all(
+        item.target_context.qualname == "Generator.generate"
+        for item in report.violations
+    )
+    assert all(
+        item.target_context.target_identifier is not None for item in report.violations
+    )
+    assert report.to_dict()["violation_count"] == 4
 
 
 def test_source_location_descriptor_codemod_builder_replaces_property(
@@ -2169,7 +2173,9 @@ def test_finding_stable_id_is_derived_from_source_coordinates() -> None:
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
     assert finding.to_dict()["stable_id"] == finding.stable_id
     assert (
-        _json_payload([finding], [], [])["findings"][0]["stable_id"]
+        JsonPayloadBuilder(findings=[finding], plans=[], modules=[]).to_dict()[
+            "findings"
+        ][0]["stable_id"]
         == finding.stable_id
     )
 
@@ -2590,7 +2596,12 @@ def test_economics_markdown_and_json_expose_payoff_proof() -> None:
     markdown = MARKDOWN_RENDERER.report(
         [finding], economics=economics, change_budget=change_budget
     )
-    payload = _json_payload([finding], [], [], economics=economics)
+    payload = JsonPayloadBuilder(
+        findings=[finding],
+        plans=[],
+        modules=[],
+        economics=economics,
+    ).to_dict()
 
     assert "Economics:" in markdown
     assert "Recommended backend LOC savings: 0-0" in markdown
@@ -4833,8 +4844,7 @@ def test_boundary_local_wrapper_collapse_ignores_completed_scope_collapse(
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == "boundary_local_wrapper_collapse"
-        for finding in findings
+        finding.detector_id == "boundary_local_wrapper_collapse" for finding in findings
     )
 
 
@@ -5642,50 +5652,6 @@ def test_detects_canonical_finding_spec_builder(tmp_path: Path) -> None:
     assert "coordinate names" in (findings[0].codemod_patch or "")
 
 
-def test_detects_manual_sorted_tuple_return(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef ordered_names(items):\n    return tuple(\n        sorted(\n            {item.name for item in items},\n            key=str.lower,\n        )\n    )\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "manual_sorted_tuple_return"
-    ]
-    assert not findings
-
-
-def test_detects_manual_sorted_tuple_expression(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        '\ndef ordered_payload(items):\n    names = tuple(\n        sorted(\n            {item.name for item in items},\n            key=str.lower,\n        )\n    )\n    return {"names": names}\n',
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "manual_sorted_tuple_expression"
-    ]
-    assert not findings
-
-
-def test_detects_sorted_tuple_wrapper_use(tmp_path: Path) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef ordered_payload(items):\n    return sorted_tuple({item.name for item in items}, key=str.lower)\n",
-    )
-    findings = [
-        item
-        for item in analyze_path(tmp_path)
-        if item.detector_id == "sorted_tuple_wrapper_use"
-    ]
-    assert len(findings) == 1
-    assert "ordered_payload" in findings[0].summary
-    assert "tuple(sorted" in (findings[0].codemod_patch or "")
-
-
 def test_detects_runtime_product_record_schema(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -6426,7 +6392,7 @@ def test_detects_field_delegate_forwarding_method(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass Schedule:\n    def __init__(self, step_scale):\n        self.step_scale = step_scale\n\n    def pose_translation_steps(self, pose_count):\n        return self.step_scale.pose_translation_steps(pose_count, self.per_pose_translation_steps)\n',
+        "\nclass Schedule:\n    def __init__(self, step_scale):\n        self.step_scale = step_scale\n\n    def pose_translation_steps(self, pose_count):\n        return self.step_scale.pose_translation_steps(pose_count, self.per_pose_translation_steps)\n",
     )
 
     findings = analyze_path(tmp_path)
@@ -6539,12 +6505,11 @@ def test_manual_virtual_membership_ignores_private_predicate_helper_calls(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        '\nclass AxisProjector:\n    @classmethod\n    def project(cls, route_values, viewer_values):\n        start_index = cls._viewer_index(route_values[0], viewer_values)\n        if cls._is_contiguous_subset(route_values, viewer_values, start_index):\n            return route_values, start_index\n        return viewer_values, 0\n\n    @staticmethod\n    def _viewer_index(value, viewer_values):\n        return viewer_values.index(value)\n\n    @staticmethod\n    def _is_contiguous_subset(route_values, viewer_values, start_index):\n        stop_index = start_index + len(route_values)\n        return viewer_values[start_index:stop_index] == route_values\n',
+        "\nclass AxisProjector:\n    @classmethod\n    def project(cls, route_values, viewer_values):\n        start_index = cls._viewer_index(route_values[0], viewer_values)\n        if cls._is_contiguous_subset(route_values, viewer_values, start_index):\n            return route_values, start_index\n        return viewer_values, 0\n\n    @staticmethod\n    def _viewer_index(value, viewer_values):\n        return viewer_values.index(value)\n\n    @staticmethod\n    def _is_contiguous_subset(route_values, viewer_values, start_index):\n        stop_index = start_index + len(route_values)\n        return viewer_values[start_index:stop_index] == route_values\n",
     )
     findings = analyze_path(tmp_path)
     assert not any(
-        finding.detector_id == "manual_virtual_membership"
-        for finding in findings
+        finding.detector_id == "manual_virtual_membership" for finding in findings
     )
 
 
@@ -7202,7 +7167,82 @@ def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
     assert plans[0].boundary_id == "alpha-run"
     assert plans[0].detector_ids == ("orbit_detector",)
     assert plans[0].opportunity_kinds == ("ast-target",)
-    assert plans[0].rewrites[0].target_qualname == "Alpha.run"
+    assert plans[0].rewrites[0].target.qualname == "Alpha.run"
+
+
+def test_load_codemod_plan_document_includes_architecture_guards(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "authority_boundaries": [
+                    {
+                        "boundary_id": "alpha-run",
+                        "rewrites": [
+                            {
+                                "target_qualname": "Alpha.run",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return AlphaRunAuthority.run(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "architecture_guards": [
+                    {
+                        "rule_id": "cellprofiler-declaration-boundary",
+                        "forbidden_call_names": [
+                            "_ModuleSettingsBindingStrategy.for_module"
+                        ],
+                        "forbidden_literal_dispatch_subjects": [
+                            "module.name",
+                            "module_name",
+                        ],
+                        "file_path_suffixes": ["generator.py"],
+                        "reason": "module semantics must route through declarations",
+                    }
+                ],
+                "recipes": [
+                    {
+                        "recipe_id": "alpha-recipe",
+                        "reason": "batch exact source-index rewrites",
+                        "rewrites": [
+                            {
+                                "target_qualname": "Alpha.run",
+                                "file_path": "pkg/mod.py",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return AlphaRunAuthority.run(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    document = load_codemod_plan_document(plan_path)
+
+    assert document.has_authority_boundaries is True
+    assert document.has_recipes is True
+    assert document.has_architecture_guards is True
+    assert document.authority_boundaries[0].boundary_id == "alpha-run"
+    assert document.recipes[0].recipe_id == "alpha-recipe"
+    assert document.recipes[0].rewrites[0].target.qualname == "Alpha.run"
+    assert document.guard_suite.rules[0].rule_id == (
+        "cellprofiler-declaration-boundary"
+    )
+    assert document.guard_suite.rules[0].forbidden_literal_dispatch_subjects == (
+        "module.name",
+        "module_name",
+    )
+    assert document.to_dict()["recipes"]
+    assert document.to_dict()["architecture_guards"]
 
 
 def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:
@@ -7271,6 +7311,124 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert payload["applied_rewrite_count"] == 1
     assert 'detector_id = "local_rule"' not in module_path.read_text()
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
+
+
+def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "alpha-route",
+                        "rewrites": [
+                            {
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": "Alpha.run",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return AlphaAuthority.run(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-impact-ranking",
+            "--raw-findings",
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is True
+    assert payload["applied_rewrite_count"] == 1
+    assert "return AlphaAuthority.run(value)" in module_path.read_text()
+
+
+def test_module_cli_codemod_apply_blocks_on_architecture_guard(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef generate(module_name):\n"
+        "    if module_name == 'SaveImages':\n"
+        "        return None\n"
+        "    return object()\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "architecture_guards": [
+                    {
+                        "rule_id": "module-declaration-boundary",
+                        "forbidden_literal_dispatch_subjects": ["module_name"],
+                        "file_path_suffixes": ["pkg/mod.py"],
+                        "reason": "module semantics must route through declarations",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--impact-ranking-depth",
+            "0",
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    report = cast(dict[str, object], payload["architecture_guard_report"])
+
+    assert result.returncode == 1
+    assert payload["applied"] is False
+    assert report["is_clean"] is False
+    assert report["violation_count"] == 1
+    assert "module_name == 'SaveImages'" in module_path.read_text()
 
 
 def test_single_root_modes_reject_multiple_paths() -> None:
@@ -8477,7 +8635,11 @@ def test_json_payload_exposes_observation_graph(tmp_path: Path) -> None:
     )
     modules = parse_python_modules(tmp_path)
     findings = analyze_path(tmp_path)
-    payload = _json_payload(findings, [], modules)
+    payload = JsonPayloadBuilder(
+        findings=findings,
+        plans=[],
+        modules=modules,
+    ).to_dict()
     observations = cast(list[dict[str, object]], payload["observations"])
     fibers = cast(list[dict[str, object]], payload["fibers"])
     assert "observations" in payload
@@ -8506,7 +8668,11 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
         (SourceLocation(str(module_path), 3, "Alpha.run"),),
     )
 
-    payload = _json_payload([finding], [], modules)
+    payload = JsonPayloadBuilder(
+        findings=[finding],
+        plans=[],
+        modules=modules,
+    ).to_dict()
     source_index = cast(dict[str, object], payload["source_index"])
     files = cast(tuple[dict[str, object], ...], source_index["files"])
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
@@ -8663,13 +8829,13 @@ def test_json_and_markdown_expose_codemod_applicability(
         source_index,
     )
 
-    payload = _json_payload(
-        [finding],
-        [],
-        modules,
+    payload = JsonPayloadBuilder(
+        findings=[finding],
+        plans=[],
+        modules=modules,
         impact_ranking=impact_ranking,
         codemod_candidates=codemod_candidates,
-    )
+    ).to_dict()
     candidate_payload = cast(
         tuple[dict[str, object], ...],
         payload["codemod_candidates"],
@@ -8725,7 +8891,9 @@ def test_json_and_markdown_expose_codemod_applicability(
     assert gate_payload["raw_findings_default"] == "suppressed_when_active"
 
 
-def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candidates() -> None:
+def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candidates() -> (
+    None
+):
     spec = _finding_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Authority boundary",
@@ -8750,7 +8918,10 @@ def test_semantic_gate_promotes_ssot_findings_over_wrapper_cleanup_without_candi
     )
 
     assert markdown.startswith("Semantic refactor gate:")
-    assert "SSOT/authority-boundary findings outrank cleanup-only wrapper findings" in markdown
+    assert (
+        "SSOT/authority-boundary findings outrank cleanup-only wrapper findings"
+        in markdown
+    )
     assert "SSOT-critical signals: 1" in markdown
     assert "Cleanup-only signals: 1; defer" in markdown
     assert "No impact-ranked target was generated" in markdown
@@ -8826,71 +8997,15 @@ def test_semantic_codemod_applicability_stops_only_for_uncertain_findings(
     )
 
 
-def test_json_payload_auto_attaches_safe_codemod_options(
-    tmp_path: Path,
-) -> None:
-    _write_module(
-        tmp_path,
-        "pkg/mod.py",
-        "\ndef ordered_payload(items):\n"
-        "    return sorted_tuple({item.name for item in items}, key=str.lower)\n",
-    )
-    modules = parse_python_modules(tmp_path)
-    findings = [
-        finding
-        for finding in analyze_modules(modules)
-        if finding.detector_id == "sorted_tuple_wrapper_use"
-    ]
-    source_index = build_source_index(modules, findings)
-    impact_ranking = build_refactor_impact_ranking(
-        findings,
-        source_index,
-        search_budget=RefactorImpactSearchBudget(
-            reported_opportunity_count=10,
-            minimum_covered_findings=1,
-            trajectory_depth=0,
-            frontier_width=3,
-        ),
-    )
-
-    payload = _json_payload(findings, [], modules, impact_ranking=impact_ranking)
-    codemod_candidates = cast(
-        tuple[dict[str, object], ...],
-        payload["codemod_candidates"],
-    )
-    safe_candidate = next(
-        candidate
-        for candidate in codemod_candidates
-        if cast(dict[str, object], candidate["opportunity_key"])["label"]
-        == "sorted_tuple"
-    )
-    applicability = cast(dict[str, object], safe_candidate["applicability"])
-    markdown = format_codemod_applicability_markdown(
-        codemod_candidates_with_automated_rewrites(
-            codemod_candidates_from_impact_ranking(impact_ranking, source_index),
-            source_index,
-            {str(module.path): module.source for module in modules},
-        )
-    )
-
-    assert applicability["automation_level"] == "safe_mechanical"
-    assert applicability["simulation_status"] == "ready_to_simulate"
-    assert applicability["safe_to_apply"] is True
-    assert applicability["actionability"] == "safe_mechanical"
-    assert applicability["planned_rewrite_count"] == 1
-    assert "safe mechanical available: 1" in markdown
-    assert "1 planned rewrite(s)" in markdown
-
-
 def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-    payload = _json_payload(
-        [],
-        [],
-        modules,
+    payload = JsonPayloadBuilder(
+        findings=[],
+        plans=[],
+        modules=modules,
         timing=ScanTiming(parse_seconds=0.1, analysis_seconds=0.2),
-    )
+    ).to_dict()
     timing = cast(dict[str, object], payload["timing"])
     assert timing["parse_seconds"] == 0.1
     assert timing["analysis_seconds"] == 0.2
@@ -10607,12 +10722,12 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path) -> None:
         [finding],
         execution_plan=execution_plan,
     )
-    payload = _json_payload(
-        [finding],
-        [],
-        [],
+    payload = JsonPayloadBuilder(
+        findings=[finding],
+        plans=[],
+        modules=[],
         execution_plan=execution_plan,
-    )
+    ).to_dict()
 
     assert "Graph execution classes:" in output
     assert "First batch move:" in output
@@ -11123,7 +11238,12 @@ def test_detects_semantic_overlap_abc_optimization(tmp_path: Path) -> None:
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
     source_index = cast(
-        dict[str, object], _json_payload(findings, [], modules)["source_index"]
+        dict[str, object],
+        JsonPayloadBuilder(
+            findings=findings,
+            plans=[],
+            modules=modules,
+        ).to_dict()["source_index"],
     )
     ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
     evidence = cast(tuple[dict[str, object], ...], source_index["evidence"])

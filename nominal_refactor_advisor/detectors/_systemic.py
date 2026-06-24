@@ -21,6 +21,7 @@ from ._base import *
 from ._helpers import *
 from ._helpers import _facade_only_nominal_authority_candidates
 
+
 def _closed_axis_conversion_matrix_compression_certificate(
     candidate: ClosedAxisConversionMatrixCandidate,
 ) -> CompressionCertificate:
@@ -388,9 +389,7 @@ class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
     )
 
 
-class BranchClusterUnderAbstractionDetector(
-    CandidateFindingDetector[FunctionProfile]
-):
+class BranchClusterUnderAbstractionDetector(CandidateFindingDetector[FunctionProfile]):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
         "Branch cluster should be split into nominal stages",
@@ -1986,7 +1985,9 @@ declare_candidate_rule_detector(
     ),
     summary=lambda table_candidate: f"Axis `{table_candidate.key_type_name}` is restated by `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` across cases {', '.join(table_candidate.shared_case_names[:4])}.",
     evidence=lambda table_candidate: table_candidate.evidence,
-    scaffold=lambda table_candidate: _axis_policy_registry_scaffold("run(self, request)")
+    scaffold=lambda table_candidate: _axis_policy_registry_scaffold(
+        "run(self, request)"
+    )
     + f"\n\ndef run_{table_candidate.key_type_name.lower()}(method, request):\n    return {_AXIS_POLICY_ROOT_NAME}.__registry__[method].run(request)\n\n# Derive table-like projections from {_AXIS_POLICY_ROOT_NAME}.__registry__ only if legacy callers need them.\n",
     codemod_patch=lambda table_candidate: f"# Collapse `{table_candidate.left.table_name}` and `{table_candidate.right.table_name}` onto one AutoRegisterMeta-backed semantic family.\n# Replace hardcoded keyed tables with registered subclasses and route behavior through `Family.__registry__[key].run(...)`.\n# Keep any table-like surface as a derived read-only projection from the registry, not as a writable authority.",
     metrics=lambda table_candidate: MappingMetrics(
@@ -2135,7 +2136,9 @@ class CallableMethodAxisRegistryDetector(IssueDetector):
             target = statement.targets[0]
             if isinstance(target, ast.Name):
                 return target.id
-        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
             return statement.target.id
         return None
 
@@ -2170,9 +2173,7 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
             node = indexed_class.node
-            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(
-                node
-            ):
+            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
                 continue
             repeated_fields = self._repeated_inherited_fields(
                 class_index, indexed_class
@@ -2225,9 +2226,7 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
             "__registry_key__",
             "__skip_if_no_key__",
         )
-        direct_assignments = CLASS_NODE_AUTHORITY.direct_assignments(
-            indexed_class.node
-        )
+        direct_assignments = CLASS_NODE_AUTHORITY.direct_assignments(indexed_class.node)
         repeated: list[str] = []
         for field_name in protocol_fields:
             current_value = direct_assignments.get(field_name)
@@ -2274,9 +2273,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(IssueDetector):
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
             node = indexed_class.node
-            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(
-                node
-            ):
+            if not HELPER_SUPPORT_PROJECTION_AUTHORITY.declares_autoregister_meta(node):
                 continue
             order_axis_sites = self._order_axis_sites(class_index, indexed_class)
             order_axis_names = tuple(
@@ -4580,30 +4577,6 @@ declare_candidate_rule_detector(
         field_names=candidate.keyword_names,
     ),
     candidate_collector=_canonical_finding_spec_builder_candidates,
-)
-
-
-declare_candidate_rule_detector(
-    SortedTupleWrapperUseCandidate,
-    high_confidence_spec(
-        PatternId.AUTHORITATIVE_SCHEMA,
-        "sorted_tuple wrapper should collapse to standard Python",
-        "`sorted_tuple(...)` is only `tuple(sorted(...))` behind an extra project-local function. It hides ordinary Python collection semantics behind a nominal surface without adding type safety, registry authority, or an invariant.",
-        "direct tuple(sorted(...)) expression instead of a project-local collection wrapper",
-        "call site delegates ordinary sorted tuple construction to sorted_tuple",
-        _AUTHORITATIVE_SHARED_ALGORITHM_AUTHORITY_NOMINAL_IDENTITY_CAPABILITY_TAGS,
-        _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
-    ),
-    summary=lambda candidate: f"`{candidate.qualname}` calls `sorted_tuple` with {candidate.argument_count} positional argument(s) and keywords {candidate.keyword_names}; use standard `tuple(sorted(...))` so the ordering operation remains AST-visible.",
-    scaffold=lambda candidate: "value = tuple(sorted(items, key=key_function))",
-    codemod_patch=lambda candidate: "# Replace `sorted_tuple(items, key=...)` with `tuple(sorted(items, key=...))` and delete the project-local wrapper once callers are gone.",
-    metrics=lambda candidate: MappingMetrics(
-        mapping_site_count=1,
-        field_count=candidate.argument_count + len(candidate.keyword_names),
-        mapping_name="sorted_tuple",
-        field_names=("items", *candidate.keyword_names),
-    ),
-    candidate_collector=_sorted_tuple_wrapper_use_candidates,
 )
 
 
