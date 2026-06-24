@@ -4523,7 +4523,6 @@ class DeclaredFieldExtractionSite:
 
 
 class DeclaredFieldExtractionFanoutDetector(IssueDetector):
-    detector_id = "declared_field_extraction_fanout"
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Declared-field extraction should become a construction authority",
