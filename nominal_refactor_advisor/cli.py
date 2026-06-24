@@ -39,8 +39,10 @@ from .codemod import (
     CodemodCandidate,
     CodemodAutomationLevel,
     CodemodPlanDocument,
+    CodemodPlanDocumentSimulation,
     CodemodSimulationReport,
     CodemodSimulationStatus,
+    PlannedSourceRewrite,
     RefactorRecipe,
     RefactorRecipeOperation,
     RefactorRecipeRewrite,
@@ -87,7 +89,7 @@ from .semantic_refactor_gate import (
     SemanticRefactorGateModeError,
     SemanticRefactorGateReport,
 )
-from .source_index import build_source_index
+from .source_index import SourceIndex, build_source_index
 
 _VALUELESS_ARGUMENT_ACTIONS = frozenset(
     {
@@ -1190,27 +1192,43 @@ class StandardMarkdownReportRenderer(MarkdownReportRenderer):
 MARKDOWN_RENDERER = StandardMarkdownReportRenderer()
 
 
-def _proof_exit_code(
-    report: EconomicsProofReport, *, fail_on_proof_regression: bool
-) -> int:
-    if fail_on_proof_regression and not report.proof_passes:
-        return 1
-    return 0
+@dataclass(frozen=True)
+class ProofExitCodeAuthority:
+    """Exit-code policy for economics proof regressions."""
+
+    report: EconomicsProofReport
+    fail_on_proof_regression: bool
+
+    def exit_code(self) -> int:
+        if self.fail_on_proof_regression and not self.report.proof_passes:
+            return 1
+        return 0
 
 
-def _calibration_exit_code(
-    report: CalibrationReport, *, fail_on_calibration_regression: bool
-) -> int:
-    if fail_on_calibration_regression and not report.passes:
-        return 1
-    return 0
+@dataclass(frozen=True)
+class CalibrationExitCodeAuthority:
+    """Exit-code policy for calibration regressions."""
+
+    report: CalibrationReport
+    fail_on_calibration_regression: bool
+
+    def exit_code(self) -> int:
+        if self.fail_on_calibration_regression and not self.report.passes:
+            return 1
+        return 0
 
 
-def _require_single_root_mode(
-    parser: argparse.ArgumentParser, roots: tuple[Path, ...], *, option_name: str
-) -> None:
-    if len(roots) > 1:
-        parser.error(f"{option_name} accepts exactly one path root")
+@dataclass(frozen=True)
+class SingleRootModeAuthority:
+    """Validate CLI modes that accept exactly one path root."""
+
+    parser: argparse.ArgumentParser
+    roots: tuple[Path, ...]
+    option_name: str
+
+    def require(self) -> None:
+        if len(self.roots) > 1:
+            self.parser.error(f"{self.option_name} accepts exactly one path root")
 
 
 def _default_parse_cache_base(root: Path) -> Path:
@@ -1219,17 +1237,20 @@ def _default_parse_cache_base(root: Path) -> Path:
     return root
 
 
-def _parse_cache_dir(
-    root: Path,
-    *,
-    requested_cache_dir: Path | None,
-    use_parse_cache: bool,
-) -> Path | None:
-    if not use_parse_cache:
-        return None
-    if requested_cache_dir is not None:
-        return requested_cache_dir
-    return _default_parse_cache_base(root) / _DEFAULT_PARSE_CACHE_RELATIVE_PATH
+@dataclass(frozen=True)
+class ParseCacheDirAuthority:
+    """Resolve the effective parse cache directory for one CLI root."""
+
+    root: Path
+    requested_cache_dir: Path | None
+    use_parse_cache: bool
+
+    def cache_dir(self) -> Path | None:
+        if not self.use_parse_cache:
+            return None
+        if self.requested_cache_dir is not None:
+            return self.requested_cache_dir
+        return _default_parse_cache_base(self.root) / _DEFAULT_PARSE_CACHE_RELATIVE_PATH
 
 
 @dataclass(frozen=True)
@@ -1276,6 +1297,178 @@ class ArchitectureGuardSourceEvaluator:
         return tuple(updated_modules)
 
 
+@dataclass(frozen=True)
+class CodemodCliExecution:
+    """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
+
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+    source_index: SourceIndex | None
+    source_by_path: dict[str, str]
+    impact_candidates: tuple[CodemodCandidate, ...] | None
+    codemod_plan_document: CodemodPlanDocument
+    architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_diff or self.args.codemod_apply
+
+    def run(self) -> int | None:
+        if not self.requested:
+            return None
+        source_index = self.required_source_index()
+        simulation, architecture_guard_report, plan_document_simulation = (
+            self.simulation_context(source_index)
+        )
+        if (
+            architecture_guard_report is not None
+            and not architecture_guard_report.is_clean
+        ):
+            return self.emit_guard_failure(simulation, architecture_guard_report)
+        applied = self.apply_if_requested(simulation, plan_document_simulation)
+        self.emit_success(simulation, applied, architecture_guard_report)
+        return 0
+
+    def required_source_index(self) -> SourceIndex:
+        if self.source_index is not None:
+            return self.source_index
+        self.parser.error(
+            "--codemod-diff/--codemod-apply require codemod candidates "
+            "or recipe rewrites"
+        )
+        raise RuntimeError("argparse.error should have exited")
+
+    def simulation_context(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[
+        CodemodSimulationReport,
+        ArchitectureGuardReport | None,
+        CodemodPlanDocumentSimulation | None,
+    ]:
+        if self.impact_candidates is None and self.codemod_plan_document.has_recipes:
+            plan_document_simulation = self.codemod_plan_document.simulate(
+                source_index,
+                self.source_by_path,
+            )
+            return (
+                plan_document_simulation.simulation,
+                self.plan_document_guard_report(plan_document_simulation),
+                plan_document_simulation,
+            )
+        simulation = simulate_planned_rewrites(
+            source_index,
+            (
+                *self.candidate_rewrite_batch(),
+                *self.codemod_plan_document.source_rewrite_batch(
+                    source_index,
+                    self.source_by_path,
+                ),
+            ),
+            self.source_by_path,
+        )
+        return (
+            simulation,
+            self.architecture_guard_report_for(simulation),
+            None,
+        )
+
+    def candidate_rewrite_batch(self) -> tuple[PlannedSourceRewrite, ...]:
+        if self.impact_candidates is None:
+            return ()
+        return tuple(
+            rewrite
+            for candidate in self.impact_candidates
+            for rewrite in candidate.planned_rewrites
+        )
+
+    def plan_document_guard_report(
+        self,
+        plan_document_simulation: CodemodPlanDocumentSimulation,
+    ) -> ArchitectureGuardReport | None:
+        if not self.codemod_plan_document.has_architecture_guards:
+            return None
+        return plan_document_simulation.architecture_guard_report
+
+    def architecture_guard_report_for(
+        self,
+        simulation: CodemodSimulationReport,
+    ) -> ArchitectureGuardReport | None:
+        return self.architecture_guard_evaluator.report_for_sources(
+            source_by_path_with_simulation(
+                self.source_by_path,
+                simulation,
+            )
+        )
+
+    def emit_guard_failure(
+        self,
+        simulation: CodemodSimulationReport,
+        architecture_guard_report: ArchitectureGuardReport,
+    ) -> int:
+        if self.args.json:
+            print(
+                json.dumps(
+                    CodemodSimulationPayload(
+                        simulation,
+                        applied=False,
+                        post_guard_report=architecture_guard_report,
+                    ).to_dict(),
+                    indent=2,
+                )
+            )
+        else:
+            if self.args.codemod_diff:
+                print(
+                    format_codemod_unified_diff(simulation, self.source_by_path),
+                    end="",
+                )
+            print(format_architecture_guard_markdown(architecture_guard_report))
+        return 1
+
+    def apply_if_requested(
+        self,
+        simulation: CodemodSimulationReport,
+        plan_document_simulation: CodemodPlanDocumentSimulation | None,
+    ) -> bool:
+        if not self.args.codemod_apply:
+            return False
+        if plan_document_simulation is not None:
+            plan_document_simulation.apply()
+        else:
+            apply_codemod_simulation(simulation)
+        return True
+
+    def emit_success(
+        self,
+        simulation: CodemodSimulationReport,
+        applied: bool,
+        architecture_guard_report: ArchitectureGuardReport | None,
+    ) -> None:
+        if self.args.json:
+            print(
+                json.dumps(
+                    CodemodSimulationPayload(
+                        simulation,
+                        applied=applied,
+                        post_guard_report=architecture_guard_report,
+                    ).to_dict(),
+                    indent=2,
+                )
+            )
+        elif self.args.codemod_diff:
+            print(
+                format_codemod_unified_diff(simulation, self.source_by_path),
+                end="",
+            )
+        else:
+            print(
+                "Codemod apply complete: "
+                f"{simulation.applied_rewrite_count} rewrite(s), "
+                f"{len(simulation.changed_file_paths)} file(s)."
+            )
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -1310,11 +1503,11 @@ def main() -> int:
         parser.error("--codemod-* options require parsed Python source paths")
 
     if args.calibrate is not None:
-        parse_cache_dir = _parse_cache_dir(
-            args.calibrate.parent,
+        parse_cache_dir = ParseCacheDirAuthority(
+            root=args.calibrate.parent,
             requested_cache_dir=args.cache_dir,
             use_parse_cache=args.use_parse_cache,
-        )
+        ).cache_dir()
         calibration_report = run_calibration_manifest(
             args.calibrate,
             config=config,
@@ -1326,20 +1519,24 @@ def main() -> int:
             print(json.dumps(calibration_report.to_dict(), indent=2))
         else:
             print(format_calibration_markdown(calibration_report))
-        return _calibration_exit_code(
-            calibration_report,
+        return CalibrationExitCodeAuthority(
+            report=calibration_report,
             fail_on_calibration_regression=args.fail_on_calibration_regression,
-        )
+        ).exit_code()
 
     roots = tuple(Path(path) for path in args.paths)
     root = roots[0]
-    parse_cache_dir = _parse_cache_dir(
-        root,
+    parse_cache_dir = ParseCacheDirAuthority(
+        root=root,
         requested_cache_dir=args.cache_dir,
         use_parse_cache=args.use_parse_cache,
-    )
+    ).cache_dir()
     if args.predict_scan:
-        _require_single_root_mode(parser, roots, option_name="--predict-scan")
+        SingleRootModeAuthority(
+            parser=parser,
+            roots=roots,
+            option_name="--predict-scan",
+        ).require()
         prediction_report = build_scan_prediction_report(
             root,
             config=config,
@@ -1355,7 +1552,11 @@ def main() -> int:
         return 0
 
     if args.prove_economics:
-        _require_single_root_mode(parser, roots, option_name="--prove-economics")
+        SingleRootModeAuthority(
+            parser=parser,
+            roots=roots,
+            option_name="--prove-economics",
+        ).require()
         proof_report = build_economics_proof_report(
             root,
             config=config,
@@ -1369,10 +1570,10 @@ def main() -> int:
             print(json.dumps(proof_report.to_dict(), indent=2))
         else:
             print(MARKDOWN_RENDERER.economics_proof(proof_report))
-        return _proof_exit_code(
-            proof_report,
+        return ProofExitCodeAuthority(
+            report=proof_report,
             fail_on_proof_regression=args.fail_on_proof_regression,
-        )
+        ).exit_code()
 
     try:
         SemanticRefactorGateMode.from_flags(
@@ -1426,7 +1627,6 @@ def main() -> int:
         else None
     )
     authority_boundary_plans = codemod_plan_document.authority_boundaries
-    recipe_rewrite_batch = ()
     architecture_guard_rules = codemod_plan_document.guard_suite.to_tuple()
     architecture_guard_evaluator = ArchitectureGuardSourceEvaluator(
         modules,
@@ -1437,10 +1637,6 @@ def main() -> int:
     if args.include_impact_ranking or codemod_plan_document.has_recipes:
         source_index = build_source_index(modules, findings)
         source_by_path = {str(module.path): module.source for module in modules}
-        recipe_rewrite_batch = codemod_plan_document.source_rewrite_batch(
-            source_index,
-            source_by_path,
-        )
 
     if args.include_impact_ranking:
         impact_ranking = build_refactor_impact_ranking(
@@ -1478,83 +1674,17 @@ def main() -> int:
             source_index = None
             source_by_path = {}
 
-    if args.codemod_diff or args.codemod_apply:
-        if source_index is None:
-            parser.error(
-                "--codemod-diff/--codemod-apply require codemod candidates "
-                "or recipe rewrites"
-            )
-        candidate_rewrite_batch = (
-            tuple(
-                rewrite
-                for candidate in codemod_candidates
-                for rewrite in candidate.planned_rewrites
-            )
-            if codemod_candidates is not None
-            else ()
-        )
-        simulation = simulate_planned_rewrites(
-            source_index,
-            (*candidate_rewrite_batch, *recipe_rewrite_batch),
-            source_by_path,
-        )
-        post_simulation_sources = source_by_path_with_simulation(
-            source_by_path,
-            simulation,
-        )
-        architecture_guard_report = architecture_guard_evaluator.report_for_sources(
-            post_simulation_sources
-        )
-        if (
-            architecture_guard_report is not None
-            and not architecture_guard_report.is_clean
-        ):
-            if args.json:
-                print(
-                    json.dumps(
-                        CodemodSimulationPayload(
-                            simulation,
-                            applied=False,
-                            post_guard_report=architecture_guard_report,
-                        ).to_dict(),
-                        indent=2,
-                    )
-                )
-            else:
-                if args.codemod_diff:
-                    print(
-                        format_codemod_unified_diff(simulation, source_by_path),
-                        end="",
-                    )
-                print(format_architecture_guard_markdown(architecture_guard_report))
-            return 1
-        applied = False
-        if args.codemod_apply:
-            apply_codemod_simulation(simulation)
-            applied = True
-        if args.json:
-            print(
-                json.dumps(
-                    CodemodSimulationPayload(
-                        simulation,
-                        applied=applied,
-                        post_guard_report=architecture_guard_report,
-                    ).to_dict(),
-                    indent=2,
-                )
-            )
-        elif args.codemod_diff:
-            print(
-                format_codemod_unified_diff(simulation, source_by_path),
-                end="",
-            )
-        else:
-            print(
-                "Codemod apply complete: "
-                f"{simulation.applied_rewrite_count} rewrite(s), "
-                f"{len(simulation.changed_file_paths)} file(s)."
-            )
-        return 0
+    codemod_execution_result = CodemodCliExecution(
+        parser=parser,
+        args=args,
+        source_index=source_index,
+        source_by_path=source_by_path,
+        impact_candidates=codemod_candidates,
+        codemod_plan_document=codemod_plan_document,
+        architecture_guard_evaluator=architecture_guard_evaluator,
+    ).run()
+    if codemod_execution_result is not None:
+        return codemod_execution_result
 
     if args.json:
         json_findings = [] if args.plans_only else findings

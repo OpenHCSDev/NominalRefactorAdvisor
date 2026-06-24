@@ -46,12 +46,12 @@ from nominal_refactor_advisor.calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
-from nominal_refactor_advisor.cli import _calibration_exit_code
+from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
-from nominal_refactor_advisor.cli import _proof_exit_code
-from nominal_refactor_advisor.cli import _require_single_root_mode
+from nominal_refactor_advisor.cli import ProofExitCodeAuthority
+from nominal_refactor_advisor.cli import SingleRootModeAuthority
 from nominal_refactor_advisor.cli import analyze_path
 from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
@@ -3125,9 +3125,24 @@ def test_strict_economics_proof_exit_code_is_ci_enforceable(
         change_budget=RepositoryChangeBudget(),
     )
 
-    assert _proof_exit_code(failing_report, fail_on_proof_regression=False) == 0
-    assert _proof_exit_code(failing_report, fail_on_proof_regression=True) == 1
-    assert _proof_exit_code(passing_report, fail_on_proof_regression=True) == 0
+    assert (
+        ProofExitCodeAuthority(
+            failing_report, fail_on_proof_regression=False
+        ).exit_code()
+        == 0
+    )
+    assert (
+        ProofExitCodeAuthority(
+            failing_report, fail_on_proof_regression=True
+        ).exit_code()
+        == 1
+    )
+    assert (
+        ProofExitCodeAuthority(
+            passing_report, fail_on_proof_regression=True
+        ).exit_code()
+        == 0
+    )
 
 
 STRING_BACKED_REFLECTIVE_NOMINAL_LOOKUP_DETECTOR_ID = (
@@ -3723,8 +3738,18 @@ def test_calibration_manifest_names_missing_and_forbidden_detectors(
         (reason.startswith("builder-regression:forbidden_detector:"))
         for reason in report.regression_reasons
     )
-    assert _calibration_exit_code(report, fail_on_calibration_regression=False) == 0
-    assert _calibration_exit_code(report, fail_on_calibration_regression=True) == 1
+    assert (
+        CalibrationExitCodeAuthority(
+            report, fail_on_calibration_regression=False
+        ).exit_code()
+        == 0
+    )
+    assert (
+        CalibrationExitCodeAuthority(
+            report, fail_on_calibration_regression=True
+        ).exit_code()
+        == 1
+    )
 
 
 def test_parse_python_modules_accepts_direct_file_path(tmp_path: Path) -> None:
@@ -7854,6 +7879,85 @@ def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
     assert "return AlphaAuthority.run(value)" in module_path.read_text()
 
 
+def test_module_cli_recipe_only_extract_authority_apply(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "def old_helper(value):\n"
+        "    return value.strip()\n\n\n"
+        "class Parser:\n"
+        "    def parse(self, value):\n"
+        "        return old_helper(value)\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "extract-helper-authority",
+                        "operations": [
+                            {
+                                "operation": "extract_authority",
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": "old_helper",
+                                "authority_source": (
+                                    "class HelperAuthority:\n"
+                                    "    @staticmethod\n"
+                                    "    def normalize(value):\n"
+                                    "        return value.strip()\n"
+                                ),
+                                "call_replacements": [
+                                    {
+                                        "file_path": module_path.as_posix(),
+                                        "target_qualname": "Parser.parse",
+                                        "old_source": "old_helper(value)",
+                                        "new_source": (
+                                            "HelperAuthority.normalize(value)"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-impact-ranking",
+            "--raw-findings",
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    rewritten = module_path.read_text()
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is True
+    assert payload["applied_rewrite_count"] == 2
+    assert "def old_helper" not in rewritten
+    assert "class HelperAuthority:" in rewritten
+    assert "return HelperAuthority.normalize(value)" in rewritten
+
+
 def test_module_cli_codemod_apply_blocks_on_architecture_guard(
     tmp_path: Path,
 ) -> None:
@@ -7914,11 +8018,11 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
 def test_single_root_modes_reject_multiple_paths() -> None:
     parser = argparse.ArgumentParser()
     with pytest.raises(SystemExit):
-        _require_single_root_mode(
-            parser,
-            (Path("nominal_refactor_advisor"), Path("tests")),
+        SingleRootModeAuthority(
+            parser=parser,
+            roots=(Path("nominal_refactor_advisor"), Path("tests")),
             option_name="--prove-economics",
-        )
+        ).require()
 
 
 def test_detects_manual_class_registration(tmp_path: Path) -> None:
