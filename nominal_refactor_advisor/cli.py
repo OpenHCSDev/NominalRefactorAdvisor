@@ -52,6 +52,7 @@ from .codemod import (
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
+    codemod_plan_from_findings,
     evaluate_architecture_guards,
     format_codemod_unified_diff,
     simulate_planned_rewrites,
@@ -413,6 +414,9 @@ class JsonPayloadBuilder:
             payload["codemod_candidates"] = tuple(
                 candidate.to_dict() for candidate in codemod_candidates
             )
+        payload["finding_recipe_plan"] = codemod_plan_from_findings(
+            self.findings,
+        ).to_dict()
         if self.scan_guard_report is not None:
             payload["architecture_guard_report"] = self.scan_guard_report.to_dict()
         return payload

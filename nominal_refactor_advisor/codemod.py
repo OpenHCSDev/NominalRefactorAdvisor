@@ -164,6 +164,7 @@ CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
+MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
@@ -5508,10 +5509,14 @@ class DerivableCandidateCollectorFindingRecipeSynthesizer(
     assignment_name = CANDIDATE_COLLECTOR_FIELD_NAME
 
 
-class DerivedSemanticTagConstantsFindingRecipeSynthesizer(FindingRecipeSynthesizer):
-    """Build deletion recipes for semantic tag constants derivable from names."""
+class ModuleAssignmentDeletionFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    ABC,
+):
+    """Shared recipe shape for findings that delete module assignments."""
 
-    detector_id = SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID
+    recipe_id_suffix: ClassVar[str]
+    recipe_reason: ClassVar[str]
 
     def recipe_for_finding(
         self,
@@ -5527,15 +5532,25 @@ class DerivedSemanticTagConstantsFindingRecipeSynthesizer(FindingRecipeSynthesiz
             return None
         source_path = next(iter(file_paths))
         return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-delete-derived-semantic-tag-constants",
-            reason=(
-                "Delete semantic tag constants whose tuple values are derivable "
-                "from the constant names."
-            ),
+            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+            reason=self.recipe_reason,
         ).delete_module_assignments(
             source_path,
             tuple(action_key.subject_name for action_key in action_keys),
         )
+
+
+class DerivedSemanticTagConstantsFindingRecipeSynthesizer(
+    ModuleAssignmentDeletionFindingRecipeSynthesizer
+):
+    """Build deletion recipes for semantic tag constants derivable from names."""
+
+    detector_id = SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID
+    recipe_id_suffix = "delete-derived-semantic-tag-constants"
+    recipe_reason = (
+        "Delete semantic tag constants whose tuple values are derivable "
+        "from the constant names."
+    )
 
     def action_keys_for_finding(
         self,
@@ -5558,6 +5573,42 @@ class DerivedSemanticTagConstantsFindingRecipeSynthesizer(FindingRecipeSynthesiz
             )
             for constant_name in finding.metrics.plan_field_names
         )
+
+
+class ModuleAuthorityReexportCatalogFindingRecipeSynthesizer(
+    ModuleAssignmentDeletionFindingRecipeSynthesizer
+):
+    """Build deletion recipes for non-paying authority re-export catalogs."""
+
+    detector_id = MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID
+    recipe_id_suffix = "delete-authority-reexport-catalog"
+    recipe_reason = (
+        "Delete module-level authority re-export aliases that the rent "
+        "proof marks as redundant abstraction."
+    )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        if not self.has_nonpaying_rent_proof(finding):
+            return ()
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return tuple(
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=evidence.file_path,
+                subject_name=alias_name,
+            )
+            for alias_name in finding.metrics.plan_field_names
+        )
+
+    @staticmethod
+    def has_nonpaying_rent_proof(finding: RefactorFinding) -> bool:
+        certificate = finding.compression_certificate
+        return certificate is not None and not certificate.pays_rent
 
 
 def _pascal_case_identifier(value: str) -> str:

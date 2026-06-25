@@ -11783,6 +11783,81 @@ def test_detects_module_authority_reexport_catalog(tmp_path: Path) -> None:
     assert "Delete module-level re-export aliases" in (finding.codemod_patch or "")
 
 
+def test_module_authority_reexport_catalog_findings_synthesize_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "module_authority_reexport_catalog"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("module_authority_reexport_catalog",),
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "delete_module_assignments"
+    assert operation["assignment_names"] == ("field_names", "method_names")
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "field_names = SYNTAX_PROJECTION_AUTHORITY.field_names" not in rewritten
+    assert "method_names = SYNTAX_PROJECTION_AUTHORITY.method_names" not in rewritten
+    remaining = tuple(
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == "module_authority_reexport_catalog"
+    )
+    assert remaining == ()
+
+
+def test_json_payload_includes_finding_backed_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = list(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "module_authority_reexport_catalog"
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=findings,
+        plans=[],
+        modules=modules,
+    ).to_dict()
+
+    recipe_plan = payload["finding_recipe_plan"]
+    assert recipe_plan["expected_removed_finding_count"] == 1
+    operation = recipe_plan["document"]["recipes"][0]["operations"][0]
+    assert operation["operation"] == "delete_module_assignments"
+    assert operation["assignment_names"] == ("field_names", "method_names")
+
+
 def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
