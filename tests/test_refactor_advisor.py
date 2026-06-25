@@ -9126,6 +9126,84 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     )
 
 
+def test_module_cli_emits_codemod_source_index_targets(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-source-index",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    targets_by_qualname = {
+        target["qualname"]: target for target in payload["targets"]
+    }
+
+    assert result.returncode == 0, result.stderr
+    assert payload["target_count"] == 3
+    assert targets_by_qualname["Alpha"]["node_type"] == "class"
+    assert targets_by_qualname["Alpha.run"]["node_type"] == "method"
+    assert targets_by_qualname["Alpha.run"]["parameters"] == ["self", "value"]
+
+
+def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n\n\ndef helper():\n    return Alpha()\n",
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "qualnames": ["Alpha.run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-resolve-selector",
+            selector_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["selector"]["selector"] == "source_index_target"
+    assert payload["selected_count"] == 1
+    assert payload["selected_targets"][0]["qualname"] == "Alpha.run"
+    assert payload["selected_targets"][0]["node_type"] == "method"
+    assert payload["missing_target_ids"] == []
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:

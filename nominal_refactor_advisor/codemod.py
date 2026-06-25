@@ -1018,6 +1018,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             selector_context=self,
         )
 
+    def source_index_report(self) -> "CodemodSourceIndexReport":
+        return CodemodSourceIndexReport(self.source_index)
+
+    def resolve_selector(
+        self,
+        selector: "CodemodTargetSelector",
+    ) -> "CodemodSelectorResolutionReport":
+        return CodemodSelectorResolutionReport.from_selector_context(selector, self)
+
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],
@@ -1083,6 +1092,55 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             fromfile_prefix=fromfile_prefix,
             tofile_prefix=tofile_prefix,
         )
+
+
+@dataclass(frozen=True)
+class CodemodSourceIndexReport:
+    """JSON-ready target discovery report for codemod DSL authors."""
+
+    source_index: SourceIndex
+
+    @property
+    def target_count(self) -> int:
+        return len(self.source_index.ast_targets)
+
+    @property
+    def file_count(self) -> int:
+        return len(self.source_index.files)
+
+    @property
+    def evidence_count(self) -> int:
+        return len(self.source_index.evidence)
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "file_count": self.file_count,
+                "target_count": self.target_count,
+                "evidence_count": self.evidence_count,
+                "files": tuple(
+                    dict(source_file.__dict__)
+                    for source_file in self.source_index.files
+                ),
+                "targets": tuple(
+                    self.target_payload(target)
+                    for target in self.source_index.ast_targets
+                ),
+                "evidence": tuple(
+                    dict(evidence.__dict__) for evidence in self.source_index.evidence
+                ),
+                "target_ids_by_finding_id": (
+                    self.source_index.target_ids_by_finding_id.to_dict()
+                ),
+                "finding_ids_by_target_id": (
+                    self.source_index.finding_ids_by_target_id.to_dict()
+                ),
+            }
+        )
+
+    @staticmethod
+    def target_payload(target: AstTargetDigest) -> JsonObject:
+        return JsonObject(dict(target.__dict__))
 
 
 @dataclass(frozen=True)
@@ -1816,6 +1874,58 @@ class CallSiteTargetSelector(CodemodTargetSelector):
                 site.enclosing_target_id
                 for site in CallSiteSelector(self.callee_names).call_sites(context)
                 if site.enclosing_target_id is not None
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CodemodSelectorResolutionReport:
+    """JSON-ready report for a codemod target selector dry run."""
+
+    selector: CodemodTargetSelector
+    selected_target_ids: tuple[str, ...]
+    selected_targets: tuple[AstTargetDigest, ...]
+    missing_target_ids: tuple[str, ...] = ()
+
+    @property
+    def selected_count(self) -> int:
+        return len(self.selected_targets)
+
+    @classmethod
+    def from_selector_context(
+        cls,
+        selector: CodemodTargetSelector,
+        context: CodemodSelectorContext,
+    ) -> "CodemodSelectorResolutionReport":
+        selected_target_ids = selector.target_ids(context)
+        selected_targets = tuple(
+            context.source_index.target_by_id[target_id]
+            for target_id in selected_target_ids
+            if target_id in context.source_index.target_by_id
+        )
+        missing_target_ids = tuple(
+            target_id
+            for target_id in selected_target_ids
+            if target_id not in context.source_index.target_by_id
+        )
+        return cls(
+            selector=selector,
+            selected_target_ids=selected_target_ids,
+            selected_targets=selected_targets,
+            missing_target_ids=missing_target_ids,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "selector": self.selector.to_dict(),
+                "selected_count": self.selected_count,
+                "selected_target_ids": self.selected_target_ids,
+                "selected_targets": tuple(
+                    CodemodSourceIndexReport.target_payload(target)
+                    for target in self.selected_targets
+                ),
+                "missing_target_ids": self.missing_target_ids,
             }
         )
 

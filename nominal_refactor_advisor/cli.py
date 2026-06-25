@@ -11,6 +11,7 @@ import argparse
 import ast
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
@@ -42,6 +43,7 @@ from .codemod import (
     CodemodAutomationLevel,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
+    CodemodTargetSelector,
     CodemodSimulationReport,
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
@@ -359,6 +361,23 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-source-index", "--codemod-target-index"),
+            action="store_true",
+            dest="codemod_source_index",
+            help=(
+                "Scan paths, emit JSON source-index target rows for codemod "
+                "DSL authoring, and exit."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-resolve-selector",),
+            value_type=Path,
+            help=(
+                "Load one codemod target selector JSON object, resolve it "
+                "against scanned paths, emit selected target rows, and exit."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-diff",),
             action="store_true",
             help="Emit a unified diff for all currently planned codemod rewrites.",
@@ -493,6 +512,15 @@ def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
         json.loads(path.read_text(encoding="utf-8")),
     )
     return CodemodPlanDocument.from_json_value(payload)
+
+
+def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
+    """Load one registry-backed codemod target selector from JSON."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        raise ValueError("codemod selector JSON must be an object")
+    return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
 
 
 @dataclass(frozen=True)
@@ -1292,11 +1320,30 @@ class ArchitectureGuardSourceEvaluator:
 
 
 @dataclass(frozen=True)
-class CodemodCliExecution(CliCommand):
+class CodemodSourceSnapshotRequiredCommand(CliCommand, ABC):
+    """CLI command that requires a prepared codemod source snapshot."""
+
+    source_snapshot: CodemodSourceSnapshot | None
+    source_snapshot_error_message: ClassVar[str] = (
+        "codemod command requires a source snapshot"
+    )
+
+    def required_source_snapshot(self) -> CodemodSourceSnapshot:
+        if self.source_snapshot is not None:
+            return self.source_snapshot
+        self.parser.error(self.source_snapshot_error_message)
+        raise RuntimeError("argparse.error should have exited")
+
+
+@dataclass(frozen=True)
+class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
 
     command_id = "codemod_execution"
-    source_snapshot: CodemodSourceSnapshot | None
+    source_snapshot_error_message: ClassVar[str] = (
+        "--codemod-diff/--codemod-apply require codemod candidates "
+        "or recipe rewrites"
+    )
     impact_candidates: CodemodCandidateSelection
     codemod_plan_document: CodemodPlanDocument
     architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
@@ -1324,15 +1371,6 @@ class CodemodCliExecution(CliCommand):
         applied = self.apply_if_requested(simulation, plan_document_simulation)
         self.emit_success(snapshot, simulation, applied, architecture_guard_report)
         return 0
-
-    def required_source_snapshot(self) -> CodemodSourceSnapshot:
-        if self.source_snapshot is not None:
-            return self.source_snapshot
-        self.parser.error(
-            "--codemod-diff/--codemod-apply require codemod candidates "
-            "or recipe rewrites"
-        )
-        raise RuntimeError("argparse.error should have exited")
 
     def simulation_context(
         self,
@@ -1454,6 +1492,134 @@ class CodemodCliExecution(CliCommand):
             )
 
 
+@dataclass(frozen=True)
+class CodemodScanQueryMode:
+    """Validated family of scan-backed codemod DSL query modes."""
+
+    synthesize_plan: bool
+    source_index: bool
+    selector_path: Path | None
+
+    @classmethod
+    def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
+        return cls(
+            synthesize_plan=args.codemod_synthesize_plan,
+            source_index=args.codemod_source_index,
+            selector_path=args.codemod_resolve_selector,
+        )
+
+    @property
+    def requested(self) -> bool:
+        return self.mode_count > 0
+
+    @property
+    def needs_analysis(self) -> bool:
+        return not self.source_index
+
+    @property
+    def mode_count(self) -> int:
+        return sum(
+            (
+                self.synthesize_plan,
+                self.source_index,
+                self.selector_path is not None,
+            )
+        )
+
+    def require_valid(self, parser: argparse.ArgumentParser) -> None:
+        if self.mode_count <= 1:
+            return
+        parser.error(
+            "--codemod-synthesize-plan, --codemod-source-index, and "
+            "--codemod-resolve-selector are mutually exclusive"
+        )
+
+
+@dataclass(frozen=True)
+class CodemodScanQueryCliCommand(CodemodSourceSnapshotRequiredCommand, ABC):
+    """Registered command that emits one scan-backed codemod DSL query."""
+
+    source_snapshot_error_message: ClassVar[str] = (
+        "codemod scan query requires a source snapshot"
+    )
+    findings: list[RefactorFinding]
+
+    @classmethod
+    def run_first(
+        cls,
+        parser: argparse.ArgumentParser,
+        args: argparse.Namespace,
+        source_snapshot: CodemodSourceSnapshot | None,
+        findings: list[RefactorFinding],
+    ) -> int | None:
+        for command_type in CliCommand.__registry__.values():
+            if not issubclass(command_type, cls):
+                continue
+            command = command_type(parser, args, source_snapshot, findings)
+            if command.requested:
+                return command.run()
+        return None
+
+
+class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
+    """Emit finding-backed executable codemod recipes."""
+
+    command_id = "codemod_synthesize_plan"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_synthesize_plan
+
+    def run(self) -> int:
+        finding_recipe_plan = self.required_source_snapshot().plan_from_findings(
+            self.findings
+        )
+        if self.args.codemod_synthesize_document_only:
+            payload = finding_recipe_plan.document.to_dict()
+        else:
+            payload = finding_recipe_plan.to_dict()
+        print(json.dumps(payload, indent=2))
+        return 0
+
+
+class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
+    """Emit source-index target rows for DSL authoring."""
+
+    command_id = "codemod_source_index"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_source_index
+
+    def run(self) -> int:
+        print(
+            json.dumps(
+                self.required_source_snapshot().source_index_report().to_dict(),
+                indent=2,
+            )
+        )
+        return 0
+
+
+class CodemodResolveSelectorCliCommand(CodemodScanQueryCliCommand):
+    """Resolve one registry-backed target selector against scanned source."""
+
+    command_id = "codemod_resolve_selector"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_resolve_selector is not None
+
+    def run(self) -> int:
+        snapshot = self.required_source_snapshot()
+        try:
+            selector = load_codemod_target_selector(self.args.codemod_resolve_selector)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self.parser.error(str(error))
+        print(json.dumps(snapshot.resolve_selector(selector).to_dict(), indent=2))
+        return 0
+
+
 def main() -> int:
     """Run the command-line interface and return a process status code."""
     parser = argparse.ArgumentParser(
@@ -1468,12 +1634,14 @@ def main() -> int:
         return early_exit_code
 
     config = DetectorConfig.from_namespace(args)
+    codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(args)
+    codemod_scan_query_mode.require_valid(parser)
     codemod_requested = (
         args.codemod_plan is not None
         or args.codemod_diff
         or args.codemod_apply
         or args.codemod_fixpoint
-        or args.codemod_synthesize_plan
+        or codemod_scan_query_mode.requested
     )
     codemod_plan_document = (
         load_codemod_plan_document(args.codemod_plan)
@@ -1487,7 +1655,7 @@ def main() -> int:
     if (
         codemod_requested
         and not args.codemod_fixpoint
-        and not args.codemod_synthesize_plan
+        and not codemod_scan_query_mode.requested
         and not args.include_impact_ranking
         and not codemod_plan_document.has_recipes
     ):
@@ -1578,7 +1746,7 @@ def main() -> int:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
             or args.codemod_fixpoint
-            or args.codemod_synthesize_plan,
+            or codemod_scan_query_mode.requested,
             raw_findings=args.raw_findings,
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
@@ -1593,9 +1761,13 @@ def main() -> int:
             parse_workers=args.parse_workers,
         )
         parse_seconds = round(perf_counter() - started, 3)
-        started = perf_counter()
-        findings = analyze_modules(modules, config)
-        analysis_seconds = round(perf_counter() - started, 3)
+        if not codemod_scan_query_mode.needs_analysis:
+            findings = []
+            analysis_seconds = 0.0
+        else:
+            started = perf_counter()
+            findings = analyze_modules(modules, config)
+            analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
         findings = analyze_lean_export(args.import_lean_export)
@@ -1655,21 +1827,20 @@ def main() -> int:
     if (
         args.include_impact_ranking
         or codemod_plan_document.has_recipes
-        or args.codemod_synthesize_plan
+        or codemod_scan_query_mode.requested
     ):
         started = perf_counter()
         source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)
 
-    if args.codemod_synthesize_plan:
-        if source_snapshot is None:
-            raise RuntimeError("codemod synthesis requires a source snapshot")
-        finding_recipe_plan = source_snapshot.plan_from_findings(findings)
-        if args.codemod_synthesize_document_only:
-            print(json.dumps(finding_recipe_plan.document.to_dict(), indent=2))
-        else:
-            print(json.dumps(finding_recipe_plan.to_dict(), indent=2))
-        return 0
+    scan_query_result = CodemodScanQueryCliCommand.run_first(
+        parser,
+        args,
+        source_snapshot,
+        findings,
+    )
+    if scan_query_result is not None:
+        return scan_query_result
 
     if args.include_impact_ranking:
         source_index = source_snapshot.source_index
