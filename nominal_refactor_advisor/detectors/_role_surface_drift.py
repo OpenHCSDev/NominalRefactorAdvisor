@@ -14,7 +14,6 @@ from ..semantic_description_length import CompressionCertificate
 from ._base import *
 from ._helpers import *
 
-
 _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS = frozenset(
     {
         "arg",
@@ -43,6 +42,8 @@ _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS = frozenset(
         "fields",
         "for",
         "from",
+        "function",
+        "functions",
         "get",
         "has",
         "id",
@@ -136,6 +137,18 @@ _ROLE_SURFACE_BROAD_CARRIER_TOKENS = frozenset(
         "payload",
         "semantic",
         "semantics",
+    }
+)
+_ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS = frozenset(
+    {
+        "codemod",
+        "finding",
+        "metric",
+        "metrics",
+        "patch",
+        "renderer",
+        "scaffold",
+        "summary",
     }
 )
 _GENERIC_ROLE_CASE_LITERAL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -402,13 +415,7 @@ class RoleSurfaceTokenProjection:
 
     def target_tokens(self, targets: Iterable[ast.AST]) -> tuple[str, ...]:
         return tuple(
-            sorted(
-                {
-                    token
-                    for target in targets
-                    for token in self.node_tokens(target)
-                }
-            )
+            sorted({token for target in targets for token in self.node_tokens(target)})
         )
 
 
@@ -505,9 +512,9 @@ class _LocalRoleCaseLiteralRecord:
 class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
     def __init__(self, broad_tokens: tuple[str, ...]) -> None:
         self.broad_tokens = frozenset(broad_tokens)
-        self.mapping_records_by_name: dict[
-            str, list[_LocalRoleCaseLiteralRecord]
-        ] = defaultdict(list)
+        self.mapping_records_by_name: dict[str, list[_LocalRoleCaseLiteralRecord]] = (
+            defaultdict(list)
+        )
         self.axis_indexed_mapping_names: set[str] = set()
         self.compare_records: list[_LocalRoleCaseLiteralRecord] = []
 
@@ -540,9 +547,8 @@ class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
-        if (
-            isinstance(node.value, ast.Name)
-            and self._expression_has_broad_axis_token(node.slice)
+        if isinstance(node.value, ast.Name) and self._expression_has_broad_axis_token(
+            node.slice
         ):
             self.axis_indexed_mapping_names.add(node.value.id)
         self.generic_visit(node)
@@ -577,9 +583,7 @@ class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
                 context_kind=_GENERIC_ROLE_CASE_CONTEXT_MAP_KEY,
             )
             for literal in sorted(items)
-            if (
-                literal_tokens := _generic_role_case_literal_tokens(literal)
-            )
+            if (literal_tokens := _generic_role_case_literal_tokens(literal))
         )
         for target_name in target_names:
             self.mapping_records_by_name[target_name].extend(records)
@@ -610,8 +614,7 @@ class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
 
     def _expression_has_broad_axis_token(self, node: ast.AST) -> bool:
         return bool(
-            self.broad_tokens
-            & set(ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(node))
+            self.broad_tokens & set(ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(node))
         )
 
 
@@ -658,9 +661,7 @@ def _generic_role_case_table_site(
     )
     if len(case_tokens) < config.min_generic_role_case_table_cases:
         return None
-    case_literals = tuple(
-        sorted({literal for _, literal, _, _ in literal_records})
-    )
+    case_literals = tuple(sorted({literal for _, literal, _, _ in literal_records}))
     context_kinds = tuple(sorted({context for *_, context in literal_records}))
     return GenericRoleCaseTableSite(
         file_path=str(module.path),
@@ -761,9 +762,7 @@ def _generic_role_case_table_candidates(
 
     candidates: list[GenericRoleCaseTableCandidate] = []
     for component in graph.connected_components:
-        unique_sites = tuple(
-            dict.fromkeys(projection.site for projection in component)
-        )
+        unique_sites = tuple(dict.fromkeys(projection.site for projection in component))
         if len(unique_sites) < config.min_generic_role_case_table_owners:
             continue
         owner_symbols = tuple(sorted({site.owner_symbol for site in unique_sites}))
@@ -798,7 +797,13 @@ def _generic_role_case_table_candidates(
                 shared_case_tokens=shared_case_tokens,
                 owner_symbols=owner_symbols,
                 case_literals=tuple(
-                    sorted({literal for site in unique_sites for literal in site.case_literals})
+                    sorted(
+                        {
+                            literal
+                            for site in unique_sites
+                            for literal in site.case_literals
+                        }
+                    )
                 ),
                 sites=unique_sites,
                 compression_certificate=certificate,
@@ -868,9 +873,7 @@ def _local_role_case_logic_site(
     )
     if len(case_tokens) < config.min_local_role_case_logic_cases:
         return None
-    case_literals = tuple(
-        sorted({record.literal for record in literal_records})
-    )
+    case_literals = tuple(sorted({record.literal for record in literal_records}))
     context_kinds = tuple(sorted({record.context_kind for record in literal_records}))
     candidate = LocalRoleCaseLogicCandidate(
         file_path=str(module.path),
@@ -1096,10 +1099,9 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
                     break
 
         assigned_tokens = _role_surface_assignment_target_tokens(parents, node)
-        if assigned_tokens:
+        if assigned_tokens and operation_kind is None:
             context_tokens.update(assigned_tokens)
-            if operation_kind is None:
-                operation_kind = _ROLE_SURFACE_OPERATION_ASSIGNED_FROM
+            operation_kind = _ROLE_SURFACE_OPERATION_ASSIGNED_FROM
 
         if operation_kind not in _ROLE_SURFACE_DRIFT_STRUCTURAL_OPERATIONS:
             return None
@@ -1108,6 +1110,7 @@ class _RoleSurfaceUseVisitor(ClassFunctionStackNodeVisitor):
             token
             for token in context_tokens
             if token not in _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS
+            and token not in _ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS
         }
         if not context_tokens:
             return None
@@ -1204,7 +1207,9 @@ def _role_surface_drift_candidates(
         )
         if operation_kinds == (_ROLE_SURFACE_OPERATION_ASSIGNED_FROM,):
             continue
-        class_names = tuple(sorted({declaration.class_name for declaration in declarations}))
+        class_names = tuple(
+            sorted({declaration.class_name for declaration in declarations})
+        )
         candidate = RoleSurfaceDriftCandidate(
             file_path=declarations[0].file_path,
             line=min(declaration.line for declaration in declarations),
@@ -1219,7 +1224,9 @@ def _role_surface_drift_candidates(
         if candidate.compression_certificate.pays_rent:
             candidates.append(candidate)
     return tuple(
-        sorted(candidates, key=lambda item: (item.file_path, item.line, item.field_name))
+        sorted(
+            candidates, key=lambda item: (item.file_path, item.line, item.field_name)
+        )
     )
 
 

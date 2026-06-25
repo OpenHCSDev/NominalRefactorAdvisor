@@ -13,7 +13,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Callable, Generic, TypeAlias, TypeVar
+from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
 from ..factorization import (
     FactorizationEngine,
@@ -6733,17 +6733,103 @@ class DeadEmbeddedStaticPayloadDetector(
         )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('UnreferencedPrivateFunctionCandidate', 'function_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
-materialize_product_record(product_record_spec('DanglingPrivateMethodCandidate', 'owner_name: str; method_name: str; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
-materialize_product_record(product_record_spec('PrivateHelperResiduePlan', 'classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; transported_parameter_names: tuple[str, ...]; callsite_axis_count: int; shared_statement_count: int; normal_form: str'))
-materialize_product_record(product_record_spec('PrivateHelperPlacementPlan', 'placement_kind: str; insertion_owner_name: str; insertion_detail: str; residue_plan: PrivateHelperResiduePlan; caller_owner_names: tuple[str, ...]'))
-materialize_product_record(product_record_spec('NonNominalPrivateHelperCandidate', 'function_name: str; parameter_names: tuple[str, ...]; caller_symbols: tuple[str, ...]; placement_plan: PrivateHelperPlacementPlan; line_count: int; call_site_count: int', 'QualnameLineWitnessCandidate'))
-materialize_product_record(product_record_spec('PrivateHelperClusterClassification', 'owner_name: str; normal_form: str; shared_stem: str; role_tokens: tuple[str, ...]; return_kinds: tuple[str, ...]; constructed_type_names: tuple[str, ...]'))
-materialize_product_record(product_record_spec('PrivateHelperSemanticClusterCandidate', 'helper_names: tuple[str, ...]; semantic_family: str; classification: PrivateHelperClusterClassification; shared_parameter_names: tuple[str, ...]; shared_call_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; cluster_size: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "helper_names")}))
-materialize_product_record(product_record_spec('PrivateHelperResidueNameTemplate', 'kind: str; prefix: str; suffix: str; uppercase: bool; parameter_name_is_authority: bool'))
-materialize_product_record(product_record_spec('PrivateHelperAuthorityRole', 'role_tokens: tuple[str, ...]; suffix: str; drop_tokens: tuple[str, ...]'))
-# fmt: on
+@dataclass(frozen=True)
+class LineCountedWitnessCandidate(LineWitnessCandidate):
+    line_count: int
+
+
+@dataclass(frozen=True)
+class LineCountedQualnameCandidate(
+    QualnameWitnessNameMixin,
+    LineCountedWitnessCandidate,
+):
+    qualname: str
+
+
+@dataclass(frozen=True)
+class CallCountedQualnameCandidate(LineCountedQualnameCandidate):
+    call_site_count: int
+
+
+@dataclass(frozen=True)
+class UnreferencedPrivateFunctionCandidate(CallCountedQualnameCandidate):
+    function_name: str
+
+
+@dataclass(frozen=True)
+class DanglingPrivateMethodCandidate(CallCountedQualnameCandidate):
+    owner_name: str
+    method_name: str
+
+
+@dataclass(frozen=True)
+class PrivateHelperResiduePlan:
+    classvar_names: tuple[str, ...]
+    property_hook_names: tuple[str, ...]
+    behavior_hook_names: tuple[str, ...]
+    transported_parameter_names: tuple[str, ...]
+    callsite_axis_count: int
+    shared_statement_count: int
+    residue_normal_form: str
+
+
+@dataclass(frozen=True)
+class PrivateHelperPlacementPlan:
+    placement_kind: str
+    insertion_owner_name: str
+    insertion_detail: str
+    residue_plan: PrivateHelperResiduePlan
+    caller_owner_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NonNominalPrivateHelperCandidate(CallCountedQualnameCandidate):
+    function_name: str
+    parameter_names: tuple[str, ...]
+    caller_symbols: tuple[str, ...]
+    placement_plan: PrivateHelperPlacementPlan
+
+
+@dataclass(frozen=True)
+class PrivateHelperClusterClassification:
+    owner_name: str
+    cluster_normal_form: str
+    shared_stem: str
+    classification_role_tokens: tuple[str, ...]
+    return_kinds: tuple[str, ...]
+    constructed_type_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PrivateHelperSemanticClusterCandidate(LineCountedWitnessCandidate):
+    helper_names: tuple[str, ...]
+    semantic_family: str
+    classification: PrivateHelperClusterClassification
+    shared_parameter_names: tuple[str, ...]
+    shared_call_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    cluster_size: int
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "helper_names")
+    )
+
+
+@dataclass(frozen=True)
+class PrivateHelperResidueNameTemplate:
+    kind: str
+    prefix: str
+    suffix: str
+    uppercase: bool
+    parameter_name_is_authority: bool
+
+
+@dataclass(frozen=True)
+class PrivateHelperAuthorityRole:
+    authority_role_tokens: tuple[str, ...]
+    suffix: str
+    drop_tokens: tuple[str, ...]
+
 
 _RuntimeFunctionsByQualname: TypeAlias = dict[str, _RuntimeFunctionNode]
 
@@ -6766,7 +6852,10 @@ class _PrivateHelperResidueSink(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     def for_kind(cls, kind: _PrivateHelperResidueKind) -> "_PrivateHelperResidueSink":
-        sink_class = cls.__registry__.get(kind, _PrivateHelperPropertyResidueSink)
+        if kind in cls.__registry__:
+            sink_class = cls.__registry__[kind]
+        else:
+            sink_class = _PrivateHelperPropertyResidueSink
         return sink_class()
 
     @abstractmethod
@@ -7317,7 +7406,7 @@ def _private_helper_residue_plan(
         transported_parameter_names=tuple(dict.fromkeys(transported_parameter_names)),
         callsite_axis_count=callsite_axis_count,
         shared_statement_count=shared_statement_count,
-        normal_form=normal_form,
+        residue_normal_form=normal_form,
     )
 
 
@@ -7345,37 +7434,37 @@ _PRIVATE_HELPER_AUTHORITY_VERB_TOKENS = frozenset(
 )
 _PRIVATE_HELPER_AUTHORITY_ROLES = (
     PrivateHelperAuthorityRole(
-        role_tokens=("candidate", "candidates", "collect", "collector"),
+        authority_role_tokens=("candidate", "candidates", "collect", "collector"),
         suffix="CandidateCollector",
         drop_tokens=("candidate", "candidates", "collect", "collector"),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("metric", "metrics"),
+        authority_role_tokens=("metric", "metrics"),
         suffix="MetricsBuilder",
         drop_tokens=("metric", "metrics"),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("dispatch",),
+        authority_role_tokens=("dispatch",),
         suffix="DispatchAuthority",
         drop_tokens=("dispatch",),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("registry", "registered"),
+        authority_role_tokens=("registry", "registered"),
         suffix="RegistryAuthority",
         drop_tokens=("registry", "registered"),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("template", "templates"),
+        authority_role_tokens=("template", "templates"),
         suffix="TemplateAuthority",
         drop_tokens=("template", "templates"),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("shape", "shapes"),
+        authority_role_tokens=("shape", "shapes"),
         suffix="ShapeProjector",
         drop_tokens=("shape", "shapes"),
     ),
     PrivateHelperAuthorityRole(
-        role_tokens=("name", "names"),
+        authority_role_tokens=("name", "names"),
         suffix="NameProjection",
         drop_tokens=("name", "names"),
     ),
@@ -7461,7 +7550,7 @@ def _private_helper_authority_role(
         (
             role
             for role in _PRIVATE_HELPER_AUTHORITY_ROLES
-            if all_tokens & frozenset(role.role_tokens)
+            if all_tokens & frozenset(role.authority_role_tokens)
         ),
         None,
     )
@@ -7790,9 +7879,9 @@ def _private_helper_cluster_classification(
     )
     return PrivateHelperClusterClassification(
         owner_name=owner_name,
-        normal_form=normal_form,
+        cluster_normal_form=normal_form,
         shared_stem="_".join(stem_tokens),
-        role_tokens=role_tokens,
+        classification_role_tokens=role_tokens,
         return_kinds=return_kinds,
         constructed_type_names=constructed_type_names,
     )
@@ -8104,7 +8193,7 @@ class NonNominalPrivateHelperDetector(
             f"class {helper_candidate.placement_plan.insertion_owner_name}(ABC):\n"
             f"    def {helper_candidate.function_name.removeprefix('_')}(self, request): ...\n\n"
             f"# {helper_candidate.placement_plan.insertion_detail}\n"
-            f"# Normal form: {helper_candidate.placement_plan.residue_plan.normal_form}\n"
+            f"# Normal form: {helper_candidate.placement_plan.residue_plan.residue_normal_form}\n"
             f"# Classvar residue: {helper_candidate.placement_plan.residue_plan.classvar_names}\n"
             f"# Property hook residue: {helper_candidate.placement_plan.residue_plan.property_hook_names}\n"
             f"# Behavior hook residue: {helper_candidate.placement_plan.residue_plan.behavior_hook_names}"
@@ -8114,7 +8203,7 @@ class NonNominalPrivateHelperDetector(
             f"# Placement kind: {helper_candidate.placement_plan.placement_kind}\n"
             f"# Insertion owner: `{helper_candidate.placement_plan.insertion_owner_name}`\n"
             f"# {helper_candidate.placement_plan.insertion_detail}\n"
-            f"# Normal form: {helper_candidate.placement_plan.residue_plan.normal_form}\n"
+            f"# Normal form: {helper_candidate.placement_plan.residue_plan.residue_normal_form}\n"
             f"# Caller owners: {helper_candidate.placement_plan.caller_owner_names}\n"
             f"# Transported inputs: {helper_candidate.placement_plan.residue_plan.transported_parameter_names}\n"
             f"# Classvars: {helper_candidate.placement_plan.residue_plan.classvar_names}\n"
@@ -8169,8 +8258,8 @@ class PrivateHelperSemanticClusterDetector(
         summary=lambda cluster: (
             f"{cluster.cluster_size} private helpers {cluster.helper_names} in "
             f"`{cluster.semantic_family}` share stem `{cluster.classification.shared_stem}` "
-            f"and normal form `{cluster.classification.normal_form}`; inferred owner "
-            f"`{cluster.classification.owner_name}`. Roles: {cluster.classification.role_tokens}; "
+            f"and normal form `{cluster.classification.cluster_normal_form}`; inferred owner "
+            f"`{cluster.classification.owner_name}`. Roles: {cluster.classification.classification_role_tokens}; "
             f"returns: {cluster.classification.return_kinds}; constructs: "
             f"{cluster.classification.constructed_type_names}; consumers: {cluster.consumer_symbols[:6]}. "
             f"Rent proof: {_private_helper_cluster_certificate(cluster).rent_proof_summary}."
@@ -8178,8 +8267,8 @@ class PrivateHelperSemanticClusterDetector(
         evidence=lambda cluster: cluster.evidence_locations,
         scaffold=lambda cluster: (
             f"class {cluster.classification.owner_name}(ABC):\n"
-            f"    normal_form = {cluster.classification.normal_form!r}\n"
-            f"    role_tokens = {cluster.classification.role_tokens!r}\n"
+            f"    normal_form = {cluster.classification.cluster_normal_form!r}\n"
+            f"    role_tokens = {cluster.classification.classification_role_tokens!r}\n"
             "    # Put the shared algorithm in concrete ABC methods.\n"
             "    # Keep only role-specific residue as classvars/properties/hooks.\n"
             "    ..."
@@ -8187,8 +8276,8 @@ class PrivateHelperSemanticClusterDetector(
         codemod_patch=lambda cluster: (
             f"# Do not fix {cluster.helper_names} by renaming or wrapping them.\n"
             f"# Factor `{cluster.classification.shared_stem}` into `{cluster.classification.owner_name}` "
-            f"as `{cluster.classification.normal_form}`.\n"
-            f"# Role/residue tokens: {cluster.classification.role_tokens}\n"
+            f"as `{cluster.classification.cluster_normal_form}`.\n"
+            f"# Role/residue tokens: {cluster.classification.classification_role_tokens}\n"
             f"# Return kinds: {cluster.classification.return_kinds}\n"
             f"# Constructed types: {cluster.classification.constructed_type_names}\n"
             f"# Shared parameters: {cluster.shared_parameter_names}\n"

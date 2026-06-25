@@ -5302,6 +5302,18 @@ def test_role_surface_drift_ignores_explicit_semantics_carrier(
     assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
 
 
+def test_role_surface_drift_ignores_candidate_renderer_presentation_sink(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/detector.py",
+        "\nclass CandidateFindingRenderer:\n    def __init__(self, **kwargs):\n        self.kwargs = kwargs\n\n\nclass OrchestrationMetrics:\n    def __init__(self, **kwargs):\n        self.kwargs = kwargs\n\n\nclass NonNominalCandidate:\n    line_count: int\n    call_site_count: int\n    placement_plan: object\n\n\nfinding_renderer = CandidateFindingRenderer(\n    summary=lambda candidate: f'{candidate.line_count} {candidate.call_site_count}',\n    scaffold=lambda candidate: f'{candidate.placement_plan}',\n    codemod_patch=lambda candidate: f'{candidate.placement_plan}',\n    metrics=lambda candidate: OrchestrationMetrics(\n        function_line_count=candidate.line_count,\n        call_site_count=candidate.call_site_count,\n    ),\n)\n",
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(finding.detector_id == "role_surface_drift" for finding in findings)
+
+
 def test_detects_generic_role_case_table_under_shared_axis(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
