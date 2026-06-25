@@ -9003,6 +9003,12 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
+    assert operations["extract_authority"]["description"] == (
+        "Replace a helper target with a nominal authority and route call sites."
+    )
+    assert selectors["source_index_target"]["description"] == (
+        "Select source-index AST targets by kind, path, qualname, or regex."
+    )
     assert (
         operations["extract_authority"]["example_payload"]["call_replacements"][0][
             "old_source"

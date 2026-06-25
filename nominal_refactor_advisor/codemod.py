@@ -18,6 +18,7 @@ import ast
 import difflib
 import hashlib
 import importlib.util
+import inspect
 import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
@@ -1612,7 +1613,7 @@ class RegexPatternSet:
 
 @dataclass(frozen=True)
 class SourceIndexTargetSelector(CodemodTargetSelector):
-    """Select source-index targets by kind, file, and qualname."""
+    """Select source-index AST targets by kind, path, qualname, or regex."""
 
     node_kinds: tuple[AstTargetNodeKind, ...] = ()
     file_paths: tuple[str, ...] = ()
@@ -6161,6 +6162,7 @@ class CodemodDslRegistryEntryManifest:
     """Shared manifest surface for one registered DSL entry."""
 
     class_name: str
+    description: str
     payload_fields: tuple[CodemodDslFieldManifest, ...]
 
     def payload_field_dicts(self) -> tuple[JsonObject, ...]:
@@ -6182,6 +6184,7 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
     ) -> "CodemodDslOperationManifest":
         return cls(
             class_name=operation_type.__name__,
+            description=codemod_dsl_entry_description(operation_type),
             payload_fields=tuple(
                 CodemodDslFieldManifest.from_binding(binding)
                 for binding in operation_type.payload_bindings()
@@ -6197,6 +6200,7 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
         return {
             "operation": self.operation,
             "class_name": self.class_name,
+            "description": self.description,
             "target_fields": tuple(field.to_dict() for field in codemod_target_fields()),
             "payload_fields": self.payload_field_dicts(),
             "common_fields": tuple(field.to_dict() for field in codemod_common_fields()),
@@ -6235,6 +6239,7 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
     ) -> "CodemodDslSelectorManifest":
         return cls(
             class_name=selector_type.__name__,
+            description=codemod_dsl_entry_description(selector_type),
             payload_fields=tuple(
                 CodemodDslFieldManifest.from_binding(binding)
                 for binding in selector_type.selector_payload_bindings
@@ -6246,6 +6251,7 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
         return {
             "selector": self.selector,
             "class_name": self.class_name,
+            "description": self.description,
             "payload_fields": self.payload_field_dicts(),
             "example_payload": self.example_payload(),
         }
@@ -6300,6 +6306,17 @@ def codemod_dsl_manifest() -> CodemodDslManifest:
             for key, selector_type in sorted(CodemodTargetSelector.__registry__.items())
         ),
     )
+
+
+def codemod_dsl_entry_description(
+    entry_type: type[RefactorRecipeOperation] | type[CodemodTargetSelector],
+) -> str:
+    """Return a normalized semantic description for one registry entry."""
+
+    description = inspect.getdoc(entry_type)
+    if description is None:
+        raise ValueError(f"{entry_type.__name__} must define a DSL description")
+    return description
 
 
 def codemod_dsl_example_plan_document() -> CodemodPlanDocument:
