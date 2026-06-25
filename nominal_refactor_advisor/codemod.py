@@ -1000,6 +1000,23 @@ class SelectorPayloadReader:
     ) -> JsonValue:
         return SelectorPayloadReader.bool_with_default(payload, field_name, False)
 
+    @staticmethod
+    def selector_tuple(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> JsonValue:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"Expected selector array field {field_name!r}")
+        selectors = []
+        for item in value:
+            if not isinstance(item, Mapping):
+                raise ValueError(f"Expected selector object entries in {field_name!r}")
+            selectors.append(CodemodTargetSelector.from_dict(item))
+        return tuple(selectors)
+
 
 class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     """Semantic selector that resolves to source-index target ids."""
@@ -1098,6 +1115,66 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         return context.source_index.target_ids_for_finding_ids(self.finding_ids)
+
+
+@dataclass(frozen=True)
+class TargetSetExpressionSelector(CodemodTargetSelector):
+    """Compose selectors with union, intersection, and exclusion."""
+
+    include: tuple[CodemodTargetSelector, ...] = ()
+    require: tuple[CodemodTargetSelector, ...] = ()
+    exclude: tuple[CodemodTargetSelector, ...] = ()
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "include",
+                    "include",
+                    lambda selector: tuple(item.to_dict() for item in selector.include),
+                    SelectorPayloadReader.selector_tuple,
+                ),
+                (
+                    "require",
+                    "require",
+                    lambda selector: tuple(item.to_dict() for item in selector.require),
+                    SelectorPayloadReader.selector_tuple,
+                ),
+                (
+                    "exclude",
+                    "exclude",
+                    lambda selector: tuple(item.to_dict() for item in selector.exclude),
+                    SelectorPayloadReader.selector_tuple,
+                ),
+            )
+        )
+    )
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        if not (self.include or self.require or self.exclude):
+            raise ValueError("Target set expression selector cannot be empty")
+        selected_target_ids = self.included_target_ids(context)
+        for selector in self.require:
+            selected_target_ids.intersection_update(selector.target_ids(context))
+        for selector in self.exclude:
+            selected_target_ids.difference_update(selector.target_ids(context))
+        return sorted_tuple(selected_target_ids)
+
+    def included_target_ids(self, context: CodemodSelectorContext) -> set[str]:
+        if not self.include:
+            return set(context.source_index.target_by_id)
+        selected_target_ids: set[str] = set()
+        for selector in self.include:
+            selected_target_ids.update(selector.target_ids(context))
+        return selected_target_ids
 
 
 @dataclass(frozen=True)

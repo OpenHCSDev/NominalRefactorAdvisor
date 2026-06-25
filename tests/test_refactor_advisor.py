@@ -85,6 +85,7 @@ from nominal_refactor_advisor.codemod import (
     RecipeCallReplacement,
     SourceRewriteTarget,
     SourceIndexTargetSelector,
+    TargetSetExpressionSelector,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
@@ -1131,6 +1132,48 @@ def test_source_index_target_selector_rejects_invalid_regex_patterns(
 
     with pytest.raises(ValueError, match="Invalid selector regex pattern"):
         SourceIndexTargetSelector(qualname_patterns=("[",)).select(context)
+
+
+def test_target_set_expression_selector_composes_union_intersection_and_exclusion(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef helper(value):\n"
+        "    return value\n\n\n"
+        "class Alpha:\n"
+        "    def run(self):\n"
+        "        return helper(1)\n\n\n"
+        "class Beta:\n"
+        "    def run(self):\n"
+        "        return 2\n\n\n"
+        "class Gamma:\n"
+        "    def run(self):\n"
+        "        return helper(3)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+    )
+
+    selected = TargetSetExpressionSelector(
+        include=(
+            SourceIndexTargetSelector(qualnames=("Alpha.run",)),
+            SourceIndexTargetSelector(qualnames=("Beta.run",)),
+            SourceIndexTargetSelector(qualnames=("Gamma.run",)),
+        ),
+        require=(CallSiteTargetSelector(("helper",)),),
+        exclude=(SourceIndexTargetSelector(qualnames=("Gamma.run",)),),
+    ).select(context)
+
+    assert tuple(
+        source_index.target_by_id[target_id].qualname
+        for target_id in selected.target_ids
+    ) == ("Alpha.run",)
 
 
 def test_class_level_inheritance_findings_synthesize_promotion_recipe(
@@ -9066,6 +9109,93 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
     assert simulation.simulation.applied_rewrite_count == 2
     simulation.apply()
     assert module_path.read_text().count("modern(value)") == 2
+
+
+def test_apply_selected_targets_accepts_selector_set_expression_json(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\ndef helper(value):\n"
+        "    return value\n\n\n"
+        "class Alpha:\n"
+        "    def run(self, value):\n"
+        "        return helper(legacy(value))\n\n\n"
+        "class Beta:\n"
+        "    def run(self, value):\n"
+        "        return helper(legacy(value))\n\n\n"
+        "class Gamma:\n"
+        "    def run(self, value):\n"
+        "        return legacy(value)\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "selector-expression",
+                        "operations": [
+                            {
+                                "operation": "apply_selected_targets",
+                                "selector": {
+                                    "selector": "target_set_expression",
+                                    "include": [
+                                        {
+                                            "selector": "source_index_target",
+                                            "node_kinds": ["method"],
+                                            "qualname_patterns": [r"\.run$"],
+                                        }
+                                    ],
+                                    "require": [
+                                        {
+                                            "selector": "call_site_target",
+                                            "callee_names": ["helper"],
+                                        }
+                                    ],
+                                    "exclude": [
+                                        {
+                                            "selector": "source_index_target",
+                                            "qualnames": ["Beta.run"],
+                                        }
+                                    ],
+                                },
+                                "operation_templates": [
+                                    {
+                                        "operation": "replace_text",
+                                        "old_source": "legacy(value)",
+                                        "new_source": (
+                                            "modern('${target.qualname}', value)"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = load_codemod_plan_document(plan_path)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "modern('Alpha.run', value)" in rewritten
+    assert rewritten.count("legacy(value)") == 2
 
 
 def test_apply_selected_targets_rejects_unknown_target_template_field(
