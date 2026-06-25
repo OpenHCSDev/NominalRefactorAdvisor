@@ -2099,7 +2099,6 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
         target = record.target
         return RefactorRecipeRewrite(
             target=SourceRewriteTarget(
-                target_identifier=target.target_id,
                 qualname=target.qualname,
                 source_path=target.file_path,
             ),

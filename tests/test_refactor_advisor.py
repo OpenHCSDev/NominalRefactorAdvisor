@@ -9420,7 +9420,9 @@ def test_module_cli_scaffolds_editable_replacement_plan(
 
     assert scaffold_result.returncode == 0, scaffold_result.stderr
     assert scaffold_payload["selected_count"] == 1
+    assert rewrite["target_id"] is None
     assert rewrite["target_qualname"] == "Alpha.run"
+    assert rewrite["file_path"] == module_path.as_posix()
     assert rewrite["replacement_source"] == (
         "    def run(self, value):\n"
         "        prepared = value + 1\n"
@@ -9433,6 +9435,10 @@ def test_module_cli_scaffolds_editable_replacement_plan(
     )
     plan_path = tmp_path / "replacement-plan.json"
     plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
+    module_path.write_text(
+        "# line shift after scaffold generation\n" + module_path.read_text(),
+        encoding="utf-8",
+    )
     simulate_result = subprocess.run(
         [
             sys.executable,
