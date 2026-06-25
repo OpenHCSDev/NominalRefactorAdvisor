@@ -8827,16 +8827,21 @@ def _shared_nominal_base_classes(
     return abstract_bases or base_classes
 
 
-def _cancelable_composition_signals_for_modules(
-    modules: list[ParsedModule],
-) -> tuple[CancelableCompositionSignal, ...]:
-    if not modules:
-        return ()
-    source_index = build_source_index(modules, ())
-    return detect_cancelable_composition_signals(
-        source_index,
-        {str(module.path): module.source for module in modules},
-    )
+@dataclass(frozen=True)
+class CancelableCompositionSignalQuery:
+    """Cached source-index query for cancelable product-composition signals."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @lru_cache(maxsize=None)
+    def signals(self) -> tuple[CancelableCompositionSignal, ...]:
+        if not self.modules:
+            return ()
+        source_index = build_source_index(list(self.modules), ())
+        return detect_cancelable_composition_signals(
+            source_index,
+            {str(module.path): module.source for module in self.modules},
+        )
 
 
 def _related_composition_signals(
@@ -8929,7 +8934,7 @@ def _nominal_authority_bypass_candidates(
     wrapper_chains = tuple(
         chain for module in modules for chain in _wrapper_chain_candidates(module)
     )
-    composition_signals = _cancelable_composition_signals_for_modules(modules)
+    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
 
     candidates: list[_NominalAuthorityBypassCandidate] = []
     for module in modules:
@@ -9315,7 +9320,7 @@ def _variant_method_family_candidates(
     wrapper_chains = tuple(
         chain for module in modules for chain in _wrapper_chain_candidates(module)
     )
-    composition_signals = _cancelable_composition_signals_for_modules(modules)
+    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
     grouped: dict[
         tuple[str, str, str, tuple[str, ...], str],
         list[_VariantMethodSurface],
