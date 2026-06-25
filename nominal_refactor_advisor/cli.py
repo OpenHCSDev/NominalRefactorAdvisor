@@ -392,6 +392,15 @@ _CLI_ARGUMENT_SPECS = (
             help="Emit a unified diff for all currently planned codemod rewrites.",
         ),
         CliArgumentSpec(
+            flags=("--codemod-simulate",),
+            action="store_true",
+            help=(
+                "Simulate all currently planned codemod rewrites, emit a "
+                "structured JSON report with parse validation and unified diff, "
+                "and exit without applying changes."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-apply",),
             action="store_true",
             help="Write all simulated codemod rewrites to disk after validation.",
@@ -539,6 +548,7 @@ class CodemodSimulationPayload:
     simulation: CodemodSimulationReport
     applied: bool = False
     post_guard_report: ArchitectureGuardReport | None = None
+    unified_diff: str | None = None
 
     def to_dict(self) -> JsonObject:
         payload: JsonObject = {
@@ -555,6 +565,8 @@ class CodemodSimulationPayload:
         }
         if self.post_guard_report is not None:
             payload["architecture_guard_report"] = self.post_guard_report.to_dict()
+        if self.unified_diff is not None:
+            payload["unified_diff"] = self.unified_diff
         return payload
 
 
@@ -1350,16 +1362,17 @@ class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
 
     command_id = "codemod_execution"
     source_snapshot_error_message: ClassVar[str] = (
-        "--codemod-diff/--codemod-apply require codemod candidates "
-        "or recipe rewrites"
+        "--codemod-diff/--codemod-simulate/--codemod-apply require "
+        "codemod candidates or recipe rewrites"
     )
     impact_candidates: CodemodCandidateSelection
     codemod_plan_document: CodemodPlanDocument
     architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
+    execution_mode: "CodemodExecutionMode"
 
     @property
     def requested(self) -> bool:
-        return self.args.codemod_diff or self.args.codemod_apply
+        return self.execution_mode.requested
 
     def run(self) -> int | None:
         if not self.requested:
@@ -1437,19 +1450,20 @@ class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
         simulation: CodemodSimulationReport,
         architecture_guard_report: ArchitectureGuardReport,
     ) -> int:
-        if self.args.json:
+        if self.execution_mode.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodSimulationPayload(
                         simulation,
                         applied=False,
                         post_guard_report=architecture_guard_report,
+                        unified_diff=self.unified_diff(snapshot, simulation),
                     ).to_dict(),
                     indent=2,
                 )
             )
         else:
-            if self.args.codemod_diff:
+            if self.execution_mode.diff_text_requested:
                 print(
                     snapshot.unified_diff(simulation),
                     end="",
@@ -1462,7 +1476,7 @@ class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
         simulation: CodemodSimulationReport,
         plan_document_simulation: CodemodPlanDocumentSimulation | None,
     ) -> bool:
-        if not self.args.codemod_apply:
+        if not self.execution_mode.apply:
             return False
         if plan_document_simulation is not None:
             plan_document_simulation.apply()
@@ -1477,18 +1491,19 @@ class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
         applied: bool,
         architecture_guard_report: ArchitectureGuardReport | None,
     ) -> None:
-        if self.args.json:
+        if self.execution_mode.json_report_requested(self.args.json):
             print(
                 json.dumps(
                     CodemodSimulationPayload(
                         simulation,
                         applied=applied,
                         post_guard_report=architecture_guard_report,
+                        unified_diff=self.optional_unified_diff(snapshot, simulation),
                     ).to_dict(),
                     indent=2,
                 )
             )
-        elif self.args.codemod_diff:
+        elif self.execution_mode.diff_text_requested:
             print(
                 snapshot.unified_diff(simulation),
                 end="",
@@ -1499,6 +1514,74 @@ class CodemodCliExecution(CodemodSourceSnapshotRequiredCommand):
                 f"{simulation.applied_rewrite_count} rewrite(s), "
                 f"{len(simulation.changed_file_paths)} file(s)."
             )
+
+    def optional_unified_diff(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        simulation: CodemodSimulationReport,
+    ) -> str | None:
+        if not self.execution_mode.unified_diff_requested:
+            return None
+        return self.unified_diff(snapshot, simulation)
+
+    @staticmethod
+    def unified_diff(
+        snapshot: CodemodSourceSnapshot,
+        simulation: CodemodSimulationReport,
+    ) -> str:
+        return snapshot.unified_diff(simulation)
+
+
+@dataclass(frozen=True)
+class CodemodExecutionMode:
+    """Validated codemod execution mode family."""
+
+    diff: bool
+    simulate: bool
+    apply: bool
+    fixpoint: bool
+
+    @classmethod
+    def from_namespace(cls, args: argparse.Namespace) -> "CodemodExecutionMode":
+        return cls(
+            diff=args.codemod_diff,
+            simulate=args.codemod_simulate,
+            apply=args.codemod_apply,
+            fixpoint=args.codemod_fixpoint,
+        )
+
+    @property
+    def requested(self) -> bool:
+        return self.mode_count > 0
+
+    @property
+    def mode_count(self) -> int:
+        return sum((self.diff, self.simulate, self.apply))
+
+    @property
+    def unified_diff_requested(self) -> bool:
+        return self.diff or self.simulate
+
+    @property
+    def diff_text_requested(self) -> bool:
+        return self.diff
+
+    def json_report_requested(self, json_flag: bool) -> bool:
+        return json_flag or self.simulate
+
+    def require_valid(self, parser: argparse.ArgumentParser) -> None:
+        if self.fixpoint and self.diff:
+            parser.error("--codemod-fixpoint cannot be combined with --codemod-diff")
+        if self.fixpoint and self.simulate:
+            parser.error(
+                "--codemod-fixpoint cannot be combined with --codemod-simulate"
+            )
+        if self.mode_count <= 1:
+            return
+        parser.error(
+            "--codemod-diff, --codemod-simulate, and --codemod-apply are "
+            "mutually exclusive"
+        )
 
 
 @dataclass(frozen=True)
@@ -1703,10 +1786,11 @@ def main() -> int:
     config = DetectorConfig.from_namespace(args)
     codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(args)
     codemod_scan_query_mode.require_valid(parser)
+    codemod_execution_mode = CodemodExecutionMode.from_namespace(args)
+    codemod_execution_mode.require_valid(parser)
     codemod_requested = (
         args.codemod_plan is not None
-        or args.codemod_diff
-        or args.codemod_apply
+        or codemod_execution_mode.requested
         or args.codemod_fixpoint
         or codemod_scan_query_mode.requested
     )
@@ -1715,8 +1799,6 @@ def main() -> int:
         if args.codemod_plan is not None
         else CodemodPlanDocument()
     )
-    if args.codemod_fixpoint and args.codemod_diff:
-        parser.error("--codemod-fixpoint cannot be combined with --codemod-diff")
     if args.codemod_fixpoint and args.codemod_fixpoint_max_iterations < 1:
         parser.error("--codemod-fixpoint-max-iterations must be at least 1")
     if (
@@ -1956,6 +2038,7 @@ def main() -> int:
         impact_candidates=codemod_candidates,
         codemod_plan_document=codemod_plan_document,
         architecture_guard_evaluator=architecture_guard_evaluator,
+        execution_mode=codemod_execution_mode,
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

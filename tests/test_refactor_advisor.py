@@ -10043,6 +10043,63 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
 
 
+def test_module_cli_codemod_simulate_reports_diff_without_applying(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "simulate-alpha",
+                        "operations": [
+                            {
+                                "operation": "replace_text",
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": "Alpha.run",
+                                "old_source": "return value",
+                                "new_source": "return value + 1",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 1
+    assert payload["parse_valid"] is True
+    assert "+        return value + 1" in payload["unified_diff"]
+    assert "return value + 1" not in module_path.read_text()
+
+
 def test_module_cli_codemod_fixpoint_applies_and_rescans(
     tmp_path: Path,
 ) -> None:
