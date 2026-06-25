@@ -6729,6 +6729,58 @@ def _concrete_union_contract_name(
     return base_name if base_name.endswith(role_suffix) else f"{base_name}{role_suffix}"
 
 
+def _concrete_type_union_contract_candidates_for_function(
+    module: ParsedModule,
+    function_name: str,
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    class_defs_by_name: dict[str, ast.ClassDef],
+    ancestor_names_by_class: dict[str, tuple[str, ...]],
+) -> Iterable[ConcreteTypeUnionContractCandidate]:
+    arguments = (
+        *function.args.posonlyargs,
+        *function.args.args,
+        *function.args.kwonlyargs,
+    )
+    for argument in arguments:
+        if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
+            continue
+        member_type_names = _concrete_class_object_union_member_names(
+            argument.annotation
+        )
+        if len(member_type_names) < 2 or any(
+            member_type_name not in class_defs_by_name
+            for member_type_name in member_type_names
+        ):
+            continue
+        observed_attribute_names = _parameter_class_call_attribute_names(
+            function, argument.arg
+        )
+        if not observed_attribute_names:
+            continue
+        common_base_names = _common_contract_base_names(
+            class_defs_by_name,
+            ancestor_names_by_class,
+            member_type_names,
+            observed_attribute_names,
+        )
+        yield ConcreteTypeUnionContractCandidate(
+            file_path=str(module.path),
+            line=argument.lineno,
+            function_name=function_name,
+            parameter_name=argument.arg,
+            member_type_names=member_type_names,
+            observed_attribute_names=observed_attribute_names,
+            suggested_contract_name=(
+                common_base_names[0]
+                if common_base_names
+                else _concrete_union_contract_name(
+                    member_type_names, observed_attribute_names
+                )
+            ),
+            common_base_names=common_base_names,
+        )
+
+
 def _concrete_type_union_contract_candidates(
     module: ParsedModule,
 ) -> tuple[ConcreteTypeUnionContractCandidate, ...]:
@@ -6738,55 +6790,12 @@ def _concrete_type_union_contract_candidates(
         for class_name, node in class_defs_by_name.items()
     }
     ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
-    candidates: list[ConcreteTypeUnionContractCandidate] = []
-    for function_name, function in _iter_named_functions(module):
-        arguments = (
-            *function.args.posonlyargs,
-            *function.args.args,
-            *function.args.kwonlyargs,
-        )
-        for argument in arguments:
-            if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
-                continue
-            member_type_names = _concrete_class_object_union_member_names(
-                argument.annotation
-            )
-            if len(member_type_names) < 2 or not set(member_type_names) <= set(
-                class_defs_by_name
-            ):
-                continue
-            observed_attribute_names = _parameter_class_call_attribute_names(
-                function, argument.arg
-            )
-            if not observed_attribute_names:
-                continue
-            common_base_names = _common_contract_base_names(
-                class_defs_by_name,
-                ancestor_names_by_class,
-                member_type_names,
-                observed_attribute_names,
-            )
-            candidates.append(
-                ConcreteTypeUnionContractCandidate(
-                    file_path=str(module.path),
-                    line=argument.lineno,
-                    function_name=function_name,
-                    parameter_name=argument.arg,
-                    member_type_names=member_type_names,
-                    observed_attribute_names=observed_attribute_names,
-                    suggested_contract_name=(
-                        common_base_names[0]
-                        if common_base_names
-                        else _concrete_union_contract_name(
-                            member_type_names, observed_attribute_names
-                        )
-                    ),
-                    common_base_names=common_base_names,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.function_name),
+    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        module,
+        _concrete_type_union_contract_candidates_for_function,
+        class_defs_by_name,
+        ancestor_names_by_class,
+        sort_key=lambda item: (item.file_path, item.line, item.function_name),
     )
 
 
