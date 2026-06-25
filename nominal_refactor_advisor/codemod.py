@@ -115,6 +115,9 @@ class RefactorRecipeOperationKind(StrEnum):
     """Agent-facing codemod DSL operation kinds."""
 
     ADD_CLASS_BASE = "add_class_base"
+    CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = (
+        "convert_manual_registry_to_autoregister"
+    )
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
     DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
     DELETE_TARGET = "delete_target"
@@ -148,6 +151,7 @@ ASSIGNMENT_NAMES_PAYLOAD_FIELD = "assignment_names"
 BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 CLASS_NAMES_PAYLOAD_FIELD = "class_names"
+CLASS_KEY_PAIRS_PAYLOAD_FIELD = "class_key_pairs"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
 DESTINATION_PATH_PAYLOAD_FIELD = "destination_path"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
@@ -159,12 +163,15 @@ NEW_SOURCE_PAYLOAD_FIELD = "new_source"
 REPLACEMENT_IMPORT_PAYLOAD_FIELD = "replacement_import"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
+REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD = "registry_key_attribute"
+REGISTRY_NAME_PAYLOAD_FIELD = "registry_name"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
 MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
+MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
@@ -1215,6 +1222,34 @@ class OperationPayloadBinding:
         self, operation: "RefactorRecipeOperation"
     ) -> tuple[tuple[str, JsonValue], ...]:
         return ((self.field_name, self.value_projector(operation)),)
+
+
+def operation_payload_bindings(
+    specs: Iterable[
+        tuple[
+            str,
+            str,
+            Callable[["RefactorRecipeOperation"], JsonValue],
+            Callable[[SourceRewritePlanPayload, str], OperationConstructorValue],
+        ]
+    ],
+) -> tuple[OperationPayloadBinding, ...]:
+    """Materialize declarative recipe-operation payload binding specs."""
+
+    return tuple(
+        OperationPayloadBinding(
+            field_name=field_name,
+            constructor_argument_name=constructor_argument_name,
+            value_projector=value_projector,
+            constructor_value_reader=constructor_value_reader,
+        )
+        for (
+            field_name,
+            constructor_argument_name,
+            value_projector,
+            constructor_value_reader,
+        ) in specs
+    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3032,6 +3067,504 @@ class RemoveClassBaseOperation(StringPayloadOperation):
         )
 
 
+@dataclass(frozen=True)
+class ClassRegistryKeyPair:
+    """One class/key binding used to convert manual registries."""
+
+    class_name: str
+    key_source: str
+
+    @classmethod
+    def parse(cls, source: str) -> "ClassRegistryKeyPair":
+        class_name, separator, key_source = source.partition("=")
+        if separator != "=" or not class_name or not key_source:
+            raise ValueError(f"Invalid class/key pair {source!r}")
+        return cls(class_name=class_name, key_source=key_source)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConvertManualRegistryToAutoregisterOperation(RefactorRecipeOperation):
+    """Convert manual class registry writes into an AutoRegisterMeta base."""
+
+    base_name: str
+    registry_name: str
+    registry_key_attribute: str
+    class_key_pairs: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return operation_payload_bindings(
+            (
+                (
+                    BASE_NAME_PAYLOAD_FIELD,
+                    BASE_NAME_PAYLOAD_FIELD,
+                    ConvertManualRegistryToAutoregisterOperation.base_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    REGISTRY_NAME_PAYLOAD_FIELD,
+                    REGISTRY_NAME_PAYLOAD_FIELD,
+                    ConvertManualRegistryToAutoregisterOperation.registry_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                    REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                    ConvertManualRegistryToAutoregisterOperation.registry_key_attribute_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                    CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                    ConvertManualRegistryToAutoregisterOperation.class_key_pairs_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+            )
+        )
+
+    @staticmethod
+    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
+            raise TypeError("base_name binding requires registry conversion")
+        return operation.base_name
+
+    @staticmethod
+    def registry_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
+            raise TypeError("registry_name binding requires registry conversion")
+        return operation.registry_name
+
+    @staticmethod
+    def registry_key_attribute_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
+            raise TypeError(
+                "registry_key_attribute binding requires registry conversion"
+            )
+        return operation.registry_key_attribute
+
+    @staticmethod
+    def class_key_pairs_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
+            raise TypeError("class_key_pairs binding requires registry conversion")
+        return operation.class_key_pairs
+
+    @property
+    def parsed_class_key_pairs(self) -> tuple[ClassRegistryKeyPair, ...]:
+        return tuple(
+            ClassRegistryKeyPair.parse(source) for source in self.class_key_pairs
+        )
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        if self.target.source_path is None:
+            raise ValueError("registry conversion requires file_path")
+        if not self.registry_key_attribute.isidentifier():
+            raise ValueError(
+                f"Registry key attribute must be an identifier: {self.registry_key_attribute!r}"
+            )
+        source_path = self.target.source_path
+        module = ast.parse(source_by_path[source_path], filename=source_path)
+        class_key_pairs = self.parsed_class_key_pairs
+        class_targets = ClassMemberPromotionTargets.resolve(
+            source_index,
+            source_by_path,
+            source_path=source_path,
+            class_names=tuple(pair.class_name for pair in class_key_pairs),
+        )
+        deletion_replacements = self.registration_deletion_replacements(
+            source_path,
+            module,
+            class_key_pairs,
+        )
+        return (
+            *self.import_replacements(source_index, source_by_path, source_path),
+            *self.base_insertion_replacements(source_index, class_targets),
+            *self.class_base_replacements(class_targets, source_by_path),
+            *self.class_key_replacements(
+                class_targets,
+                class_key_pairs,
+                source_by_path,
+            ),
+            *deletion_replacements,
+            *self.empty_registry_assignment_replacements(
+                source_path,
+                module,
+                deletion_replacements,
+            ),
+        )
+
+    def import_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        source_path: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        return EnsureImportOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            payload_value="from metaclass_registry import AutoRegisterMeta\n",
+            rationale=self.rationale_text(
+                "Import AutoRegisterMeta for class-time registration."
+            ),
+        ).line_replacements(source_index, source_by_path)
+
+    def base_insertion_replacements(
+        self,
+        source_index: SourceIndex,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[SourceLineReplacement, ...]:
+        if any(
+            target.is_class
+            and target.file_path == targets.insertion_target[0].file_path
+            and target.matches_symbol(self.base_name)
+            for target in source_index.ast_targets
+        ):
+            return ()
+        target, _ = targets.insertion_target
+        return (
+            SourceLineReplacement(
+                file_path=target.file_path,
+                start_line=target.line,
+                end_line=target.line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.autoregister_base_source
+                ),
+                rationale=self.rationale_text(
+                    f"Insert AutoRegisterMeta base {self.base_name!r}."
+                ),
+            ),
+        )
+
+    @property
+    def autoregister_base_source(self) -> str:
+        return (
+            f"class {self.base_name}(metaclass=AutoRegisterMeta):\n"
+            f"    __registry_key__ = {self.registry_key_attribute!r}\n"
+            "    __skip_if_no_key__ = True\n"
+            f"    {self.registry_key_attribute} = None\n\n"
+        )
+
+    def class_base_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for target, node in targets.targets:
+            if self.base_name in _class_base_source_names(node):
+                continue
+            original_line = source_by_path[target.file_path].splitlines(keepends=True)[
+                node.lineno - 1
+            ]
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=target.file_path,
+                    start_line=node.lineno,
+                    end_line=node.lineno,
+                    replacement_lines=(
+                        ClassHeaderSourceAuthority(
+                            original_line,
+                            node.name,
+                        ).with_added_base(self.base_name),
+                    ),
+                    rationale=self.rationale_text(
+                        f"Add AutoRegisterMeta base to {target.qualname!r}."
+                    ),
+                )
+            )
+        return tuple(replacements)
+
+    def class_key_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        pair_by_class_name = {pair.class_name: pair for pair in class_key_pairs}
+        replacements = []
+        for target, node in targets.targets:
+            if self.class_declares_registry_key(node):
+                continue
+            pair = pair_by_class_name[node.name]
+            replacements.append(
+                self.class_key_replacement(target, node, pair, source_by_path)
+            )
+        return tuple(replacements)
+
+    def class_declares_registry_key(self, node: ast.ClassDef) -> bool:
+        return any(
+            ClassDeclarationPromotionStatement(statement).name
+            == self.registry_key_attribute
+            for statement in node.body
+        )
+
+    def class_key_replacement(
+        self,
+        target: AstTargetDigest,
+        node: ast.ClassDef,
+        pair: ClassRegistryKeyPair,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement:
+        body_without_docstring = self.class_body_without_docstring(node)
+        if len(body_without_docstring) == 1 and isinstance(
+            body_without_docstring[0],
+            ast.Pass,
+        ):
+            pass_statement = body_without_docstring[0]
+            return SourceLineReplacement(
+                file_path=target.file_path,
+                start_line=pass_statement.lineno,
+                end_line=pass_statement.end_lineno or pass_statement.lineno,
+                replacement_lines=(
+                    self.class_key_assignment_line(
+                        target,
+                        node,
+                        pair,
+                        source_by_path,
+                    ),
+                ),
+                rationale=self.rationale_text(
+                    f"Replace pass with registry key on {target.qualname!r}."
+                ),
+            )
+        insert_after_line = self.class_key_insert_after_line(node)
+        return SourceLineReplacement(
+            file_path=target.file_path,
+            start_line=insert_after_line + 1,
+            end_line=insert_after_line,
+            replacement_lines=(
+                self.class_key_assignment_line(target, node, pair, source_by_path),
+            ),
+            rationale=self.rationale_text(
+                f"Insert registry key on {target.qualname!r}."
+            ),
+        )
+
+    @staticmethod
+    def class_body_without_docstring(node: ast.ClassDef) -> list[ast.stmt]:
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            return list(node.body[1:])
+        return list(node.body)
+
+    @staticmethod
+    def class_key_insert_after_line(node: ast.ClassDef) -> int:
+        if (
+            node.body
+            and isinstance(node.body[0], ast.Expr)
+            and isinstance(node.body[0].value, ast.Constant)
+            and isinstance(node.body[0].value.value, str)
+        ):
+            return node.body[0].end_lineno or node.body[0].lineno
+        return node.lineno
+
+    def class_key_assignment_line(
+        self,
+        target: AstTargetDigest,
+        node: ast.ClassDef,
+        pair: ClassRegistryKeyPair,
+        source_by_path: Mapping[str, str],
+    ) -> str:
+        source_lines = source_by_path[target.file_path].splitlines(keepends=True)
+        if node.body:
+            body_line = source_lines[node.body[0].lineno - 1]
+            indent = body_line[: len(body_line) - len(body_line.lstrip())]
+        else:
+            indent = ""
+        if not indent:
+            indent = "    "
+        return f"{indent}{self.registry_key_attribute} = {pair.key_source}\n"
+
+    def registration_deletion_replacements(
+        self,
+        source_path: str,
+        module: ast.Module,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for statement in module.body:
+            if self.assignment_matches_registration(statement, class_key_pairs):
+                replacements.append(
+                    self.delete_statement_replacement(source_path, statement)
+                )
+                continue
+            if self.call_statement_matches_registration(statement, class_key_pairs):
+                replacements.append(
+                    self.delete_statement_replacement(source_path, statement)
+                )
+                continue
+            if isinstance(statement, ast.ClassDef):
+                replacements.extend(
+                    self.decorator_deletion_replacements(
+                        source_path,
+                        statement,
+                        class_key_pairs,
+                    )
+                )
+        if len(replacements) != len(class_key_pairs):
+            raise ValueError(
+                "Expected one manual registration deletion per class/key pair"
+            )
+        return tuple(replacements)
+
+    def assignment_matches_registration(
+        self,
+        statement: ast.stmt,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+    ) -> bool:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            return False
+        class_name = _name_id(statement.value)
+        if class_name is None:
+            return False
+        pair = self.class_key_pair_for(class_name, class_key_pairs)
+        if pair is None:
+            return False
+        target = statement.targets[0]
+        return (
+            isinstance(target, ast.Subscript)
+            and _terminal_name(target.value) == self.registry_name
+            and ast.unparse(target.slice) == pair.key_source
+        )
+
+    def call_statement_matches_registration(
+        self,
+        statement: ast.stmt,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+    ) -> bool:
+        if not isinstance(statement, ast.Expr) or not isinstance(
+            statement.value,
+            ast.Call,
+        ):
+            return False
+        call = statement.value
+        if not isinstance(call.func, ast.Attribute):
+            return False
+        if _terminal_name(call.func.value) != self.registry_name or not call.args:
+            return False
+        class_name = _terminal_name(call.args[0])
+        if class_name is None:
+            return False
+        pair = self.class_key_pair_for(class_name, class_key_pairs)
+        key_node = call.args[1] if len(call.args) >= 2 else call.args[0]
+        return pair is not None and ast.unparse(key_node) == pair.key_source
+
+    def decorator_deletion_replacements(
+        self,
+        source_path: str,
+        node: ast.ClassDef,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+    ) -> tuple[SourceLineReplacement, ...]:
+        pair = self.class_key_pair_for(node.name, class_key_pairs)
+        if pair is None:
+            return ()
+        return tuple(
+                SourceLineReplacement(
+                    file_path=source_path,
+                    start_line=decorator.lineno,
+                    end_line=decorator.end_lineno or decorator.lineno,
+                    replacement_lines=(),
+                    rationale=self.rationale_text(
+                        f"Delete manual registration decorator for {node.name!r}."
+                    ),
+                )
+            for decorator in node.decorator_list
+            if self.decorator_matches_registration(decorator, pair)
+        )
+
+    def decorator_matches_registration(
+        self,
+        decorator: ast.expr,
+        pair: ClassRegistryKeyPair,
+    ) -> bool:
+        if not isinstance(decorator, ast.Call) or not decorator.args:
+            return False
+        if _terminal_name(decorator.args[0]) != self.registry_name:
+            return False
+        if len(decorator.args) >= 2:
+            key_source = ast.unparse(decorator.args[1])
+        else:
+            key_source = pair.key_source
+        return key_source == pair.key_source
+
+    @staticmethod
+    def class_key_pair_for(
+        class_name: str,
+        class_key_pairs: tuple[ClassRegistryKeyPair, ...],
+    ) -> ClassRegistryKeyPair | None:
+        for pair in class_key_pairs:
+            if pair.class_name == class_name:
+                return pair
+        return None
+
+    def empty_registry_assignment_replacements(
+        self,
+        source_path: str,
+        module: ast.Module,
+        deletion_replacements: tuple[SourceLineReplacement, ...],
+    ) -> tuple[SourceLineReplacement, ...]:
+        assignment = self.empty_registry_assignment(module)
+        if assignment is None:
+            return ()
+        deleted_lines = {
+            line_number
+            for replacement in deletion_replacements
+            for line_number in range(replacement.start_line, replacement.end_line + 1)
+        }
+        empty_assignment_lines = set(
+            range(assignment.lineno, (assignment.end_lineno or assignment.lineno) + 1)
+        )
+        registry_use_lines = {
+            node.lineno
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name) and node.id == self.registry_name
+        }
+        if registry_use_lines - deleted_lines - empty_assignment_lines:
+            return ()
+        return (self.delete_statement_replacement(source_path, assignment),)
+
+    def empty_registry_assignment(self, module: ast.Module) -> ast.Assign | None:
+        for statement in module.body:
+            if (
+                isinstance(statement, ast.Assign)
+                and len(statement.targets) == 1
+                and _name_id(statement.targets[0]) == self.registry_name
+                and isinstance(statement.value, ast.Dict)
+                and not statement.value.keys
+            ):
+                return statement
+        return None
+
+    def delete_statement_replacement(
+        self,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> SourceLineReplacement:
+        return SourceLineReplacement(
+            file_path=source_path,
+            start_line=statement.lineno,
+            end_line=statement.end_lineno or statement.lineno,
+            replacement_lines=(),
+            rationale=self.rationale_text("Delete manual registry write."),
+        )
+
+    def rationale_text(self, default: str) -> str:
+        if self.rationale:
+            return self.rationale
+        return default
+
+
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionSignatureOperation(StringPayloadOperation):
     """Replace a single-line function signature while preserving its body."""
@@ -4583,6 +5116,26 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def convert_manual_registry_to_autoregister(
+        self,
+        source_path: str,
+        *,
+        base_name: str,
+        registry_name: str,
+        registry_key_attribute: str,
+        class_key_pairs: Iterable[str],
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ConvertManualRegistryToAutoregisterOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            base_name=base_name,
+            registry_name=registry_name,
+            registry_key_attribute=registry_key_attribute,
+            class_key_pairs=tuple(class_key_pairs),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def promote_class_declarations(
         self,
         source_path: str,
@@ -4977,6 +5530,21 @@ class FindingRecipeActionKey:
     file_path: str
     subject_name: str
 
+    @classmethod
+    def from_finding_file_subjects(
+        cls,
+        finding: RefactorFinding,
+        file_subjects: Iterable[tuple[str, str]],
+    ) -> tuple["FindingRecipeActionKey", ...]:
+        return tuple(
+            cls(
+                detector_id=finding.detector_id,
+                file_path=file_path,
+                subject_name=subject_name,
+            )
+            for file_path, subject_name in file_subjects
+        )
+
 
 @dataclass(frozen=True)
 class FindingRecipePlan:
@@ -5128,14 +5696,13 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
         evidence = FindingPrimaryEvidence(finding).source_location
         if evidence is None:
             return ()
-        return tuple(
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=evidence.file_path,
-                subject_name=record_name,
-            )
-            for record_name in finding.metrics.plan_field_names
-            if record_name != self.dynamic_record_name
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (evidence.file_path, record_name)
+                for record_name in finding.metrics.plan_field_names
+                if record_name != self.dynamic_record_name
+            ),
         )
 
 
@@ -5200,13 +5767,9 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
-        return tuple(
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=evidence.file_path,
-                subject_name=evidence.symbol,
-            )
-            for evidence in finding.evidence
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, evidence.symbol) for evidence in finding.evidence),
         )
 
     @staticmethod
@@ -5276,13 +5839,12 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         source_path = self.source_path(finding)
         if source_path is None:
             return ()
-        return tuple(
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=source_path,
-                subject_name=method_symbol,
-            )
-            for method_symbol in self.method_symbols(finding)
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (source_path, method_symbol)
+                for method_symbol in self.method_symbols(finding)
+            ),
         )
 
     @staticmethod
@@ -5482,12 +6044,9 @@ class DerivableClassAssignmentFindingRecipeSynthesizer(FindingRecipeSynthesizer)
         evidence = FindingPrimaryEvidence(finding).source_location
         if evidence is None:
             return ()
-        return (
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=evidence.file_path,
-                subject_name=evidence.symbol,
-            ),
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, evidence.symbol),),
         )
 
 
@@ -5565,13 +6124,12 @@ class DerivedSemanticTagConstantsFindingRecipeSynthesizer(
         if len(file_paths) != 1:
             return ()
         source_path = next(iter(file_paths))
-        return tuple(
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=source_path,
-                subject_name=constant_name,
-            )
-            for constant_name in finding.metrics.plan_field_names
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (source_path, constant_name)
+                for constant_name in finding.metrics.plan_field_names
+            ),
         )
 
 
@@ -5596,19 +6154,150 @@ class ModuleAuthorityReexportCatalogFindingRecipeSynthesizer(
         evidence = FindingPrimaryEvidence(finding).source_location
         if evidence is None:
             return ()
-        return tuple(
-            FindingRecipeActionKey(
-                detector_id=finding.detector_id,
-                file_path=evidence.file_path,
-                subject_name=alias_name,
-            )
-            for alias_name in finding.metrics.plan_field_names
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (evidence.file_path, alias_name)
+                for alias_name in finding.metrics.plan_field_names
+            ),
         )
 
     @staticmethod
     def has_nonpaying_rent_proof(finding: RefactorFinding) -> bool:
         certificate = finding.compression_certificate
         return certificate is not None and not certificate.pays_rent
+
+
+class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Build AutoRegisterMeta conversion recipes for manual class registries."""
+
+    detector_id = MANUAL_CLASS_REGISTRATION_FINDING_ID
+    registry_key_attribute: ClassVar[str] = "registry_key"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        del context
+        return (
+            Maybe.of(self.action_keys_for_finding(finding))
+            .filter(bool)
+            .combine(
+                lambda action_keys: self.single_file_path(action_keys),
+                lambda action_keys, source_path: (action_keys, source_path),
+            )
+            .combine(
+                lambda _: finding.metrics.plan_registry_name,
+                lambda action_context, registry_name: (
+                    action_context[1],
+                    registry_name,
+                ),
+            )
+            .combine(
+                lambda _: self.nonempty_class_key_pairs(finding),
+                lambda registry_context, class_key_pairs: self.recipe_from_parts(
+                    finding,
+                    registry_context[0],
+                    registry_context[1],
+                    class_key_pairs,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def single_file_path(
+        action_keys: tuple[FindingRecipeActionKey, ...],
+    ) -> str | None:
+        file_paths = frozenset(action_key.file_path for action_key in action_keys)
+        if len(file_paths) != 1:
+            return None
+        for file_path in file_paths:
+            return file_path
+        return None
+
+    @staticmethod
+    def nonempty_class_key_pairs(
+        finding: RefactorFinding,
+    ) -> tuple[str, ...] | None:
+        class_key_pairs = finding.metrics.plan_class_key_pairs
+        if class_key_pairs:
+            return class_key_pairs
+        return None
+
+    def recipe_from_parts(
+        self,
+        finding: RefactorFinding,
+        source_path: str,
+        registry_name: str,
+        class_key_pairs: tuple[str, ...],
+    ) -> RefactorRecipe:
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-convert-manual-registry",
+            reason="Replace manual registry writes with AutoRegisterMeta.",
+        ).convert_manual_registry_to_autoregister(
+            source_path,
+            base_name=autoregister_base_name(
+                finding.metrics.plan_class_names,
+                registry_name,
+            ),
+            registry_name=registry_name,
+            registry_key_attribute=self.registry_key_attribute,
+            class_key_pairs=class_key_pairs,
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        registry_name = finding.metrics.plan_registry_name
+        if registry_name is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (evidence.file_path, class_name)
+                for class_name in finding.metrics.plan_class_names
+            ),
+        )
+
+
+def autoregister_base_name(
+    class_names: tuple[str, ...],
+    registry_name: str,
+) -> str:
+    suffix = shared_pascal_suffix(class_names)
+    if suffix:
+        return f"Registered{suffix}"
+    registry_suffix = _pascal_case_identifier(registry_name.lower())
+    if registry_suffix:
+        return f"Registered{registry_suffix}"
+    return "RegisteredRegistry"
+
+
+def shared_pascal_suffix(class_names: tuple[str, ...]) -> str:
+    token_rows = tuple(
+        tuple(
+            re.findall(
+                r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
+                class_name,
+            )
+        )
+        for class_name in class_names
+    )
+    if not token_rows or any(not row for row in token_rows):
+        return ""
+    suffix: list[str] = []
+    for offset in range(1, min(len(row) for row in token_rows) + 1):
+        tokens = {row[-offset] for row in token_rows}
+        if len(tokens) != 1:
+            break
+        suffix.insert(0, next(iter(tokens)))
+    return "".join(suffix)
 
 
 def _pascal_case_identifier(value: str) -> str:
@@ -7077,6 +7766,14 @@ def _trim_docstring_body(body: list[ast.stmt]) -> list[ast.stmt]:
 
 def _name_id(node: ast.expr) -> str | None:
     return node.id if isinstance(node, ast.Name) else None
+
+
+def _terminal_name(node: ast.expr) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
 
 
 def _has_strict_true_keyword(call: ast.Call) -> bool:

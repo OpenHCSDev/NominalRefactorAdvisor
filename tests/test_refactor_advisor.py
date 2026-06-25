@@ -1489,6 +1489,49 @@ def test_refactor_recipe_removes_import_names(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_refactor_recipe_converts_manual_registry_to_autoregister(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(
+        recipe_id="manual-registry-to-autoregister"
+    ).convert_manual_registry_to_autoregister(
+        module_path.as_posix(),
+        base_name="RegisteredHandler",
+        registry_name="REGISTRY",
+        registry_key_attribute="registry_key",
+        class_key_pairs=("AlphaHandler='alpha'", "BetaHandler='beta'"),
+    )
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+from metaclass_registry import AutoRegisterMeta" in diff
+    assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in diff
+    assert "+class AlphaHandler(RegisteredHandler):" in diff
+    assert "+    registry_key = 'alpha'" in diff
+    assert '-REGISTRY["alpha"] = AlphaHandler' in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "REGISTRY = {}" not in rewritten
+    assert 'REGISTRY["alpha"]' not in rewritten
+    assert "class BetaHandler(RegisteredHandler):" in rewritten
+    assert "registry_key = 'beta'" in rewritten
+
+
 def test_refactor_recipe_moves_decorated_symbol_between_modules(
     tmp_path: Path,
 ) -> None:
@@ -8931,6 +8974,54 @@ def test_detects_manual_class_registration(tmp_path: Path) -> None:
             for finding in findings
         )
     )
+
+
+def test_manual_class_registration_findings_synthesize_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "manual_class_registration"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("manual_class_registration",),
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "convert_manual_registry_to_autoregister"
+    assert operation["base_name"] == "RegisteredHandler"
+    assert operation["class_key_pairs"] == (
+        "AlphaHandler='alpha'",
+        "BetaHandler='beta'",
+    )
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    remaining = tuple(
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == "manual_class_registration"
+    )
+    assert remaining == ()
 
 
 def test_detects_manual_concrete_subclass_roster_with_abstract_filter(
