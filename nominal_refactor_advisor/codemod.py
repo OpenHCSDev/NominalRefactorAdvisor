@@ -8803,21 +8803,104 @@ class FindingRecipeActionKey:
 
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisRecord:
-    """Recipe-synthesis outcome for one finding."""
+class FindingRecipeSynthesisRecordIdentity:
+    """Shared identity and source hints for synthesis record views."""
 
     finding_id: str
     detector_id: str
     title: str
+    status: FindingRecipeSynthesisStatus
+    scaffold: str
+    codemod_patch: str
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisAuthoringRecord(
+    FindingRecipeSynthesisRecordIdentity,
+    CodemodJsonReport,
+):
+    """Agent-authoring handle for one finding synthesis outcome."""
+
+    evidence_selector: FindingEvidenceTargetSelector
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "finding_id": self.finding_id,
+            "detector_id": self.detector_id,
+            "title": self.title,
+            "status": self.status.value,
+            "evidence_selector": self.evidence_selector.to_dict(),
+            "scaffold": self.scaffold,
+            "codemod_patch": self.codemod_patch,
+        }
+
+
+class FindingRecipeSynthesisReportView(CodemodJsonReport, ABC):
+    """Shared JSON projection algorithm for synthesis report views."""
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "records": self.record_payloads(),
+            "planned_count": self.planned_count,
+            "rejected_count": self.rejected_count,
+            "unsupported_count": self.unsupported_count,
+        }
+
+    @abstractmethod
+    def record_payloads(self) -> tuple[JsonObject, ...]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def planned_count(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def rejected_count(self) -> int:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def unsupported_count(self) -> int:
+        raise NotImplementedError
+
+
+class FindingRecipeSynthesisAuthoringReport(FindingRecipeSynthesisReportView):
+    """Agent-authoring handles for a finding-backed synthesis report."""
+
+    def __init__(self, source_report: "FindingRecipeSynthesisReport") -> None:
+        self.source_report = source_report
+
+    def record_payloads(self) -> tuple[JsonObject, ...]:
+        return tuple(
+            record.authoring_record().to_dict()
+            for record in self.source_report.records
+        )
+
+    @property
+    def planned_count(self) -> int:
+        return self.source_report.planned_count
+
+    @property
+    def rejected_count(self) -> int:
+        return self.source_report.rejected_count
+
+    @property
+    def unsupported_count(self) -> int:
+        return self.source_report.unsupported_count
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
+    """Recipe-synthesis outcome for one finding."""
+
     summary: str
     capability_gap: str
-    status: FindingRecipeSynthesisStatus
     synthesizer_name: str = ""
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
     recipe_id: str = ""
     reason: str = ""
-    scaffold: str = ""
-    codemod_patch: str = ""
 
     @classmethod
     def for_finding(
@@ -8834,15 +8917,30 @@ class FindingRecipeSynthesisRecord:
             finding_id=finding.stable_id,
             detector_id=finding.detector_id,
             title=finding.title,
+            status=status,
+            scaffold=finding.scaffold or "",
+            codemod_patch=finding.codemod_patch or "",
             summary=finding.summary,
             capability_gap=finding.capability_gap,
-            status=status,
             synthesizer_name="" if synthesizer is None else type(synthesizer).__name__,
             action_keys=action_keys,
             recipe_id="" if recipe is None else recipe.recipe_id,
             reason=reason,
-            scaffold=finding.scaffold or "",
-            codemod_patch=finding.codemod_patch or "",
+        )
+
+    @property
+    def evidence_selector(self) -> FindingEvidenceTargetSelector:
+        return FindingEvidenceTargetSelector(finding_ids=(self.finding_id,))
+
+    def authoring_record(self) -> FindingRecipeSynthesisAuthoringRecord:
+        return FindingRecipeSynthesisAuthoringRecord(
+            finding_id=self.finding_id,
+            detector_id=self.detector_id,
+            title=self.title,
+            status=self.status,
+            scaffold=self.scaffold,
+            codemod_patch=self.codemod_patch,
+            evidence_selector=self.evidence_selector,
         )
 
     def to_dict(self) -> JsonObject:
@@ -8863,7 +8961,7 @@ class FindingRecipeSynthesisRecord:
 
 
 @dataclass(frozen=True)
-class FindingRecipeSynthesisReport:
+class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
     """Coverage report for finding-backed DSL recipe synthesis."""
 
     records: tuple[FindingRecipeSynthesisRecord, ...] = ()
@@ -8883,13 +8981,11 @@ class FindingRecipeSynthesisReport:
     def count_status(self, status: FindingRecipeSynthesisStatus) -> int:
         return sum(1 for record in self.records if record.status == status)
 
-    def to_dict(self) -> JsonObject:
-        return {
-            "records": tuple(record.to_dict() for record in self.records),
-            "planned_count": self.planned_count,
-            "rejected_count": self.rejected_count,
-            "unsupported_count": self.unsupported_count,
-        }
+    def record_payloads(self) -> tuple[JsonObject, ...]:
+        return tuple(record.to_dict() for record in self.records)
+
+    def authoring_report(self) -> FindingRecipeSynthesisAuthoringReport:
+        return FindingRecipeSynthesisAuthoringReport(self)
 
 
 @dataclass(frozen=True, kw_only=True)

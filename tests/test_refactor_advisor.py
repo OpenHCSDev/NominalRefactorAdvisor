@@ -1184,6 +1184,45 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
     ) == ("Alpha.run",)
 
 
+def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import ClassVar\n\n\n"
+        "class Alpha:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("class_level_inheritance_optimization",),
+    )
+    record = plan.synthesis_report.records[0]
+    selector_payload = record.authoring_record().to_dict()["evidence_selector"]
+
+    assert isinstance(selector_payload, dict)
+    selector = CodemodTargetSelector.from_dict(selector_payload)
+    assert selector_payload == {
+        "selector": "finding_evidence_target",
+        "finding_ids": (findings[0].stable_id,),
+    }
+    assert {
+        snapshot.source_index.target_by_id[target_id].qualname
+        for target_id in selector.select(snapshot).target_ids
+    } == {"Alpha", "Beta"}
+
+
 def test_source_index_target_selector_supports_regex_patterns(
     tmp_path: Path,
 ) -> None:
@@ -9520,6 +9559,47 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     )
 
 
+def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import ClassVar\n\n\n"
+        "class Alpha:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-synthesis-authoring",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    records = payload["synthesis_authoring"]["records"]
+    selector_payload = records[0]["evidence_selector"]
+
+    assert result.returncode == 0, result.stderr
+    assert records[0]["finding_id"] == payload["synthesis_report"]["records"][0][
+        "finding_id"
+    ]
+    assert selector_payload["selector"] == "finding_evidence_target"
+    assert selector_payload["finding_ids"] == [records[0]["finding_id"]]
+
+
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     tmp_path: Path,
 ) -> None:
@@ -12509,6 +12589,69 @@ def test_json_payload_reuses_supplied_source_index(
 
     assert payload["source_index"] == source_index.to_dict()
     assert timing["source_index_seconds"] == 0.123
+
+
+def test_module_cli_context_root_keeps_global_cache_for_file_scope(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    package_root = tmp_path / "pkg"
+    focused_path = package_root / "alpha.py"
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        "from typing import ClassVar\n\n\n"
+        "class Alpha:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        "from typing import ClassVar\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            focused_path.as_posix(),
+            "--context-root",
+            package_root.as_posix(),
+            "--no-impact-ranking",
+            "--raw-findings",
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    source_index = cast(dict[str, object], payload["source_index"])
+    ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
+    findings = cast(list[dict[str, object]], payload["findings"])
+    class_family_findings = [
+        finding
+        for finding in findings
+        if finding["detector_id"] == "class_level_inheritance_optimization"
+    ]
+    evidence_paths = {
+        evidence["file_path"]
+        for finding in class_family_findings
+        for evidence in cast(tuple[dict[str, object], ...], finding["evidence"])
+    }
+
+    assert result.returncode == 0, result.stderr
+    assert class_family_findings
+    assert focused_path.as_posix() in evidence_paths
+    assert (package_root / "beta.py").as_posix() in evidence_paths
+    assert {target["qualname"] for target in ast_targets} >= {"Alpha", "Beta"}
+    assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
 
 
 def test_source_index_caches_lookup_maps_and_finding_target_keys(

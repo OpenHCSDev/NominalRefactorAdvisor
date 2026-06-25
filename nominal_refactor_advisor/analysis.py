@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from .ast_tools import parse_python_module_roots, parse_python_modules
@@ -9,6 +10,63 @@ from .detectors import DetectorConfig, default_detectors
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
+
+
+@dataclass(frozen=True)
+class AnalysisPathScope:
+    """Resolve global analysis roots and optional focused reporting roots."""
+
+    analysis_roots: tuple[Path, ...]
+    report_roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def from_requested_roots(
+        cls,
+        requested_roots: tuple[Path, ...],
+        context_roots: tuple[Path, ...] = (),
+    ) -> "AnalysisPathScope":
+        if context_roots:
+            return cls(
+                analysis_roots=context_roots,
+                report_roots=requested_roots,
+            )
+        return cls(analysis_roots=requested_roots)
+
+    @property
+    def primary_analysis_root(self) -> Path:
+        return self.analysis_roots[0]
+
+    @property
+    def has_report_filter(self) -> bool:
+        return bool(self.report_roots)
+
+    def filter_findings(
+        self,
+        findings: list[RefactorFinding],
+    ) -> list[RefactorFinding]:
+        if not self.has_report_filter:
+            return findings
+        return [
+            finding
+            for finding in findings
+            if any(
+                self.includes_report_path(Path(item.file_path))
+                for item in finding.evidence
+            )
+        ]
+
+    def includes_report_path(self, file_path: Path) -> bool:
+        candidate = file_path.resolve()
+        return any(
+            self._root_contains_path(root.resolve(), candidate)
+            for root in self.report_roots
+        )
+
+    @staticmethod
+    def _root_contains_path(root: Path, candidate: Path) -> bool:
+        if root.is_file():
+            return candidate == root
+        return candidate == root or candidate.is_relative_to(root)
 
 
 def analyze_modules(

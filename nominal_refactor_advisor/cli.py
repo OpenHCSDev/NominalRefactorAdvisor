@@ -20,6 +20,7 @@ from typing import ClassVar, TypeAlias, cast
 from metaclass_registry import AutoRegisterMeta
 
 from .analysis import (
+    AnalysisPathScope,
     analyze_lean_export,
     analyze_modules,
     analyze_path,
@@ -221,6 +222,17 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--context-root",),
+            action="append",
+            dest="context_roots",
+            value_type=Path,
+            default=[],
+            help=(
+                "Parse and analyze this root for global source context while "
+                "limiting reported findings to the positional paths."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--no-cache",),
             action="store_false",
             dest="use_parse_cache",
@@ -390,6 +402,14 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "With --codemod-synthesize-plan, emit only the reusable "
                 "CodemodPlanDocument JSON."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-synthesis-authoring",),
+            action="store_true",
+            help=(
+                "With --codemod-synthesize-plan, include opt-in authoring "
+                "selectors for each synthesis record."
             ),
         ),
         CliArgumentSpec(
@@ -1834,14 +1854,30 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 "applied": applied,
                 "unified_diff": unified_diff,
             }
+            if self.args.codemod_synthesis_authoring:
+                payload["synthesis_authoring"] = (
+                    finding_recipe_plan.synthesis_report.authoring_report().to_dict()
+                )
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(
                 simulation.is_clean
             ).exit_code()
+        if (
+            self.args.codemod_synthesize_document_only
+            and self.args.codemod_synthesis_authoring
+        ):
+            self.parser.error(
+                "--codemod-synthesis-authoring cannot be combined with "
+                "--codemod-synthesize-document-only"
+            )
         if self.args.codemod_synthesize_document_only:
             payload = finding_recipe_plan.document.to_dict()
         else:
             payload = finding_recipe_plan.to_dict()
+            if self.args.codemod_synthesis_authoring:
+                payload["synthesis_authoring"] = (
+                    finding_recipe_plan.synthesis_report.authoring_report().to_dict()
+                )
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -2024,6 +2060,10 @@ def main() -> int:
         or args.codemod_fixpoint
         or codemod_scan_query_mode.requested
     )
+    if args.codemod_synthesis_authoring and not args.codemod_synthesize_plan:
+        parser.error(
+            "--codemod-synthesis-authoring requires --codemod-synthesize-plan"
+        )
     codemod_plan_document = (
         load_codemod_plan_document(args.codemod_plan)
         if args.codemod_plan is not None
@@ -2070,8 +2110,13 @@ def main() -> int:
             fail_on_calibration_regression=args.fail_on_calibration_regression,
         ).exit_code()
 
-    roots = tuple(Path(path) for path in args.paths)
-    root = roots[0]
+    requested_roots = tuple(Path(path) for path in args.paths)
+    path_scope = AnalysisPathScope.from_requested_roots(
+        requested_roots,
+        tuple(args.context_roots),
+    )
+    roots = path_scope.analysis_roots
+    root = path_scope.primary_analysis_root
     parse_cache_dir = ParseCacheDirAuthority(
         root=root,
         requested_cache_dir=args.cache_dir,
@@ -2145,7 +2190,7 @@ def main() -> int:
             analysis_seconds = 0.0
         else:
             started = perf_counter()
-            findings = analyze_modules(modules, config)
+            findings = path_scope.filter_findings(analyze_modules(modules, config))
             analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
