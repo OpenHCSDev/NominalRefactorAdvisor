@@ -438,6 +438,7 @@ class JsonPayloadBuilder:
                 sources_by_file_path={
                     str(module.path): module.source for module in self.modules
                 },
+                class_family_index=build_class_family_index(self.modules),
             ),
         ).to_dict()
         if self.scan_guard_report is not None:
@@ -909,6 +910,7 @@ class CodemodFixpointRunner:
             simulation = guarded_document.simulate(
                 scan.source_index,
                 scan.source_by_path,
+                selector_context=scan.selector_context,
             )
             if simulation.simulation.applied_rewrite_count == 0:
                 iterations.append(
@@ -1699,6 +1701,7 @@ class CodemodCliExecution:
             plan_document_simulation = self.codemod_plan_document.simulate(
                 source_index,
                 self.source_by_path,
+                selector_context=self.selector_context(source_index),
             )
             return (
                 plan_document_simulation.simulation,
@@ -1712,6 +1715,7 @@ class CodemodCliExecution:
                 *self.codemod_plan_document.source_rewrite_batch(
                     source_index,
                     self.source_by_path,
+                    selector_context=self.selector_context(source_index),
                 ),
             ),
             self.source_by_path,
@@ -1720,6 +1724,15 @@ class CodemodCliExecution:
             simulation,
             self.architecture_guard_report_for(simulation),
             None,
+        )
+
+    def selector_context(self, source_index: SourceIndex) -> CodemodSelectorContext:
+        return CodemodSelectorContext(
+            source_index=source_index,
+            sources_by_file_path=self.source_by_path,
+            class_family_index=build_class_family_index(
+                self.architecture_guard_evaluator.modules
+            ),
         )
 
     def candidate_rewrite_batch(self) -> tuple[PlannedSourceRewrite, ...]:

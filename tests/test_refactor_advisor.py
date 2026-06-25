@@ -8956,6 +8956,77 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
     assert "stable(value)" in rewritten
 
 
+def test_apply_selected_targets_operation_uses_class_family_selector_context(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Root:\n"
+        "    pass\n\n\n"
+        "class Alpha(Root):\n"
+        "    pass\n\n\n"
+        "class Beta(Root):\n"
+        "    pass\n\n\n"
+        "class Other:\n"
+        "    pass\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "mark-descendants",
+                        "operations": [
+                            {
+                                "operation": "apply_selected_targets",
+                                "selector": {
+                                    "selector": "class_family_target",
+                                    "class_symbols": ["pkg.mod.Root"],
+                                    "include_self": False,
+                                    "include_descendants": True,
+                                },
+                                "operation_template": {
+                                    "operation": "add_class_base",
+                                    "base_name": "Marked",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+        class_family_index=build_class_family_index(modules),
+    )
+    document = load_codemod_plan_document(plan_path)
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+        selector_context=context,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "class Root:" in rewritten
+    assert "class Alpha(Root, Marked):" in rewritten
+    assert "class Beta(Root, Marked):" in rewritten
+    assert "class Other:" in rewritten
+
+
 def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

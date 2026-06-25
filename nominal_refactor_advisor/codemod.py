@@ -2104,6 +2104,16 @@ class RefactorRecipeOperation(
     ) -> tuple[SourceLineReplacement, ...]:
         raise NotImplementedError
 
+    def line_replacements_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[SourceLineReplacement, ...]:
+        del selector_context
+        return self.line_replacements(source_index, source_by_path)
+
     def target_node(
         self,
         source_index: SourceIndex,
@@ -2854,17 +2864,35 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
             raise TypeError("selector binding requires selected-targets operation")
         return operation.selector.to_dict()
 
-    def selected_target_ids(
+    def selector_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
-    ) -> tuple[str, ...]:
-        return self.selector.target_ids(
-            CodemodSelectorContext(
-                source_index=source_index,
-                sources_by_file_path=source_by_path,
-            )
+        provided_context: CodemodSelectorContext | None,
+    ) -> CodemodSelectorContext:
+        if provided_context is not None:
+            return provided_context
+        return CodemodSelectorContext(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
         )
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        return self.line_replacements_with_context(source_index, source_by_path)
+
+    @abstractmethod
+    def line_replacements_with_context(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[SourceLineReplacement, ...]:
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2899,14 +2927,18 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
             )
         return operation.operation_template.to_dict()
 
-    def line_replacements(
+    def line_replacements_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[SourceLineReplacement, ...]:
         return tuple(
             replacement
-            for target_id in self.selected_target_ids(source_index, source_by_path)
+            for target_id in self.selector.target_ids(
+                self.selector_context(source_index, source_by_path, selector_context)
+            )
             for replacement in self.operation_for_target_id(
                 source_index,
                 target_id,
@@ -2933,14 +2965,18 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
 class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     """Delete every source-index target selected by a registered selector."""
 
-    def line_replacements(
+    def line_replacements_with_context(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[SourceLineReplacement, ...]:
         return tuple(
             self.line_replacement_for(source_index.target_by_id[target_id])
-            for target_id in self.selected_target_ids(source_index, source_by_path)
+            for target_id in self.selector.target_ids(
+                self.selector_context(source_index, source_by_path, selector_context)
+            )
         )
 
     def line_replacement_for(
@@ -5836,6 +5872,7 @@ class RefactorRecipeOperationCompiler:
 
     source_index: SourceIndex
     sources: Mapping[str, str]
+    selector_context: CodemodSelectorContext | None = None
 
     def planned_rewrites(
         self,
@@ -5844,9 +5881,10 @@ class RefactorRecipeOperationCompiler:
         replacements = tuple(
             replacement
             for operation in operations
-            for replacement in operation.line_replacements(
+            for replacement in operation.line_replacements_with_context(
                 self.source_index,
                 self.sources,
+                selector_context=self.selector_context,
             )
         )
         groups = self._merged_replacement_groups(replacements)
@@ -6380,6 +6418,8 @@ class RefactorRecipe:
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str] | None = None,
+        *,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         rewrite_batch = tuple(
             rewrite.planned_rewrite(source_index) for rewrite in self.rewrites
@@ -6391,6 +6431,7 @@ class RefactorRecipe:
         operation_rewrites = RefactorRecipeOperationCompiler(
             source_index,
             source_by_path,
+            selector_context,
         ).planned_rewrites(
             self.operations,
         )
@@ -6403,6 +6444,7 @@ class RefactorRecipe:
         *,
         backend: CodemodBackend | None = None,
         guard_suite: ArchitectureGuardSuite | None = None,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> "RefactorRecipeSimulation":
         if guard_suite is None:
             active_guard_suite = ArchitectureGuardSuite()
@@ -6410,7 +6452,11 @@ class RefactorRecipe:
             active_guard_suite = guard_suite
         simulation = simulate_planned_rewrites(
             source_index,
-            self.source_rewrite_batch(source_index, source_by_path),
+            self.source_rewrite_batch(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            ),
             source_by_path,
             backend=backend,
         )
@@ -6457,11 +6503,17 @@ class CodemodPlanDocument:
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str] | None = None,
+        *,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[PlannedSourceRewrite, ...]:
         return tuple(
             rewrite
             for recipe in self.recipes
-            for rewrite in recipe.source_rewrite_batch(source_index, source_by_path)
+            for rewrite in recipe.source_rewrite_batch(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
         )
 
     def simulate(
@@ -6470,10 +6522,15 @@ class CodemodPlanDocument:
         source_by_path: Mapping[str, str],
         *,
         backend: CodemodBackend | None = None,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> "CodemodPlanDocumentSimulation":
         simulation = simulate_planned_rewrites(
             source_index,
-            self.source_rewrite_batch(source_index, source_by_path),
+            self.source_rewrite_batch(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            ),
             source_by_path,
             backend=backend,
         )
@@ -6679,6 +6736,7 @@ class FindingRecipePlan:
         source_by_path: Mapping[str, str],
         *,
         backend: CodemodBackend | None = None,
+        selector_context: CodemodSelectorContext | None = None,
     ) -> "FindingRecipePlanSimulation":
         return FindingRecipePlanSimulation(
             plan=self,
@@ -6686,6 +6744,7 @@ class FindingRecipePlan:
                 source_index,
                 source_by_path,
                 backend=backend,
+                selector_context=selector_context,
             ),
         )
 
