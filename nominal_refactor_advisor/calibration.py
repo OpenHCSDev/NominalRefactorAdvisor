@@ -24,7 +24,6 @@ from .detectors import DetectorConfig
 from .economics import ScanEconomicsProof
 from .models import RefactorFinding, SemanticRecord
 from .planner import build_refactor_plans
-from .record_algebra import materialize_product_record, product_record_spec
 
 _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
 
@@ -153,14 +152,12 @@ class DetectorExpectation(SemanticRecord):
         return None
 
 
-materialize_product_record(
-    product_record_spec(
-        "DetectorCount",
-        "detector_id: str; count: int",
-        "SemanticRecord",
-        doc="Observed multiplicity for one emitted detector family.",
-    )
-)
+@dataclass(frozen=True)
+class DetectorCount(SemanticRecord):
+    """Observed multiplicity for one emitted detector family."""
+
+    detector_id: str
+    count: int
 
 
 @dataclass(frozen=True)
@@ -397,35 +394,44 @@ class CalibrationReport(SemanticRecord):
         }
 
 
-def _detector_counts(findings: Iterable[RefactorFinding]) -> tuple[DetectorCount, ...]:
-    counts = Counter((finding.detector_id for finding in findings))
-    return tuple(
-        (
-            DetectorCount(detector_id=detector_id, count=count)
-            for detector_id, count in sorted(counts.items())
+@dataclass(frozen=True)
+class DetectorCountsAuthority:
+    """Project emitted findings into detector multiplicity records."""
+
+    findings: Iterable[RefactorFinding]
+
+    def detector_counts(self) -> tuple[DetectorCount, ...]:
+        counts = Counter((finding.detector_id for finding in self.findings))
+        return tuple(
+            (
+                DetectorCount(detector_id=detector_id, count=count)
+                for detector_id, count in sorted(counts.items())
+            )
         )
-    )
 
 
-def _empty_scan_for_target(
-    target: CalibrationTarget,
-    *,
-    unavailable_reason: str,
-) -> CalibrationTargetResult:
-    path = Path(target.path)
-    scan = ScanEconomicsProof.from_findings_and_plans(
-        label=target.name,
-        path=path,
-        elapsed_seconds=0.0,
-        scan_budget_seconds=target.max_scan_seconds,
-        findings=(),
-        plans=(),
-    )
-    return CalibrationTargetResult(
-        target=target,
-        scan=scan,
-        unavailable_reason=unavailable_reason,
-    )
+@dataclass(frozen=True)
+class EmptyCalibrationScanAuthority:
+    """Build the zero-work proof result for an unavailable target path."""
+
+    target: CalibrationTarget
+    unavailable_reason: str
+
+    def target_result(self) -> CalibrationTargetResult:
+        path = Path(self.target.path)
+        scan = ScanEconomicsProof.from_findings_and_plans(
+            label=self.target.name,
+            path=path,
+            elapsed_seconds=0.0,
+            scan_budget_seconds=self.target.max_scan_seconds,
+            findings=(),
+            plans=(),
+        )
+        return CalibrationTargetResult(
+            target=self.target,
+            scan=scan,
+            unavailable_reason=self.unavailable_reason,
+        )
 
 
 def run_calibration_target(
@@ -440,10 +446,10 @@ def run_calibration_target(
 
     path = Path(target.path)
     if not path.exists():
-        return _empty_scan_for_target(
+        return EmptyCalibrationScanAuthority(
             target,
             unavailable_reason=f"path does not exist: {path}",
-        )
+        ).target_result()
     started = perf_counter()
     modules = parse_python_modules(
         path,
@@ -465,7 +471,7 @@ def run_calibration_target(
     return CalibrationTargetResult(
         target=target,
         scan=scan,
-        detector_counts=_detector_counts(findings),
+        detector_counts=DetectorCountsAuthority(findings).detector_counts(),
     )
 
 
