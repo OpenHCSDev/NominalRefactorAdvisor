@@ -4699,23 +4699,36 @@ class DispatchPolymorphismExtraction:
     apply_argument_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class DispatchPolymorphismSpec:
-    """Shared identity for a generated dispatch strategy family."""
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismAxisSpec:
+    """Dispatch expression shared by recognizers and generated families."""
 
-    base_name: str
-    case_key_attribute: str
-    method_name: str
     axis_expression: str
 
 
-@dataclass(frozen=True)
-class DispatchPolymorphismFunction:
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismFamilySpec(DispatchPolymorphismAxisSpec):
+    """Shared identity for a generated dispatch strategy family."""
+
+    case_key_attribute: str
+    method_name: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismCaseSet:
+    """Closed literal cases expected for one dispatch strategy family."""
+
+    literal_cases: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismFunction(
+    DispatchPolymorphismAxisSpec,
+    DispatchPolymorphismCaseSet,
+):
     """Strict recognizer for literal branch functions convertible to strategies."""
 
     node: ast.FunctionDef
-    axis_expression: str
-    literal_cases: tuple[str, ...]
 
     def extraction(self) -> DispatchPolymorphismExtraction | None:
         if self.unsupported_signature:
@@ -4883,21 +4896,35 @@ class DispatchPolymorphismFunction:
         )
 
 
-@dataclass(frozen=True)
-class DispatchPolymorphismSource:
+@dataclass(frozen=True, kw_only=True)
+class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
     """Render an extracted dispatch family and replacement function body."""
 
-    spec: DispatchPolymorphismSpec
+    base_name: str
     extraction: DispatchPolymorphismExtraction
+
+    @classmethod
+    def from_operation(
+        cls,
+        operation: "DispatchToPolymorphismOperation",
+        extraction: DispatchPolymorphismExtraction,
+    ) -> "DispatchPolymorphismSource":
+        return cls(
+            base_name=operation.base_name,
+            case_key_attribute=operation.case_key_attribute,
+            method_name=operation.method_name,
+            axis_expression=operation.axis_expression,
+            extraction=extraction,
+        )
 
     @property
     def for_method_name(self) -> str:
-        return f"for_{self.spec.case_key_attribute}"
+        return f"for_{self.case_key_attribute}"
 
     @property
     def apply_signature(self) -> str:
         parameters = ", ".join(("self", *self.extraction.apply_argument_names))
-        return f"def {self.spec.method_name}({parameters})"
+        return f"def {self.method_name}({parameters})"
 
     @property
     def apply_call_arguments(self) -> str:
@@ -4907,8 +4934,8 @@ class DispatchPolymorphismSource:
     def dispatch_call_source(self) -> str:
         apply_arguments = self.apply_call_arguments
         return (
-            f"return {self.spec.base_name}.{self.for_method_name}"
-            f"({self.spec.axis_expression}).{self.spec.method_name}({apply_arguments})"
+            f"return {self.base_name}.{self.for_method_name}"
+            f"({self.axis_expression}).{self.method_name}({apply_arguments})"
         )
 
     def family_source(self) -> str:
@@ -4922,10 +4949,10 @@ class DispatchPolymorphismSource:
     def base_source(self) -> str:
         return "\n".join(
             (
-                f"class {self.spec.base_name}(ABC, metaclass=AutoRegisterMeta):",
-                f'    __registry_key__ = "{self.spec.case_key_attribute}"',
+                f"class {self.base_name}(ABC, metaclass=AutoRegisterMeta):",
+                f'    __registry_key__ = "{self.case_key_attribute}"',
                 "    __skip_if_no_key__ = True",
-                f"    {self.spec.case_key_attribute}: ClassVar[object] = None",
+                f"    {self.case_key_attribute}: ClassVar[object] = None",
                 "",
                 "    @classmethod",
                 f"    def {self.for_method_name}(cls, key):",
@@ -4944,8 +4971,8 @@ class DispatchPolymorphismSource:
     def case_source(self, dispatch_case: DispatchPolymorphismCase) -> str:
         return "\n".join(
             (
-                f"class {self.case_class_name(dispatch_case.literal_source)}({self.spec.base_name}):",
-                f"    {self.spec.case_key_attribute} = {dispatch_case.literal_source}",
+                f"class {self.case_class_name(dispatch_case.literal_source)}({self.base_name}):",
+                f"    {self.case_key_attribute} = {dispatch_case.literal_source}",
                 "",
                 f"    {self.apply_signature}:",
                 *self.return_statement_lines(dispatch_case.return_statement),
@@ -4965,17 +4992,16 @@ class DispatchPolymorphismSource:
         case_name = _pascal_case_identifier(literal_name)
         if not case_name:
             case_name = "Case"
-        return f"{case_name}{self.spec.base_name}"
+        return f"{case_name}{self.base_name}"
 
 
 @dataclass(frozen=True, kw_only=True)
-class DispatchToPolymorphismOperation(BaseNamePayloadOperation):
+class DispatchToPolymorphismOperation(
+    BaseNamePayloadOperation,
+    DispatchPolymorphismFamilySpec,
+    DispatchPolymorphismCaseSet,
+):
     """Replace simple literal dispatch functions with strategy subclasses."""
-
-    axis_expression: str
-    literal_cases: tuple[str, ...]
-    case_key_attribute: str
-    method_name: str
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -5058,10 +5084,7 @@ class DispatchToPolymorphismOperation(BaseNamePayloadOperation):
             raise ValueError(
                 f"Target {target_digest.qualname!r} is not a supported literal dispatch"
             )
-        source = DispatchPolymorphismSource(
-            spec=self.spec,
-            extraction=extraction,
-        )
+        source = DispatchPolymorphismSource.from_operation(self, extraction)
         return (
             *self.import_replacements(
                 source_index,
@@ -5070,15 +5093,6 @@ class DispatchToPolymorphismOperation(BaseNamePayloadOperation):
             ),
             self.family_insertion_replacement(source_index, target_digest, source),
             self.function_body_replacement(target_digest, node, source, source_by_path),
-        )
-
-    @property
-    def spec(self) -> DispatchPolymorphismSpec:
-        return DispatchPolymorphismSpec(
-            base_name=self.base_name,
-            case_key_attribute=self.case_key_attribute,
-            method_name=self.method_name,
-            axis_expression=self.axis_expression,
         )
 
     def extraction_for(
