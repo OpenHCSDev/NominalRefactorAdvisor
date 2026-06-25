@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,12 +25,23 @@ class AnalysisPathScope:
         cls,
         requested_roots: tuple[Path, ...],
         context_roots: tuple[Path, ...] = (),
+        *,
+        auto_context: bool = True,
     ) -> "AnalysisPathScope":
         if context_roots:
             return cls(
                 analysis_roots=context_roots,
                 report_roots=requested_roots,
             )
+        if auto_context:
+            analysis_roots = AnalysisContextRootResolver(
+                requested_roots
+            ).context_roots()
+            if analysis_roots != requested_roots:
+                return cls(
+                    analysis_roots=analysis_roots,
+                    report_roots=requested_roots,
+                )
         return cls(analysis_roots=requested_roots)
 
     @property
@@ -67,6 +79,47 @@ class AnalysisPathScope:
         if root.is_file():
             return candidate == root
         return candidate == root or candidate.is_relative_to(root)
+
+
+@dataclass(frozen=True)
+class AnalysisContextRootResolver:
+    """Infer global context roots for focused file-only scans."""
+
+    requested_roots: tuple[Path, ...]
+
+    def context_roots(self) -> tuple[Path, ...]:
+        if not self.file_only_scan:
+            return self.requested_roots
+        return self._dedupe(
+            self.context_root_for_file(root)
+            for root in self.requested_roots
+        )
+
+    @property
+    def file_only_scan(self) -> bool:
+        return all(root.is_file() for root in self.requested_roots)
+
+    @classmethod
+    def context_root_for_file(cls, file_path: Path) -> Path:
+        parent = file_path.resolve().parent
+        context_root = parent
+        cursor = parent
+        while (cursor / "__init__.py").is_file():
+            context_root = cursor
+            cursor = cursor.parent
+        return context_root
+
+    @staticmethod
+    def _dedupe(roots: Iterable[Path]) -> tuple[Path, ...]:
+        deduped: list[Path] = []
+        seen: set[Path] = set()
+        for root in roots:
+            path = Path(root)
+            if path in seen:
+                continue
+            seen.add(path)
+            deduped.append(path)
+        return tuple(deduped)
 
 
 def analyze_modules(

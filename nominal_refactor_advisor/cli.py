@@ -233,6 +233,15 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--no-auto-context-root",),
+            action="store_false",
+            dest="auto_context_root",
+            default=True,
+            help=(
+                "Do not infer package-level context roots for file-only scans."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--no-cache",),
             action="store_false",
             dest="use_parse_cache",
@@ -2114,6 +2123,7 @@ def main() -> int:
     path_scope = AnalysisPathScope.from_requested_roots(
         requested_roots,
         tuple(args.context_roots),
+        auto_context=args.auto_context_root,
     )
     roots = path_scope.analysis_roots
     root = path_scope.primary_analysis_root

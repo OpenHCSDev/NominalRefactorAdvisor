@@ -9037,6 +9037,9 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "4",
             "--cache-dir",
             ".nra-cache/ast",
+            "--context-root",
+            "nominal_refactor_advisor",
+            "--no-auto-context-root",
             "--no-cache",
             "--codemod-plan",
             "codemod-plan.json",
@@ -9060,6 +9063,8 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.calibrate == Path("calibration.json")
     assert args.parse_workers == 4
     assert args.cache_dir == Path(".nra-cache/ast")
+    assert args.context_roots == [Path("nominal_refactor_advisor")]
+    assert args.auto_context_root is False
     assert args.use_parse_cache is False
     assert args.codemod_plan == Path("codemod-plan.json")
     assert args.codemod_diff is True
@@ -12591,7 +12596,7 @@ def test_json_payload_reuses_supplied_source_index(
     assert timing["source_index_seconds"] == 0.123
 
 
-def test_module_cli_context_root_keeps_global_cache_for_file_scope(
+def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     tmp_path: Path,
 ) -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -12620,8 +12625,6 @@ def test_module_cli_context_root_keeps_global_cache_for_file_scope(
             "-m",
             "nominal_refactor_advisor",
             focused_path.as_posix(),
-            "--context-root",
-            package_root.as_posix(),
             "--no-impact-ranking",
             "--raw-findings",
             "--json",
@@ -12651,6 +12654,63 @@ def test_module_cli_context_root_keeps_global_cache_for_file_scope(
     assert focused_path.as_posix() in evidence_paths
     assert (package_root / "beta.py").as_posix() in evidence_paths
     assert {target["qualname"] for target in ast_targets} >= {"Alpha", "Beta"}
+    assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
+
+
+def test_module_cli_can_disable_auto_context_root_for_file_scope(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    package_root = tmp_path / "pkg"
+    focused_path = package_root / "alpha.py"
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        "from typing import ClassVar\n\n\n"
+        "class Alpha:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        "from typing import ClassVar\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            focused_path.as_posix(),
+            "--no-auto-context-root",
+            "--no-impact-ranking",
+            "--raw-findings",
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    source_index = cast(dict[str, object], payload["source_index"])
+    ast_targets = cast(tuple[dict[str, object], ...], source_index["ast_targets"])
+    findings = cast(list[dict[str, object]], payload["findings"])
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        target["qualname"]
+        for target in ast_targets
+        if target["node_type"] == "class"
+    } == {"Alpha"}
+    assert not any(
+        finding["detector_id"] == "class_level_inheritance_optimization"
+        for finding in findings
+    )
     assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
 
 
