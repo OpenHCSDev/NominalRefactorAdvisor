@@ -116,12 +116,14 @@ class RefactorRecipeOperationKind(StrEnum):
 
     ADD_CLASS_BASE = "add_class_base"
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
+    DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
     DELETE_TARGET = "delete_target"
     ENSURE_IMPORT = "ensure_import"
     EXTRACT_AUTHORITY = "extract_authority"
     INSERT_AFTER_TARGET = "insert_after_target"
     INSERT_AFTER_IMPORTS = "insert_after_imports"
     INSERT_BEFORE_TARGET = "insert_before_target"
+    MOVE_SYMBOL_TO_MODULE = "move_symbol_to_module"
     PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
     PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
     PROMOTE_CLASS_DECLARATIONS = "promote_class_declarations"
@@ -142,22 +144,29 @@ class SourceNodeDecoratorPolicy(StrEnum):
 
 SOURCE_PAYLOAD_FIELD = "source"
 AUTHORITY_SOURCE_PAYLOAD_FIELD = "authority_source"
+ASSIGNMENT_NAMES_PAYLOAD_FIELD = "assignment_names"
 BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 CLASS_NAMES_PAYLOAD_FIELD = "class_names"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
+DESTINATION_PATH_PAYLOAD_FIELD = "destination_path"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
 IMPORT_NAMES_PAYLOAD_FIELD = "import_names"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
+REPLACEMENT_IMPORT_PAYLOAD_FIELD = "replacement_import"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
+SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
+DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
+    ("capability_tag_constants", "observation_tag_constants")
+)
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -1778,6 +1787,91 @@ class DeleteClassAssignmentOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
+    """Delete named module-level assignment statements."""
+
+    assignment_names: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=ASSIGNMENT_NAMES_PAYLOAD_FIELD,
+                constructor_argument_name="assignment_names",
+                value_projector=DeleteModuleAssignmentsOperation.assignment_names_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+        )
+
+    @staticmethod
+    def assignment_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, DeleteModuleAssignmentsOperation):
+            raise TypeError(
+                "assignment_names binding requires DeleteModuleAssignmentsOperation"
+            )
+        return operation.assignment_names
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("delete_module_assignments requires file_path")
+        source_path = self.target.source_path
+        module = ast.parse(source_by_path[source_path], filename=source_path)
+        pending_names = set(self.assignment_names)
+        replacements = []
+        for statement in module.body:
+            matched_names = pending_names & set(_module_assignment_names(statement))
+            if not matched_names:
+                continue
+            pending_names -= matched_names
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=source_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    replacement_lines=(),
+                    rationale=self.rationale
+                    or f"Delete module assignments {tuple(sorted(matched_names))!r}.",
+                )
+            )
+        if pending_names:
+            raise ValueError(
+                f"Module {source_path!r} has no top-level assignments for "
+                f"{tuple(sorted(pending_names))!r}"
+            )
+        return tuple(replacements)
+
+
+def _module_assignment_names(statement: ast.stmt) -> tuple[str, ...]:
+    if isinstance(statement, ast.Assign):
+        return tuple(
+            name
+            for target in statement.targets
+            for name in _assignment_target_names(target)
+        )
+    if isinstance(statement, ast.AnnAssign):
+        return _assignment_target_names(statement.target)
+    return ()
+
+
+def _assignment_target_names(target: ast.expr) -> tuple[str, ...]:
+    if isinstance(target, ast.Name):
+        return (target.id,)
+    if isinstance(target, (ast.Tuple, ast.List)):
+        return tuple(
+            name for item in target.elts for name in _assignment_target_names(item)
+        )
+    return ()
+
+
+@dataclass(frozen=True, kw_only=True)
 class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     """Recipe operation that promotes repeated class members to a shared base."""
 
@@ -2576,6 +2670,293 @@ class ImportFromSource:
         if alias.asname is None:
             return alias.name
         return f"{alias.name} as {alias.asname}"
+
+
+@dataclass(frozen=True)
+class MovedTopLevelSymbolSource:
+    """Decorator-aware source block for one moved module-level symbol."""
+
+    name: str
+    source_file_path: str
+    source_start_line: int
+    source_end_line: int
+    moved_source: str
+
+    @classmethod
+    def from_target(
+        cls,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
+        source_by_path: Mapping[str, str],
+    ) -> "MovedTopLevelSymbolSource":
+        source_node = cls._top_level_source_node(target_digest, node)
+        span = SourceNodeSpan(
+            source_node,
+            decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
+        )
+        moved_source = "".join(
+            source_by_path[target_digest.file_path].splitlines(keepends=True)[
+                span.start_line - 1 : span.end_line
+            ]
+        )
+        return cls(
+            name=source_node.name,
+            source_file_path=target_digest.file_path,
+            source_start_line=span.start_line,
+            source_end_line=span.end_line,
+            moved_source=moved_source,
+        )
+
+    @staticmethod
+    def _top_level_source_node(
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
+    ) -> ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef:
+        if (
+            not _is_movable_module_symbol_kind(target_digest.node_kind)
+            or "." in target_digest.qualname
+        ):
+            raise ValueError(
+                "move_symbol_to_module only supports module-level classes "
+                f"and functions; got {target_digest.qualname!r}"
+            )
+        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a movable symbol"
+            )
+        return node
+
+    def deletion_replacement(self, *, rationale: str) -> SourceLineReplacement:
+        return SourceLineReplacement(
+            file_path=self.source_file_path,
+            start_line=self.source_start_line,
+            end_line=self.source_end_line,
+            replacement_lines=(),
+            rationale=rationale or f"Remove moved symbol {self.name!r}.",
+        )
+
+
+def _is_movable_module_symbol_kind(node_kind: AstTargetNodeKind) -> bool:
+    return node_kind.is_class or node_kind is AstTargetNodeKind.FUNCTION
+
+
+@dataclass(frozen=True)
+class MovedSymbolImportPolicy:
+    """Optional source-module import left behind after a symbol move."""
+
+    import_source: str | None = None
+
+    @classmethod
+    def from_source(cls, import_source: str | None) -> "MovedSymbolImportPolicy":
+        return cls(import_source=import_source)
+
+    @property
+    def operation_payload(self) -> JsonObject:
+        if self.import_source is None:
+            return {}
+        return {REPLACEMENT_IMPORT_PAYLOAD_FIELD: self.import_source}
+
+    def source_replacement(
+        self,
+        source_block: MovedTopLevelSymbolSource,
+        source_by_path: Mapping[str, str],
+        *,
+        rationale: str,
+    ) -> SourceLineReplacement | None:
+        if not self.import_source:
+            return None
+        import_lines = SourceTargetEditor.source_lines(self.import_source)
+        source = source_by_path[source_block.source_file_path]
+        if EnsureImportOperation._source_already_contains_import(source, import_lines):
+            return None
+        insertion_line = ModuleImportInsertionPoint(
+            source,
+            source_block.source_file_path,
+        ).line_number
+        return SourceLineReplacement(
+            file_path=source_block.source_file_path,
+            start_line=insertion_line,
+            end_line=insertion_line - 1,
+            replacement_lines=import_lines,
+            rationale=rationale
+            or f"Ensure moved symbol import for {source_block.name!r}.",
+        )
+
+
+@dataclass(frozen=True)
+class SourceTopLevelSymbolMovePlan:
+    """Line replacements for moving one module-level class or function."""
+
+    source_block: MovedTopLevelSymbolSource
+    destination_file_path: str
+    rationale: str = ""
+
+    @classmethod
+    def from_target(
+        cls,
+        target_digest: AstTargetDigest,
+        node: _TargetNode,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        destination_file_path: str,
+        rationale: str,
+    ) -> "SourceTopLevelSymbolMovePlan":
+        source_block = MovedTopLevelSymbolSource.from_target(
+            target_digest,
+            node,
+            source_by_path,
+        )
+        cls._validate_destination(
+            target_digest,
+            source_index,
+            source_by_path,
+            destination_file_path,
+        )
+        return cls(
+            source_block=source_block,
+            destination_file_path=destination_file_path,
+            rationale=rationale,
+        )
+
+    @staticmethod
+    def _validate_destination(
+        target_digest: AstTargetDigest,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        destination_file_path: str,
+    ) -> None:
+        if destination_file_path not in source_by_path:
+            raise ValueError(
+                f"move_symbol_to_module destination {destination_file_path!r} "
+                "is not in the source set"
+            )
+        if destination_file_path == target_digest.file_path:
+            raise ValueError(
+                "move_symbol_to_module destination must differ from source"
+            )
+        if any(
+            destination_target.file_path == destination_file_path
+            and destination_target.name == target_digest.name
+            and _is_movable_module_symbol_kind(destination_target.node_kind)
+            and "." not in destination_target.qualname
+            for destination_target in source_index.ast_targets
+        ):
+            raise ValueError(
+                f"Destination {destination_file_path!r} already defines "
+                f"module-level symbol {target_digest.name!r}"
+            )
+
+    def line_replacements(
+        self,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = [
+            self.destination_insertion(source_by_path),
+            self.source_block.deletion_replacement(rationale=self.rationale),
+        ]
+        return tuple(replacements)
+
+    def destination_insertion(
+        self,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement:
+        destination_source = source_by_path[self.destination_file_path]
+        insertion_line = ModuleImportInsertionPoint(
+            destination_source,
+            self.destination_file_path,
+        ).line_number
+        return SourceLineReplacement(
+            file_path=self.destination_file_path,
+            start_line=insertion_line,
+            end_line=insertion_line - 1,
+            replacement_lines=self.destination_replacement_lines(
+                destination_source,
+                insertion_line,
+            ),
+            rationale=self.rationale
+            or f"Move {self.source_block.name!r} into {self.destination_file_path!r}.",
+        )
+
+    def destination_replacement_lines(
+        self,
+        destination_source: str,
+        insertion_line: int,
+    ) -> tuple[str, ...]:
+        destination_lines = destination_source.splitlines(keepends=True)
+        previous_line = self._line_at(destination_lines, insertion_line - 1)
+        current_line = self._line_at(destination_lines, insertion_line)
+        leading_separator = ""
+        if previous_line.strip():
+            leading_separator = "\n"
+        trailing_separator = "\n\n"
+        if current_line and not current_line.strip():
+            trailing_separator = "\n"
+        moved_source = self.source_block.moved_source.strip("\n")
+        return SourceTargetEditor.source_lines(
+            f"{leading_separator}{moved_source}{trailing_separator}"
+        )
+
+    @staticmethod
+    def _line_at(lines: list[str], line_number: int) -> str:
+        if line_number < 1 or line_number > len(lines):
+            return ""
+        return lines[line_number - 1]
+
+
+@dataclass(frozen=True, kw_only=True)
+class MoveSymbolToModuleOperation(RefactorRecipeOperation):
+    """Move one module-level class or function into another existing module."""
+
+    destination_path: str
+    import_policy: MovedSymbolImportPolicy = field(
+        default_factory=MovedSymbolImportPolicy
+    )
+
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "MoveSymbolToModuleOperation":
+        return cls(
+            target=target,
+            destination_path=payload.required_string(DESTINATION_PATH_PAYLOAD_FIELD),
+            import_policy=MovedSymbolImportPolicy.from_source(
+                payload.optional_string(REPLACEMENT_IMPORT_PAYLOAD_FIELD)
+            ),
+            rationale=payload.string_or_empty("rationale"),
+        )
+
+    def operation_payload(self) -> JsonObject:
+        return {
+            DESTINATION_PATH_PAYLOAD_FIELD: self.destination_path,
+            **self.import_policy.operation_payload,
+        }
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        move_plan = SourceTopLevelSymbolMovePlan.from_target(
+            target_digest,
+            node,
+            source_index,
+            source_by_path,
+            destination_file_path=self.destination_path,
+            rationale=self.rationale,
+        )
+        replacements = list(move_plan.line_replacements(source_by_path))
+        import_replacement = self.import_policy.source_replacement(
+            move_plan.source_block,
+            source_by_path,
+            rationale=self.rationale,
+        )
+        if import_replacement is not None:
+            replacements.append(import_replacement)
+        return tuple(replacements)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4109,6 +4490,26 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def move_symbol_to_module(
+        self,
+        symbol_qualname: str,
+        destination_path: str,
+        *,
+        source_path: str | None = None,
+        replacement_import: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = MoveSymbolToModuleOperation(
+            target=SourceRewriteTarget(
+                qualname=symbol_qualname,
+                source_path=source_path,
+            ),
+            destination_path=destination_path,
+            import_policy=MovedSymbolImportPolicy.from_source(replacement_import),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def delete_target(
         self,
         target_qualname: str,
@@ -4251,6 +4652,20 @@ class RefactorRecipe:
                 source_path=source_path,
             ),
             payload_value=attribute_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def delete_module_assignments(
+        self,
+        source_path: str,
+        assignment_names: Iterable[str],
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DeleteModuleAssignmentsOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            assignment_names=tuple(assignment_names),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -5091,6 +5506,58 @@ class DerivableCandidateCollectorFindingRecipeSynthesizer(
 
     detector_id = DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID
     assignment_name = CANDIDATE_COLLECTOR_FIELD_NAME
+
+
+class DerivedSemanticTagConstantsFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Build deletion recipes for semantic tag constants derivable from names."""
+
+    detector_id = SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        del context
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return None
+        file_paths = frozenset(action_key.file_path for action_key in action_keys)
+        if len(file_paths) != 1:
+            return None
+        source_path = next(iter(file_paths))
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-delete-derived-semantic-tag-constants",
+            reason=(
+                "Delete semantic tag constants whose tuple values are derivable "
+                "from the constant names."
+            ),
+        ).delete_module_assignments(
+            source_path,
+            tuple(action_key.subject_name for action_key in action_keys),
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        if (
+            finding.metrics.plan_mapping_name
+            not in DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES
+        ):
+            return ()
+        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
+        if len(file_paths) != 1:
+            return ()
+        source_path = next(iter(file_paths))
+        return tuple(
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=source_path,
+                subject_name=constant_name,
+            )
+            for constant_name in finding.metrics.plan_field_names
+        )
 
 
 def _pascal_case_identifier(value: str) -> str:

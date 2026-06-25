@@ -1489,6 +1489,76 @@ def test_refactor_recipe_removes_import_names(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_refactor_recipe_moves_decorated_symbol_between_modules(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Helper:\n"
+        "    value: int\n\n"
+        "    def render(self) -> str:\n"
+        "        return str(self.value)\n\n\n"
+        "def use_helper(value: int) -> str:\n"
+        "    return Helper(value).render()\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Existing:\n"
+        "    name: str\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {
+        source_path.as_posix(): source_path.read_text(),
+        destination_path.as_posix(): destination_path.read_text(),
+    }
+
+    recipe = RefactorRecipe(recipe_id="move-helper").move_symbol_to_module(
+        "Helper",
+        destination_path.as_posix(),
+        source_path=source_path.as_posix(),
+        replacement_import="from pkg.destination import Helper\n",
+    )
+    operation = recipe.operations[0].to_dict()
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert operation["operation"] == "move_symbol_to_module"
+    assert operation["destination_path"] == destination_path.as_posix()
+    assert operation["replacement_import"] == "from pkg.destination import Helper\n"
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert "+from pkg.destination import Helper" in diff
+    assert "-class Helper:" in diff
+    assert "+class Helper:" in diff
+    assert set(simulation.apply()) == {
+        source_path.as_posix(),
+        destination_path.as_posix(),
+    }
+
+    rewritten_source = source_path.read_text()
+    rewritten_destination = destination_path.read_text()
+    assert "from pkg.destination import Helper" in rewritten_source
+    assert "class Helper" not in rewritten_source
+    assert "@dataclass\nclass Helper" in rewritten_destination
+    assert rewritten_destination.index("class Helper") < rewritten_destination.index(
+        "class Existing"
+    )
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
 def test_refactor_recipe_extracts_authority(
     tmp_path: Path,
 ) -> None:
@@ -7044,6 +7114,72 @@ def test_detects_derivable_semantic_tag_constant(tmp_path: Path) -> None:
     assert any(
         ("1 observation tag constants" in finding.summary for finding in findings)
     )
+
+
+def test_derived_semantic_tag_constants_synthesize_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\n_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS = (\n"
+        "    CapabilityTag.AUTHORITATIVE_MAPPING,\n"
+        "    CapabilityTag.PROVENANCE,\n"
+        "    CapabilityTag.NOMINAL_IDENTITY,\n"
+        ")\n\n"
+        "_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS = (\n"
+        "    ObservationTag.DATAFLOW_ROOT,\n"
+        "    ObservationTag.NORMALIZED_AST,\n"
+        ")\n\n"
+        "def keep_runtime_code():\n"
+        "    return 42\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "semantic_tag_tuple_boilerplate"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("semantic_tag_tuple_boilerplate",),
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 2
+    assert len(plan.document.recipes) == 1
+    operations = tuple(
+        operation.to_dict() for operation in plan.document.recipes[0].operations
+    )
+    assert {
+        assignment_name
+        for operation in operations
+        for assignment_name in operation["assignment_names"]
+    } == {
+        "_AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS",
+        "_DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS",
+    }
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "CAPABILITY_TAGS" not in rewritten
+    assert "OBSERVATION_TAGS" not in rewritten
+    assert "def keep_runtime_code" in rewritten
+    remaining = [
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == "semantic_tag_tuple_boilerplate"
+    ]
+    assert remaining == []
 
 
 def test_detects_derived_metric_count_boilerplate(tmp_path: Path) -> None:
