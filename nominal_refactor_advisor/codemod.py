@@ -35,7 +35,7 @@ from .impact_ranking import (
     RefactorImpactOpportunity,
     RefactorImpactRankingReport,
 )
-from .models import ImpactDelta, RefactorFinding, SourceLocation
+from .models import ImpactDelta, RefactorFinding, RepeatedMethodMetrics, SourceLocation
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import Maybe
@@ -125,6 +125,7 @@ class RefactorRecipeOperationKind(StrEnum):
     PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
     PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
     PROMOTE_CLASS_DECLARATIONS = "promote_class_declarations"
+    PROMOTE_CLASS_METHODS = "promote_class_methods"
     REMOVE_CLASS_BASE = "remove_class_base"
     REMOVE_IMPORT_NAMES = "remove_import_names"
     REPLACE_FUNCTION_BODY = "replace_function_body"
@@ -145,6 +146,7 @@ BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 CLASS_NAMES_PAYLOAD_FIELD = "class_names"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
+METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
 IMPORT_NAMES_PAYLOAD_FIELD = "import_names"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
@@ -1772,84 +1774,117 @@ class DeleteClassAssignmentOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PromoteClassDeclarationsOperation(RefactorRecipeOperation):
-    """Promote repeated class declarations to a shared base class."""
+class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
+    """Recipe operation that promotes repeated class members to a shared base."""
 
     base_name: str
     class_names: tuple[str, ...]
-    declaration_names: tuple[str, ...]
+
+    member_role: ClassVar[str] = "member"
+    member_payload_field_name: ClassVar[str]
+    member_constructor_argument_name: ClassVar[str]
 
     @classmethod
     def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
-        del cls
         return (
             OperationPayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
-                value_projector=PromoteClassDeclarationsOperation.base_name_from_operation,
+                value_projector=ClassMemberPromotionOperation.base_name_from_operation,
             ),
             OperationPayloadBinding(
                 field_name=CLASS_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name=CLASS_NAMES_PAYLOAD_FIELD,
-                value_projector=PromoteClassDeclarationsOperation.class_names_from_operation,
+                value_projector=ClassMemberPromotionOperation.class_names_from_operation,
                 constructor_value_reader=OperationPayloadReader.required_string_tuple,
             ),
             OperationPayloadBinding(
-                field_name=DECLARATION_NAMES_PAYLOAD_FIELD,
-                constructor_argument_name=DECLARATION_NAMES_PAYLOAD_FIELD,
-                value_projector=PromoteClassDeclarationsOperation.declaration_names_from_operation,
+                field_name=cls.member_payload_field_name,
+                constructor_argument_name=cls.member_constructor_argument_name,
+                value_projector=ClassMemberPromotionOperation.member_names_from_operation,
                 constructor_value_reader=OperationPayloadReader.required_string_tuple,
             ),
         )
 
     @staticmethod
     def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, PromoteClassDeclarationsOperation):
+        if not isinstance(operation, ClassMemberPromotionOperation):
             raise TypeError(
                 f"{BASE_NAME_PAYLOAD_FIELD} binding requires "
-                "PromoteClassDeclarationsOperation"
+                "ClassMemberPromotionOperation"
             )
         return operation.base_name
 
     @staticmethod
     def class_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, PromoteClassDeclarationsOperation):
+        if not isinstance(operation, ClassMemberPromotionOperation):
             raise TypeError(
                 f"{CLASS_NAMES_PAYLOAD_FIELD} binding requires "
-                "PromoteClassDeclarationsOperation"
+                "ClassMemberPromotionOperation"
             )
         return operation.class_names
 
     @staticmethod
-    def declaration_names_from_operation(
-        operation: RefactorRecipeOperation,
-    ) -> JsonValue:
-        if not isinstance(operation, PromoteClassDeclarationsOperation):
+    def member_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, ClassMemberPromotionOperation):
             raise TypeError(
-                f"{DECLARATION_NAMES_PAYLOAD_FIELD} binding requires "
-                "PromoteClassDeclarationsOperation"
+                "member-name binding requires ClassMemberPromotionOperation"
             )
-        return operation.declaration_names
+        return operation.member_names
+
+    @property
+    @abstractmethod
+    def member_names(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def statement_type(self) -> type["ClassMemberPromotionStatement"]:
+        raise NotImplementedError
 
     def line_replacements(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        targets = ClassDeclarationPromotionTargets.resolve(
+        targets = ClassMemberPromotionTargets.resolve(
             source_index,
             source_by_path,
             source_path=self.target.source_path,
             class_names=self.class_names,
         )
-        self.reject_enum_targets(targets)
-        return (
-            self.base_insertion_replacement(targets),
-            *self.base_addition_replacements(targets),
-            *self.declaration_deletion_replacements(targets),
-        )
+        self.validate_targets(targets)
+        return ClassMemberPromotionReplacementPlan(
+            base_name=self.base_name,
+            member_names=self.member_names,
+            statement_type=self.statement_type,
+            rationale=self.rationale,
+            inserted_base_role=self.member_role,
+            deleted_member_role=self.member_role,
+        ).line_replacements(targets)
 
-    def reject_enum_targets(self, targets: "ClassDeclarationPromotionTargets") -> None:
+    def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
+        del targets
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteClassDeclarationsOperation(ClassMemberPromotionOperation):
+    """Promote repeated class declarations to a shared base class."""
+
+    declaration_names: tuple[str, ...]
+    member_role: ClassVar[str] = "declaration"
+    member_payload_field_name: ClassVar[str] = DECLARATION_NAMES_PAYLOAD_FIELD
+    member_constructor_argument_name: ClassVar[str] = "declaration_names"
+
+    @property
+    def member_names(self) -> tuple[str, ...]:
+        return self.declaration_names
+
+    @property
+    def statement_type(self) -> type["ClassMemberPromotionStatement"]:
+        return ClassDeclarationPromotionStatement
+
+    def reject_enum_targets(self, targets: "ClassMemberPromotionTargets") -> None:
         enum_targets = tuple(
             target.qualname
             for target, node in targets.targets
@@ -1861,99 +1896,31 @@ class PromoteClassDeclarationsOperation(RefactorRecipeOperation):
                 f"non-Enum base: {enum_targets!r}"
             )
 
-    def base_insertion_replacement(
-        self, targets: "ClassDeclarationPromotionTargets"
-    ) -> SourceLineReplacement:
-        target, _ = targets.insertion_target
-        base_source = ClassDeclarationPromotedBase(
-            operation=self,
-            source_text=targets.first_source,
-            source_class=targets.insertion_target[1],
-        ).source
-        return SourceLineReplacement(
-            file_path=target.file_path,
-            start_line=target.line,
-            end_line=target.line - 1,
-            replacement_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
-            rationale=self.rationale
-            or f"Insert promoted declaration base {self.base_name!r}.",
-        )
+    def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
+        self.reject_enum_targets(targets)
 
-    def base_addition_replacements(
-        self, targets: "ClassDeclarationPromotionTargets"
-    ) -> tuple[SourceLineReplacement, ...]:
-        replacements = []
-        for target, node in targets.targets:
-            if self.base_name in _class_base_source_names(node):
-                continue
-            original_line = targets.sources_by_file_path[target.file_path].splitlines(
-                keepends=True
-            )[node.lineno - 1]
-            replacements.append(
-                SourceLineReplacement(
-                    file_path=target.file_path,
-                    start_line=node.lineno,
-                    end_line=node.lineno,
-                    replacement_lines=(
-                        ClassHeaderSourceAuthority(
-                            original_line,
-                            node.name,
-                        ).with_added_base(self.base_name),
-                    ),
-                    rationale=self.rationale
-                    or f"Add base {self.base_name!r} to {target.qualname!r}.",
-                )
-            )
-        return tuple(replacements)
 
-    def declaration_deletion_replacements(
-        self, targets: "ClassDeclarationPromotionTargets"
-    ) -> tuple[SourceLineReplacement, ...]:
-        replacements = []
-        for target, node in targets.targets:
-            promoted_statements = tuple(
-                statement
-                for statement in node.body
-                if ClassDeclarationPromotionStatement(statement).name
-                in self.declaration_names
-            )
-            if not promoted_statements:
-                continue
-            promoted_statement_ids = frozenset(
-                id(statement) for statement in promoted_statements
-            )
-            class_would_be_empty = not any(
-                id(statement) not in promoted_statement_ids for statement in node.body
-            )
-            for index, statement in enumerate(promoted_statements):
-                replacements.append(
-                    SourceLineReplacement(
-                        file_path=target.file_path,
-                        start_line=statement.lineno,
-                        end_line=statement.end_lineno or statement.lineno,
-                        replacement_lines=self.replacement_lines_for_deleted_declaration(
-                            class_would_be_empty,
-                            index,
-                        ),
-                        rationale=self.rationale
-                        or f"Delete promoted declaration from {target.qualname!r}.",
-                    )
-                )
-        return tuple(replacements)
+@dataclass(frozen=True, kw_only=True)
+class PromoteClassMethodsOperation(ClassMemberPromotionOperation):
+    """Promote repeated class methods to a shared base class."""
 
-    @staticmethod
-    def replacement_lines_for_deleted_declaration(
-        class_would_be_empty: bool,
-        deletion_index: int,
-    ) -> tuple[str, ...]:
-        if class_would_be_empty and deletion_index == 0:
-            return ("    pass\n",)
-        return ()
+    method_names: tuple[str, ...]
+    member_role: ClassVar[str] = "method"
+    member_payload_field_name: ClassVar[str] = METHOD_NAMES_PAYLOAD_FIELD
+    member_constructor_argument_name: ClassVar[str] = "method_names"
+
+    @property
+    def member_names(self) -> tuple[str, ...]:
+        return self.method_names
+
+    @property
+    def statement_type(self) -> type["ClassMemberPromotionStatement"]:
+        return ClassMethodPromotionStatement
 
 
 @dataclass(frozen=True)
-class ClassDeclarationPromotionTargets:
-    """Resolved class nodes participating in a class-declaration promotion."""
+class ClassMemberPromotionTargets:
+    """Resolved class nodes participating in a class-member promotion."""
 
     targets: tuple[tuple[AstTargetDigest, ast.ClassDef], ...]
     sources_by_file_path: Mapping[str, str]
@@ -1966,7 +1933,7 @@ class ClassDeclarationPromotionTargets:
         *,
         source_path: str | None,
         class_names: tuple[str, ...],
-    ) -> "ClassDeclarationPromotionTargets":
+    ) -> "ClassMemberPromotionTargets":
         nodes_by_target_id = AstTargetNodeIndex(
             source_index,
             source_by_path,
@@ -2017,27 +1984,153 @@ class ClassDeclarationPromotionTargets:
 
 
 @dataclass(frozen=True)
-class ClassDeclarationPromotedBase:
-    """Source for a base class containing promoted class declarations."""
+class ClassMemberPromotionSpec:
+    """Shared member-promotion identity used by plans and generated bases."""
 
-    operation: PromoteClassDeclarationsOperation
+    base_name: str
+    member_names: tuple[str, ...]
+    statement_type: type["ClassMemberPromotionStatement"]
+
+
+@dataclass(frozen=True)
+class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
+    """Line replacements for promoting class members into one shared base."""
+
+    rationale: str
+    inserted_base_role: str
+    deleted_member_role: str
+
+    def line_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[SourceLineReplacement, ...]:
+        return (
+            self.base_insertion_replacement(targets),
+            *self.base_addition_replacements(targets),
+            *self.member_deletion_replacements(targets),
+        )
+
+    def base_insertion_replacement(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> SourceLineReplacement:
+        target, source_class = targets.insertion_target
+        base_source = ClassMemberPromotedBase(
+            base_name=self.base_name,
+            member_names=self.member_names,
+            statement_type=self.statement_type,
+            source_text=targets.first_source,
+            source_class=source_class,
+        ).source
+        return SourceLineReplacement(
+            file_path=target.file_path,
+            start_line=target.line,
+            end_line=target.line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
+            rationale=self.rationale
+            or f"Insert promoted {self.inserted_base_role} base {self.base_name!r}.",
+        )
+
+    def base_addition_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for target, node in targets.targets:
+            if self.base_name in _class_base_source_names(node):
+                continue
+            original_line = targets.sources_by_file_path[target.file_path].splitlines(
+                keepends=True
+            )[node.lineno - 1]
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=target.file_path,
+                    start_line=node.lineno,
+                    end_line=node.lineno,
+                    replacement_lines=(
+                        ClassHeaderSourceAuthority(
+                            original_line,
+                            node.name,
+                        ).with_added_base(self.base_name),
+                    ),
+                    rationale=self.rationale
+                    or f"Add base {self.base_name!r} to {target.qualname!r}.",
+                )
+            )
+        return tuple(replacements)
+
+    def member_deletion_replacements(
+        self,
+        targets: ClassMemberPromotionTargets,
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for target, node in targets.targets:
+            promoted_statements = self.promoted_statements(node)
+            if not promoted_statements:
+                continue
+            promoted_statement_ids = frozenset(
+                id(statement) for statement in promoted_statements
+            )
+            class_would_be_empty = not any(
+                id(statement) not in promoted_statement_ids for statement in node.body
+            )
+            for index, statement in enumerate(promoted_statements):
+                member_statement = self.statement_type(statement)
+                replacements.append(
+                    SourceLineReplacement(
+                        file_path=target.file_path,
+                        start_line=member_statement.start_line,
+                        end_line=member_statement.end_line,
+                        replacement_lines=self.replacement_lines_for_deleted_member(
+                            class_would_be_empty,
+                            index,
+                        ),
+                        rationale=self.rationale
+                        or (
+                            f"Delete promoted {self.deleted_member_role} "
+                            f"from {target.qualname!r}."
+                        ),
+                    )
+                )
+        return tuple(replacements)
+
+    def promoted_statements(self, node: ast.ClassDef) -> tuple[ast.stmt, ...]:
+        return tuple(
+            statement
+            for statement in node.body
+            if self.statement_type(statement).name in self.member_names
+        )
+
+    @staticmethod
+    def replacement_lines_for_deleted_member(
+        class_would_be_empty: bool,
+        deletion_index: int,
+    ) -> tuple[str, ...]:
+        if class_would_be_empty and deletion_index == 0:
+            return ("    pass\n",)
+        return ()
+
+
+@dataclass(frozen=True)
+class ClassMemberPromotedBase(ClassMemberPromotionSpec):
+    """Source for a base class containing promoted class members."""
+
     source_text: str
     source_class: ast.ClassDef
 
     @property
     def source(self) -> str:
-        declarations = tuple(
-            ClassDeclarationPromotionStatement(statement).source_from(self.source_text)
+        members = tuple(
+            self.statement_type(statement).source_from(self.source_text)
             for statement in self.source_class.body
-            if ClassDeclarationPromotionStatement(statement).name
-            in self.operation.declaration_names
+            if self.statement_type(statement).name in self.member_names
         )
-        if len(declarations) != len(self.operation.declaration_names):
+        if len(members) != len(self.member_names):
             raise ValueError(
-                f"Could not find declarations {self.operation.declaration_names!r} "
+                f"Could not find promoted members {self.member_names!r} "
                 f"on {self.source_class.name!r}"
             )
-        return f"class {self.operation.base_name}:\n{''.join(declarations)}"
+        return f"class {self.base_name}:\n{''.join(members)}"
 
 
 @dataclass(frozen=True)
@@ -2055,10 +2148,38 @@ class ClassDeclarationPromotionClass:
 
 
 @dataclass(frozen=True)
-class ClassDeclarationPromotionStatement:
-    """Class-body statement eligible for declaration promotion."""
+class ClassMemberPromotionStatement(ABC, metaclass=AutoRegisterMeta):
+    """Class-body statement projected as a promotable member."""
 
+    __registry__: ClassVar[dict[str, type["ClassMemberPromotionStatement"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+
+    registry_key_suffix: ClassVar[str] = "PromotionStatement"
     statement: ast.stmt
+
+    @property
+    @abstractmethod
+    def name(self) -> str | None:
+        raise NotImplementedError
+
+    @property
+    def start_line(self) -> int:
+        return self.statement.lineno
+
+    @property
+    def end_line(self) -> int:
+        return self.statement.end_lineno or self.statement.lineno
+
+    def source_from(self, source: str) -> str:
+        lines = source.splitlines(keepends=True)
+        return "".join(lines[self.start_line - 1 : self.end_line])
+
+
+@dataclass(frozen=True)
+class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
+    """Class-body declaration eligible for declaration promotion."""
 
     @property
     def name(self) -> str | None:
@@ -2075,10 +2196,33 @@ class ClassDeclarationPromotionStatement:
             return self.statement.target.id
         return None
 
-    def source_from(self, source: str) -> str:
-        lines = source.splitlines(keepends=True)
-        end_line = self.statement.end_lineno or self.statement.lineno
-        return "".join(lines[self.statement.lineno - 1 : end_line])
+
+@dataclass(frozen=True)
+class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
+    """Class-body method eligible for method promotion."""
+
+    @property
+    def name(self) -> str | None:
+        if isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return self.statement.name
+        return None
+
+    @property
+    def start_line(self) -> int:
+        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return super().start_line
+        decorator_lines = tuple(
+            decorator.lineno for decorator in self.statement.decorator_list
+        )
+        if not decorator_lines:
+            return self.statement.lineno
+        return min((*decorator_lines, self.statement.lineno))
+
+    @property
+    def comparable_shape(self) -> str:
+        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return ""
+        return ast.dump(self.statement, include_attributes=False)
 
 
 _ENUM_BASE_NAMES = frozenset(("Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"))
@@ -4051,6 +4195,24 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def promote_class_methods(
+        self,
+        source_path: str,
+        base_name: str,
+        class_names: Iterable[str],
+        method_names: Iterable[str],
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = PromoteClassMethodsOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            base_name=base_name,
+            class_names=tuple(class_names),
+            method_names=tuple(method_names),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def replace_text(
         self,
         target_qualname: str,
@@ -4654,6 +4816,226 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
             if ClassDeclarationPromotionClass(node).is_enum_class:
                 return False
         return True
+
+
+class RepeatedMethodPromotionFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer,
+    ABC,
+):
+    """Build method-promotion recipes for exact repeated method findings."""
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(context)
+            .combine(
+                lambda selector_context: self.executable_promotion(
+                    finding,
+                    selector_context,
+                ),
+                lambda selector_context, promotion: RefactorRecipe(
+                    recipe_id=f"{finding.stable_id}-promote-class-methods",
+                    reason="Promote exact repeated class methods to a shared mixin.",
+                ).promote_class_methods(
+                    promotion.source_path,
+                    self.base_name_for_methods(promotion.method_names),
+                    promotion.class_names,
+                    promotion.method_names,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        source_path = self.source_path(finding)
+        if source_path is None:
+            return ()
+        return tuple(
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=source_path,
+                subject_name=method_symbol,
+            )
+            for method_symbol in self.method_symbols(finding)
+        )
+
+    @staticmethod
+    def method_symbols(finding: RefactorFinding) -> tuple[str, ...]:
+        if not isinstance(finding.metrics, RepeatedMethodMetrics):
+            return ()
+        return finding.metrics.method_symbols
+
+    def executable_promotion(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> "RepeatedMethodPromotionPlan | None":
+        return (
+            Maybe.of(self.source_path(finding))
+            .combine(
+                lambda source_path: self.class_and_method_names_or_none(finding),
+                lambda source_path, names: RepeatedMethodPromotionPlan(
+                    source_path=source_path,
+                    class_names=names[0],
+                    method_names=names[1],
+                ),
+            )
+            .filter(lambda plan: self.promotion_is_executable(plan, context))
+            .unwrap_or_none()
+        )
+
+    def class_and_method_names(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        class_names = []
+        method_names = []
+        for method_symbol in self.method_symbols(finding):
+            if "." not in method_symbol:
+                return (), ()
+            class_name, method_name = method_symbol.rsplit(".", 1)
+            if not class_name or not method_name:
+                return (), ()
+            class_names.append(class_name)
+            method_names.append(method_name)
+        return tuple(dict.fromkeys(class_names)), tuple(dict.fromkeys(method_names))
+
+    def class_and_method_names_or_none(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        class_names, method_names = self.class_and_method_names(finding)
+        if not class_names or not method_names:
+            return None
+        return class_names, method_names
+
+    @staticmethod
+    def source_path(finding: RefactorFinding) -> str | None:
+        file_paths = frozenset(evidence.file_path for evidence in finding.evidence)
+        if len(file_paths) != 1:
+            return None
+        return next(iter(file_paths))
+
+    def promotion_is_executable(
+        self,
+        promotion: "RepeatedMethodPromotionPlan",
+        context: CodemodSelectorContext,
+    ) -> bool:
+        targets = ClassMemberPromotionTargets.resolve(
+            context.source_index,
+            context.sources_by_file_path,
+            source_path=promotion.source_path,
+            class_names=promotion.class_names,
+        )
+        return self.methods_are_identical(
+            targets,
+            promotion.method_names,
+        ) and not self.direct_bases_define_methods(
+            targets,
+            promotion.method_names,
+            context,
+        )
+
+    @staticmethod
+    def methods_are_identical(
+        targets: ClassMemberPromotionTargets,
+        method_names: tuple[str, ...],
+    ) -> bool:
+        for method_name in method_names:
+            shapes = []
+            for _, node in targets.targets:
+                matching_methods = tuple(
+                    statement
+                    for statement in node.body
+                    if ClassMethodPromotionStatement(statement).name == method_name
+                )
+                if len(matching_methods) != 1:
+                    return False
+                shapes.append(
+                    ClassMethodPromotionStatement(
+                        matching_methods[0],
+                    ).comparable_shape
+                )
+            if len(frozenset(shapes)) != 1:
+                return False
+        return True
+
+    @staticmethod
+    def direct_bases_define_methods(
+        targets: ClassMemberPromotionTargets,
+        method_names: tuple[str, ...],
+        context: CodemodSelectorContext,
+    ) -> bool:
+        class_index = context.class_family_index
+        for target, _ in targets.targets:
+            symbol = class_index.symbol_for(
+                file_path=target.file_path,
+                qualname=target.qualname,
+            )
+            if symbol is None:
+                return True
+            indexed_class = class_index.class_for(symbol)
+            if indexed_class is None:
+                return True
+            if len(indexed_class.resolved_base_symbols) != len(
+                indexed_class.declared_base_names
+            ):
+                return True
+            for base_symbol in indexed_class.resolved_base_symbols:
+                base_class = class_index.class_for(base_symbol)
+                if base_class is None:
+                    return True
+                if any(
+                    ClassMethodPromotionStatement(statement).name in method_names
+                    for statement in base_class.node.body
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def base_name_for_methods(method_names: tuple[str, ...]) -> str:
+        method_name = "".join(_pascal_case_identifier(name) for name in method_names)
+        if not method_name:
+            method_name = "Member"
+        return f"Shared{method_name}Mixin"
+
+
+@dataclass(frozen=True)
+class RepeatedMethodPromotionPlan:
+    """Concrete repeated-method promotion proven executable for one finding."""
+
+    source_path: str
+    class_names: tuple[str, ...]
+    method_names: tuple[str, ...]
+
+
+class RepeatedPropertyAliasHooksFindingRecipeSynthesizer(
+    RepeatedMethodPromotionFindingRecipeSynthesizer
+):
+    """Build executable recipes for exact repeated property aliases."""
+
+    detector_id = "repeated_property_alias_hooks"
+
+
+class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
+    RepeatedMethodPromotionFindingRecipeSynthesizer
+):
+    """Only execute semantic-overlap findings that are already exact duplicates."""
+
+    detector_id = "semantic_overlap_abc_optimization"
+
+
+def _pascal_case_identifier(value: str) -> str:
+    parts = tuple(part for part in re.split(r"[^0-9A-Za-z]+", value) if part)
+    if not parts:
+        return ""
+    return "".join(part[:1].upper() + part[1:] for part in parts)
 
 
 @dataclass(frozen=True)

@@ -1131,6 +1131,175 @@ def test_class_level_inheritance_findings_synthesize_promotion_recipe(
     assert remaining == []
 
 
+def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    def emit(self, rows):\n"
+        "        cleaned = self.normalize(rows)\n"
+        "        return self.write(cleaned)\n\n\n"
+        "class Beta:\n"
+        "    def emit(self, rows):\n"
+        "        cleaned = self.normalize(rows)\n"
+        "        return self.write(cleaned)\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = RefactorRecipe(recipe_id="promote-repeated-methods").promote_class_methods(
+        module_path.as_posix(),
+        "SharedEmitMixin",
+        ("Alpha", "Beta"),
+        ("emit",),
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    operation = recipe.operations[0].to_dict()
+    assert operation["operation"] == "promote_class_methods"
+    assert operation["method_names"] == ("emit",)
+    assert simulation.is_clean is True
+    assert "+class SharedEmitMixin:" in diff
+    assert "+class Alpha(SharedEmitMixin):" in diff
+    assert "+class Beta(SharedEmitMixin):" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert rewritten.count("def emit") == 1
+    assert "class Alpha(SharedEmitMixin):\n    pass\n" in rewritten
+    assert "class Beta(SharedEmitMixin):\n    pass\n" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from abc import ABC\n\n\n"
+        "class ProjectionTemplate(ABC):\n"
+        "    @property\n"
+        "    def observation_kind(self):\n"
+        "        raise NotImplementedError\n\n\n"
+        "class AlphaProjection(ProjectionTemplate):\n"
+        "    @property\n"
+        "    def observation_line(self):\n"
+        "        return self.lineno\n\n\n"
+        "class BetaProjection(ProjectionTemplate):\n"
+        "    @property\n"
+        "    def observation_line(self):\n"
+        "        return self.lineno\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "repeated_property_alias_hooks"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+        class_family_index=build_class_family_index(modules),
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("repeated_property_alias_hooks",),
+        selector_context=context,
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert plan.expected_removed_finding_count == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "promote_class_methods"
+    assert operation["method_names"] == ("observation_line",)
+    assert simulation.is_clean is True
+    assert "+class SharedObservationLineMixin:" in diff
+    assert (
+        "+class AlphaProjection(ProjectionTemplate, SharedObservationLineMixin):"
+        in diff
+    )
+    assert (
+        "+class BetaProjection(ProjectionTemplate, SharedObservationLineMixin):" in diff
+    )
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert rewritten.count("def observation_line") == 1
+    remaining = [
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == "repeated_property_alias_hooks"
+    ]
+    assert remaining == []
+
+
+def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from abc import ABC\n\n\n"
+        "class Exporter(ABC):\n"
+        "    pass\n\n\n"
+        "class CsvExporter(Exporter):\n"
+        "    def emit(self, rows):\n"
+        "        cleaned = self.normalize(rows)\n"
+        "        encoded = encode_csv(cleaned)\n"
+        "        self.write(encoded, suffix='.csv')\n"
+        "        return encoded\n\n\n"
+        "class JsonExporter(Exporter):\n"
+        "    def emit(self, rows):\n"
+        "        cleaned = self.normalize(rows)\n"
+        "        encoded = encode_json(cleaned)\n"
+        "        self.write(encoded, suffix='.json')\n"
+        "        return encoded\n\n\n"
+        "class XmlExporter(Exporter):\n"
+        "    def emit(self, rows):\n"
+        "        cleaned = self.normalize(rows)\n"
+        "        encoded = encode_xml(cleaned)\n"
+        "        self.write(encoded, suffix='.xml')\n"
+        "        return encoded\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == _SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID
+    )
+    source_index = build_source_index(modules, findings)
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        class_family_index=build_class_family_index(modules),
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=(_SEMANTIC_OVERLAP_ABC_OPTIMIZATION_DETECTOR_ID,),
+        selector_context=context,
+    )
+
+    assert findings
+    assert plan.expected_removed_finding_count == 0
+    assert plan.document.recipes == ()
+
+
 def test_class_level_promotion_bridge_refuses_enum_member_promotion(
     tmp_path: Path,
 ) -> None:
