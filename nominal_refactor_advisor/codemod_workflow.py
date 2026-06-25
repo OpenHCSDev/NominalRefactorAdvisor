@@ -14,11 +14,14 @@ from .codemod import (
     ArchitectureGuardSuite,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
+    CodemodPlanSequence,
+    CodemodPlanSequenceContinuationReport,
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     FindingRecipePlan,
     FindingRecipeSynthesisReport,
     JsonObject,
+    module_name_from_source_path,
 )
 from .detectors import DetectorConfig
 from .models import RefactorFinding
@@ -114,9 +117,7 @@ class CodemodFindingDelta:
         expected_removed_finding_ids: tuple[str, ...],
     ) -> int:
         return len(
-            self.confirmed_expected_removed_finding_ids(
-                expected_removed_finding_ids
-            )
+            self.confirmed_expected_removed_finding_ids(expected_removed_finding_ids)
         )
 
     def surviving_expected_removed_finding_count(
@@ -132,9 +133,7 @@ class CodemodFindingDelta:
         expected_removed_finding_ids: tuple[str, ...],
     ) -> bool:
         return (
-            self.surviving_expected_removed_finding_count(
-                expected_removed_finding_ids
-            )
+            self.surviving_expected_removed_finding_count(expected_removed_finding_ids)
             == 0
         )
 
@@ -177,6 +176,65 @@ class CodemodFindingDelta:
 
 
 @dataclass(frozen=True)
+class CodemodProjectedFindingReport:
+    """Before/after advisor findings for one simulated codemod source state."""
+
+    before_findings: tuple[RefactorFinding, ...]
+    after_scan: "CodemodFixpointScan"
+    source_sequence: CodemodPlanSequence | None = None
+
+    @property
+    def before_finding_count(self) -> int:
+        return len(self.before_findings)
+
+    @property
+    def after_findings(self) -> tuple[RefactorFinding, ...]:
+        return tuple(self.after_scan.findings)
+
+    @property
+    def after_finding_count(self) -> int:
+        return len(self.after_findings)
+
+    @property
+    def projected_source_index(self) -> SourceIndex:
+        return self.after_scan.source_index
+
+    @property
+    def finding_delta(self) -> CodemodFindingDelta:
+        return CodemodFindingDelta.from_findings(
+            self.before_findings,
+            self.after_findings,
+        )
+
+    @property
+    def continuation_report(self) -> CodemodPlanSequenceContinuationReport:
+        projected_snapshot = self.after_scan.source_snapshot
+        after_findings = self.after_findings
+        return CodemodPlanSequenceContinuationReport(
+            sequence=self.source_sequence or CodemodPlanSequence(),
+            source_index=projected_snapshot.source_index,
+            findings=after_findings,
+            plan=projected_snapshot.plan_from_findings(after_findings),
+        )
+
+    def to_dict(self) -> JsonObject:
+        after_findings = self.after_findings
+        projected_snapshot = self.after_scan.source_snapshot
+        continuation_report = self.continuation_report
+        return {
+            "before_finding_count": self.before_finding_count,
+            "after_finding_count": self.after_finding_count,
+            "finding_delta": self.finding_delta.to_dict(),
+            "after_findings": tuple(
+                finding.to_dict() for finding in after_findings
+            ),
+            "projected_source_index": projected_snapshot.source_index.to_dict(),
+            "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
+            "projected_finding_continuation": continuation_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodFixpointScan:
     """Parsed source snapshot used by one fixpoint iteration."""
 
@@ -194,6 +252,37 @@ class CodemodFixpointScan:
     @property
     def source_snapshot(self) -> CodemodSourceSnapshot:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
+
+
+@dataclass(frozen=True)
+class CodemodSimulationFindingProjection:
+    """Analyze advisor findings after applying a simulation in memory."""
+
+    modules: tuple[ParsedModule, ...]
+    findings: tuple[RefactorFinding, ...]
+    simulation: CodemodSimulationReport
+    config: DetectorConfig
+    roots: tuple[Path, ...] = ()
+    source_sequence: CodemodPlanSequence | None = None
+
+    def scan(self) -> CodemodFixpointScan:
+        projected_modules = ProjectedScanModuleSet(
+            modules=self.modules,
+            simulation=self.simulation,
+            roots=self.roots,
+        ).modules_after_projection()
+        return CodemodFixpointScan(
+            modules=list(projected_modules),
+            findings=analyze_modules(projected_modules, self.config),
+        )
+
+    def report(self) -> CodemodProjectedFindingReport:
+        after_scan = self.scan()
+        return CodemodProjectedFindingReport(
+            before_findings=self.findings,
+            after_scan=after_scan,
+            source_sequence=self.source_sequence,
+        )
 
 
 @dataclass(frozen=True)
@@ -506,9 +595,7 @@ class CodemodFixpointRunner(ParseCacheRequest):
                 simulation,
             )
             if stop is not None:
-                return iteration_builder.stopped_report(
-                    stop
-                )
+                return iteration_builder.stopped_report(stop)
             if self.dry_run:
                 next_scan = self.projected_scan(
                     scan,
@@ -553,12 +640,13 @@ class CodemodFixpointRunner(ParseCacheRequest):
     ) -> CodemodFixpointScan:
         """Analyze the post-simulation source state without writing files."""
 
-        modules = [
-            self.projected_module(module, simulation)
-            for module in scan.modules
-        ]
+        modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=self.roots,
+        ).modules_after_projection()
         return CodemodFixpointScan(
-            modules=modules,
+            modules=list(modules),
             findings=analyze_modules(modules, self.config),
         )
 
@@ -581,6 +669,75 @@ class CodemodFixpointRunner(ParseCacheRequest):
             module=ast.parse(source, filename=str(module.path)),
             source=source,
         )
+
+
+@dataclass(frozen=True)
+class ProjectedScanModuleSet:
+    """Parsed module set after a codemod simulation, including created files."""
+
+    modules: tuple[ParsedModule, ...]
+    simulation: CodemodSimulationReport
+    roots: tuple[Path, ...] = ()
+
+    def modules_after_projection(self) -> tuple[ParsedModule, ...]:
+        return (
+            *self.projected_existing_modules(),
+            *self.created_modules(),
+        )
+
+    def projected_existing_modules(self) -> tuple[ParsedModule, ...]:
+        return tuple(
+            CodemodFixpointRunner.projected_module(module, self.simulation)
+            for module in self.modules
+        )
+
+    def created_modules(self) -> tuple[ParsedModule, ...]:
+        known_paths = self.known_resolved_paths()
+        return tuple(
+            self.created_module(file_path, source)
+            for file_path, source in sorted(self.simulation.rewritten_sources.items())
+            if Path(file_path).resolve() not in known_paths
+        )
+
+    def known_resolved_paths(self) -> frozenset[Path]:
+        return frozenset(module.path.resolve() for module in self.modules)
+
+    def created_module(self, file_path: str, source: str) -> ParsedModule:
+        path = Path(file_path)
+        return ParsedModule(
+            path=path,
+            module_name=ProjectedModuleName(
+                file_path=path,
+                roots=self.roots,
+            ).module_name(),
+            is_package_init=path.name == "__init__.py",
+            module=ast.parse(source, filename=file_path),
+            source=source,
+        )
+
+
+@dataclass(frozen=True)
+class ProjectedModuleName:
+    """Resolve module names for simulated sources using known scan roots."""
+
+    file_path: Path
+    roots: tuple[Path, ...] = ()
+
+    def module_name(self) -> str:
+        relative_path = self.relative_path()
+        return module_name_from_source_path(relative_path.as_posix())
+
+    def relative_path(self) -> Path:
+        resolved_file_path = self.file_path.resolve()
+        for root in self.roots:
+            resolved_root = root.resolve()
+            if resolved_root.is_file():
+                resolved_root = resolved_root.parent
+            try:
+                return resolved_file_path.relative_to(resolved_root)
+            except ValueError:
+                continue
+        return self.file_path
 
 
 @dataclass(frozen=True)

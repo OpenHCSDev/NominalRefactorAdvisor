@@ -2177,9 +2177,7 @@ def _excessive_blank_line_run_candidates(
         run_start = None
         run_length = 0
 
-    for line_number, line in enumerate(
-        module.path.read_text(encoding="utf-8").splitlines(), 1
-    ):
+    for line_number, line in enumerate(module.source.splitlines(), 1):
         if line_number in protected_lines or line.strip():
             flush(line_number - 1)
             continue

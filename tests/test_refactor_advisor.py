@@ -58,6 +58,7 @@ from nominal_refactor_advisor.cli import analyze_paths
 from nominal_refactor_advisor.cli import format_codemod_applicability_markdown
 from nominal_refactor_advisor.cli import load_authority_boundary_plans
 from nominal_refactor_advisor.cli import load_codemod_plan_document
+from nominal_refactor_advisor.cli import load_codemod_plan_sequence
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -66,8 +67,10 @@ from nominal_refactor_advisor.codemod import (
     AuthorityBoundaryRewrite,
     CodemodActionability,
     CodemodAutomationLevel,
+    CodemodOperationPreflightError,
     CodemodBackend,
     CodemodPlanDocument,
+    CodemodPlanSequence,
     CancelableCompositionKind,
     CallSiteSelector,
     CallSiteTargetSelector,
@@ -2143,6 +2146,125 @@ def test_refactor_recipe_moves_decorated_symbol_between_modules(
     assert rewritten_destination.index("class Helper") < rewritten_destination.index(
         "class Existing"
     )
+
+
+def test_refactor_recipe_moves_symbol_dependency_closure_between_modules(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass, field\n"
+        "from pathlib import Path\n"
+        "from typing import ClassVar\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    label: ClassVar[str] = 'helper'\n\n"
+        "    def render(self, path: Path) -> str:\n"
+        "        return f'{self.label}:{path.name}'\n\n\n"
+        "def use_helper(path: Path) -> str:\n"
+        "    return Helper().render(path)\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/destination.py",
+        "class Existing:\n" "    pass\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {
+        source_path.as_posix(): source_path.read_text(),
+        destination_path.as_posix(): destination_path.read_text(),
+    }
+
+    recipe = RefactorRecipe(recipe_id="move-helper-closure").move_symbols_to_module(
+        source_path.as_posix(),
+        ("LocalBase", "Helper"),
+        destination_path.as_posix(),
+        replacement_import="from pkg.destination import Helper\n",
+    )
+    operation = recipe.operations[0]
+    report = operation.dependency_report(source_index, source_by_path)
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert operation.to_dict()["operation"] == "move_symbols_to_module"
+    assert report.is_clean is True
+    assert report.imported_dependency_names == ("ClassVar", "Path", "dataclass")
+    assert report.import_sources == (
+        "from typing import ClassVar\n",
+        "from pathlib import Path\n",
+        "from dataclasses import dataclass\n",
+    )
+    assert report.source_local_dependency_names == ()
+    assert report.unresolved_dependency_names == ()
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert set(simulation.apply()) == {
+        source_path.as_posix(),
+        destination_path.as_posix(),
+    }
+
+    rewritten_source = source_path.read_text()
+    rewritten_destination = destination_path.read_text()
+    assert "from pkg.destination import Helper" in rewritten_source
+    assert "class LocalBase" not in rewritten_source
+    assert "class Helper" not in rewritten_source
+    assert "from dataclasses import dataclass" in rewritten_destination
+    assert "field" not in rewritten_destination
+    assert "from pathlib import Path" in rewritten_destination
+    assert "from typing import ClassVar" in rewritten_destination
+    assert "@dataclass\nclass Helper(LocalBase):" in rewritten_destination
+    assert rewritten_destination.index("class LocalBase") < rewritten_destination.index(
+        "class Helper"
+    )
+    assert rewritten_destination.index("class Helper") < rewritten_destination.index(
+        "class Existing"
+    )
+
+
+def test_refactor_recipe_rejects_symbol_move_with_unmoved_local_dependency(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {
+        source_path.as_posix(): source_path.read_text(),
+        destination_path.as_posix(): destination_path.read_text(),
+    }
+    recipe = RefactorRecipe(recipe_id="move-helper-only").move_symbols_to_module(
+        source_path.as_posix(),
+        ("Helper",),
+        destination_path.as_posix(),
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError, match="source-local dependencies"
+    ):
+        recipe.simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+    operation = recipe.operations[0]
+    report = operation.dependency_report(source_index, source_by_path)
+    assert report.is_clean is False
+    assert report.source_local_dependency_names == ("LocalBase",)
+    assert report.unresolved_dependency_names == ()
     build_source_index(parse_python_modules(tmp_path), ())
 
 
@@ -9095,6 +9217,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "--no-cache",
             "--codemod-plan",
             "codemod-plan.json",
+            "--codemod-preflight",
             "--codemod-diff",
             "--codemod-apply",
             "--codemod-fixpoint",
@@ -9119,6 +9242,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.auto_context_root is False
     assert args.use_parse_cache is False
     assert args.codemod_plan == Path("codemod-plan.json")
+    assert args.codemod_preflight is True
     assert args.codemod_diff is True
     assert args.codemod_apply is True
     assert args.codemod_fixpoint is True
@@ -9234,6 +9358,14 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         field["field_name"]: field
         for field in operations["move_symbol_to_module"]["payload_fields"]
     }
+    create_file_fields = {
+        field["field_name"]: field
+        for field in operations["create_file"]["payload_fields"]
+    }
+    move_symbols_fields = {
+        field["field_name"]: field
+        for field in operations["move_symbols_to_module"]["payload_fields"]
+    }
     registry_conversion_fields = {
         field["field_name"]: field
         for field in operations["convert_manual_registry_to_autoregister"][
@@ -9268,9 +9400,25 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         if field["value_kind"] == "unknown"
     ]
 
-    assert len(operations) >= 23
+    assert len(operations) >= 25
     assert len(selectors) >= 6
     assert unknown_fields == []
+    assert manifest["operation_plan_template_fields"] == (
+        "recipe_id",
+        "reason",
+        "setup_operations",
+        "operation_templates",
+    )
+    assert (
+        manifest["operation_plan_template_example"]["setup_operations"][0]["operation"]
+        == "create_file"
+    )
+    assert (
+        manifest["operation_plan_template_example"]["operation_templates"][0][
+            "operation"
+        ]
+        == "replace_text"
+    )
     assert replace_text_fields["old_source"]["value_kind"] == "string"
     assert replace_text_fields["old_source"]["required"] is True
     assert replace_text_fields["new_source"]["empty_string_allowed"] is True
@@ -9278,13 +9426,20 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         extract_authority_fields["call_replacements"]["value_kind"]
         == "call_replacement_array"
     )
+    assert create_file_fields["source"]["value_kind"] == "string"
     assert move_symbol_fields["destination_path"]["value_kind"] == "string"
+    assert move_symbols_fields["destination_path"]["value_kind"] == "string"
+    assert move_symbols_fields["symbol_qualnames"]["value_kind"] == "string_array"
     assert (
         registry_conversion_fields["class_key_pairs"]["value_kind"]
         == "class_key_pair_array"
     )
     assert dispatch_fields["literal_cases"]["value_kind"] == "python_literal_array"
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
+    assert operations["create_file"]["contributes_source_overlay"] is True
+    assert operations["create_file"]["reports_preflight"] is False
+    assert operations["move_symbols_to_module"]["reports_preflight"] is True
+    assert operations["move_symbols_to_module"]["contributes_source_overlay"] is False
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
     assert operations["extract_authority"]["description"] == (
@@ -9672,6 +9827,684 @@ def test_module_cli_simulates_codemod_plan_from_stdin(
     assert "return value + 1" not in module_path.read_text()
 
 
+def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    sequence = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("create-generated").create_file(
+                        generated_path.as_posix(),
+                        "class Generated:\n"
+                        "    def run(self):\n"
+                        "        return 1\n",
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("rewrite-generated").replace_text(
+                        "Generated.run",
+                        "return 1",
+                        "return 2",
+                        source_path=generated_path.as_posix(),
+                    ),
+                )
+            ),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    simulation = sequence.simulate_snapshot(snapshot)
+    projected_snapshot = snapshot.with_simulation(simulation.simulation)
+
+    assert simulation.simulation.applied_rewrite_count == 2
+    assert generated_path.as_posix() in simulation.simulation.changed_file_paths
+    assert "return 2" in simulation.simulation.rewritten_sources[
+        generated_path.as_posix()
+    ]
+    assert len(simulation.stage_reports) == 2
+    first_stage, second_stage = simulation.stage_reports
+    assert first_stage.stage_index == 0
+    assert second_stage.stage_index == 1
+    assert any(
+        target.qualname == "Generated.run"
+        for target in first_stage.after_source_index.ast_targets
+    )
+    assert any(
+        target.qualname == "Generated.run"
+        for target in second_stage.before_source_index.ast_targets
+    )
+    assert any(
+        target.qualname == "Generated.run"
+        for target in projected_snapshot.source_index.ast_targets
+    )
+
+
+def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    generated_path = tmp_path / "pkg/generated_record.py"
+    sequence = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("create-generated-record").create_file(
+                        generated_path.as_posix(),
+                        "from nominal_refactor_advisor.record_algebra import (\n"
+                        "    materialize_product_record,\n"
+                        "    product_record_spec,\n"
+                        ")\n\n\n"
+                        "class SemanticRecord:\n"
+                        "    pass\n\n\n"
+                        "materialize_product_record(\n"
+                        "    product_record_spec(\n"
+                        '        "GeneratedRecord",\n'
+                        '        "path: str",\n'
+                        '        "SemanticRecord",\n'
+                        "    )\n"
+                        ")\n",
+                    ),
+                )
+            ),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+
+    simulation = sequence.simulate_snapshot(snapshot)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(simulation.required_final_snapshot.parsed_modules)
+        if finding.detector_id == "runtime_product_record_schema"
+    )
+    continuation_report = simulation.continuation_report_from_findings(findings)
+
+    assert generated_path.exists() is False
+    assert len(findings) == 2
+    assert continuation_report.finding_count == 2
+    assert continuation_report.source_index is simulation.required_final_snapshot.source_index
+    assert continuation_report.plan.expected_removed_finding_count == 1
+    assert continuation_report.has_continuation_stage is True
+    assert continuation_report.continuation_stage_count == 1
+    assert len(continuation_report.continuation_sequence.documents) == 1
+    assert len(continuation_report.extended_sequence.documents) == 2
+    assert (
+        continuation_report.extended_sequence.documents[-1]
+        == continuation_report.plan.document
+    )
+    assert (
+        continuation_report.plan.document.recipes[0].operations[0].to_dict()[
+            "operation"
+        ]
+        == "product_record_to_dataclass"
+    )
+    continuation_payload = continuation_report.to_dict()
+    assert continuation_payload["has_continuation_stage"] is True
+    assert (
+        continuation_payload["continuation_sequence"]["stages"][0]["recipes"][0][
+            "operations"
+        ][0]["operation"]
+        == "product_record_to_dataclass"
+    )
+    assert (
+        continuation_payload["extended_sequence"]["stages"][-1]["recipes"][0][
+            "operations"
+        ][0]["operation"]
+        == "product_record_to_dataclass"
+    )
+
+
+def test_module_cli_simulates_staged_codemod_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    plan_path = tmp_path / "staged-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "recipes": [
+                            {
+                                "recipe_id": "create-generated",
+                                "operations": [
+                                    {
+                                        "operation": "create_file",
+                                        "file_path": generated_path.as_posix(),
+                                        "source": (
+                                            "class Generated:\n"
+                                            "    def run(self):\n"
+                                            "        return 1\n"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    {
+                        "recipes": [
+                            {
+                                "recipe_id": "rewrite-generated",
+                                "operations": [
+                                    {
+                                        "operation": "replace_text",
+                                        "file_path": generated_path.as_posix(),
+                                        "target_qualname": "Generated.run",
+                                        "old_source": "return 1",
+                                        "new_source": "return 2",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    sequence = load_codemod_plan_sequence(plan_path)
+
+    assert result.returncode == 0, result.stderr
+    assert sequence.has_multiple_stages
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 2
+    assert generated_path.as_posix() in payload["changed_file_paths"]
+    assert "+        return 2" in payload["unified_diff"]
+    sequence_payload = payload["plan_sequence_simulation"]
+    assert sequence_payload["stage_count"] == 2
+    first_stage, second_stage = sequence_payload["stages"]
+    assert first_stage["stage_index"] == 0
+    assert second_stage["stage_index"] == 1
+    assert any(
+        target["qualname"] == "Generated.run"
+        for target in first_stage["after_source_index"]["ast_targets"]
+    )
+    assert any(
+        target["qualname"] == "Generated.run"
+        for target in second_stage["before_source_index"]["ast_targets"]
+    )
+    assert any(
+        target["qualname"] == "Generated.run"
+        for target in sequence_payload["final_source_index"]["ast_targets"]
+    )
+    assert generated_path.exists() is False
+
+
+def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-relative-path",
+                "operations": [
+                    {
+                        "operation": "replace_text",
+                        "file_path": "pkg/mod.py",
+                        "target_qualname": "Alpha.run",
+                        "old_source": "return value",
+                        "new_source": "return value + 1",
+                    },
+                    {
+                        "operation": "ensure_import",
+                        "file_path": "pkg/mod.py",
+                        "import_source": "from pkg.modern import modern\n",
+                    },
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 1
+    assert payload["parse_valid"] is True
+    assert f"+++ b{module_path.as_posix()}" in payload["unified_diff"]
+    assert "+from pkg.modern import modern" in payload["unified_diff"]
+    assert "+        return value + 1" in payload["unified_diff"]
+    assert "return value + 1" not in module_path.read_text()
+
+
+def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    value: int\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-move-symbol-closure",
+                "operations": [
+                    {
+                        "operation": "move_symbols_to_module",
+                        "file_path": "pkg/source.py",
+                        "symbol_qualnames": ["LocalBase", "Helper"],
+                        "destination_path": "pkg/destination.py",
+                        "replacement_import": "from pkg.destination import Helper\n",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 2
+    assert payload["parse_valid"] is True
+    assert f"+++ b{source_path.as_posix()}" in payload["unified_diff"]
+    assert f"+++ b{destination_path.as_posix()}" in payload["unified_diff"]
+    assert "+from dataclasses import dataclass" in payload["unified_diff"]
+    assert "+class Helper(LocalBase):" in payload["unified_diff"]
+    assert "class Helper" in source_path.read_text()
+
+
+def test_module_cli_preflights_relative_multi_symbol_move_plan_from_stdin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    value: int\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-move-symbol-closure-preflight",
+                "operations": [
+                    {
+                        "operation": "move_symbols_to_module",
+                        "file_path": "pkg/source.py",
+                        "symbol_qualnames": ["LocalBase", "Helper"],
+                        "destination_path": "pkg/destination.py",
+                        "replacement_import": "from pkg.destination import Helper\n",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-preflight",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["preflight_failed"] is False
+    assert payload["is_clean"] is True
+    assert payload["applied"] is False
+    assert payload["report_count"] == 1
+    assert payload["reports"][0]["operation"] == "move_symbols_to_module"
+    assert payload["reports"][0]["status"] == "passed"
+    assert payload["reports"][0]["details"]["imported_dependency_names"] == [
+        "dataclass"
+    ]
+    assert payload["reports"][0]["details"]["source_local_dependency_names"] == []
+    assert "unified_diff" not in payload
+    assert "class Helper" in source_path.read_text()
+
+
+def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    destination_path = tmp_path / "pkg/destination.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class LocalBase:\n"
+        "    pass\n\n\n"
+        "@dataclass\n"
+        "class Helper(LocalBase):\n"
+        "    value: int\n",
+    )
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-create-and-move-symbols",
+                "operations": [
+                    {
+                        "operation": "create_file",
+                        "file_path": "pkg/destination.py",
+                        "source": "",
+                    },
+                    {
+                        "operation": "move_symbols_to_module",
+                        "file_path": "pkg/source.py",
+                        "symbol_qualnames": ["LocalBase", "Helper"],
+                        "destination_path": "pkg/destination.py",
+                        "replacement_import": "from pkg.destination import Helper\n",
+                    },
+                ],
+            }
+        ]
+    }
+
+    preflight = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-preflight",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    preflight_payload = json.loads(preflight.stdout)
+
+    assert preflight.returncode == 0, preflight.stderr
+    assert preflight_payload["preflight_failed"] is False
+    assert preflight_payload["report_count"] == 1
+    assert preflight_payload["reports"][0]["status"] == "passed"
+    assert destination_path.exists() is False
+
+    simulation = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    simulation_payload = json.loads(simulation.stdout)
+
+    assert simulation.returncode == 0, simulation.stderr
+    assert simulation_payload["applied"] is False
+    assert simulation_payload["applied_rewrite_count"] == 2
+    assert simulation_payload["parse_valid"] is True
+    assert f"+++ b{destination_path.as_posix()}" in simulation_payload["unified_diff"]
+    assert "+class Helper(LocalBase):" in simulation_payload["unified_diff"]
+    assert destination_path.exists() is False
+
+    apply_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-apply",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert apply_result.returncode == 0, apply_result.stderr
+    assert "Codemod apply complete" in apply_result.stdout
+    assert "from pkg.destination import Helper" in source_path.read_text()
+    assert "class Helper" not in source_path.read_text()
+    assert "@dataclass\nclass Helper(LocalBase):" in destination_path.read_text()
+
+
+def test_module_cli_preflights_multi_symbol_move_failure_from_stdin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-move-symbol-incomplete-preflight",
+                "operations": [
+                    {
+                        "operation": "move_symbols_to_module",
+                        "file_path": "pkg/source.py",
+                        "symbol_qualnames": ["Helper"],
+                        "destination_path": "pkg/destination.py",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-preflight",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert payload["preflight_failed"] is True
+    assert payload["is_clean"] is False
+    assert payload["applied"] is False
+    assert payload["report_count"] == 1
+    assert payload["reports"][0]["operation"] == "move_symbols_to_module"
+    assert payload["reports"][0]["status"] == "failed"
+    assert payload["reports"][0]["details"]["source_local_dependency_names"] == [
+        "LocalBase"
+    ]
+    assert "unified_diff" not in payload
+    assert "class Helper" in source_path.read_text()
+
+
+def test_module_cli_reports_multi_symbol_move_preflight_failure_from_stdin(
+    tmp_path: Path,
+) -> None:
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n" "    pass\n\n\n" "class Helper(LocalBase):\n" "    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-move-symbol-incomplete",
+                "operations": [
+                    {
+                        "operation": "move_symbols_to_module",
+                        "file_path": "pkg/source.py",
+                        "symbol_qualnames": ["Helper"],
+                        "destination_path": "pkg/destination.py",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert payload["preflight_failed"] is True
+    assert payload["applied"] is False
+    assert payload["preflight_report"]["operation"] == "move_symbols_to_module"
+    assert payload["preflight_report"]["status"] == "failed"
+    assert payload["preflight_report"]["details"]["source_local_dependency_names"] == [
+        "LocalBase"
+    ]
+    assert "class Helper" in source_path.read_text()
+
+
+def test_module_cli_resolves_selector_stdin_relative_file_paths(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    selector_payload = {
+        "selector": "source_index_target",
+        "node_kinds": ["method"],
+        "file_paths": ["pkg/mod.py"],
+        "qualnames": ["Alpha.run"],
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-resolve-selector",
+            "-",
+        ],
+        cwd=repo_root,
+        input=json.dumps(selector_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["selected_count"] == 1
+    assert payload["selected_targets"][0]["qualname"] == "Alpha.run"
+
+
 def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     tmp_path: Path,
 ) -> None:
@@ -9805,6 +10638,46 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
         payload["unified_diff"]
     )
+    assert module_path.read_text() == original_source
+
+
+def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-preflight",
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["preflight_failed"] is False
+    assert payload["is_clean"] is True
+    assert payload["report_count"] == 0
+    assert payload["expected_removed_finding_count"] == 1
+    assert payload["synthesis_report"]["planned_count"] == 1
+    assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
+        "convert_manual_registry_to_autoregister"
+    )
+    assert payload["preflight_report"]["is_clean"] is True
     assert module_path.read_text() == original_source
 
 
@@ -10272,6 +11145,100 @@ def test_module_cli_scaffolds_selected_operation_plan_from_stdin_template(
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "apply_selected_targets"
     )
+
+
+def test_module_cli_executes_multifile_selected_operation_plan_template(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    generated_path = tmp_path / "pkg/generated.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n\n\n"
+            "class Beta:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n"
+        ),
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "file_paths": [module_path.as_posix()],
+                "qualname_patterns": ["^(Alpha|Beta)\\.run$"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    template_path = tmp_path / "operation-plan-template.json"
+    template_path.write_text(
+        json.dumps(
+            {
+                "recipe_id": "modernize-selected",
+                "reason": "Create a shared helper and update selected calls.",
+                "setup_operations": [
+                    {
+                        "operation": "create_file",
+                        "file_path": "pkg/generated.py",
+                        "source": (
+                            "def modern(name, value):\n"
+                            "    return f'{name}:{value}'\n"
+                        ),
+                    }
+                ],
+                "operation_templates": [
+                    {
+                        "operation": "replace_text",
+                        "old_source": "legacy(value)",
+                        "new_source": "modern('${target.qualname}', value)",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            selector_path.as_posix(),
+            "--codemod-operation-template",
+            template_path.as_posix(),
+            "--codemod-apply",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    operations = payload["document"]["recipes"][0]["operations"]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is True
+    assert payload["parse_valid"] is True
+    assert module_path.as_posix() in payload["changed_file_paths"]
+    assert generated_path.as_posix() in payload["changed_file_paths"]
+    assert operations[0]["operation"] == "create_file"
+    assert operations[1]["operation"] == "apply_selected_targets"
+    assert payload["scaffold"]["setup_operations"][0]["operation"] == "create_file"
+    assert generated_path.read_text() == (
+        "def modern(name, value):\n" "    return f'{name}:{value}'\n"
+    )
+    assert "modern('Alpha.run', value)" in module_path.read_text()
+    assert "modern('Beta.run', value)" in module_path.read_text()
 
 
 def test_module_cli_rejects_multiple_scan_query_stdin_documents(
@@ -11317,13 +12284,259 @@ def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
     assert "BetaTwo" in projected_scan.modules[1].source
 
 
+def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import CodemodParseValidationReport
+    from nominal_refactor_advisor.codemod import CodemodSimulationReport
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    created_path = tmp_path / "pkg/generated.py"
+    created_source = (
+        "class GeneratedAlpha:\n"
+        "    pass\n"
+        "\n\n\n\n\n"
+        "class GeneratedBeta:\n"
+        "    pass\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    scan = CodemodFixpointScan(modules=modules, findings=[])
+    simulation = CodemodSimulationReport(
+        backend=CodemodBackend.AST_SPAN,
+        rewrites=(),
+        rewritten_sources={created_path.as_posix(): created_source},
+        parse_validation=CodemodParseValidationReport(
+            backend=CodemodBackend.AST_SPAN,
+            validated_file_paths=(created_path.as_posix(),),
+            parse_valid=True,
+        ),
+    )
+    runner = CodemodFixpointRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        max_iterations=1,
+        guard_suite=ArchitectureGuardSuite(),
+    )
+
+    projected_scan = runner.projected_scan(scan, simulation)
+    projected_module = next(
+        module for module in projected_scan.modules if module.path == created_path
+    )
+
+    assert projected_module.module_name == "pkg.generated"
+    assert any(
+        (
+            finding.detector_id == "excessive_blank_line_run"
+            and any(
+                evidence.file_path == created_path.as_posix()
+                for evidence in finding.evidence
+            )
+            for finding in projected_scan.findings
+        )
+    )
+
+
+def test_module_cli_simulates_projected_findings_for_created_files(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    created_path = tmp_path / "pkg/generated.py"
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "create-generated",
+                        "operations": [
+                            {
+                                "operation": "create_file",
+                                "file_path": created_path.as_posix(),
+                                "source": (
+                                    "class GeneratedAlpha:\n"
+                                    "    pass\n"
+                                    "\n\n\n\n\n"
+                                    "class GeneratedBeta:\n"
+                                    "    pass\n"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+            "--codemod-project-findings",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    projected_findings = payload["projected_findings"]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert created_path.as_posix() in payload["changed_file_paths"]
+    assert created_path.exists() is False
+    assert projected_findings["finding_delta"]["added_finding_count"] == 1
+    projected_source_index = projected_findings["projected_source_index"]
+    assert any(
+        file_digest["file_path"] == created_path.as_posix()
+        for file_digest in projected_source_index["files"]
+    )
+    assert {
+        target["qualname"]
+        for target in projected_source_index["ast_targets"]
+        if target["file_path"] == created_path.as_posix()
+    } >= {"GeneratedAlpha", "GeneratedBeta"}
+    projected_plan = projected_findings["projected_finding_recipe_plan"]
+    assert "document" in projected_plan
+    assert "synthesis_report" in projected_plan
+    projected_continuation = projected_findings["projected_finding_continuation"]
+    assert projected_continuation["has_continuation_stage"] is False
+    assert projected_continuation["finding_recipe_plan"] == projected_plan
+    assert len(projected_continuation["sequence"]["stages"]) == 1
+    assert projected_continuation["extended_sequence"] == projected_continuation[
+        "sequence"
+    ]
+    assert any(
+        finding["detector_id"] == "excessive_blank_line_run"
+        and any(
+            evidence["file_path"] == created_path.as_posix()
+            for evidence in finding["evidence"]
+        )
+        for finding in projected_findings["after_findings"]
+    )
+
+
+def test_module_cli_simulates_projected_findings_with_executable_continuation(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    created_path = tmp_path / "pkg/generated_record.py"
+    plan_path = tmp_path / "codemod-plan.json"
+    continuation_plan_path = tmp_path / "next-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "create-generated-record",
+                        "operations": [
+                            {
+                                "operation": "create_file",
+                                "file_path": created_path.as_posix(),
+                                "source": (
+                                    "from nominal_refactor_advisor.record_algebra import (\n"
+                                    "    materialize_product_record,\n"
+                                    "    product_record_spec,\n"
+                                    ")\n\n\n"
+                                    "class SemanticRecord:\n"
+                                    "    pass\n\n\n"
+                                    "materialize_product_record(\n"
+                                    "    product_record_spec(\n"
+                                    '        "GeneratedRecord",\n'
+                                    '        "path: str",\n'
+                                    '        "SemanticRecord",\n'
+                                    "    )\n"
+                                    ")\n"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+            "--codemod-project-findings",
+            "--codemod-continuation-plan-out",
+            continuation_plan_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    projected_findings = payload["projected_findings"]
+    projected_continuation = projected_findings["projected_finding_continuation"]
+
+    assert result.returncode == 0, result.stderr
+    assert created_path.exists() is False
+    assert any(
+        finding["detector_id"] == "runtime_product_record_schema"
+        for finding in projected_findings["after_findings"]
+    )
+    assert projected_continuation["has_continuation_stage"] is True
+    assert projected_continuation["continuation_stage_count"] == 1
+    assert len(projected_continuation["sequence"]["stages"]) == 1
+    assert len(projected_continuation["continuation_sequence"]["stages"]) == 1
+    assert len(projected_continuation["extended_sequence"]["stages"]) == 2
+    assert (
+        projected_continuation["finding_recipe_plan"]["expected_removed_finding_count"]
+        == 1
+    )
+    assert (
+        projected_continuation["extended_sequence"]["stages"][-1]["recipes"][0][
+            "operations"
+        ][0]["operation"]
+        == "product_record_to_dataclass"
+    )
+    continuation_payload = json.loads(continuation_plan_path.read_text(encoding="utf-8"))
+    continuation_sequence = load_codemod_plan_sequence(continuation_plan_path)
+    assert continuation_sequence.has_recipes
+    assert len(continuation_payload["stages"]) == 1
+    assert (
+        continuation_payload["stages"][0]["recipes"][0]["operations"][0]["operation"]
+        == "product_record_to_dataclass"
+    )
+
+
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodDslManifest
     from nominal_refactor_advisor import CodemodPlanJsonParser
+    from nominal_refactor_advisor import CodemodPlanSequence
+    from nominal_refactor_advisor import CodemodPlanSequenceContinuationReport
+    from nominal_refactor_advisor import CodemodPlanSequenceStageReport
+    from nominal_refactor_advisor import CodemodPlanSequenceSimulation
+    from nominal_refactor_advisor import CodemodProjectedFindingReport
+    from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import ParseCacheRequest
+    from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import codemod_dsl_manifest
 
@@ -11336,7 +12549,20 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
 
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
+    assert (
+        CodemodPlanSequenceContinuationReport.__name__
+        == "CodemodPlanSequenceContinuationReport"
+    )
+    assert CodemodPlanSequenceStageReport.__name__ == "CodemodPlanSequenceStageReport"
+    assert CodemodPlanSequenceSimulation.__name__ == "CodemodPlanSequenceSimulation"
+    assert CodemodProjectedFindingReport.__name__ == "CodemodProjectedFindingReport"
+    assert (
+        CodemodSimulationFindingProjection.__name__
+        == "CodemodSimulationFindingProjection"
+    )
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
+    assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True
     assert SourceRewriteSimulationPayload.__name__ == "SourceRewriteSimulationPayload"
     assert delta.removed_finding_ids == ("a",)

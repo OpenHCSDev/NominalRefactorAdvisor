@@ -37,6 +37,10 @@ from .codemod import (
     CodemodDslSelectorManifest,
     CodemodPlanDocument,
     CodemodPlanJsonParser,
+    CodemodPlanSequence,
+    CodemodPlanSequenceContinuationReport,
+    CodemodPlanSequenceStageReport,
+    CodemodPlanSequenceSimulation,
     CodemodRewriteBuilder,
     CodemodSimulationReport,
     CodemodSimulationStatus,
@@ -86,7 +90,10 @@ from .codemod_workflow import (
     CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodFixpointStopReason,
+    CodemodProjectedFindingReport,
+    CodemodSimulationFindingProjection,
     ParseCacheRequest,
+    ProjectedScanModuleSet,
 )
 from .models import (
     AnalysisReport,

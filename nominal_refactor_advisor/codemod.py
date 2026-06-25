@@ -15,6 +15,7 @@ materializes a rewrite.
 from __future__ import annotations
 
 import ast
+import builtins
 import difflib
 import hashlib
 import importlib.util
@@ -24,6 +25,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Generic, TypeAlias, TypeVar
 
@@ -47,6 +49,7 @@ from .source_index import (
     SourceIndex,
     build_source_index,
 )
+from .codemod_spacing import DestinationInsertionSpacing
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 
@@ -147,6 +150,13 @@ class ArchitectureGuardViolationKind(StrEnum):
     FORBIDDEN_LITERAL_DISPATCH = "forbidden_literal_dispatch"
 
 
+class CodemodPreflightStatus(StrEnum):
+    """Machine-readable codemod preflight outcome."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+
+
 _COMPOSITION_KIND_LOAD_BEARING_BONUS = {
     CancelableCompositionKind.PACK_UNPACK_FORWARD: 75,
     CancelableCompositionKind.PRODUCT_PACK_FORWARD: 25,
@@ -159,6 +169,7 @@ class RefactorRecipeOperationKind(StrEnum):
     ADD_CLASS_BASE = "add_class_base"
     APPLY_SELECTED_TARGETS = "apply_selected_targets"
     CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = "convert_manual_registry_to_autoregister"
+    CREATE_FILE = "create_file"
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
     DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
     DELETE_SELECTED_TARGETS = "delete_selected_targets"
@@ -170,6 +181,7 @@ class RefactorRecipeOperationKind(StrEnum):
     INSERT_AFTER_IMPORTS = "insert_after_imports"
     INSERT_BEFORE_TARGET = "insert_before_target"
     MOVE_SYMBOL_TO_MODULE = "move_symbol_to_module"
+    MOVE_SYMBOLS_TO_MODULE = "move_symbols_to_module"
     PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
     PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
     PROMOTE_CLASS_DECLARATIONS = "promote_class_declarations"
@@ -199,6 +211,7 @@ CLASS_NAMES_PAYLOAD_FIELD = "class_names"
 CLASS_KEY_PAIRS_PAYLOAD_FIELD = "class_key_pairs"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
 DESTINATION_PATH_PAYLOAD_FIELD = "destination_path"
+SYMBOL_QUALNAMES_PAYLOAD_FIELD = "symbol_qualnames"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
 METHOD_NAME_PAYLOAD_FIELD = "method_name"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
@@ -418,6 +431,57 @@ class ArchitectureGuardSuite:
 
     def to_dict(self) -> tuple[JsonObject, ...]:
         return tuple(rule.to_dict() for rule in self.rules)
+
+
+@dataclass(frozen=True)
+class CodemodOperationPreflightReport:
+    """Machine-readable failed preflight for one codemod operation."""
+
+    operation: str
+    status: CodemodPreflightStatus
+    message: str
+    details: JsonObject
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "operation": self.operation,
+            "status": self.status.value,
+            "message": self.message,
+            "details": self.details,
+        }
+
+
+class CodemodOperationPreflightError(ValueError):
+    """Raised when a codemod operation can report why it is not executable yet."""
+
+    def __init__(self, report: CodemodOperationPreflightReport) -> None:
+        super().__init__(report.message)
+        self.report = report
+
+
+@dataclass(frozen=True)
+class CodemodPlanPreflightReport:
+    """Preflight results for one executable codemod plan document."""
+
+    reports: tuple[CodemodOperationPreflightReport, ...]
+
+    @property
+    def is_clean(self) -> bool:
+        return all(
+            report.status is CodemodPreflightStatus.PASSED for report in self.reports
+        )
+
+    @property
+    def preflight_failed(self) -> bool:
+        return not self.is_clean
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "preflight_failed": self.preflight_failed,
+            "is_clean": self.is_clean,
+            "report_count": len(self.reports),
+            "reports": tuple(report.to_dict() for report in self.reports),
+        }
 
 
 @dataclass(frozen=True)
@@ -804,6 +868,229 @@ class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
         }
 
 
+class SourcePathResolutionStrategy(ABC, metaclass=AutoRegisterMeta):
+    """One nominal strategy for matching a DSL path to indexed source files."""
+
+    __registry__: ClassVar[dict[str, type["SourcePathResolutionStrategy"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "SourcePathResolutionStrategy"
+    registry_order: ClassVar[int] = 100
+
+    @classmethod
+    def ordered_strategies(cls) -> tuple["SourcePathResolutionStrategy", ...]:
+        return tuple(
+            strategy_type()
+            for strategy_type in sorted(
+                cls.__registry__.values(),
+                key=lambda item: (item.registry_order, item.__name__),
+            )
+        )
+
+    @abstractmethod
+    def matching_paths(
+        self,
+        requested_path: str,
+        candidate_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+class ExactSourcePathResolutionStrategy(SourcePathResolutionStrategy):
+    """Match an indexed source path exactly as provided by the DSL."""
+
+    registry_order = 10
+
+    def matching_paths(
+        self,
+        requested_path: str,
+        candidate_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return tuple(
+            candidate for candidate in candidate_paths if candidate == requested_path
+        )
+
+
+class NormalizedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
+    """Match path strings after platform-neutral slash normalization."""
+
+    registry_order = 20
+
+    def matching_paths(
+        self,
+        requested_path: str,
+        candidate_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        requested_posix = Path(requested_path).as_posix()
+        return tuple(
+            candidate
+            for candidate in candidate_paths
+            if Path(candidate).as_posix() == requested_posix
+        )
+
+
+class ResolvedSourcePathResolutionStrategy(SourcePathResolutionStrategy):
+    """Match paths after resolving them from the current working directory."""
+
+    registry_order = 30
+
+    def matching_paths(
+        self,
+        requested_path: str,
+        candidate_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        requested_resolved = Path(requested_path).expanduser().resolve()
+        return tuple(
+            candidate
+            for candidate in candidate_paths
+            if Path(candidate).expanduser().resolve() == requested_resolved
+        )
+
+
+class RelativeSuffixSourcePathResolutionStrategy(SourcePathResolutionStrategy):
+    """Match repo-relative DSL paths against absolute indexed source paths."""
+
+    registry_order = 40
+
+    def matching_paths(
+        self,
+        requested_path: str,
+        candidate_paths: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        requested = Path(requested_path)
+        suffix = f"/{requested.as_posix()}"
+        return tuple(
+            candidate
+            for candidate in candidate_paths
+            if not requested.is_absolute()
+            and Path(candidate).as_posix().endswith(suffix)
+        )
+
+
+@dataclass(frozen=True)
+class SourcePathCandidateAuthority:
+    """Base authority for resolving DSL paths against indexed source files."""
+
+    requested_path: str
+    candidate_paths: tuple[str, ...]
+
+    @classmethod
+    def from_source_index(
+        cls,
+        requested_path: str,
+        source_index: SourceIndex,
+    ) -> "SourcePathResolutionAuthority":
+        return cls(
+            requested_path=requested_path,
+            candidate_paths=tuple(
+                sorted({target.file_path for target in source_index.ast_targets})
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class SourcePathResolutionAuthority(SourcePathCandidateAuthority):
+    """Resolve DSL file_path values against indexed source files."""
+
+    def required_path(self) -> str:
+        matches = self.matching_paths()
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            raise ValueError(
+                f"Source path {self.requested_path!r} did not resolve to any "
+                "indexed source file"
+            )
+        raise ValueError(
+            f"Source path {self.requested_path!r} resolved to multiple indexed "
+            f"source files: {matches!r}"
+        )
+
+    def matching_paths(self) -> tuple[str, ...]:
+        candidates = tuple(sorted(set(self.candidate_paths)))
+        prioritized_matches = (
+            *(
+                matches
+                for strategy in SourcePathResolutionStrategy.ordered_strategies()
+                for matches in (
+                    strategy.matching_paths(self.requested_path, candidates),
+                )
+                if matches
+            ),
+            (),
+        )
+        return prioritized_matches[0]
+
+
+@dataclass(frozen=True)
+class SourceCreationPathAuthority(SourcePathCandidateAuthority):
+    """Resolve a new DSL file path against existing indexed source roots."""
+
+    def required_path(self) -> str:
+        requested = Path(self.requested_path)
+        if requested.is_absolute():
+            return requested.as_posix()
+        parent_matches = self.parent_matches(requested)
+        if len(parent_matches) == 1:
+            return parent_matches[0]
+        if len(parent_matches) > 1:
+            raise ValueError(
+                f"New source path {self.requested_path!r} resolved to multiple "
+                f"candidate locations: {parent_matches!r}"
+            )
+        return requested.as_posix()
+
+    def parent_matches(self, requested: Path) -> tuple[str, ...]:
+        requested_parent = requested.parent.as_posix()
+        if requested_parent in ("", "."):
+            return ()
+        suffix = f"/{requested_parent}"
+        return tuple(
+            sorted(
+                {
+                    (Path(candidate).parent / requested.name).as_posix()
+                    for candidate in self.candidate_paths
+                    if Path(candidate).parent.as_posix() == requested_parent
+                    or Path(candidate).parent.as_posix().endswith(suffix)
+                }
+            )
+        )
+
+
+def module_name_from_source_path(file_path: str) -> str:
+    path = Path(file_path)
+    without_suffix = path.with_suffix("").as_posix().strip("/")
+    if without_suffix.endswith("/__init__"):
+        without_suffix = without_suffix[: -len("/__init__")]
+    module_name = without_suffix.replace("/", ".")
+    if module_name:
+        return module_name
+    if path.stem:
+        return path.stem
+    return "__main__"
+
+
+def _parsed_module_from_source(file_path: str, source: str) -> ParsedModule:
+    path = Path(file_path)
+    return ParsedModule(
+        path=path,
+        module_name=module_name_from_source_path(file_path),
+        is_package_init=path.name == "__init__.py",
+        module=ast.parse(source, filename=file_path),
+        source=source,
+    )
+
+
+def _parsed_modules_from_source_mapping(
+    source_by_path: Mapping[str, str],
+) -> tuple[ParsedModule, ...]:
+    return tuple(
+        _parsed_module_from_source(file_path, source)
+        for file_path, source in sorted(source_by_path.items())
+    )
+
+
 @dataclass(frozen=True)
 class SourceRewriteTarget:
     """Source-index target selector for a planned rewrite."""
@@ -816,6 +1103,20 @@ class SourceRewriteTarget:
     def from_mapping(cls, fields: Mapping[str, JsonValue]) -> "SourceRewriteTarget":
         payload = SourceRewritePlanPayload(fields)
         return payload.source_target()
+
+    def optional_source_path(self, source_index: SourceIndex) -> str | None:
+        if self.source_path is None:
+            return None
+        return SourcePathResolutionAuthority.from_source_index(
+            self.source_path,
+            source_index,
+        ).required_path()
+
+    def required_source_path(self, source_index: SourceIndex) -> str:
+        source_path = self.optional_source_path(source_index)
+        if source_path is None:
+            raise ValueError("Source rewrite target requires file_path")
+        return source_path
 
     def optional_identifier(
         self,
@@ -832,15 +1133,20 @@ class SourceRewriteTarget:
             if self.target_identifier in eligible_identifiers:
                 return self.target_identifier
             return None
+        source_path = self.optional_source_path(source_index)
         if self.qualname is None:
             return self._optional_module_identifier(
                 source_index,
                 eligible_identifiers,
+                source_path,
             )
         matching_identifiers = [
             target_identifier
             for target_identifier in sorted(eligible_identifiers)
-            if self.matches_target(source_index.target_by_id.get(target_identifier))
+            if self.matches_target(
+                source_index.target_by_id.get(target_identifier),
+                source_path,
+            )
         ]
         if len(matching_identifiers) != 1:
             return None
@@ -850,8 +1156,9 @@ class SourceRewriteTarget:
         self,
         source_index: SourceIndex,
         eligible_identifiers: set[str],
+        source_path: str | None,
     ) -> str | None:
-        if self.source_path is None:
+        if source_path is None:
             return None
         matching_identifiers = [
             target_identifier
@@ -859,7 +1166,7 @@ class SourceRewriteTarget:
             for target in (source_index.target_by_id.get(target_identifier),)
             if target is not None
             and target.is_module
-            and target.file_path == self.source_path
+            and target.file_path == source_path
         ]
         if len(matching_identifiers) != 1:
             return None
@@ -873,11 +1180,15 @@ class SourceRewriteTarget:
             "Source rewrite target did not resolve to exactly one source-index target"
         )
 
-    def matches_target(self, target: AstTargetDigest | None) -> bool:
+    def matches_target(
+        self,
+        target: AstTargetDigest | None,
+        source_path: str | None,
+    ) -> bool:
         return (
             target is not None
             and target.qualname == self.qualname
-            and (self.source_path is None or target.file_path == self.source_path)
+            and (source_path is None or target.file_path == source_path)
         )
 
     def to_dict(self) -> JsonObject:
@@ -897,6 +1208,21 @@ class CodemodSelectorContext:
     class_family_index: ClassFamilyIndex | None = None
 
     @property
+    def source_file_paths(self) -> tuple[str, ...]:
+        return tuple(
+            sorted({target.file_path for target in self.source_index.ast_targets})
+        )
+
+    def resolve_source_paths(self, file_paths: Iterable[str]) -> frozenset[str]:
+        return frozenset(
+            SourcePathResolutionAuthority(
+                requested_path=file_path,
+                candidate_paths=self.source_file_paths,
+            ).required_path()
+            for file_path in file_paths
+        )
+
+    @property
     def required_class_family_index(self) -> ClassFamilyIndex:
         if self.class_family_index is None:
             raise ValueError("Class-family selector requires ClassFamilyIndex")
@@ -906,6 +1232,18 @@ class CodemodSelectorContext:
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
+
+    @classmethod
+    def from_source_mapping(
+        cls,
+        source_by_path: Mapping[str, str],
+    ) -> "CodemodSourceSnapshot":
+        modules = _parsed_modules_from_source_mapping(source_by_path)
+        return cls(
+            source_index=build_source_index(modules, ()),
+            sources_by_file_path=dict(source_by_path),
+            class_family_index=build_class_family_index(modules),
+        )
 
     @classmethod
     def from_modules(
@@ -922,6 +1260,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             },
             class_family_index=build_class_family_index(module_tuple),
         )
+
+    def with_virtual_sources(
+        self,
+        source_overlay: Mapping[str, str],
+    ) -> "CodemodSourceSnapshot":
+        if not source_overlay:
+            return self
+        sources = dict(self.sources_by_file_path)
+        sources.update(source_overlay)
+        return CodemodSourceSnapshot.from_source_mapping(sources)
+
+    @property
+    def parsed_modules(self) -> tuple[ParsedModule, ...]:
+        return _parsed_modules_from_source_mapping(self.sources_by_file_path)
 
     def simulate_rewrites(
         self,
@@ -955,6 +1307,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             for recipe in document.recipes
             for rewrite in self.source_rewrite_batch_for_recipe(recipe)
         )
+
+    def preflight_document(
+        self,
+        document: "CodemodPlanDocument",
+    ) -> CodemodPlanPreflightReport:
+        return document.preflight_snapshot(self)
 
     def evaluate_guard_suite(
         self,
@@ -990,15 +1348,16 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         *,
         backend: "CodemodBackend" | None = None,
     ) -> "CodemodPlanDocumentSimulation":
-        simulation = self.simulate_rewrites(
-            self.source_rewrite_batch_for_document(document),
+        rewrite_snapshot = document.rewrite_snapshot(self)
+        simulation = rewrite_snapshot.simulate_rewrites(
+            rewrite_snapshot.source_rewrite_batch_for_document(document),
             backend=backend,
         )
         return CodemodPlanDocumentSimulation(
             document=document,
             simulation=simulation,
             architecture_guard_report=(
-                self.with_simulation(simulation).evaluate_guard_suite(
+                rewrite_snapshot.with_simulation(simulation).evaluate_guard_suite(
                     document.guard_suite
                 )
             ),
@@ -1057,11 +1416,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def selected_operation_plan_scaffold_report(
         self,
         selector: "CodemodTargetSelector",
-        operation_templates: Iterable["RefactorRecipeOperationTemplate"],
+        operation_plan_template: "RefactorRecipeOperationPlanTemplate",
     ) -> "CodemodSelectedOperationPlanScaffoldReport":
         return CodemodSelectedOperationPlanScaffoldReport.from_selector_context(
             selector,
-            operation_templates,
+            operation_plan_template,
             self,
         )
 
@@ -1111,11 +1470,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         sources = dict(self.sources_by_file_path)
         sources.update(simulation.rewritten_sources)
-        return CodemodSourceSnapshot(
-            self.source_index,
-            sources,
-            self.class_family_index,
-        )
+        return CodemodSourceSnapshot.from_source_mapping(sources)
 
     def unified_diff(
         self,
@@ -1669,7 +2024,7 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         node_kinds = frozenset(self.node_kinds)
-        file_paths = frozenset(self.file_paths)
+        file_paths = context.resolve_source_paths(self.file_paths)
         qualnames = frozenset(self.qualnames)
         file_path_patterns = RegexPatternSet.from_patterns(self.file_path_patterns)
         name_patterns = RegexPatternSet.from_patterns(self.name_patterns)
@@ -2110,16 +2465,15 @@ class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
 class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
     """Editable CodemodPlanDocument applying templates over selected targets."""
 
-    operation_templates: tuple["RefactorRecipeOperationTemplate", ...]
+    operation_plan_template: "RefactorRecipeOperationPlanTemplate"
 
     @classmethod
     def from_selector_context(
         cls,
         selector: CodemodTargetSelector,
-        operation_templates: Iterable["RefactorRecipeOperationTemplate"],
+        operation_plan_template: "RefactorRecipeOperationPlanTemplate",
         context: CodemodSelectorContext,
     ) -> "CodemodSelectedOperationPlanScaffoldReport":
-        template_tuple = tuple(operation_templates)
         selector_resolution = CodemodSelectorResolutionReport.from_selector_context(
             selector,
             context,
@@ -2128,34 +2482,28 @@ class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
             selector_resolution=selector_resolution,
             document=cls.document_for_selection(
                 selector,
-                template_tuple,
+                operation_plan_template,
                 selected_count=selector_resolution.selected_count,
             ),
-            operation_templates=template_tuple,
+            operation_plan_template=operation_plan_template,
         )
 
     @classmethod
     def document_for_selection(
         cls,
         selector: CodemodTargetSelector,
-        operation_templates: tuple["RefactorRecipeOperationTemplate", ...],
+        operation_plan_template: "RefactorRecipeOperationPlanTemplate",
         *,
         selected_count: int,
     ) -> "CodemodPlanDocument":
-        recipe = RefactorRecipe(
-            recipe_id="selected-operation-plan-scaffold",
-            reason=("Apply target-local operation templates to the resolved selector."),
-            operations=(
-                ApplySelectedTargetsOperation(
-                    target=SourceRewriteTarget(),
-                    selector=selector,
-                    selection_count=SelectionCountExpectation(exact=selected_count),
-                    operation_templates=operation_templates,
-                    rationale=("Apply operation templates to the selected target set."),
+        return CodemodPlanDocument(
+            recipes=(
+                operation_plan_template.recipe_for_selection(
+                    selector,
+                    selected_count=selected_count,
                 ),
-            ),
+            )
         )
-        return CodemodPlanDocument(recipes=(recipe,))
 
     def to_dict(self) -> JsonObject:
         return JsonObject(
@@ -2168,8 +2516,16 @@ class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
                     for target in self.selector_resolution.selected_targets
                 ),
                 "missing_target_ids": self.selector_resolution.missing_target_ids,
+                "operation_plan_template": self.operation_plan_template.to_dict(),
+                "setup_operations": tuple(
+                    operation.to_dict()
+                    for operation in self.operation_plan_template.recipe.operations
+                ),
                 "operation_templates": tuple(
-                    template.to_dict() for template in self.operation_templates
+                    template.to_dict()
+                    for template in (
+                        self.operation_plan_template.selected_operation_templates
+                    )
                 ),
                 "document": self.document.to_dict(),
             }
@@ -2451,6 +2807,187 @@ class RefactorRecipeOperationTemplate:
 
     def to_dict(self) -> JsonObject:
         return dict(self.fields)
+
+
+@dataclass(frozen=True)
+class RefactorRecipeOperationPlanTemplate:
+    """Composable scaffold for setup operations plus selected-target operations."""
+
+    default_recipe_id: ClassVar[str] = "selected-operation-plan-scaffold"
+    default_reason: ClassVar[str] = (
+        "Apply operation plan template to the resolved selector."
+    )
+
+    recipe: "RefactorRecipe" = field(
+        default_factory=lambda: RefactorRecipe(
+            recipe_id=RefactorRecipeOperationPlanTemplate.default_recipe_id,
+            reason=RefactorRecipeOperationPlanTemplate.default_reason,
+        )
+    )
+    selected_operation_templates: tuple[RefactorRecipeOperationTemplate, ...] = ()
+
+    @classmethod
+    def from_json_value(
+        cls,
+        value: JsonValue,
+    ) -> "RefactorRecipeOperationPlanTemplate":
+        if isinstance(value, list):
+            return cls.from_operation_templates(
+                RefactorRecipeOperationTemplate.from_json_value(item) for item in value
+            )
+        if not isinstance(value, Mapping):
+            raise ValueError(
+                "codemod operation plan template JSON must be an object or array"
+            )
+        if "operation" in value:
+            return cls.from_operation_templates(
+                (RefactorRecipeOperationTemplate.from_json_value(value),)
+            )
+        return cls.from_payload(value)
+
+    @classmethod
+    def from_operation_templates(
+        cls,
+        operation_templates: Iterable[RefactorRecipeOperationTemplate],
+    ) -> "RefactorRecipeOperationPlanTemplate":
+        template_tuple = tuple(operation_templates)
+        if not template_tuple:
+            raise ValueError(
+                "codemod operation template JSON must contain at least one template"
+            )
+        return cls(selected_operation_templates=template_tuple)
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "RefactorRecipeOperationPlanTemplate":
+        setup_operations = cls.setup_operations_from_payload(payload)
+        operation_templates = cls.operation_templates_from_payload(payload)
+        if not setup_operations and not operation_templates:
+            raise ValueError(
+                "operation plan template requires setup_operations or "
+                "operation_templates"
+            )
+        return cls(
+            recipe=RefactorRecipe(
+                recipe_id=cls.optional_string_with_default(
+                    payload,
+                    "recipe_id",
+                    cls.default_recipe_id,
+                ),
+                reason=cls.optional_string_with_default(
+                    payload,
+                    "reason",
+                    cls.default_reason,
+                ),
+                operations=setup_operations,
+            ),
+            selected_operation_templates=operation_templates,
+        )
+
+    @classmethod
+    def setup_operations_from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> tuple["RefactorRecipeOperation", ...]:
+        if "setup_operations" not in payload:
+            return ()
+        value = payload["setup_operations"]
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("setup_operations must be an array")
+        operations = tuple(
+            RefactorRecipeOperation.from_dict(cls.required_mapping(item))
+            for item in value
+        )
+        for operation in operations:
+            if isinstance(operation, SelectedTargetsOperation):
+                raise ValueError(
+                    "setup_operations must not include selected-target operations"
+                )
+        return operations
+
+    @classmethod
+    def operation_templates_from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> tuple[RefactorRecipeOperationTemplate, ...]:
+        if OPERATION_TEMPLATES_PAYLOAD_FIELD not in payload:
+            return ()
+        value = payload[OPERATION_TEMPLATES_PAYLOAD_FIELD]
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("operation_templates must be an array")
+        return tuple(
+            RefactorRecipeOperationTemplate.from_json_value(item) for item in value
+        )
+
+    @staticmethod
+    def required_mapping(value: JsonValue) -> Mapping[str, JsonValue]:
+        if not isinstance(value, Mapping):
+            raise ValueError("setup operation entries must be objects")
+        return value
+
+    @staticmethod
+    def optional_string(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> str | None:
+        value = payload.get(field_name)
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"Expected string field {field_name!r}")
+        return value
+
+    @classmethod
+    def optional_string_with_default(
+        cls,
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+        default_value: str,
+    ) -> str:
+        value = cls.optional_string(payload, field_name)
+        if value is None:
+            return default_value
+        if value == "":
+            return default_value
+        return value
+
+    def recipe_for_selection(
+        self,
+        selector: CodemodTargetSelector,
+        *,
+        selected_count: int,
+    ) -> "RefactorRecipe":
+        operations: tuple[RefactorRecipeOperation, ...] = self.recipe.operations
+        if self.selected_operation_templates:
+            operations = (
+                *operations,
+                ApplySelectedTargetsOperation(
+                    target=SourceRewriteTarget(),
+                    selector=selector,
+                    selection_count=SelectionCountExpectation(exact=selected_count),
+                    operation_templates=self.selected_operation_templates,
+                    rationale=("Apply operation templates to the selected target set."),
+                ),
+            )
+        return replace(self.recipe, operations=operations)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "recipe_id": self.recipe.recipe_id,
+            "reason": self.recipe.reason,
+            "setup_operations": tuple(
+                operation.to_dict() for operation in self.recipe.operations
+            ),
+            "operation_templates": tuple(
+                template.to_dict() for template in self.selected_operation_templates
+            ),
+        }
 
 
 OperationConstructorValue: TypeAlias = (
@@ -2903,6 +3440,8 @@ class RefactorRecipeOperation(
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Operation"
+    contributes_source_overlay: ClassVar[bool] = False
+    reports_preflight: ClassVar[bool] = False
 
     @classmethod
     def operation_kind(cls) -> RefactorRecipeOperationKind:
@@ -2976,6 +3515,35 @@ class RefactorRecipeOperation(
     ) -> tuple[SourceLineReplacement, ...]:
         del selector_context
         return self.line_replacements(source_index, source_by_path)
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        del source_index, source_by_path, selector_context
+        return ()
+
+    def source_overlays(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> Mapping[str, str]:
+        del source_index, source_by_path, selector_context
+        return {}
+
+    def required_source_path(
+        self,
+        source_index: SourceIndex,
+        operation_name: str,
+    ) -> str:
+        if self.target.source_path is None:
+            raise ValueError(f"{operation_name} requires file_path")
+        return self.target.required_source_path(source_index)
 
     def target_digest(
         self,
@@ -3097,6 +3665,66 @@ class ReplaceTextOperation(RefactorRecipeOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class CreateFileOperation(StringPayloadOperation):
+    """Create a Python source file for later operations in the same plan."""
+
+    payload_field_name = SOURCE_PAYLOAD_FIELD
+    contributes_source_overlay = True
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        del cls
+        return (
+            PayloadBinding(
+                field_name=SOURCE_PAYLOAD_FIELD,
+                constructor_argument_name="payload_value",
+                value_projector=StringPayloadOperation.payload_value_from_operation,
+                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
+            ),
+        )
+
+    def source_overlays(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> Mapping[str, str]:
+        del source_by_path, selector_context
+        return {self.created_source_path(source_index): ""}
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        source_path = self.required_source_path(
+            source_index,
+            self.operation_kind().value,
+        )
+        existing_source = source_by_path[source_path]
+        if existing_source:
+            raise ValueError(f"create_file target {source_path!r} is not empty")
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=1,
+                end_line=0,
+                replacement_lines=SourceTargetEditor.source_lines(self.payload_value),
+                rationale=self.rationale or f"Create source file {source_path!r}.",
+            ),
+        )
+
+    def created_source_path(self, source_index: SourceIndex) -> str:
+        if self.target.source_path is None:
+            raise ValueError("create_file requires file_path")
+        return SourceCreationPathAuthority.from_source_index(
+            self.target.source_path,
+            source_index,
+        ).required_path()
+
+
+@dataclass(frozen=True, kw_only=True)
 class DeleteClassAssignmentOperation(StringPayloadOperation):
     """Delete one class-level assignment by attribute name."""
 
@@ -3180,10 +3808,10 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("delete_module_assignments requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(
+            source_index,
+            "delete_module_assignments",
+        )
         module = ast.parse(source_by_path[source_path], filename=source_path)
         pending_names = set(self.assignment_names)
         replacements = []
@@ -3311,7 +3939,7 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
                 source_index=source_index,
                 sources_by_file_path=source_by_path,
             ),
-            source_path=self.target.source_path,
+            source_path=self.target.optional_source_path(source_index),
             class_names=self.class_names,
         )
         self.validate_targets(targets)
@@ -4183,10 +4811,10 @@ class InsertAfterImportsOperation(StringPayloadOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("insert_after_imports requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(
+            source_index,
+            "insert_after_imports",
+        )
         source = source_by_path[source_path]
         insertion_line = ModuleImportInsertionPoint(source, source_path).line_number
         return (
@@ -4212,10 +4840,7 @@ class EnsureImportOperation(StringPayloadOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("ensure_import requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(source_index, "ensure_import")
         source = source_by_path[source_path]
         import_lines = SourceTargetEditor.source_lines(self.payload_value)
         if self._source_already_contains_import(source, import_lines):
@@ -4286,10 +4911,10 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("remove_import_names requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(
+            source_index,
+            "remove_import_names",
+        )
         module = ast.parse(source_by_path[source_path], filename=source_path)
         for statement in module.body:
             if not isinstance(statement, ast.ImportFrom):
@@ -4597,33 +5222,609 @@ class SourceTopLevelSymbolMovePlan:
         return lines[line_number - 1]
 
 
+_PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
+    (
+        "__builtins__",
+        "__doc__",
+        "__file__",
+        "__name__",
+        "__package__",
+        "__annotations__",
+    )
+)
+_AVAILABLE_WITHOUT_IMPORT = frozenset(dir(builtins)) | _PYTHON_RUNTIME_GLOBAL_NAMES
+
+
+@dataclass(frozen=True)
+class ModuleImportDependency:
+    """One import statement that can satisfy a moved-symbol dependency."""
+
+    bound_name_sources: tuple[tuple[str, str], ...]
+    source: str
+    line: int
+
+    @property
+    def bound_names(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.bound_name_sources)
+
+    def source_for_name(self, name: str) -> str:
+        for bound_name, source in self.bound_name_sources:
+            if bound_name == name:
+                return source
+        raise KeyError(name)
+
+
+@dataclass(frozen=True)
+class ModuleMoveDependencyReport:
+    """Dependency closure report for a multi-symbol module move."""
+
+    source_path: str
+    destination_path: str
+    moved_symbol_names: tuple[str, ...]
+    imported_dependency_names: tuple[str, ...]
+    import_sources: tuple[str, ...]
+    source_local_dependency_names: tuple[str, ...]
+    unresolved_dependency_names: tuple[str, ...]
+
+    @property
+    def is_clean(self) -> bool:
+        return (
+            not self.source_local_dependency_names
+            and not self.unresolved_dependency_names
+        )
+
+    def require_clean(self) -> None:
+        if self.is_clean:
+            return
+        raise ValueError(self.error_message)
+
+    @property
+    def error_message(self) -> str:
+        parts = [
+            "move_symbols_to_module dependency closure is incomplete",
+            f"source={self.source_path!r}",
+            f"destination={self.destination_path!r}",
+            f"moved={self.moved_symbol_names!r}",
+        ]
+        if self.source_local_dependency_names:
+            parts.append(
+                "source-local dependencies not included in symbol_qualnames="
+                f"{self.source_local_dependency_names!r}"
+            )
+        if self.unresolved_dependency_names:
+            parts.append(
+                "unresolved dependencies=" f"{self.unresolved_dependency_names!r}"
+            )
+        return "; ".join(parts)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_path": self.source_path,
+            "destination_path": self.destination_path,
+            "moved_symbol_names": self.moved_symbol_names,
+            "imported_dependency_names": self.imported_dependency_names,
+            "import_sources": self.import_sources,
+            "source_local_dependency_names": self.source_local_dependency_names,
+            "unresolved_dependency_names": self.unresolved_dependency_names,
+            "is_clean": self.is_clean,
+        }
+
+
 @dataclass(frozen=True, kw_only=True)
-class MoveSymbolToModuleOperation(RefactorRecipeOperation):
-    """Move one module-level class or function into another existing module."""
+class SourceTopLevelSymbolClosureMoveCarrier:
+    """Shared source/destination carrier for closure-checked symbol moves."""
+
+    source_path: str
+    destination_path: str
+    replacement_import: str | None = None
+    rationale: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceTopLevelSymbolClosureMoveRequest(SourceTopLevelSymbolClosureMoveCarrier):
+    """Agent-authored request for one dependency-checked symbol move."""
+
+    symbol_qualnames: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ModuleSymbolTable:
+    """Top-level and import-bound names visible in one module."""
+
+    file_path: str
+    source: str
+    module: ast.Module
+
+    @cached_property
+    def top_level_names(self) -> frozenset[str]:
+        names: set[str] = set()
+        for statement in self.module.body:
+            if isinstance(
+                statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+            ):
+                names.add(statement.name)
+            elif isinstance(statement, ast.Assign):
+                names.update(_store_name_targets(statement.targets))
+            elif isinstance(statement, ast.AnnAssign):
+                names.update(_store_name_targets((statement.target,)))
+            elif isinstance(statement, ast.AugAssign):
+                names.update(_store_name_targets((statement.target,)))
+        return frozenset(names)
+
+    @cached_property
+    def import_dependencies(self) -> tuple[ModuleImportDependency, ...]:
+        return tuple(
+            dependency
+            for statement in self.module.body
+            if isinstance(statement, (ast.Import, ast.ImportFrom))
+            for dependency in (self.import_dependency(statement),)
+            if dependency.bound_names
+        )
+
+    @cached_property
+    def import_sources_by_name(self) -> dict[str, str]:
+        sources: dict[str, str] = {}
+        for dependency in self.import_dependencies:
+            for name in dependency.bound_names:
+                if name not in sources:
+                    sources[name] = dependency.source_for_name(name)
+        return sources
+
+    @cached_property
+    def available_names(self) -> frozenset[str]:
+        return frozenset(
+            (
+                *self.top_level_names,
+                *self.import_sources_by_name,
+                *_AVAILABLE_WITHOUT_IMPORT,
+            )
+        )
+
+    def import_dependency(
+        self,
+        statement: ast.Import | ast.ImportFrom,
+    ) -> ModuleImportDependency:
+        return ModuleImportDependency(
+            bound_name_sources=ImportBoundNameProjection(statement).name_sources(),
+            source=_statement_source(self.source, statement),
+            line=statement.lineno,
+        )
+
+
+def _store_name_targets(targets: Iterable[ast.AST]) -> tuple[str, ...]:
+    names: list[str] = []
+    for target in targets:
+        if isinstance(target, ast.Name):
+            names.append(target.id)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            names.extend(_store_name_targets(target.elts))
+    return tuple(names)
+
+
+@dataclass(frozen=True)
+class ImportBoundNameProjection:
+    """Project Python import statements to names they bind in module scope."""
+
+    statement: ast.Import | ast.ImportFrom
+
+    def names(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.name_sources())
+
+    def name_sources(self) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (name, self.alias_import_source(alias))
+            for alias in self.statement.names
+            for name in (self.alias_bound_name(alias),)
+            if name
+        )
+
+    def alias_bound_name(self, alias: ast.alias) -> str:
+        if alias.name == "*":
+            return ""
+        if alias.asname:
+            return alias.asname
+        if isinstance(self.statement, ast.Import):
+            return alias.name.split(".", maxsplit=1)[0]
+        return alias.name
+
+    def alias_import_source(self, alias: ast.alias) -> str:
+        alias_source = alias.name
+        if alias.asname:
+            alias_source = f"{alias.name} as {alias.asname}"
+        if isinstance(self.statement, ast.Import):
+            return f"import {alias_source}\n"
+        module_name = self.statement.module
+        if module_name is None:
+            module_name = ""
+        module_path = f"{'.' * self.statement.level}{module_name}"
+        return f"from {module_path} import {alias_source}\n"
+
+
+def _statement_source(source: str, statement: ast.stmt) -> str:
+    lines = source.splitlines(keepends=True)
+    span = SourceNodeSpan(statement)
+    return "".join(lines[span.start_line - 1 : span.end_line])
+
+
+class _LoadedAndBoundNameVisitor(ast.NodeVisitor):
+    def __init__(self) -> None:
+        self.loaded_names: set[str] = set()
+        self.bound_names: set[str] = set()
+
+    def visit_Name(self, node: ast.Name) -> None:
+        if isinstance(node.ctx, ast.Load):
+            self.loaded_names.add(node.id)
+        elif isinstance(node.ctx, (ast.Store, ast.Del)):
+            self.bound_names.add(node.id)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self.bound_names.add(node.name)
+        self._visit_function_signature(node)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.bound_names.add(node.name)
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        for base in node.bases:
+            self.visit(base)
+        for keyword in node.keywords:
+            self.visit(keyword)
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._bind_arguments(node.args)
+        self.visit(node.body)
+
+    def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
+        self.bound_names.update(ImportBoundNameProjection(node).names())
+
+    visit_ImportFrom = visit_Import
+
+    def _visit_function_signature(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        for decorator in node.decorator_list:
+            self.visit(decorator)
+        self._bind_arguments(node.args)
+        for default in (*node.args.defaults, *node.args.kw_defaults):
+            if default is not None:
+                self.visit(default)
+        for arg in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
+            if arg.annotation is not None:
+                self.visit(arg.annotation)
+        if node.args.vararg is not None and node.args.vararg.annotation is not None:
+            self.visit(node.args.vararg.annotation)
+        if node.args.kwarg is not None and node.args.kwarg.annotation is not None:
+            self.visit(node.args.kwarg.annotation)
+        if node.returns is not None:
+            self.visit(node.returns)
+
+    def _bind_arguments(self, args: ast.arguments) -> None:
+        for arg in (
+            *args.posonlyargs,
+            *args.args,
+            *args.kwonlyargs,
+        ):
+            self.bound_names.add(arg.arg)
+        if args.vararg is not None:
+            self.bound_names.add(args.vararg.arg)
+        if args.kwarg is not None:
+            self.bound_names.add(args.kwarg.arg)
+
+
+def _external_names_for_moved_node(node: _TargetNode) -> frozenset[str]:
+    visitor = _LoadedAndBoundNameVisitor()
+    visitor.visit(node)
+    return frozenset(
+        visitor.loaded_names - visitor.bound_names - _AVAILABLE_WITHOUT_IMPORT
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier):
+    """Dependency-checked move plan for a set of top-level symbols."""
+
+    source_blocks: tuple[MovedTopLevelSymbolSource, ...]
+    dependency_report: ModuleMoveDependencyReport
+
+    @classmethod
+    def from_request(
+        cls,
+        request: SourceTopLevelSymbolClosureMoveRequest,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> "SourceTopLevelSymbolClosureMovePlan":
+        source_table = ModuleSymbolTable(
+            file_path=request.source_path,
+            source=source_by_path[request.source_path],
+            module=ast.parse(
+                source_by_path[request.source_path], filename=request.source_path
+            ),
+        )
+        destination_table = ModuleSymbolTable(
+            file_path=request.destination_path,
+            source=source_by_path[request.destination_path],
+            module=ast.parse(
+                source_by_path[request.destination_path],
+                filename=request.destination_path,
+            ),
+        )
+        target_nodes = AstTargetNodeIndex(
+            source_index,
+            source_by_path,
+        ).nodes_by_target_identifier()
+        targets = tuple(
+            cls._target_digest_for_symbol(
+                source_index,
+                request.source_path,
+                symbol_qualname,
+            )
+            for symbol_qualname in request.symbol_qualnames
+        )
+        if len({target.name for target in targets}) != len(targets):
+            raise ValueError(
+                "move_symbols_to_module requires unique top-level symbol names"
+            )
+        cls._validate_destination(source_index, request.destination_path, targets)
+        source_blocks = tuple(
+            MovedTopLevelSymbolSource.from_target(
+                target,
+                target_nodes[target.target_id],
+                source_by_path,
+            )
+            for target in targets
+        )
+        report = cls._dependency_report(
+            source_table,
+            destination_table,
+            targets,
+            target_nodes,
+        )
+        return cls(
+            source_path=request.source_path,
+            destination_path=request.destination_path,
+            source_blocks=tuple(
+                sorted(source_blocks, key=lambda block: block.source_start_line)
+            ),
+            dependency_report=report,
+            replacement_import=request.replacement_import,
+            rationale=request.rationale,
+        )
+
+    @staticmethod
+    def _target_digest_for_symbol(
+        source_index: SourceIndex,
+        source_path: str,
+        symbol_qualname: str,
+    ) -> AstTargetDigest:
+        target_identifier = SourceRewriteTarget(
+            qualname=symbol_qualname,
+            source_path=source_path,
+        ).required_identifier(source_index)
+        target = source_index.target_by_id[target_identifier]
+        if (
+            target.file_path != source_path
+            or not _is_movable_module_symbol_kind(target.node_kind)
+            or "." in target.qualname
+        ):
+            raise ValueError(
+                "move_symbols_to_module only supports module-level classes "
+                f"and functions; got {symbol_qualname!r}"
+            )
+        return target
+
+    @staticmethod
+    def _validate_destination(
+        source_index: SourceIndex,
+        destination_path: str,
+        targets: tuple[AstTargetDigest, ...],
+    ) -> None:
+        destination_names = {
+            target.name
+            for target in source_index.ast_targets
+            if target.file_path == destination_path
+            and _is_movable_module_symbol_kind(target.node_kind)
+            and "." not in target.qualname
+        }
+        duplicate_names = tuple(
+            target.name for target in targets if target.name in destination_names
+        )
+        if duplicate_names:
+            raise ValueError(
+                f"Destination {destination_path!r} already defines moved symbols "
+                f"{duplicate_names!r}"
+            )
+
+    @classmethod
+    def _dependency_report(
+        cls,
+        source_table: ModuleSymbolTable,
+        destination_table: ModuleSymbolTable,
+        targets: tuple[AstTargetDigest, ...],
+        target_nodes: Mapping[str, _TargetNode],
+    ) -> ModuleMoveDependencyReport:
+        moved_names = frozenset(target.name for target in targets)
+        external_names = frozenset(
+            name
+            for target in targets
+            for name in _external_names_for_moved_node(target_nodes[target.target_id])
+        )
+        destination_available = destination_table.available_names | moved_names
+        source_import_names = frozenset(source_table.import_sources_by_name)
+        importable_names = tuple(
+            sorted((external_names - destination_available) & source_import_names)
+        )
+        source_local_names = tuple(
+            sorted(
+                (external_names - destination_available - source_import_names)
+                & source_table.top_level_names
+            )
+        )
+        unresolved_names = tuple(
+            sorted(
+                external_names
+                - destination_available
+                - source_import_names
+                - source_table.top_level_names
+            )
+        )
+        return ModuleMoveDependencyReport(
+            source_path=source_table.file_path,
+            destination_path=destination_table.file_path,
+            moved_symbol_names=tuple(target.name for target in targets),
+            imported_dependency_names=importable_names,
+            import_sources=cls._missing_import_sources(
+                source_table,
+                destination_table,
+                importable_names,
+            ),
+            source_local_dependency_names=source_local_names,
+            unresolved_dependency_names=unresolved_names,
+        )
+
+    @staticmethod
+    def _missing_import_sources(
+        source_table: ModuleSymbolTable,
+        destination_table: ModuleSymbolTable,
+        imported_dependency_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        destination_source = destination_table.source
+        import_sources = []
+        for name in imported_dependency_names:
+            import_source = source_table.import_sources_by_name[name]
+            if import_source.strip() not in destination_source:
+                import_sources.append(import_source)
+        return tuple(dict.fromkeys(import_sources))
+
+    def line_replacements(
+        self, source_by_path: Mapping[str, str]
+    ) -> tuple[SourceLineReplacement, ...]:
+        if not self.dependency_report.is_clean:
+            raise CodemodOperationPreflightError(
+                CodemodOperationPreflightReport(
+                    operation=RefactorRecipeOperationKind.MOVE_SYMBOLS_TO_MODULE.value,
+                    status=CodemodPreflightStatus.FAILED,
+                    message=self.dependency_report.error_message,
+                    details=self.dependency_report.to_dict(),
+                )
+            )
+        replacements = [
+            self.destination_insertion(source_by_path),
+            *(
+                block.deletion_replacement(rationale=self.rationale)
+                for block in self.source_blocks
+            ),
+        ]
+        replacement_import = self.source_replacement_import(source_by_path)
+        if replacement_import is not None:
+            replacements.append(replacement_import)
+        return tuple(replacements)
+
+    def destination_insertion(
+        self,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement:
+        destination_source = source_by_path[self.destination_path]
+        insertion_line = ModuleImportInsertionPoint(
+            destination_source,
+            self.destination_path,
+        ).line_number
+        return SourceLineReplacement(
+            file_path=self.destination_path,
+            start_line=insertion_line,
+            end_line=insertion_line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(
+                self.destination_source(destination_source, insertion_line)
+            ),
+            rationale=self.rationale
+            or (
+                f"Move symbols {self.dependency_report.moved_symbol_names!r} "
+                f"into {self.destination_path!r}."
+            ),
+        )
+
+    def destination_source(self, destination_source: str, insertion_line: int) -> str:
+        destination_lines = destination_source.splitlines(keepends=True)
+        previous_line = SourceTopLevelSymbolMovePlan._line_at(
+            destination_lines,
+            insertion_line - 1,
+        )
+        current_line = SourceTopLevelSymbolMovePlan._line_at(
+            destination_lines,
+            insertion_line,
+        )
+        imports = "".join(self.dependency_report.import_sources)
+        moved_source = "\n\n".join(
+            block.moved_source.strip("\n") for block in self.source_blocks
+        )
+        spacing = DestinationInsertionSpacing(
+            previous_line=previous_line,
+            current_line=current_line,
+            has_import_block=bool(imports),
+        )
+        body = f"{imports}{spacing.import_separator}{moved_source}"
+        return f"{spacing.leading_separator}{body}{spacing.trailing_separator}"
+
+    def source_replacement_import(
+        self,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement | None:
+        if not self.replacement_import:
+            return None
+        import_lines = SourceTargetEditor.source_lines(self.replacement_import)
+        source = source_by_path[self.source_path]
+        if EnsureImportOperation._source_already_contains_import(source, import_lines):
+            return None
+        insertion_line = ModuleImportInsertionPoint(
+            source, self.source_path
+        ).line_number
+        return SourceLineReplacement(
+            file_path=self.source_path,
+            start_line=insertion_line,
+            end_line=insertion_line - 1,
+            replacement_lines=import_lines,
+            rationale=self.rationale
+            or (
+                "Ensure source module imports moved symbols "
+                f"{self.dependency_report.moved_symbol_names!r}."
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ModuleSymbolMoveOperation(RefactorRecipeOperation, ABC):
+    """Shared destination/import contract for module-symbol move operations."""
 
     destination_path: str
-    import_policy: MovedSymbolImportPolicy = field(
+    replacement_import: MovedSymbolImportPolicy = field(
         default_factory=MovedSymbolImportPolicy
     )
 
     @classmethod
-    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
-        del cls
-        return (
-            PayloadBinding(
-                field_name=DESTINATION_PATH_PAYLOAD_FIELD,
-                constructor_argument_name="destination_path",
-                value_projector=MoveSymbolToModuleOperation.destination_path_from_operation,
-            ),
+    def destination_path_payload_binding(cls) -> PayloadBinding:
+        return PayloadBinding(
+            field_name=DESTINATION_PATH_PAYLOAD_FIELD,
+            constructor_argument_name="destination_path",
+            value_projector=ModuleSymbolMoveOperation.destination_path_from_operation,
         )
 
     @staticmethod
     def destination_path_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
-        if not isinstance(operation, MoveSymbolToModuleOperation):
+        if not isinstance(operation, ModuleSymbolMoveOperation):
             raise TypeError(
-                "destination_path binding requires MoveSymbolToModuleOperation"
+                "destination_path binding requires ModuleSymbolMoveOperation"
             )
         return operation.destination_path
 
@@ -4632,13 +5833,13 @@ class MoveSymbolToModuleOperation(RefactorRecipeOperation):
         cls,
         target: SourceRewriteTarget,
         payload: SourceRewritePlanPayload,
-    ) -> "MoveSymbolToModuleOperation":
+    ) -> "ModuleSymbolMoveOperation":
         operation = super().from_operation_payload(target, payload)
-        if not isinstance(operation, MoveSymbolToModuleOperation):
-            raise TypeError("move-symbol operation payload resolved incorrectly")
+        if not isinstance(operation, ModuleSymbolMoveOperation):
+            raise TypeError("module-symbol move payload resolved incorrectly")
         return replace(
             operation,
-            import_policy=MovedSymbolImportPolicy.from_source(
+            replacement_import=MovedSymbolImportPolicy.from_source(
                 payload.optional_string(REPLACEMENT_IMPORT_PAYLOAD_FIELD)
             ),
         )
@@ -4646,8 +5847,17 @@ class MoveSymbolToModuleOperation(RefactorRecipeOperation):
     def operation_payload(self) -> JsonObject:
         return {
             **super().operation_payload(),
-            **self.import_policy.operation_payload,
+            **self.replacement_import.operation_payload,
         }
+
+
+@dataclass(frozen=True, kw_only=True)
+class MoveSymbolToModuleOperation(ModuleSymbolMoveOperation):
+    """Move one module-level class or function into another existing module."""
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        return (cls.destination_path_payload_binding(),)
 
     def line_replacements(
         self,
@@ -4660,11 +5870,14 @@ class MoveSymbolToModuleOperation(RefactorRecipeOperation):
             node,
             source_index,
             source_by_path,
-            destination_file_path=self.destination_path,
+            destination_file_path=SourcePathResolutionAuthority.from_source_index(
+                self.destination_path,
+                source_index,
+            ).required_path(),
             rationale=self.rationale,
         )
         replacements = list(move_plan.line_replacements(source_by_path))
-        import_replacement = self.import_policy.source_replacement(
+        import_replacement = self.replacement_import.source_replacement(
             move_plan.source_block,
             source_by_path,
             rationale=self.rationale,
@@ -4672,6 +5885,102 @@ class MoveSymbolToModuleOperation(RefactorRecipeOperation):
         if import_replacement is not None:
             replacements.append(import_replacement)
         return tuple(replacements)
+
+
+@dataclass(frozen=True, kw_only=True)
+class MoveSymbolsToModuleOperation(ModuleSymbolMoveOperation):
+    """Move a dependency-checked set of top-level symbols into another module."""
+
+    symbol_qualnames: tuple[str, ...]
+    reports_preflight = True
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        return (
+            PayloadBinding(
+                field_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
+                constructor_argument_name=SYMBOL_QUALNAMES_PAYLOAD_FIELD,
+                value_projector=MoveSymbolsToModuleOperation.symbol_qualnames_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+            cls.destination_path_payload_binding(),
+        )
+
+    @staticmethod
+    def symbol_qualnames_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, MoveSymbolsToModuleOperation):
+            raise TypeError(
+                "symbol_qualnames binding requires MoveSymbolsToModuleOperation"
+            )
+        return operation.symbol_qualnames
+
+    def dependency_report(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> ModuleMoveDependencyReport:
+        return self.move_plan(source_index, source_by_path).dependency_report
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        del selector_context
+        dependency_report = self.dependency_report(source_index, source_by_path)
+        if dependency_report.is_clean:
+            status = CodemodPreflightStatus.PASSED
+            message = "move_symbols_to_module dependency closure is clean"
+        else:
+            status = CodemodPreflightStatus.FAILED
+            message = dependency_report.error_message
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_kind().value,
+                status=status,
+                message=message,
+                details=dependency_report.to_dict(),
+            ),
+        )
+
+    def move_plan(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> SourceTopLevelSymbolClosureMovePlan:
+        source_path = self.required_source_path(source_index, "move_symbols_to_module")
+        destination_path = SourcePathResolutionAuthority.from_source_index(
+            self.destination_path,
+            source_index,
+        ).required_path()
+        if source_path == destination_path:
+            raise ValueError(
+                "move_symbols_to_module destination must differ from source"
+            )
+        return SourceTopLevelSymbolClosureMovePlan.from_request(
+            SourceTopLevelSymbolClosureMoveRequest(
+                source_path=source_path,
+                destination_path=destination_path,
+                symbol_qualnames=self.symbol_qualnames,
+                replacement_import=self.replacement_import.import_source,
+                rationale=self.rationale,
+            ),
+            source_index=source_index,
+            source_by_path=source_by_path,
+        )
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        return self.move_plan(source_index, source_by_path).line_replacements(
+            source_by_path,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -4850,13 +6159,11 @@ class ConvertManualRegistryToAutoregisterOperation(
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        if self.target.source_path is None:
-            raise ValueError("registry conversion requires file_path")
+        source_path = self.required_source_path(source_index, "registry conversion")
         if not self.registry_key_attribute.isidentifier():
             raise ValueError(
                 f"Registry key attribute must be an identifier: {self.registry_key_attribute!r}"
             )
-        source_path = self.target.source_path
         module = ast.parse(source_by_path[source_path], filename=source_path)
         class_key_pairs = self.parsed_class_key_pairs
         class_targets = ClassMemberPromotionTargets.resolve(
@@ -5841,10 +7148,10 @@ class ProductRecordToDataclassOperation(StringPayloadOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("product_record_to_dataclass requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(
+            source_index,
+            "product_record_to_dataclass",
+        )
         source = source_by_path[source_path]
         module = ast.parse(source, filename=source_path)
         return ProductRecordDataclassRewriteAuthority(
@@ -5888,10 +7195,10 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        del source_index
-        if self.target.source_path is None:
-            raise ValueError("product_records_to_dataclasses requires file_path")
-        source_path = self.target.source_path
+        source_path = self.required_source_path(
+            source_index,
+            "product_records_to_dataclasses",
+        )
         source = source_by_path[source_path]
         module = ast.parse(source, filename=source_path)
         return ProductRecordBatchDataclassRewriteAuthority(
@@ -6143,6 +7450,31 @@ def codemod_dsl_operation_template_example_payload() -> JsonObject:
     ).to_dict()
 
 
+def codemod_dsl_operation_plan_template_example_payload() -> JsonObject:
+    """Return a multi-step selected-target plan-template example payload."""
+
+    return RefactorRecipeOperationPlanTemplate(
+        recipe=RefactorRecipe(
+            recipe_id=RefactorRecipeOperationPlanTemplate.default_recipe_id,
+            reason=RefactorRecipeOperationPlanTemplate.default_reason,
+            operations=(
+                CreateFileOperation(
+                    target=SourceRewriteTarget(
+                        source_path=CodemodDslPlaceholder("new_file_path").value,
+                    ),
+                    payload_value="",
+                    rationale=CodemodDslPlaceholder("rationale").value,
+                ),
+            ),
+        ),
+        selected_operation_templates=(
+            RefactorRecipeOperationTemplate.from_payload(
+                codemod_dsl_operation_template_example_payload()
+            ),
+        ),
+    ).to_dict()
+
+
 def codemod_dsl_call_replacement_example_payload() -> JsonObject:
     """Return an exact call-site replacement example payload."""
 
@@ -6343,6 +7675,8 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
 
     operation: str
     supports_selection_count: bool = False
+    contributes_source_overlay: bool = False
+    reports_preflight: bool = False
 
     @classmethod
     def from_operation_type(
@@ -6362,6 +7696,8 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
                 operation_type,
                 SelectedTargetsOperation,
             ),
+            contributes_source_overlay=operation_type.contributes_source_overlay,
+            reports_preflight=operation_type.reports_preflight,
         )
 
     def to_dict(self) -> JsonObject:
@@ -6377,6 +7713,8 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
                 field.to_dict() for field in codemod_common_fields()
             ),
             "supports_selection_count": self.supports_selection_count,
+            "contributes_source_overlay": self.contributes_source_overlay,
+            "reports_preflight": self.reports_preflight,
             "example_payload": self.example_payload(),
         }
 
@@ -6445,6 +7783,15 @@ class CodemodDslManifest:
         return {
             "plan_fields": ("authority_boundaries", "recipes", "architecture_guards"),
             "recipe_fields": ("recipe_id", "rewrites", "operations", "reason"),
+            "operation_plan_template_fields": (
+                "recipe_id",
+                "reason",
+                "setup_operations",
+                "operation_templates",
+            ),
+            "operation_plan_template_example": (
+                codemod_dsl_operation_plan_template_example_payload()
+            ),
             "operation_common_fields": tuple(
                 field.to_dict() for field in codemod_common_fields()
             ),
@@ -7818,6 +9165,20 @@ class RefactorRecipe:
         )
         return replace(self, rewrites=(*self.rewrites, rewrite))
 
+    def create_file(
+        self,
+        source_path: str,
+        source: str = "",
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = CreateFileOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            payload_value=source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def insert_before_target(
         self,
         target_qualname: str,
@@ -7913,7 +9274,25 @@ class RefactorRecipe:
                 source_path=source_path,
             ),
             destination_path=destination_path,
-            import_policy=MovedSymbolImportPolicy.from_source(replacement_import),
+            replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def move_symbols_to_module(
+        self,
+        source_path: str,
+        symbol_qualnames: Iterable[str],
+        destination_path: str,
+        *,
+        replacement_import: str | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = MoveSymbolsToModuleOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            symbol_qualnames=tuple(symbol_qualnames),
+            destination_path=destination_path,
+            replacement_import=MovedSymbolImportPolicy.from_source(replacement_import),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -8247,6 +9626,41 @@ class RefactorRecipe:
         )
         return (*rewrite_batch, *operation_rewrites)
 
+    def source_overlays(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> Mapping[str, str]:
+        overlays: dict[str, str] = {}
+        for operation in self.operations:
+            overlays.update(
+                operation.source_overlays(
+                    source_index,
+                    source_by_path,
+                    selector_context=selector_context,
+                )
+            )
+        return overlays
+
+    def preflight_reports(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        return tuple(
+            report
+            for operation in self.operations
+            for report in operation.preflight_reports(
+                source_index,
+                source_by_path,
+                selector_context=selector_context,
+            )
+        )
+
     def simulate(
         self,
         source_index: SourceIndex,
@@ -8364,7 +9778,46 @@ class CodemodPlanDocument:
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PlannedSourceRewrite, ...]:
-        return snapshot.source_rewrite_batch_for_document(self)
+        rewrite_snapshot = self.rewrite_snapshot(snapshot)
+        return rewrite_snapshot.source_rewrite_batch_for_document(self)
+
+    def preflight_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> CodemodPlanPreflightReport:
+        rewrite_snapshot = self.rewrite_snapshot(snapshot)
+        return CodemodPlanPreflightReport(
+            tuple(
+                report
+                for recipe in self.recipes
+                for report in recipe.preflight_reports(
+                    rewrite_snapshot.source_index,
+                    rewrite_snapshot.sources_by_file_path,
+                    selector_context=rewrite_snapshot,
+                )
+            )
+        )
+
+    def rewrite_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> CodemodSourceSnapshot:
+        return snapshot.with_virtual_sources(self.source_overlays(snapshot))
+
+    def source_overlays(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> Mapping[str, str]:
+        overlays: dict[str, str] = {}
+        for recipe in self.recipes:
+            overlays.update(
+                recipe.source_overlays(
+                    snapshot.source_index,
+                    snapshot.sources_by_file_path,
+                    selector_context=snapshot,
+                )
+            )
+        return overlays
 
     def simulate(
         self,
@@ -8407,12 +9860,132 @@ class CodemodPlanDocument:
 
 
 @dataclass(frozen=True)
+class CodemodPlanSequence:
+    """Ordered codemod documents resolved against each prior simulated stage."""
+
+    documents: tuple[CodemodPlanDocument, ...] = ()
+
+    @classmethod
+    def from_document(cls, document: CodemodPlanDocument) -> "CodemodPlanSequence":
+        return cls(documents=(document,))
+
+    @property
+    def authority_boundaries(self) -> tuple[AuthorityBoundaryPlan, ...]:
+        return tuple(
+            boundary
+            for document in self.documents
+            for boundary in document.authority_boundaries
+        )
+
+    @property
+    def guard_suite(self) -> ArchitectureGuardSuite:
+        return ArchitectureGuardSuite().merge(
+            *(document.guard_suite for document in self.documents)
+        )
+
+    @property
+    def has_authority_boundaries(self) -> bool:
+        return bool(self.authority_boundaries)
+
+    @property
+    def has_recipes(self) -> bool:
+        return any(document.has_recipes for document in self.documents)
+
+    @property
+    def has_architecture_guards(self) -> bool:
+        return not self.guard_suite.is_empty
+
+    @property
+    def has_multiple_stages(self) -> bool:
+        return len(self.documents) > 1
+
+    def source_rewrite_batch_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        if self.has_multiple_stages:
+            raise ValueError(
+                "multi-stage codemod plans must be simulated as a sequence"
+            )
+        if not self.documents:
+            return ()
+        return self.documents[0].source_rewrite_batch_from_snapshot(snapshot)
+
+    def preflight_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> CodemodPlanPreflightReport:
+        active_snapshot = snapshot
+        reports: list[CodemodOperationPreflightReport] = []
+        for document in self.documents:
+            report = document.preflight_snapshot(active_snapshot)
+            reports.extend(report.reports)
+            if report.preflight_failed or not document.has_recipes:
+                if report.preflight_failed:
+                    break
+                continue
+            active_snapshot = active_snapshot.with_simulation(
+                document.simulate_snapshot(active_snapshot).simulation
+            )
+        return CodemodPlanPreflightReport(tuple(reports))
+
+    def simulate_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "CodemodPlanSequenceSimulation":
+        active_snapshot = snapshot
+        stage_reports: list[CodemodPlanSequenceStageReport] = []
+        for stage_index, document in enumerate(self.documents):
+            before_snapshot = active_snapshot
+            stage = document.simulate_snapshot(before_snapshot, backend=backend)
+            active_snapshot = before_snapshot.with_simulation(stage.simulation)
+            stage_reports.append(
+                CodemodPlanSequenceStageReport(
+                    stage_index=stage_index,
+                    document_simulation=stage,
+                    before_source_index=before_snapshot.source_index,
+                    after_source_index=active_snapshot.source_index,
+                )
+            )
+        return CodemodPlanSequenceSimulation(
+            sequence=self,
+            stage_reports=tuple(stage_reports),
+            final_snapshot=active_snapshot,
+            simulation=CodemodSimulationReport.combine(
+                stage.result.simulation for stage in stage_reports
+            ),
+            architecture_guard_report=self.guard_suite.evaluate(
+                active_snapshot.source_index,
+                active_snapshot.sources_by_file_path,
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "stages": tuple(document.to_dict() for document in self.documents),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodPlanJsonParser:
     """Decode codemod-plan JSON into nominal codemod DSL records."""
 
     authority_boundaries_field: str = "authority_boundaries"
     recipes_field: str = "recipes"
     architecture_guards_field: str = "architecture_guards"
+    stages_field: str = "stages"
+
+    def parse_sequence(self, payload: JsonObject | JsonArray) -> CodemodPlanSequence:
+        if isinstance(payload, dict) and self.stages_field in payload:
+            return CodemodPlanSequence(
+                documents=tuple(
+                    self.parse_document(row)
+                    for row in self.array_field(payload, self.stages_field)
+                )
+            )
+        return CodemodPlanSequence.from_document(self.parse_document(payload))
 
     def parse_document(self, payload: JsonObject | JsonArray) -> CodemodPlanDocument:
         if isinstance(payload, dict):
@@ -8623,6 +10196,43 @@ class CodemodSimulationReport:
     rewritten_sources: dict[str, str]
     parse_validation: CodemodParseValidationReport
 
+    @classmethod
+    def combine(
+        cls,
+        reports: Iterable["CodemodSimulationReport"],
+    ) -> "CodemodSimulationReport":
+        """Combine sequential simulation reports into one final write set."""
+
+        report_tuple = tuple(reports)
+        if not report_tuple:
+            backend = select_codemod_backend()
+            return cls(
+                backend=backend,
+                rewrites=(),
+                rewritten_sources={},
+                parse_validation=CodemodParseValidationReport(
+                    backend=backend,
+                    validated_file_paths=(),
+                    parse_valid=True,
+                ),
+            )
+        rewritten_sources: dict[str, str] = {}
+        validated_file_paths: set[str] = set()
+        for report in report_tuple:
+            rewritten_sources.update(report.rewritten_sources)
+            validated_file_paths.update(report.validated_file_paths)
+        backend = report_tuple[-1].backend
+        return cls(
+            backend=backend,
+            rewrites=tuple(rewrite for report in report_tuple for rewrite in report.rewrites),
+            rewritten_sources=rewritten_sources,
+            parse_validation=CodemodParseValidationReport(
+                backend=backend,
+                validated_file_paths=tuple(sorted(validated_file_paths)),
+                parse_valid=all(report.parse_valid for report in report_tuple),
+            ),
+        )
+
     @property
     def applied_rewrite_count(self) -> int:
         return len(self.rewrites)
@@ -8664,9 +10274,8 @@ class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
     architecture_guard_report: ArchitectureGuardReport
 
     @property
-    @abstractmethod
     def guard_subject(self) -> str:
-        raise NotImplementedError
+        return f"Codemod {self.registry_key.replace('_', ' ')}"
 
     @property
     def is_clean(self) -> bool:
@@ -8740,14 +10349,136 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     registry_key = "plan_document"
     document: CodemodPlanDocument
 
-    @property
-    def guard_subject(self) -> str:
-        return "Codemod plan document"
-
     def to_dict(self) -> JsonObject:
         return {
             "document": self.document.to_dict(),
             **self.simulation_payload().to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodPlanSequenceStageReport:
+    """One staged codemod document plus source indexes before and after it."""
+
+    stage_index: int
+    document_simulation: CodemodPlanDocumentSimulation
+    before_source_index: SourceIndex
+    after_source_index: SourceIndex
+
+    @property
+    def result(self) -> CodemodPlanDocumentSimulation:
+        return self.document_simulation
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "stage_index": self.stage_index,
+            "document": self.result.document.to_dict(),
+            "simulation": self.result.simulation.to_dict(),
+            "architecture_guard_report": self.result.architecture_guard_report.to_dict(),
+            "is_clean": self.result.is_clean,
+            "before_source_index": self.before_source_index.to_dict(),
+            "after_source_index": self.after_source_index.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodPlanSequenceSimulation(SourceRewriteSimulationResult):
+    """Simulation result for an ordered codemod plan sequence."""
+
+    registry_key = "plan_sequence"
+    sequence: CodemodPlanSequence
+    stage_reports: tuple[CodemodPlanSequenceStageReport, ...] = ()
+    final_snapshot: CodemodSourceSnapshot | None = None
+
+    @property
+    def stages(self) -> tuple[CodemodPlanDocumentSimulation, ...]:
+        return tuple(stage.result for stage in self.stage_reports)
+
+    @property
+    def required_final_snapshot(self) -> CodemodSourceSnapshot:
+        if self.final_snapshot is None:
+            raise ValueError("plan sequence simulation has no final source snapshot")
+        return self.final_snapshot
+
+    def continuation_report_from_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+        *,
+        detector_ids: Iterable[str] = (),
+    ) -> "CodemodPlanSequenceContinuationReport":
+        final_snapshot = self.required_final_snapshot
+        finding_tuple = tuple(findings)
+        detector_id_tuple = tuple(detector_ids)
+        return CodemodPlanSequenceContinuationReport(
+            sequence=self.sequence,
+            source_index=final_snapshot.source_index,
+            findings=finding_tuple,
+            plan=final_snapshot.plan_from_findings(
+                finding_tuple,
+                detector_ids=detector_id_tuple,
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        final_snapshot = self.required_final_snapshot
+        return {
+            "sequence": self.sequence.to_dict(),
+            "stage_count": len(self.stage_reports),
+            "stages": tuple(stage.to_dict() for stage in self.stage_reports),
+            "final_source_index": final_snapshot.source_index.to_dict(),
+            **self.simulation_payload().to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodPlanSequenceContinuationReport:
+    """Executable continuation plan synthesized from a staged final source state."""
+
+    sequence: CodemodPlanSequence
+    source_index: SourceIndex
+    findings: tuple[RefactorFinding, ...]
+    plan: "FindingRecipePlan"
+
+    @property
+    def finding_count(self) -> int:
+        return len(self.findings)
+
+    @property
+    def continuation_stage_count(self) -> int:
+        if self.plan.document.has_recipes:
+            return 1
+        return 0
+
+    @property
+    def has_continuation_stage(self) -> bool:
+        return bool(self.continuation_stage_count)
+
+    @property
+    def continuation_sequence(self) -> CodemodPlanSequence:
+        if not self.has_continuation_stage:
+            return CodemodPlanSequence()
+        return CodemodPlanSequence.from_document(self.plan.document)
+
+    @property
+    def extended_sequence(self) -> CodemodPlanSequence:
+        if not self.has_continuation_stage:
+            return self.sequence
+        return replace(
+            self.sequence,
+            documents=(*self.sequence.documents, self.plan.document),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "sequence": self.sequence.to_dict(),
+            "source_index": self.source_index.to_dict(),
+            "finding_count": self.finding_count,
+            "findings": tuple(finding.to_dict() for finding in self.findings),
+            "finding_recipe_plan": self.plan.to_dict(),
+            "has_continuation_stage": self.has_continuation_stage,
+            "continuation_stage_count": self.continuation_stage_count,
+            "continuation_sequence": self.continuation_sequence.to_dict(),
+            "extended_sequence": self.extended_sequence.to_dict(),
         }
 
 
@@ -9124,12 +10855,45 @@ class FindingRecipePlan:
     ) -> "FindingRecipePlanSimulation":
         return snapshot.simulate_finding_plan(self, backend=backend)
 
+    def preflight_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> "FindingRecipePlanPreflight":
+        return FindingRecipePlanPreflight(
+            plan=self,
+            preflight_report=self.document.preflight_snapshot(snapshot),
+        )
+
     def to_dict(self) -> JsonObject:
         return {
             "document": self.document.to_dict(),
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
             "expected_removed_finding_count": self.expected_removed_finding_count,
             "synthesis_report": self.synthesis_report.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanPreflight:
+    """Preflight result for a synthesized finding-backed codemod plan."""
+
+    plan: FindingRecipePlan
+    preflight_report: CodemodPlanPreflightReport
+
+    @property
+    def is_clean(self) -> bool:
+        return self.preflight_report.is_clean
+
+    @property
+    def preflight_failed(self) -> bool:
+        return self.preflight_report.preflight_failed
+
+    def to_dict(self) -> JsonObject:
+        return {
+            **self.plan.to_dict(),
+            **self.preflight_report.to_dict(),
+            "preflight_report": self.preflight_report.to_dict(),
+            "applied": False,
         }
 
 
@@ -10945,7 +12709,7 @@ def format_codemod_unified_diff(
 
     diff_lines: list[str] = []
     for file_path in simulation.changed_file_paths:
-        original_source = source_by_path[file_path]
+        original_source = source_by_path.get(file_path, "")
         rewritten_source = simulation.rewritten_sources[file_path]
         diff_lines.extend(
             difflib.unified_diff(
@@ -10966,7 +12730,9 @@ def apply_codemod_simulation(
     """Write simulated codemod sources to their files and return changed paths."""
 
     for file_path, source in simulation.rewritten_sources.items():
-        Path(file_path).write_text(source, encoding=encoding)
+        path = Path(file_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding=encoding)
     return simulation.changed_file_paths
 
 
@@ -11259,6 +13025,9 @@ class SourceRewriteSimulationAuthority:
         target = resolved_rewrite.target
         start_index = target.line - 1
         end_index = target.end_line
+        if target.is_module and not lines and target.line == 1 and target.end_line == 1:
+            start_index = 0
+            end_index = 0
         if start_index < 0 or end_index > len(lines):
             raise ValueError(f"Target {target.target_id!r} span is outside source")
         original_source = "".join(lines[start_index:end_index])
