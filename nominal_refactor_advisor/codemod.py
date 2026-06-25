@@ -5736,6 +5736,7 @@ class CodemodDslFieldKind(StrEnum):
     """Machine-readable JSON value kinds accepted by the codemod DSL."""
 
     BOOLEAN = "boolean"
+    CALL_REPLACEMENT_ARRAY = "call_replacement_array"
     INTEGER = "integer"
     NODE_KIND_ARRAY = "node_kind_array"
     OPERATION_TEMPLATE_ARRAY = "operation_template_array"
@@ -5854,6 +5855,12 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
             ),
         ),
         CodemodDslPayloadReaderProfileRule(
+            RecipeCallReplacement.tuple_from_payload,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY
+            ),
+        ),
+        CodemodDslPayloadReaderProfileRule(
             SelectorPayloadReader.required_string,
             CodemodDslPayloadReaderProfile.string(),
         ),
@@ -5963,6 +5970,22 @@ def codemod_dsl_operation_template_example_payload() -> JsonObject:
     ).to_dict()
 
 
+def codemod_dsl_call_replacement_example_payload() -> JsonObject:
+    """Return an exact call-site replacement example payload."""
+
+    return RecipeCallReplacement.from_json_value(
+        {
+            **codemod_dsl_target_example_payload(),
+            OLD_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
+                OLD_SOURCE_PAYLOAD_FIELD
+            ).value,
+            NEW_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
+                NEW_SOURCE_PAYLOAD_FIELD
+            ).value,
+        }
+    ).to_dict()
+
+
 class CodemodDslExampleValueProvider(ABC, metaclass=AutoRegisterMeta):
     """Registered field-kind strategy for agent-facing DSL example values."""
 
@@ -6062,6 +6085,17 @@ class OperationTemplateArrayCodemodDslExampleValueProvider(
     value_kind = CodemodDslFieldKind.OPERATION_TEMPLATE_ARRAY
     item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
         codemod_dsl_operation_template_example_payload
+    )
+
+
+class CallReplacementArrayCodemodDslExampleValueProvider(
+    SingleItemArrayCodemodDslExampleValueProvider
+):
+    """Example value for authority-extraction call replacement fields."""
+
+    value_kind = CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY
+    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
+        codemod_dsl_call_replacement_example_payload
     )
 
 

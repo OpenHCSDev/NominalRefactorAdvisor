@@ -82,6 +82,7 @@ from nominal_refactor_advisor.codemod import (
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
     RefactorRecipe,
+    RefactorRecipeOperation,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
     SelectionCountExpectation,
@@ -8955,19 +8956,59 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         field["field_name"]: field
         for field in operations["replace_text"]["payload_fields"]
     }
+    extract_authority_fields = {
+        field["field_name"]: field
+        for field in operations["extract_authority"]["payload_fields"]
+    }
     source_index_fields = {
         field["field_name"]: field
         for field in selectors["source_index_target"]["payload_fields"]
     }
+    unknown_fields = [
+        {
+            "entry": "operation",
+            "name": operation["operation"],
+            "field": field["field_name"],
+        }
+        for operation in manifest["operations"]
+        for field in operation["payload_fields"]
+        if field["value_kind"] == "unknown"
+    ] + [
+        {
+            "entry": "selector",
+            "name": selector["selector"],
+            "field": field["field_name"],
+        }
+        for selector in manifest["selectors"]
+        for field in selector["payload_fields"]
+        if field["value_kind"] == "unknown"
+    ]
 
     assert len(operations) >= 23
     assert len(selectors) >= 6
+    assert unknown_fields == []
     assert replace_text_fields["old_source"]["value_kind"] == "string"
     assert replace_text_fields["old_source"]["required"] is True
     assert replace_text_fields["new_source"]["empty_string_allowed"] is True
+    assert (
+        extract_authority_fields["call_replacements"]["value_kind"]
+        == "call_replacement_array"
+    )
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
+    assert (
+        operations["extract_authority"]["example_payload"]["call_replacements"][0][
+            "old_source"
+        ]
+        == "<old_source>"
+    )
+    assert (
+        RefactorRecipeOperation.from_dict(
+            operations["extract_authority"]["example_payload"]
+        ).to_dict()["operation"]
+        == "extract_authority"
+    )
     assert (
         operations["apply_selected_targets"]["example_payload"]["operation_templates"][
             0
