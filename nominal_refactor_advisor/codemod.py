@@ -1309,6 +1309,7 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
     constructor_value_reader: Callable[
         [PayloadSourceT, str], PayloadValueT
     ] = required_source_plan_payload_string
+    dsl_value_kind: CodemodDslFieldKind | None = None
 
     def constructor_kwargs(
         self,
@@ -4643,33 +4644,38 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
-        return operation_payload_bindings(
-            (
+        return (
+            *operation_payload_bindings(
                 (
-                    BASE_NAME_PAYLOAD_FIELD,
-                    BASE_NAME_PAYLOAD_FIELD,
-                    BaseNamePayloadOperation.base_name_from_operation,
-                    OperationPayloadReader.required_string,
+                    (
+                        BASE_NAME_PAYLOAD_FIELD,
+                        BASE_NAME_PAYLOAD_FIELD,
+                        BaseNamePayloadOperation.base_name_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        REGISTRY_NAME_PAYLOAD_FIELD,
+                        REGISTRY_NAME_PAYLOAD_FIELD,
+                        ConvertManualRegistryToAutoregisterOperation.registry_name_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                        REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                        ConvertManualRegistryToAutoregisterOperation.registry_key_attribute_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                )
+            ),
+            PayloadBinding(
+                field_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                constructor_argument_name=CLASS_KEY_PAIRS_PAYLOAD_FIELD,
+                value_projector=(
+                    ConvertManualRegistryToAutoregisterOperation.class_key_pairs_from_operation
                 ),
-                (
-                    REGISTRY_NAME_PAYLOAD_FIELD,
-                    REGISTRY_NAME_PAYLOAD_FIELD,
-                    ConvertManualRegistryToAutoregisterOperation.registry_name_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                    REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                    ConvertManualRegistryToAutoregisterOperation.registry_key_attribute_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                    CLASS_KEY_PAIRS_PAYLOAD_FIELD,
-                    ConvertManualRegistryToAutoregisterOperation.class_key_pairs_from_operation,
-                    OperationPayloadReader.required_string_tuple,
-                ),
-            )
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                dsl_value_kind=CodemodDslFieldKind.CLASS_KEY_PAIR_ARRAY,
+            ),
         )
 
     @staticmethod
@@ -5425,39 +5431,44 @@ class DispatchToPolymorphismOperation(
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
-        return operation_payload_bindings(
-            (
+        return (
+            *operation_payload_bindings(
                 (
-                    AXIS_EXPRESSION_PAYLOAD_FIELD,
-                    AXIS_EXPRESSION_PAYLOAD_FIELD,
-                    DispatchToPolymorphismOperation.axis_expression_from_operation,
-                    OperationPayloadReader.required_string,
+                    (
+                        AXIS_EXPRESSION_PAYLOAD_FIELD,
+                        AXIS_EXPRESSION_PAYLOAD_FIELD,
+                        DispatchToPolymorphismOperation.axis_expression_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        BASE_NAME_PAYLOAD_FIELD,
+                        BASE_NAME_PAYLOAD_FIELD,
+                        BaseNamePayloadOperation.base_name_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                        CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                        DispatchToPolymorphismOperation.case_key_attribute_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                    (
+                        METHOD_NAME_PAYLOAD_FIELD,
+                        METHOD_NAME_PAYLOAD_FIELD,
+                        DispatchToPolymorphismOperation.method_name_from_operation,
+                        OperationPayloadReader.required_string,
+                    ),
+                )
+            ),
+            PayloadBinding(
+                field_name=LITERAL_CASES_PAYLOAD_FIELD,
+                constructor_argument_name=LITERAL_CASES_PAYLOAD_FIELD,
+                value_projector=(
+                    DispatchToPolymorphismOperation.literal_cases_from_operation
                 ),
-                (
-                    LITERAL_CASES_PAYLOAD_FIELD,
-                    LITERAL_CASES_PAYLOAD_FIELD,
-                    DispatchToPolymorphismOperation.literal_cases_from_operation,
-                    OperationPayloadReader.required_string_tuple,
-                ),
-                (
-                    BASE_NAME_PAYLOAD_FIELD,
-                    BASE_NAME_PAYLOAD_FIELD,
-                    BaseNamePayloadOperation.base_name_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                    CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
-                    DispatchToPolymorphismOperation.case_key_attribute_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-                (
-                    METHOD_NAME_PAYLOAD_FIELD,
-                    METHOD_NAME_PAYLOAD_FIELD,
-                    DispatchToPolymorphismOperation.method_name_from_operation,
-                    OperationPayloadReader.required_string,
-                ),
-            )
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+                dsl_value_kind=CodemodDslFieldKind.PYTHON_LITERAL_ARRAY,
+            ),
         )
 
     @staticmethod
@@ -5760,9 +5771,11 @@ class CodemodDslFieldKind(StrEnum):
 
     BOOLEAN = "boolean"
     CALL_REPLACEMENT_ARRAY = "call_replacement_array"
+    CLASS_KEY_PAIR_ARRAY = "class_key_pair_array"
     INTEGER = "integer"
     NODE_KIND_ARRAY = "node_kind_array"
     OPERATION_TEMPLATE_ARRAY = "operation_template_array"
+    PYTHON_LITERAL_ARRAY = "python_literal_array"
     SELECTOR_ARRAY = "selector_array"
     SELECTOR_OBJECT = "selector_object"
     STRING = "string"
@@ -5932,9 +5945,12 @@ class CodemodDslFieldManifest:
         cls,
         binding: PayloadBinding,
     ) -> "CodemodDslFieldManifest":
-        reader_profile = CodemodDslPayloadReaderProfile.from_reader(
-            binding.constructor_value_reader,
-        )
+        if binding.dsl_value_kind is None:
+            reader_profile = CodemodDslPayloadReaderProfile.from_reader(
+                binding.constructor_value_reader,
+            )
+        else:
+            reader_profile = CodemodDslPayloadReaderProfile(binding.dsl_value_kind)
         return cls(
             field_name=binding.field_name,
             constructor_argument_name=binding.constructor_argument_name,
@@ -6066,6 +6082,34 @@ class NodeKindArrayCodemodDslExampleValueProvider(CodemodDslExampleValueProvider
         return (AstTargetNodeKind.FUNCTION.value,)
 
 
+class ConstantCodemodDslExampleValueProvider(CodemodDslExampleValueProvider, ABC):
+    """Field-kind provider whose example is a class-declared constant."""
+
+    constant_example_value: ClassVar[JsonValue]
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        del field_manifest
+        return self.constant_example_value
+
+
+class ClassKeyPairArrayCodemodDslExampleValueProvider(
+    ConstantCodemodDslExampleValueProvider
+):
+    """Example value for class-name to registry-key source pairs."""
+
+    value_kind = CodemodDslFieldKind.CLASS_KEY_PAIR_ARRAY
+    constant_example_value = ("ExampleHandler='example'",)
+
+
+class PythonLiteralArrayCodemodDslExampleValueProvider(
+    ConstantCodemodDslExampleValueProvider
+):
+    """Example value for Python literal source arrays."""
+
+    value_kind = CodemodDslFieldKind.PYTHON_LITERAL_ARRAY
+    constant_example_value = ("'example'",)
+
+
 class SelectorObjectCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
     """Example value for nested selector object fields."""
 
@@ -6131,16 +6175,6 @@ class BooleanCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
         if field_manifest.default_value is not None:
             return field_manifest.default_value
         return True
-
-
-class ConstantCodemodDslExampleValueProvider(CodemodDslExampleValueProvider, ABC):
-    """Field-kind provider whose example is a class-declared constant."""
-
-    constant_example_value: ClassVar[JsonValue]
-
-    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
-        del field_manifest
-        return self.constant_example_value
 
 
 class IntegerCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):

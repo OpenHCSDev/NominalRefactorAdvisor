@@ -8965,6 +8965,16 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         field["field_name"]: field
         for field in operations["move_symbol_to_module"]["payload_fields"]
     }
+    registry_conversion_fields = {
+        field["field_name"]: field
+        for field in operations["convert_manual_registry_to_autoregister"][
+            "payload_fields"
+        ]
+    }
+    dispatch_fields = {
+        field["field_name"]: field
+        for field in operations["dispatch_to_polymorphism"]["payload_fields"]
+    }
     source_index_fields = {
         field["field_name"]: field
         for field in selectors["source_index_target"]["payload_fields"]
@@ -9000,6 +9010,11 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         == "call_replacement_array"
     )
     assert move_symbol_fields["destination_path"]["value_kind"] == "string"
+    assert (
+        registry_conversion_fields["class_key_pairs"]["value_kind"]
+        == "class_key_pair_array"
+    )
+    assert dispatch_fields["literal_cases"]["value_kind"] == "python_literal_array"
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
@@ -9027,6 +9042,12 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         ).to_dict()["destination_path"]
         == "<destination_path>"
     )
+    assert operations["convert_manual_registry_to_autoregister"]["example_payload"][
+        "class_key_pairs"
+    ] == ("ExampleHandler='example'",)
+    assert operations["dispatch_to_polymorphism"]["example_payload"][
+        "literal_cases"
+    ] == ("'example'",)
     assert [
         RefactorRecipeOperation.from_dict(operation["example_payload"]).to_dict()[
             "operation"
