@@ -9670,6 +9670,7 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
+    composed_plan_path = tmp_path / "composed-plan.json"
 
     compose_result = subprocess.run(
         [
@@ -9679,6 +9680,8 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
             "--codemod-compose-plans",
             first_plan_path.as_posix(),
             second_plan_path.as_posix(),
+            "--codemod-plan-out",
+            composed_plan_path.as_posix(),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -9686,8 +9689,9 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
         check=False,
     )
     composed_payload = json.loads(compose_result.stdout)
-    composed_plan_path = tmp_path / "composed-plan.json"
-    composed_plan_path.write_text(json.dumps(composed_payload), encoding="utf-8")
+    emitted_composed_payload = json.loads(
+        composed_plan_path.read_text(encoding="utf-8")
+    )
     validation_result = subprocess.run(
         [
             sys.executable,
@@ -9706,6 +9710,7 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
 
     assert compose_result.returncode == 0, compose_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
+    assert emitted_composed_payload == composed_payload
     assert validation_payload["authority_boundaries"][0]["boundary_id"] == "alpha-run"
     assert [recipe["recipe_id"] for recipe in validation_payload["recipes"]] == [
         "replace-alpha",
@@ -9773,6 +9778,32 @@ def test_module_cli_rejects_multiple_compose_stdin_documents() -> None:
 
     assert result.returncode != 0
     assert "stdin JSON document token '-'" in result.stderr
+
+
+def test_module_cli_rejects_plan_out_for_non_plan_query(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-source-index",
+            "--codemod-plan-out",
+            (tmp_path / "source-index-plan.json").as_posix(),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "--codemod-plan-out requires a plan-producing codemod command" in (
+        result.stderr
+    )
 
 
 def test_module_cli_simulates_codemod_plan_from_stdin(
@@ -10514,6 +10545,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         "pkg/mod.py",
         "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
     )
+    plan_path = tmp_path / "synthesized-plan.json"
     plan_result = subprocess.run(
         [
             sys.executable,
@@ -10523,6 +10555,8 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
             "--no-impact-ranking",
             "--codemod-synthesize-plan",
             "--codemod-synthesize-document-only",
+            "--codemod-plan-out",
+            plan_path.as_posix(),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -10530,8 +10564,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         check=False,
     )
     plan_payload = json.loads(plan_result.stdout)
-    plan_path = tmp_path / "synthesized-plan.json"
-    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
+    emitted_plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
     validation_result = subprocess.run(
         [
             sys.executable,
@@ -10551,6 +10584,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
 
     assert plan_result.returncode == 0, plan_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
+    assert emitted_plan_payload == plan_payload
     assert any(
         operation["operation"] == "delete_module_assignments"
         and operation["assignment_names"] == ["field_names", "method_names"]
@@ -10920,6 +10954,7 @@ def test_module_cli_scaffolds_editable_replacement_plan(
         ),
         encoding="utf-8",
     )
+    plan_path = tmp_path / "replacement-plan.json"
 
     scaffold_result = subprocess.run(
         [
@@ -10930,6 +10965,8 @@ def test_module_cli_scaffolds_editable_replacement_plan(
             "--no-cache",
             "--codemod-replacement-plan",
             selector_path.as_posix(),
+            "--codemod-plan-out",
+            plan_path.as_posix(),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -10937,7 +10974,7 @@ def test_module_cli_scaffolds_editable_replacement_plan(
         check=False,
     )
     scaffold_payload = json.loads(scaffold_result.stdout)
-    plan_payload = scaffold_payload["document"]
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
     rewrite = plan_payload["recipes"][0]["rewrites"][0]
 
     assert scaffold_result.returncode == 0, scaffold_result.stderr
@@ -10955,7 +10992,6 @@ def test_module_cli_scaffolds_editable_replacement_plan(
         "return prepared",
         "return prepared + 1",
     )
-    plan_path = tmp_path / "replacement-plan.json"
     plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
     module_path.write_text(
         "# line shift after scaffold generation\n" + module_path.read_text(),
@@ -11030,6 +11066,7 @@ def test_module_cli_scaffolds_selected_operation_plan(
         ),
         encoding="utf-8",
     )
+    plan_path = tmp_path / "selected-operation-plan.json"
 
     scaffold_result = subprocess.run(
         [
@@ -11042,6 +11079,8 @@ def test_module_cli_scaffolds_selected_operation_plan(
             selector_path.as_posix(),
             "--codemod-operation-template",
             template_path.as_posix(),
+            "--codemod-plan-out",
+            plan_path.as_posix(),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -11049,7 +11088,7 @@ def test_module_cli_scaffolds_selected_operation_plan(
         check=False,
     )
     scaffold_payload = json.loads(scaffold_result.stdout)
-    plan_payload = scaffold_payload["document"]
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
     operation = plan_payload["recipes"][0]["operations"][0]
 
     assert scaffold_result.returncode == 0, scaffold_result.stderr
@@ -11059,8 +11098,6 @@ def test_module_cli_scaffolds_selected_operation_plan(
     assert operation["selection_count"] == {"exact": 2}
     assert operation["selector"]["qualname_patterns"] == ["^(Alpha|Beta)\\.run$"]
 
-    plan_path = tmp_path / "selected-operation-plan.json"
-    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
     simulate_result = subprocess.run(
         [
             sys.executable,

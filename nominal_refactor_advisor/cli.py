@@ -424,6 +424,14 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-plan-out",),
+            value_type=Path,
+            help=(
+                "With a plan-producing codemod command, write the reusable "
+                "CodemodPlanDocument or CodemodPlanSequence JSON to this path."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-synthesis-authoring",),
             action="store_true",
             help=(
@@ -794,6 +802,31 @@ def load_codemod_operation_plan_template(
     return RefactorRecipeOperationPlanTemplate.from_json_value(payload)
 
 
+def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
+    """Write a machine-readable CLI artifact when the caller requested one."""
+
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
+    """Return whether the selected command can produce reusable plan JSON."""
+
+    return any(
+        (
+            args.codemod_dsl_example_plan,
+            args.codemod_validate_plan,
+            args.codemod_compose_plans is not None,
+            args.codemod_synthesize_plan,
+            args.codemod_replacement_plan is not None,
+            args.codemod_selected_operation_plan is not None,
+            args.codemod_fixpoint,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class CodemodSimulationPayload:
     """JSON-ready metadata for a codemod simulation/apply run."""
@@ -881,17 +914,9 @@ class CodemodProjectedFindingReporter(ABC):
         self,
         report: CodemodProjectedFindingReport,
     ) -> None:
-        plan_path = self.args.codemod_continuation_plan_out
-        if plan_path is None:
-            return
-        plan_path.parent.mkdir(parents=True, exist_ok=True)
-        plan_path.write_text(
-            json.dumps(
-                report.continuation_report.continuation_sequence.to_dict(),
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+        write_cli_json_artifact(
+            self.args.codemod_continuation_plan_out,
+            report.continuation_report.continuation_sequence.to_dict(),
         )
 
 
@@ -1579,7 +1604,9 @@ class CodemodDslExamplePlanCliCommand(CliEarlyExitCommand):
         return self.args.codemod_dsl_example_plan
 
     def run(self) -> int:
-        print(json.dumps(codemod_dsl_example_plan_payload(), indent=2))
+        payload = codemod_dsl_example_plan_payload()
+        write_cli_json_artifact(self.args.codemod_plan_out, payload)
+        print(json.dumps(payload, indent=2))
         return 0
 
 
@@ -1593,9 +1620,11 @@ class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
         return self.args.codemod_validate_plan
 
     def run(self) -> int:
+        payload = load_codemod_plan_validation_payload(self.plan_path)
+        write_cli_json_artifact(self.args.codemod_plan_out, payload)
         print(
             json.dumps(
-                load_codemod_plan_validation_payload(self.plan_path),
+                payload,
                 indent=2,
             )
         )
@@ -1628,7 +1657,9 @@ class CodemodComposePlansCliCommand(CliEarlyExitCommand):
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
-        print(json.dumps(document.to_dict(), indent=2))
+        payload = document.to_dict()
+        write_cli_json_artifact(self.args.codemod_plan_out, payload)
+        print(json.dumps(payload, indent=2))
         return 0
 
 
@@ -2171,14 +2202,14 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
         return self.args.codemod_synthesize_plan
 
     def run(self) -> int:
+        self.require_valid_document_only_mode()
         snapshot = self.required_source_snapshot()
         finding_recipe_plan = snapshot.plan_from_findings(self.findings)
+        write_cli_json_artifact(
+            self.args.codemod_plan_out,
+            finding_recipe_plan.document.to_dict(),
+        )
         if self.args.codemod_preflight:
-            if self.args.codemod_synthesize_document_only:
-                self.parser.error(
-                    "--codemod-synthesize-document-only cannot be combined with "
-                    "--codemod-preflight"
-                )
             payload = finding_recipe_plan.preflight_snapshot(snapshot).to_dict()
             if self.args.codemod_synthesis_authoring:
                 payload["synthesis_authoring"] = (
@@ -2187,11 +2218,6 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
         if self.synthesis_execution_requested:
-            if self.args.codemod_synthesize_document_only:
-                self.parser.error(
-                    "--codemod-synthesize-document-only cannot be combined with "
-                    "--codemod-diff, --codemod-simulate, or --codemod-apply"
-                )
             simulation = finding_recipe_plan.simulate_snapshot(snapshot)
             unified_diff = snapshot.unified_diff(simulation.simulation)
             applied = self.apply_synthesized_plan(simulation)
@@ -2218,14 +2244,6 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 )
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
-        if (
-            self.args.codemod_synthesize_document_only
-            and self.args.codemod_synthesis_authoring
-        ):
-            self.parser.error(
-                "--codemod-synthesis-authoring cannot be combined with "
-                "--codemod-synthesize-document-only"
-            )
         if self.args.codemod_synthesize_document_only:
             payload = finding_recipe_plan.document.to_dict()
         else:
@@ -2245,6 +2263,21 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             or self.args.codemod_simulate
             or self.args.codemod_apply
         )
+
+    def require_valid_document_only_mode(self) -> None:
+        if not self.args.codemod_synthesize_document_only:
+            return
+        if self.synthesis_execution_requested:
+            self.parser.error(
+                "--codemod-synthesize-document-only cannot be combined with "
+                "--codemod-preflight, --codemod-diff, --codemod-simulate, "
+                "or --codemod-apply"
+            )
+        if self.args.codemod_synthesis_authoring:
+            self.parser.error(
+                "--codemod-synthesis-authoring cannot be combined with "
+                "--codemod-synthesize-document-only"
+            )
 
     def apply_synthesized_plan(
         self,
@@ -2279,6 +2312,7 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     """Scan-backed command that loads one selector and emits a JSON payload."""
 
     payload_builder: ClassVar[CodemodSelectorPayloadBuilder | None] = None
+    writes_plan_document: ClassVar[bool] = False
 
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
@@ -2286,9 +2320,15 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
             selector = load_codemod_target_selector(self.selector_path)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
+        payload = self.payload_for_selector(snapshot, selector)
+        if self.writes_plan_document:
+            write_cli_json_artifact(
+                self.args.codemod_plan_out,
+                JsonObject(payload["document"]),
+            )
         print(
             json.dumps(
-                self.payload_for_selector(snapshot, selector),
+                payload,
                 indent=2,
             )
         )
@@ -2350,6 +2390,7 @@ class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
     """Emit an editable replacement-source plan for selected targets."""
 
     command_id = "codemod_replacement_plan"
+    writes_plan_document = True
     payload_builder = CodemodSelectorPayloadBuilder(
         CodemodSourceSnapshot.replacement_plan_scaffold_report
     )
@@ -2449,6 +2490,7 @@ class SelectedOperationPlanDiffCliMode(SelectedOperationPlanCliMode):
                 applied=False,
                 unified_diff=unified_diff,
             )
+        command.write_scaffold_plan_if_requested(scaffold)
         print(unified_diff, end="")
         return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
 
@@ -2549,8 +2591,15 @@ class CodemodSelectedOperationPlanCliCommand(CodemodSelectorQueryCliCommand):
         self,
         scaffold: CodemodSelectedOperationPlanScaffoldReport,
     ) -> int:
+        self.write_scaffold_plan_if_requested(scaffold)
         print(json.dumps(scaffold.to_dict(), indent=2))
         return 0
+
+    def write_scaffold_plan_if_requested(
+        self,
+        scaffold: CodemodSelectedOperationPlanScaffoldReport,
+    ) -> None:
+        write_cli_json_artifact(self.args.codemod_plan_out, scaffold.document.to_dict())
 
     def scaffold_for_selector(
         self,
@@ -2574,6 +2623,7 @@ class CodemodSelectedOperationPlanCliCommand(CodemodSelectorQueryCliCommand):
         scaffold: CodemodSelectedOperationPlanScaffoldReport,
     ) -> int:
         report = scaffold.document.preflight_snapshot(snapshot)
+        self.write_scaffold_plan_if_requested(scaffold)
         print(
             json.dumps(
                 {
@@ -2638,6 +2688,7 @@ class CodemodSelectedOperationPlanCliCommand(CodemodSelectorQueryCliCommand):
             self.write_continuation_plan_if_requested(projected_findings)
         payload["scaffold"] = scaffold.to_dict()
         payload["document"] = scaffold.document.to_dict()
+        self.write_scaffold_plan_if_requested(scaffold)
         print(
             json.dumps(
                 payload,
@@ -2655,6 +2706,11 @@ def main() -> int:
     for spec in _CLI_ARGUMENT_SPECS:
         spec.add_to_parser(parser)
     args = parser.parse_args()
+
+    if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
+        parser.error(
+            "--codemod-plan-out requires a plan-producing codemod command"
+        )
 
     early_exit_code = CliEarlyExitCommand.run_first(parser, args)
     if early_exit_code is not None:
@@ -2872,12 +2928,9 @@ def main() -> int:
                 findings=findings,
             ),
         ).run()
-        if args.codemod_fixpoint_plan_out is not None:
-            args.codemod_fixpoint_plan_out.parent.mkdir(parents=True, exist_ok=True)
-            args.codemod_fixpoint_plan_out.write_text(
-                json.dumps(report.replay_plan.sequence.to_dict(), indent=2) + "\n",
-                encoding="utf-8",
-            )
+        replay_plan_payload = report.replay_plan.sequence.to_dict()
+        write_cli_json_artifact(args.codemod_fixpoint_plan_out, replay_plan_payload)
+        write_cli_json_artifact(args.codemod_plan_out, replay_plan_payload)
         if args.json:
             print(json.dumps(report.to_dict(), indent=2))
         else:
