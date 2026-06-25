@@ -706,6 +706,56 @@ def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     assert "return value + 1" in rewritten
 
 
+def test_replace_text_operation_allows_empty_json_replacement(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Parser:\n"
+        "    obsolete_flag = True\n\n"
+        "    def parse(self, value):\n"
+        "        return value\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "delete-obsolete-text",
+                        "operations": [
+                            {
+                                "operation": "replace_text",
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": "Parser",
+                                "old_source": "    obsolete_flag = True\n",
+                                "new_source": "",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = load_codemod_plan_document(plan_path).simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    assert "obsolete_flag" not in module_path.read_text()
+
+
 def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     tmp_path: Path,
 ) -> None:

@@ -2682,6 +2682,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
                 field_name=NEW_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="new_source",
                 value_projector=ReplaceTextOperation.new_source_from_operation,
+                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
             ),
         )
 
@@ -9611,11 +9612,34 @@ def _has_derived_candidate_collector_base(node: ast.ClassDef) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class DetectorClassNameStem:
+    """Nominal parse result for detector class-name conventions."""
+
+    stem: str
+    value: str
+
+    pattern: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?P<stem>.+)Detector$"
+    )
+
+    @classmethod
+    def parse(cls, class_name: str) -> "DetectorClassNameStem | None":
+        match = cls.pattern.fullmatch(class_name)
+        if match is None:
+            return None
+        stem = match.group("stem")
+        return cls(
+            stem=stem,
+            value=re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower(),
+        )
+
+
 def _detector_id_from_class_name(class_name: str) -> str | None:
-    if not class_name.endswith("Detector"):
+    class_name_stem = DetectorClassNameStem.parse(class_name)
+    if class_name_stem is None:
         return None
-    stem = class_name.removesuffix("Detector")
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", stem).lower()
+    return class_name_stem.value
 
 
 def _candidate_collector_name_from_class_name(class_name: str) -> str | None:
