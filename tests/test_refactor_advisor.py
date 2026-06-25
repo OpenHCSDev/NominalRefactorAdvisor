@@ -46,6 +46,7 @@ from nominal_refactor_advisor.calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
+from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
@@ -68,14 +69,20 @@ from nominal_refactor_advisor.codemod import (
     CodemodBackend,
     CodemodPlanDocument,
     CancelableCompositionKind,
+    CallSiteSelector,
+    ClassFamilyTargetSelector,
+    CodemodSelectorContext,
     CodemodRewriteBuilder,
     CodemodSimulationStatus,
     CodemodStrategy,
     CodemodStrategyRegistry,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
+    FindingEvidenceTargetSelector,
+    InheritanceEdgeTargetSelector,
     RefactorRecipe,
     RecipeCallReplacement,
     SourceRewriteTarget,
+    SourceIndexTargetSelector,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
@@ -166,7 +173,11 @@ from nominal_refactor_advisor.semantic_description_length import (
     OrbitPartition,
     SemanticCostVector,
 )
-from nominal_refactor_advisor.source_index import SourceIndex, build_source_index
+from nominal_refactor_advisor.source_index import (
+    AstTargetNodeKind,
+    SourceIndex,
+    build_source_index,
+)
 from nominal_refactor_advisor.taxonomy import ConfidenceLevel, SPECULATIVE
 
 _PACKAGE_SCAN_LABEL = "package"
@@ -991,6 +1002,174 @@ def test_runtime_product_record_batch_findings_synthesize_ordered_recipe_plan(
         if finding.detector_id == "runtime_product_record_schema"
     ]
     assert remaining == []
+
+
+def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import ClassVar\n\n\n"
+        "class Base:\n"
+        "    pass\n\n\n"
+        "class Alpha(Base):\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n"
+        "    def run(self):\n"
+        "        return helper(self.KIND)\n\n\n"
+        "class Beta(Base):\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n\n"
+        "def helper(value):\n"
+        "    return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    )
+    source_index = build_source_index(modules, findings)
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        class_family_index=build_class_family_index(modules),
+    )
+    finding = findings[0]
+
+    evidence_targets = FindingEvidenceTargetSelector.from_findings((finding,)).select(
+        context
+    )
+    direct_class_targets = SourceIndexTargetSelector(
+        node_kinds=(AstTargetNodeKind.CLASS,),
+        file_paths=(module_path.as_posix(),),
+        qualnames=("Alpha", "Beta"),
+    ).select(context)
+    family_targets = ClassFamilyTargetSelector(
+        class_symbols=("pkg.mod.Base",),
+        include_descendants=True,
+    ).select(context)
+    edge_targets = InheritanceEdgeTargetSelector(
+        parent_symbols=("pkg.mod.Base",),
+    ).select(context)
+    call_sites = CallSiteSelector(("helper",)).call_sites(context)
+
+    assert evidence_targets.target_ids == direct_class_targets.target_ids
+    assert {
+        source_index.target_by_id[target_id].qualname
+        for target_id in family_targets.target_ids
+    } == {"Base", "Alpha", "Beta"}
+    assert {
+        source_index.target_by_id[target_id].qualname
+        for target_id in edge_targets.target_ids
+    } == {"Base", "Alpha", "Beta"}
+    assert tuple(site.symbol for site in call_sites) == ("helper",)
+    assert call_sites[0].to_source_location().file_path == module_path.as_posix()
+
+
+def test_class_level_inheritance_findings_synthesize_promotion_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import ClassVar\n\n\n"
+        "class Alpha:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+        class_family_index=build_class_family_index(modules),
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("class_level_inheritance_optimization",),
+        selector_context=context,
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "promote_class_declarations"
+    assert simulation.is_clean is True
+    assert "+class SharedKindFlagBase:" in diff
+    assert "+class Alpha(SharedKindFlagBase):" in diff
+    assert "+class Beta(SharedKindFlagBase):" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "class SharedKindFlagBase:" in rewritten
+    assert rewritten.count("KIND: ClassVar[str] = 'shared'") == 1
+    assert rewritten.count("FLAG = 'enabled'") == 1
+    remaining = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    ]
+    assert remaining == []
+
+
+def test_class_level_promotion_bridge_refuses_enum_member_promotion(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from enum import StrEnum\n\n\n"
+        "class FirstMode(StrEnum):\n"
+        "    SHARED = 'shared'\n"
+        "    COMMON = 'common'\n"
+        "    OTHER = 'first'\n\n\n"
+        "class SecondMode(StrEnum):\n"
+        "    SHARED = 'shared'\n"
+        "    COMMON = 'common'\n"
+        "    OTHER = 'second'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    )
+    source_index = build_source_index(modules, findings)
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+        class_family_index=build_class_family_index(modules),
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("class_level_inheritance_optimization",),
+        selector_context=context,
+    )
+
+    assert findings
+    assert plan.expected_removed_finding_count == 0
+    assert plan.document.recipes == ()
 
 
 def test_refactor_recipe_inserts_after_module_imports(

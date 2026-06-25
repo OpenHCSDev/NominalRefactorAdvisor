@@ -28,6 +28,7 @@ from typing import ClassVar, TypeAlias
 
 from metaclass_registry import AutoRegisterMeta
 
+from .class_index import ClassFamilyIndex
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
     RefactorImpactKey,
@@ -38,7 +39,7 @@ from .models import ImpactDelta, RefactorFinding, SourceLocation
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import Maybe
-from .source_index import AstTargetDigest, SourceIndex
+from .source_index import AstTargetDigest, AstTargetNodeKind, SourceIndex
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
@@ -123,6 +124,7 @@ class RefactorRecipeOperationKind(StrEnum):
     INSERT_BEFORE_TARGET = "insert_before_target"
     PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
     PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
+    PROMOTE_CLASS_DECLARATIONS = "promote_class_declarations"
     REMOVE_CLASS_BASE = "remove_class_base"
     REMOVE_IMPORT_NAMES = "remove_import_names"
     REPLACE_FUNCTION_BODY = "replace_function_body"
@@ -139,7 +141,10 @@ class SourceNodeDecoratorPolicy(StrEnum):
 
 SOURCE_PAYLOAD_FIELD = "source"
 AUTHORITY_SOURCE_PAYLOAD_FIELD = "authority_source"
+BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
+CLASS_NAMES_PAYLOAD_FIELD = "class_names"
+DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
 IMPORT_NAMES_PAYLOAD_FIELD = "import_names"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
@@ -790,6 +795,258 @@ class SourceRewriteTarget:
             "target_qualname": self.qualname,
             "file_path": self.source_path,
         }
+
+
+@dataclass(frozen=True)
+class CodemodSelectorContext:
+    """Shared semantic selection context for recipe synthesis."""
+
+    source_index: SourceIndex
+    sources_by_file_path: Mapping[str, str] = field(default_factory=dict)
+    class_family_index: ClassFamilyIndex | None = None
+
+    @property
+    def required_class_family_index(self) -> ClassFamilyIndex:
+        if self.class_family_index is None:
+            raise ValueError("Class-family selector requires ClassFamilyIndex")
+        return self.class_family_index
+
+
+@dataclass(frozen=True)
+class CodemodTargetSelection:
+    """Resolved source-index target ids selected by semantic criteria."""
+
+    target_ids: tuple[str, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.target_ids
+
+    def digests(self, source_index: SourceIndex) -> tuple[AstTargetDigest, ...]:
+        return tuple(
+            source_index.target_by_id[target_id] for target_id in self.target_ids
+        )
+
+
+class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
+    """Semantic selector that resolves to source-index target ids."""
+
+    __registry__: ClassVar[dict[str, type["CodemodTargetSelector"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "Selector"
+
+    def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
+        return CodemodTargetSelection(self.target_ids(context))
+
+    @abstractmethod
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class FindingEvidenceTargetSelector(CodemodTargetSelector):
+    """Select source-index targets connected to advisor finding evidence."""
+
+    finding_ids: tuple[str, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+    ) -> "FindingEvidenceTargetSelector":
+        return cls(tuple(finding.stable_id for finding in findings))
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        return context.source_index.target_ids_for_finding_ids(self.finding_ids)
+
+
+@dataclass(frozen=True)
+class SourceIndexTargetSelector(CodemodTargetSelector):
+    """Select source-index targets by kind, file, and qualname."""
+
+    node_kinds: tuple[AstTargetNodeKind, ...] = ()
+    file_paths: tuple[str, ...] = ()
+    qualnames: tuple[str, ...] = ()
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        node_kinds = frozenset(self.node_kinds)
+        file_paths = frozenset(self.file_paths)
+        qualnames = frozenset(self.qualnames)
+        return sorted_tuple(
+            target.target_id
+            for target in context.source_index.ast_targets
+            if (not node_kinds or target.node_kind in node_kinds)
+            and (not file_paths or target.file_path in file_paths)
+            and (not qualnames or target.qualname in qualnames)
+        )
+
+
+@dataclass(frozen=True)
+class ClassFamilyTargetSelector(CodemodTargetSelector):
+    """Select class targets from class-family symbols and graph closure."""
+
+    class_symbols: tuple[str, ...]
+    include_self: bool = True
+    include_ancestors: bool = False
+    include_descendants: bool = False
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        class_index = context.required_class_family_index
+        symbols: set[str] = set()
+        if self.include_self:
+            symbols.update(self.class_symbols)
+        for symbol in self.class_symbols:
+            if self.include_ancestors:
+                symbols.update(class_index.ancestor_symbols(symbol))
+            if self.include_descendants:
+                symbols.update(class_index.descendant_symbols(symbol))
+        return self.target_ids_for_symbols(context.source_index, class_index, symbols)
+
+    @staticmethod
+    def target_ids_for_symbols(
+        source_index: SourceIndex,
+        class_index: ClassFamilyIndex,
+        symbols: Iterable[str],
+    ) -> tuple[str, ...]:
+        target_ids = []
+        for symbol in symbols:
+            indexed_class = class_index.class_for(symbol)
+            if indexed_class is None:
+                continue
+            target = SourceRewriteTarget(
+                qualname=indexed_class.qualname,
+                source_path=indexed_class.file_path,
+            )
+            target_id = target.optional_identifier(source_index)
+            if target_id is not None:
+                target_ids.append(target_id)
+        return sorted_tuple(target_ids)
+
+
+@dataclass(frozen=True)
+class InheritanceEdgeTargetSelector(CodemodTargetSelector):
+    """Select class targets participating in resolved inheritance edges."""
+
+    parent_symbols: tuple[str, ...] = ()
+    child_symbols: tuple[str, ...] = ()
+    include_parents: bool = True
+    include_children: bool = True
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        class_index = context.required_class_family_index
+        selected_symbols: set[str] = set()
+        parent_filter = frozenset(self.parent_symbols)
+        child_filter = frozenset(self.child_symbols)
+        for child_symbol, indexed_class in class_index.classes_by_symbol.items():
+            for parent_symbol in indexed_class.resolved_base_symbols:
+                if parent_filter and parent_symbol not in parent_filter:
+                    continue
+                if child_filter and child_symbol not in child_filter:
+                    continue
+                if self.include_parents:
+                    selected_symbols.add(parent_symbol)
+                if self.include_children:
+                    selected_symbols.add(child_symbol)
+        return ClassFamilyTargetSelector.target_ids_for_symbols(
+            context.source_index,
+            class_index,
+            selected_symbols,
+        )
+
+
+@dataclass(frozen=True)
+class CallSiteDigest:
+    """Concrete call-site coordinate selected from source text."""
+
+    file_path: str
+    line: int
+    symbol: str
+    enclosing_target_id: str | None = None
+
+    def to_source_location(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.symbol)
+
+
+@dataclass(frozen=True)
+class CallSiteSelector:
+    """Select call sites by surface callee name."""
+
+    callee_names: tuple[str, ...]
+
+    def call_sites(self, context: CodemodSelectorContext) -> tuple[CallSiteDigest, ...]:
+        allowed_names = frozenset(self.callee_names)
+        call_sites = []
+        for file_path, source in context.sources_by_file_path.items():
+            visitor = _CallSiteSelectorVisitor(
+                file_path=file_path,
+                source_index=context.source_index,
+                allowed_names=allowed_names,
+            )
+            visitor.visit(ast.parse(source, filename=file_path))
+            call_sites.extend(visitor.call_sites)
+        return sorted_tuple(
+            call_sites,
+            key=lambda item: (item.file_path, item.line, item.symbol),
+        )
+
+
+class _CallSiteSelectorVisitor(ast.NodeVisitor):
+    def __init__(
+        self,
+        *,
+        file_path: str,
+        source_index: SourceIndex,
+        allowed_names: frozenset[str],
+    ) -> None:
+        self.file_path = file_path
+        self.source_index = source_index
+        self.allowed_names = allowed_names
+        self.call_sites: list[CallSiteDigest] = []
+
+    def visit_Call(self, node: ast.Call) -> None:
+        symbol = self.call_symbol(node)
+        if symbol in self.allowed_names:
+            self.call_sites.append(
+                CallSiteDigest(
+                    file_path=self.file_path,
+                    line=node.lineno,
+                    symbol=symbol,
+                    enclosing_target_id=self.enclosing_target_id(node.lineno),
+                )
+            )
+        self.generic_visit(node)
+
+    def enclosing_target_id(self, line: int) -> str | None:
+        candidates = [
+            target
+            for target in self.source_index.ast_targets
+            if target.file_path == self.file_path
+            and target.contains_line(line)
+            and not target.is_module
+        ]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda target: (target.end_line - target.line, target.line),
+        ).target_id
+
+    @staticmethod
+    def call_symbol(node: ast.Call) -> str:
+        return _call_surface_name(node.func)
+
+
+def _call_surface_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = _call_surface_name(node.value)
+        if not parent:
+            return node.attr
+        return f"{parent}.{node.attr}"
+    return ""
 
 
 @dataclass(frozen=True)
@@ -1512,6 +1769,319 @@ class DeleteClassAssignmentOperation(StringPayloadOperation):
             and isinstance(statement.target, ast.Name)
             and statement.target.id == self.payload_value
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PromoteClassDeclarationsOperation(RefactorRecipeOperation):
+    """Promote repeated class declarations to a shared base class."""
+
+    base_name: str
+    class_names: tuple[str, ...]
+    declaration_names: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=BASE_NAME_PAYLOAD_FIELD,
+                constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
+                value_projector=PromoteClassDeclarationsOperation.base_name_from_operation,
+            ),
+            OperationPayloadBinding(
+                field_name=CLASS_NAMES_PAYLOAD_FIELD,
+                constructor_argument_name=CLASS_NAMES_PAYLOAD_FIELD,
+                value_projector=PromoteClassDeclarationsOperation.class_names_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+            OperationPayloadBinding(
+                field_name=DECLARATION_NAMES_PAYLOAD_FIELD,
+                constructor_argument_name=DECLARATION_NAMES_PAYLOAD_FIELD,
+                value_projector=PromoteClassDeclarationsOperation.declaration_names_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+        )
+
+    @staticmethod
+    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, PromoteClassDeclarationsOperation):
+            raise TypeError(
+                f"{BASE_NAME_PAYLOAD_FIELD} binding requires "
+                "PromoteClassDeclarationsOperation"
+            )
+        return operation.base_name
+
+    @staticmethod
+    def class_names_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, PromoteClassDeclarationsOperation):
+            raise TypeError(
+                f"{CLASS_NAMES_PAYLOAD_FIELD} binding requires "
+                "PromoteClassDeclarationsOperation"
+            )
+        return operation.class_names
+
+    @staticmethod
+    def declaration_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, PromoteClassDeclarationsOperation):
+            raise TypeError(
+                f"{DECLARATION_NAMES_PAYLOAD_FIELD} binding requires "
+                "PromoteClassDeclarationsOperation"
+            )
+        return operation.declaration_names
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        targets = ClassDeclarationPromotionTargets.resolve(
+            source_index,
+            source_by_path,
+            source_path=self.target.source_path,
+            class_names=self.class_names,
+        )
+        self.reject_enum_targets(targets)
+        return (
+            self.base_insertion_replacement(targets),
+            *self.base_addition_replacements(targets),
+            *self.declaration_deletion_replacements(targets),
+        )
+
+    def reject_enum_targets(self, targets: "ClassDeclarationPromotionTargets") -> None:
+        enum_targets = tuple(
+            target.qualname
+            for target, node in targets.targets
+            if ClassDeclarationPromotionClass(node).is_enum_class
+        )
+        if enum_targets:
+            raise ValueError(
+                "Class declaration promotion cannot move Enum members into a "
+                f"non-Enum base: {enum_targets!r}"
+            )
+
+    def base_insertion_replacement(
+        self, targets: "ClassDeclarationPromotionTargets"
+    ) -> SourceLineReplacement:
+        target, _ = targets.insertion_target
+        base_source = ClassDeclarationPromotedBase(
+            operation=self,
+            source_text=targets.first_source,
+            source_class=targets.insertion_target[1],
+        ).source
+        return SourceLineReplacement(
+            file_path=target.file_path,
+            start_line=target.line,
+            end_line=target.line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(f"{base_source}\n"),
+            rationale=self.rationale
+            or f"Insert promoted declaration base {self.base_name!r}.",
+        )
+
+    def base_addition_replacements(
+        self, targets: "ClassDeclarationPromotionTargets"
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for target, node in targets.targets:
+            if self.base_name in _class_base_source_names(node):
+                continue
+            original_line = targets.sources_by_file_path[target.file_path].splitlines(
+                keepends=True
+            )[node.lineno - 1]
+            replacements.append(
+                SourceLineReplacement(
+                    file_path=target.file_path,
+                    start_line=node.lineno,
+                    end_line=node.lineno,
+                    replacement_lines=(
+                        ClassHeaderSourceAuthority(
+                            original_line,
+                            node.name,
+                        ).with_added_base(self.base_name),
+                    ),
+                    rationale=self.rationale
+                    or f"Add base {self.base_name!r} to {target.qualname!r}.",
+                )
+            )
+        return tuple(replacements)
+
+    def declaration_deletion_replacements(
+        self, targets: "ClassDeclarationPromotionTargets"
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements = []
+        for target, node in targets.targets:
+            promoted_statements = tuple(
+                statement
+                for statement in node.body
+                if ClassDeclarationPromotionStatement(statement).name
+                in self.declaration_names
+            )
+            if not promoted_statements:
+                continue
+            promoted_statement_ids = frozenset(
+                id(statement) for statement in promoted_statements
+            )
+            class_would_be_empty = not any(
+                id(statement) not in promoted_statement_ids for statement in node.body
+            )
+            for index, statement in enumerate(promoted_statements):
+                replacements.append(
+                    SourceLineReplacement(
+                        file_path=target.file_path,
+                        start_line=statement.lineno,
+                        end_line=statement.end_lineno or statement.lineno,
+                        replacement_lines=self.replacement_lines_for_deleted_declaration(
+                            class_would_be_empty,
+                            index,
+                        ),
+                        rationale=self.rationale
+                        or f"Delete promoted declaration from {target.qualname!r}.",
+                    )
+                )
+        return tuple(replacements)
+
+    @staticmethod
+    def replacement_lines_for_deleted_declaration(
+        class_would_be_empty: bool,
+        deletion_index: int,
+    ) -> tuple[str, ...]:
+        if class_would_be_empty and deletion_index == 0:
+            return ("    pass\n",)
+        return ()
+
+
+@dataclass(frozen=True)
+class ClassDeclarationPromotionTargets:
+    """Resolved class nodes participating in a class-declaration promotion."""
+
+    targets: tuple[tuple[AstTargetDigest, ast.ClassDef], ...]
+    sources_by_file_path: Mapping[str, str]
+
+    @classmethod
+    def resolve(
+        cls,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        source_path: str | None,
+        class_names: tuple[str, ...],
+    ) -> "ClassDeclarationPromotionTargets":
+        nodes_by_target_id = AstTargetNodeIndex(
+            source_index,
+            source_by_path,
+        ).nodes_by_target_identifier()
+        return cls(
+            targets=tuple(
+                cls.class_target(
+                    source_index,
+                    nodes_by_target_id,
+                    source_path=source_path,
+                    class_name=class_name,
+                )
+                for class_name in class_names
+            ),
+            sources_by_file_path=source_by_path,
+        )
+
+    @staticmethod
+    def class_target(
+        source_index: SourceIndex,
+        nodes_by_target_id: Mapping[str, _TargetNode],
+        *,
+        source_path: str | None,
+        class_name: str,
+    ) -> tuple[AstTargetDigest, ast.ClassDef]:
+        matches = tuple(
+            target
+            for target in source_index.ast_targets
+            if target.is_class
+            and target.matches_symbol(class_name)
+            and (source_path is None or target.file_path == source_path)
+        )
+        if len(matches) != 1:
+            raise ValueError(f"Expected one class target for {class_name!r}")
+        target = matches[0]
+        node = nodes_by_target_id[target.target_id]
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(f"Target {target.qualname!r} is not a class definition")
+        return target, node
+
+    @property
+    def insertion_target(self) -> tuple[AstTargetDigest, ast.ClassDef]:
+        return min(self.targets, key=lambda item: (item[0].file_path, item[0].line))
+
+    @property
+    def first_source(self) -> str:
+        return self.sources_by_file_path[self.insertion_target[0].file_path]
+
+
+@dataclass(frozen=True)
+class ClassDeclarationPromotedBase:
+    """Source for a base class containing promoted class declarations."""
+
+    operation: PromoteClassDeclarationsOperation
+    source_text: str
+    source_class: ast.ClassDef
+
+    @property
+    def source(self) -> str:
+        declarations = tuple(
+            ClassDeclarationPromotionStatement(statement).source_from(self.source_text)
+            for statement in self.source_class.body
+            if ClassDeclarationPromotionStatement(statement).name
+            in self.operation.declaration_names
+        )
+        if len(declarations) != len(self.operation.declaration_names):
+            raise ValueError(
+                f"Could not find declarations {self.operation.declaration_names!r} "
+                f"on {self.source_class.name!r}"
+            )
+        return f"class {self.operation.base_name}:\n{''.join(declarations)}"
+
+
+@dataclass(frozen=True)
+class ClassDeclarationPromotionClass:
+    """Class-level safety checks for declaration promotion."""
+
+    node: ast.ClassDef
+
+    @property
+    def is_enum_class(self) -> bool:
+        return any(
+            base_name.rsplit(".", 1)[-1] in _ENUM_BASE_NAMES
+            for base_name in _class_base_source_names(self.node)
+        )
+
+
+@dataclass(frozen=True)
+class ClassDeclarationPromotionStatement:
+    """Class-body statement eligible for declaration promotion."""
+
+    statement: ast.stmt
+
+    @property
+    def name(self) -> str | None:
+        if isinstance(self.statement, ast.Assign):
+            if len(self.statement.targets) != 1:
+                return None
+            target = self.statement.targets[0]
+            if isinstance(target, ast.Name):
+                return target.id
+        if isinstance(self.statement, ast.AnnAssign) and isinstance(
+            self.statement.target,
+            ast.Name,
+        ):
+            return self.statement.target.id
+        return None
+
+    def source_from(self, source: str) -> str:
+        lines = source.splitlines(keepends=True)
+        end_line = self.statement.end_lineno or self.statement.lineno
+        return "".join(lines[self.statement.lineno - 1 : end_line])
+
+
+_ENUM_BASE_NAMES = frozenset(("Enum", "StrEnum", "IntEnum", "Flag", "IntFlag"))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3463,6 +4033,24 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def promote_class_declarations(
+        self,
+        source_path: str,
+        base_name: str,
+        class_names: Iterable[str],
+        declaration_names: Iterable[str],
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = PromoteClassDeclarationsOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            base_name=base_name,
+            class_names=tuple(class_names),
+            declaration_names=tuple(declaration_names),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def replace_text(
         self,
         target_qualname: str,
@@ -3897,7 +4485,11 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     detector_id: ClassVar[str]
 
     @abstractmethod
-    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe | None:
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
         raise NotImplementedError
 
     def action_keys_for_finding(
@@ -3917,7 +4509,12 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
     batch_materializer_name: ClassVar[str] = "materialize_product_records"
     dynamic_record_name: ClassVar[str] = "dynamic_product_record"
 
-    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe | None:
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        del context
         if finding.metrics.plan_mapping_name not in self.executable_callee_names:
             return None
         action_keys = self.action_keys_for_finding(finding)
@@ -3960,6 +4557,105 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
         )
 
 
+class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
+    FindingRecipeSynthesizer
+):
+    """Build declaration-promotion recipes for safe class-level findings."""
+
+    detector_id = "class_level_inheritance_optimization"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(context)
+            .filter(lambda selector_context: len(self.file_paths(finding)) == 1)
+            .combine(
+                lambda selector_context: self.safe_action_keys(
+                    finding,
+                    selector_context,
+                ),
+                lambda selector_context, action_keys: self.recipe_from_action_keys(
+                    finding,
+                    action_keys,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def safe_action_keys(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> tuple[FindingRecipeActionKey, ...] | None:
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return None
+        if not self.action_keys_are_safe(action_keys, context):
+            return None
+        return action_keys
+
+    @staticmethod
+    def recipe_from_action_keys(
+        finding: RefactorFinding,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+    ) -> RefactorRecipe:
+        source_path = action_keys[0].file_path
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-promote-class-declarations",
+            reason="Promote repeated class-level declarations to a shared base.",
+        ).promote_class_declarations(
+            source_path,
+            finding.metrics.plan_mapping_name,
+            tuple(action_key.subject_name for action_key in action_keys),
+            finding.metrics.plan_field_names,
+        )
+        return recipe
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return tuple(
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=evidence.file_path,
+                subject_name=evidence.symbol,
+            )
+            for evidence in finding.evidence
+        )
+
+    @staticmethod
+    def file_paths(finding: RefactorFinding) -> frozenset[str]:
+        return frozenset(evidence.file_path for evidence in finding.evidence)
+
+    def action_keys_are_safe(
+        self,
+        action_keys: tuple[FindingRecipeActionKey, ...],
+        context: CodemodSelectorContext,
+    ) -> bool:
+        nodes_by_target_id = AstTargetNodeIndex(
+            context.source_index,
+            context.sources_by_file_path,
+        ).nodes_by_target_identifier()
+        for action_key in action_keys:
+            target_ids = SourceIndexTargetSelector(
+                node_kinds=(AstTargetNodeKind.CLASS,),
+                file_paths=(action_key.file_path,),
+                qualnames=(action_key.subject_name,),
+            ).target_ids(context)
+            if len(target_ids) != 1:
+                return False
+            node = nodes_by_target_id[target_ids[0]]
+            if not isinstance(node, ast.ClassDef):
+                return False
+            if ClassDeclarationPromotionClass(node).is_enum_class:
+                return False
+        return True
+
+
 @dataclass(frozen=True)
 class FindingPrimaryEvidence:
     """Primary source location for one advisor finding."""
@@ -3979,6 +4675,7 @@ class FindingRecipePlanBuilder:
 
     findings: tuple[RefactorFinding, ...]
     detector_ids: frozenset[str] = frozenset()
+    selector_context: CodemodSelectorContext | None = None
 
     def plan(self) -> FindingRecipePlan:
         recipes = []
@@ -3995,7 +4692,7 @@ class FindingRecipePlanBuilder:
             )
             if not action_keys:
                 continue
-            recipe = synthesizer.recipe_for_finding(finding)
+            recipe = synthesizer.recipe_for_finding(finding, self.selector_context)
             if recipe is None:
                 continue
             recipes.append(recipe)
@@ -4043,12 +4740,14 @@ def codemod_plan_from_findings(
     findings: Iterable[RefactorFinding],
     *,
     detector_ids: Iterable[str] = (),
+    selector_context: CodemodSelectorContext | None = None,
 ) -> FindingRecipePlan:
     """Build executable recipes for supported high-confidence findings."""
 
     return FindingRecipePlanBuilder(
         findings=tuple(findings),
         detector_ids=frozenset(detector_ids),
+        selector_context=selector_context,
     ).plan()
 
 
