@@ -34,7 +34,7 @@ from .impact_ranking import (
     RefactorImpactOpportunity,
     RefactorImpactRankingReport,
 )
-from .models import ImpactDelta, SourceLocation
+from .models import ImpactDelta, RefactorFinding, SourceLocation
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import Maybe
@@ -122,7 +122,9 @@ class RefactorRecipeOperationKind(StrEnum):
     INSERT_AFTER_IMPORTS = "insert_after_imports"
     INSERT_BEFORE_TARGET = "insert_before_target"
     PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
+    PRODUCT_RECORDS_TO_DATACLASSES = "product_records_to_dataclasses"
     REMOVE_CLASS_BASE = "remove_class_base"
+    REMOVE_IMPORT_NAMES = "remove_import_names"
     REPLACE_FUNCTION_BODY = "replace_function_body"
     REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
     REPLACE_TEXT = "replace_text"
@@ -139,9 +141,12 @@ SOURCE_PAYLOAD_FIELD = "source"
 AUTHORITY_SOURCE_PAYLOAD_FIELD = "authority_source"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
+IMPORT_NAMES_PAYLOAD_FIELD = "import_names"
+MODULE_NAME_PAYLOAD_FIELD = "module_name"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
+RECORD_NAMES_PAYLOAD_FIELD = "record_names"
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -886,7 +891,9 @@ class RecipeCallReplacement:
         )
 
 
-OperationConstructorValue: TypeAlias = JsonValue | tuple[RecipeCallReplacement, ...]
+OperationConstructorValue: TypeAlias = (
+    JsonValue | tuple[RecipeCallReplacement, ...] | tuple[str, ...]
+)
 
 
 class OperationPayloadReader:
@@ -898,6 +905,16 @@ class OperationPayloadReader:
         field_name: str,
     ) -> OperationConstructorValue:
         return payload.required_string(field_name)
+
+    @staticmethod
+    def required_string_tuple(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> OperationConstructorValue:
+        values = payload.required_array(field_name)
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return tuple(values)
 
 
 @dataclass(frozen=True)
@@ -1227,7 +1244,7 @@ class SourceTargetEditor:
     ) -> tuple[SourceLineReplacement, ...]:
         ordered_replacements = sorted_tuple(
             replacements,
-            key=lambda item: (item.start_line, item.end_line, item.rationale),
+            key=lambda item: (item.start_line, item.end_line),
         )
         previous_end = self.target.line - 1
         for replacement in ordered_replacements:
@@ -1720,6 +1737,130 @@ class EnsureImportOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class RemoveImportNamesOperation(RefactorRecipeOperation):
+    """Remove selected names from a from-import statement."""
+
+    module_name: str
+    import_names: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=MODULE_NAME_PAYLOAD_FIELD,
+                constructor_argument_name="module_name",
+                value_projector=RemoveImportNamesOperation.module_name_from_operation,
+            ),
+            OperationPayloadBinding(
+                field_name=IMPORT_NAMES_PAYLOAD_FIELD,
+                constructor_argument_name="import_names",
+                value_projector=RemoveImportNamesOperation.import_names_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+        )
+
+    @staticmethod
+    def module_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, RemoveImportNamesOperation):
+            raise TypeError("module_name binding requires RemoveImportNamesOperation")
+        return operation.module_name
+
+    @staticmethod
+    def import_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, RemoveImportNamesOperation):
+            raise TypeError("import_names binding requires RemoveImportNamesOperation")
+        return operation.import_names
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("remove_import_names requires file_path")
+        source_path = self.target.source_path
+        module = ast.parse(source_by_path[source_path], filename=source_path)
+        for statement in module.body:
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            if ImportFromModuleName.from_node(statement).source != self.module_name:
+                continue
+            return (self.line_replacement(source_path, statement),)
+        return ()
+
+    def line_replacement(
+        self,
+        source_path: str,
+        node: ast.ImportFrom,
+    ) -> SourceLineReplacement:
+        remaining_aliases = tuple(
+            alias for alias in node.names if alias.name not in self.import_names
+        )
+        return SourceLineReplacement(
+            file_path=source_path,
+            start_line=node.lineno,
+            end_line=node.end_lineno or node.lineno,
+            replacement_lines=SourceTargetEditor.source_lines(
+                ImportFromSource(
+                    module_name=self.module_name,
+                    aliases=remaining_aliases,
+                ).source
+            ),
+            rationale=self.rationale
+            or f"Remove imports {self.import_names!r} from {self.module_name!r}.",
+        )
+
+
+@dataclass(frozen=True)
+class ImportFromModuleName:
+    """Canonical source spelling for an ImportFrom module."""
+
+    source: str
+
+    @classmethod
+    def from_node(cls, node: ast.ImportFrom) -> "ImportFromModuleName":
+        relative_prefix = "." * node.level
+        if node.module is None:
+            return cls(relative_prefix)
+        return cls(f"{relative_prefix}{node.module}")
+
+
+@dataclass(frozen=True)
+class ImportFromSource:
+    """Rendered from-import source for remaining aliases."""
+
+    module_name: str
+    aliases: tuple[ast.alias, ...]
+
+    @property
+    def source(self) -> str:
+        if not self.aliases:
+            return ""
+        if len(self.aliases) == 1:
+            return f"from {self.module_name} import {self.alias_sources[0]}\n"
+        alias_lines = "".join(
+            f"    {alias_source},\n" for alias_source in self.alias_sources
+        )
+        return f"from {self.module_name} import (\n{alias_lines})\n"
+
+    @property
+    def alias_sources(self) -> tuple[str, ...]:
+        return tuple(self.alias_source(alias) for alias in self.aliases)
+
+    @staticmethod
+    def alias_source(alias: ast.alias) -> str:
+        if alias.asname is None:
+            return alias.name
+        return f"{alias.name} as {alias.asname}"
+
+
+@dataclass(frozen=True, kw_only=True)
 class AddClassBaseOperation(StringPayloadOperation):
     """Add one base class to a single-line class declaration."""
 
@@ -1892,6 +2033,53 @@ class ProductRecordToDataclassOperation(StringPayloadOperation):
             source=source,
             file_path=source_path,
             record_name=self.payload_value,
+            rationale=self.rationale,
+        ).line_replacements(module)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
+    """Replace one full runtime product-record batch with dataclasses."""
+
+    record_names: tuple[str, ...]
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return (
+            OperationPayloadBinding(
+                field_name=RECORD_NAMES_PAYLOAD_FIELD,
+                constructor_argument_name="record_names",
+                value_projector=ProductRecordsToDataclassesOperation.record_names_from_operation,
+                constructor_value_reader=OperationPayloadReader.required_string_tuple,
+            ),
+        )
+
+    @staticmethod
+    def record_names_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ProductRecordsToDataclassesOperation):
+            raise TypeError(
+                "record_names binding requires ProductRecordsToDataclassesOperation"
+            )
+        return operation.record_names
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("product_records_to_dataclasses requires file_path")
+        source_path = self.target.source_path
+        source = source_by_path[source_path]
+        module = ast.parse(source, filename=source_path)
+        return ProductRecordBatchDataclassRewriteAuthority(
+            source=source,
+            file_path=source_path,
+            record_names=self.record_names,
             rationale=self.rationale,
         ).line_replacements(module)
 
@@ -2270,8 +2458,21 @@ class ProductRecordDocKeyword:
         if isinstance(self.value, ast.Constant) and self.value.value is None:
             return None
         if isinstance(self.value, ast.Constant) and isinstance(self.value.value, str):
-            return repr(self.value.value)
+            return ProductRecordDocString(self.value.value).source
         return f"__doc__ = {ProductRecordAstSource(self.source).expression_source(self.value)}"
+
+
+@dataclass(frozen=True)
+class ProductRecordDocString:
+    """Class docstring source for a literal product_record doc value."""
+
+    text: str
+
+    @property
+    def source(self) -> str:
+        if '"""' not in self.text:
+            return f'"""{self.text}"""'
+        return repr(self.text)
 
 
 @dataclass(frozen=True)
@@ -2331,39 +2532,182 @@ class ProductRecordDataclassFieldParser:
         )
 
 
-@dataclass(frozen=True)
-class ProductRecordDataclassRewriteAuthority:
-    """Find and rewrite one product_record declaration by record name."""
+ProductRecordRewriteResult: TypeAlias = tuple[SourceLineReplacement, ...] | None
+PRODUCT_RECORD_BATCH_REWRITE_KEY = "batch"
+PRODUCT_RECORD_SINGLE_REWRITE_KEY = "single"
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProductRecordRewriteAuthorityBase(ABC, metaclass=AutoRegisterMeta):
+    """Shared source context for product-record schema rewrites."""
+
+    __registry__: ClassVar[dict[str, type["ProductRecordRewriteAuthorityBase"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __skip_if_no_key__ = True
+
+    registry_key: ClassVar[str]
 
     source: str
     file_path: str
-    record_name: str
     rationale: str = ""
 
     def line_replacements(
-        self, module: ast.Module
+        self,
+        module: ast.Module,
     ) -> tuple[SourceLineReplacement, ...]:
         for statement in module.body:
-            replacements = ProductRecordRewriteSearch(
-                statement=statement,
-                authority=self,
-            ).line_replacements()
+            replacements = self.search_statement(statement)
             if replacements is not None:
                 return replacements
-        raise ValueError(
+        raise ValueError(self.missing_schema_message())
+
+    def search_statement(
+        self,
+        statement: ast.stmt,
+    ) -> ProductRecordRewriteResult:
+        search_type = ProductRecordStatementRewriteSearch.__registry__.get(
+            self.registry_key
+        )
+        if search_type is None:
+            raise ValueError(
+                f"No product_record search registered for {self.registry_key!r}"
+            )
+        return search_type(statement=statement, authority=self).line_replacements()
+
+    @abstractmethod
+    def missing_schema_message(self) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, kw_only=True)
+class ProductRecordDataclassRewriteAuthority(ProductRecordRewriteAuthorityBase):
+    """Find and rewrite one product_record declaration by record name."""
+
+    registry_key = PRODUCT_RECORD_SINGLE_REWRITE_KEY
+    record_name: str
+
+    def missing_schema_message(self) -> str:
+        return (
             f"No product_record schema declaration for {self.record_name!r} "
             f"in {self.file_path!r}"
         )
 
 
-ProductRecordRewriteResult: TypeAlias = tuple[SourceLineReplacement, ...] | None
+@dataclass(frozen=True, kw_only=True)
+class ProductRecordBatchDataclassRewriteAuthority(ProductRecordRewriteAuthorityBase):
+    """Find and rewrite one complete product_record batch by record names."""
+
+    registry_key = PRODUCT_RECORD_BATCH_REWRITE_KEY
+    record_names: tuple[str, ...]
+
+    @property
+    def requested_names(self) -> frozenset[str]:
+        return frozenset(self.record_names)
+
+    def missing_schema_message(self) -> str:
+        return (
+            f"No product_record batch for {self.record_names!r} "
+            f"in {self.file_path!r}"
+        )
 
 
 @dataclass(frozen=True)
-class ProductRecordRewriteSearch:
-    """Statement-local search context for a product_record schema rewrite."""
+class ProductRecordStatementRewriteSearch(ABC, metaclass=AutoRegisterMeta):
+    """Registry-backed statement search for one product-record authority kind."""
+
+    __registry__: ClassVar[dict[str, type["ProductRecordStatementRewriteSearch"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __skip_if_no_key__ = True
+
+    registry_key: ClassVar[str]
 
     statement: ast.stmt
+    authority: ProductRecordRewriteAuthorityBase
+
+    @abstractmethod
+    def line_replacements(self) -> ProductRecordRewriteResult:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ProductRecordBatchRewriteSearch(ProductRecordStatementRewriteSearch):
+    """Statement-local search context for a full product-record batch rewrite."""
+
+    registry_key = PRODUCT_RECORD_BATCH_REWRITE_KEY
+    authority: ProductRecordBatchDataclassRewriteAuthority
+
+    @property
+    def statement_value(self) -> "ProductRecordStatementValue":
+        return ProductRecordStatementValue(self.statement)
+
+    def line_replacements(self) -> ProductRecordRewriteResult:
+        call = self.statement_value.expr_call
+        if (
+            call is None
+            or not ProductRecordCallName.from_call(call).is_batch_materializer
+        ):
+            return None
+        tuple_node = ProductRecordTupleArgument(call).tuple_node
+        if tuple_node is None:
+            raise ValueError("materialize_product_records requires a tuple argument")
+        declarations = self.declarations(tuple_node)
+        declaration_names = frozenset(
+            declaration.record_name for declaration in declarations
+        )
+        if declaration_names != self.authority.requested_names:
+            return None
+        if len(declarations) != len(tuple_node.elts):
+            raise ValueError(
+                "product_records_to_dataclasses requires selecting every "
+                "product_record_spec in the batch"
+            )
+        replacement_line_span = ProductRecordReplacementPlacement(
+            self.statement
+        ).replacement_line_span(self.authority.source)
+        return (
+            SourceLineReplacement(
+                file_path=self.authority.file_path,
+                start_line=replacement_line_span[0],
+                end_line=replacement_line_span[1],
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.declaration_source(declarations)
+                ),
+                rationale=self.authority.rationale
+                or f"Replace product_record batch {self.authority.record_names!r}.",
+            ),
+        )
+
+    def declarations(
+        self,
+        tuple_node: ast.Tuple,
+    ) -> tuple[ProductRecordDataclassDeclaration, ...]:
+        declarations = []
+        for item in tuple_node.elts:
+            if not isinstance(item, ast.Call):
+                continue
+            if not ProductRecordCallName.from_call(item).is_product_record_spec:
+                continue
+            declaration = ProductRecordSchemaCall(
+                item,
+                self.authority.source,
+                ProductRecordSchemaKind.PRODUCT_RECORD_SPEC,
+            ).declaration
+            if declaration.record_name in self.authority.requested_names:
+                declarations.append(declaration)
+        return tuple(declarations)
+
+    @staticmethod
+    def declaration_source(
+        declarations: tuple[ProductRecordDataclassDeclaration, ...],
+    ) -> str:
+        return "\n".join(declaration.source for declaration in declarations)
+
+
+@dataclass(frozen=True)
+class ProductRecordRewriteSearch(ProductRecordStatementRewriteSearch):
+    """Statement-local search context for a product_record schema rewrite."""
+
+    registry_key = PRODUCT_RECORD_SINGLE_REWRITE_KEY
     authority: ProductRecordDataclassRewriteAuthority
 
     @property
@@ -2503,7 +2847,7 @@ class ProductRecordReplacementPlacement(ProductRecordRewritePlacement):
         authority: ProductRecordDataclassRewriteAuthority,
         declaration: ProductRecordDataclassDeclaration,
     ) -> tuple[SourceLineReplacement, ...]:
-        replacement_line_span = self.line_span(self.node)
+        replacement_line_span = self.replacement_line_span(authority.source)
         return (
             SourceLineReplacement(
                 file_path=authority.file_path,
@@ -2514,6 +2858,21 @@ class ProductRecordReplacementPlacement(ProductRecordRewritePlacement):
                 or f"Replace product_record schema for {declaration.record_name!r}.",
             ),
         )
+
+    def replacement_line_span(
+        self,
+        source: str,
+    ) -> tuple[int, int]:
+        start_line, end_line = self.line_span(self.node)
+        lines = source.splitlines()
+        if (
+            start_line >= 2
+            and end_line < len(lines)
+            and lines[start_line - 2].strip() == "# fmt: off"
+            and lines[end_line].strip() == "# fmt: on"
+        ):
+            return start_line - 1, end_line + 1
+        return start_line, end_line
 
 
 @dataclass(frozen=True)
@@ -3016,6 +3375,22 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def remove_import_names(
+        self,
+        source_path: str,
+        module_name: str,
+        import_names: Iterable[str],
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = RemoveImportNamesOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            module_name=module_name,
+            import_names=tuple(import_names),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def delete_target(
         self,
         target_qualname: str,
@@ -3172,6 +3547,20 @@ class RefactorRecipe:
         operation = ProductRecordToDataclassOperation(
             target=SourceRewriteTarget(source_path=source_path),
             payload_value=record_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def product_records_to_dataclasses(
+        self,
+        source_path: str,
+        record_names: Iterable[str],
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ProductRecordsToDataclassesOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            record_names=tuple(record_names),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -3408,6 +3797,259 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
             "document": self.document.to_dict(),
             **self.simulation_payload(),
         }
+
+
+@dataclass(frozen=True)
+class FindingRecipeActionKey:
+    """Stable semantic key for one finding-backed recipe action."""
+
+    detector_id: str
+    file_path: str
+    subject_name: str
+
+
+@dataclass(frozen=True)
+class FindingRecipePlan:
+    """Codemod plan synthesized from executable advisor findings."""
+
+    document: CodemodPlanDocument
+    expected_removed_finding_ids: tuple[str, ...] = ()
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
+
+    def simulate(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "FindingRecipePlanSimulation":
+        return FindingRecipePlanSimulation(
+            plan=self,
+            document_simulation=self.document.simulate(
+                source_index,
+                source_by_path,
+                backend=backend,
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "document": self.document.to_dict(),
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "expected_removed_finding_count": self.expected_removed_finding_count,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanSimulation:
+    """Simulation result plus expected finding removals from a finding bridge."""
+
+    plan: FindingRecipePlan
+    document_simulation: CodemodPlanDocumentSimulation
+
+    @property
+    def simulation(self) -> CodemodSimulationReport:
+        return self.document_simulation.simulation
+
+    @property
+    def architecture_guard_report(self) -> ArchitectureGuardReport:
+        return self.document_simulation.architecture_guard_report
+
+    @property
+    def is_clean(self) -> bool:
+        return self.document_simulation.is_clean
+
+    def unified_diff(
+        self,
+        source_by_path: Mapping[str, str],
+        *,
+        fromfile_prefix: str = "a/",
+        tofile_prefix: str = "b/",
+    ) -> str:
+        return self.document_simulation.unified_diff(
+            source_by_path,
+            fromfile_prefix=fromfile_prefix,
+            tofile_prefix=tofile_prefix,
+        )
+
+    def apply(self, *, require_clean: bool = True) -> tuple[str, ...]:
+        return self.document_simulation.apply(require_clean=require_clean)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            **self.plan.to_dict(),
+            "simulation": self.simulation.to_dict(),
+            "architecture_guard_report": self.architecture_guard_report.to_dict(),
+            "is_clean": self.is_clean,
+        }
+
+
+class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
+    """Registry-backed bridge from advisor findings to executable recipes."""
+
+    __registry__: ClassVar[dict[str, type["FindingRecipeSynthesizer"]]] = {}
+    __registry_key__ = "detector_id"
+    __skip_if_no_key__ = True
+
+    detector_id: ClassVar[str]
+
+    @abstractmethod
+    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe | None:
+        raise NotImplementedError
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        return ()
+
+
+class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Build product_record_to_dataclass recipes from product-record findings."""
+
+    detector_id = "runtime_product_record_schema"
+    executable_callee_names: ClassVar[frozenset[str]] = frozenset(
+        ("materialize_product_record", "materialize_product_records", "product_record")
+    )
+    batch_materializer_name: ClassVar[str] = "materialize_product_records"
+    dynamic_record_name: ClassVar[str] = "dynamic_product_record"
+
+    def recipe_for_finding(self, finding: RefactorFinding) -> RefactorRecipe | None:
+        if finding.metrics.plan_mapping_name not in self.executable_callee_names:
+            return None
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return None
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-product-records-to-dataclasses",
+            reason=(
+                "Replace runtime product-record schema with AST-visible "
+                "dataclass declarations."
+            ),
+        )
+        if finding.metrics.plan_mapping_name == self.batch_materializer_name:
+            return recipe.product_records_to_dataclasses(
+                action_keys[0].file_path,
+                tuple(action_key.subject_name for action_key in action_keys),
+            )
+        for action_key in action_keys:
+            recipe = recipe.product_record_to_dataclass(
+                action_key.file_path,
+                action_key.subject_name,
+            )
+        return recipe
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return tuple(
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=evidence.file_path,
+                subject_name=record_name,
+            )
+            for record_name in finding.metrics.plan_field_names
+            if record_name != self.dynamic_record_name
+        )
+
+
+@dataclass(frozen=True)
+class FindingPrimaryEvidence:
+    """Primary source location for one advisor finding."""
+
+    finding: RefactorFinding
+
+    @property
+    def source_location(self) -> SourceLocation | None:
+        if not self.finding.evidence:
+            return None
+        return self.finding.evidence[0]
+
+
+@dataclass(frozen=True)
+class FindingRecipePlanBuilder:
+    """Build a deduplicated codemod plan from advisor findings."""
+
+    findings: tuple[RefactorFinding, ...]
+    detector_ids: frozenset[str] = frozenset()
+
+    def plan(self) -> FindingRecipePlan:
+        recipes = []
+        expected_removed_finding_ids = []
+        seen_action_keys: set[FindingRecipeActionKey] = set()
+        for finding in self.findings:
+            synthesizer = self.synthesizer_for(finding)
+            if synthesizer is None:
+                continue
+            action_keys = tuple(
+                key
+                for key in synthesizer.action_keys_for_finding(finding)
+                if key not in seen_action_keys
+            )
+            if not action_keys:
+                continue
+            recipe = synthesizer.recipe_for_finding(finding)
+            if recipe is None:
+                continue
+            recipes.append(recipe)
+            expected_removed_finding_ids.append(finding.stable_id)
+            seen_action_keys.update(action_keys)
+        return FindingRecipePlan(
+            document=CodemodPlanDocument(recipes=self.merged_recipes(recipes)),
+            expected_removed_finding_ids=tuple(expected_removed_finding_ids),
+        )
+
+    def merged_recipes(
+        self,
+        recipes: list[RefactorRecipe],
+    ) -> tuple[RefactorRecipe, ...]:
+        if not recipes:
+            return ()
+        return (
+            RefactorRecipe(
+                recipe_id="finding-backed-codemod-plan",
+                rewrites=tuple(
+                    rewrite for recipe in recipes for rewrite in recipe.rewrites
+                ),
+                operations=tuple(
+                    operation for recipe in recipes for operation in recipe.operations
+                ),
+                reason="Batch executable advisor findings into one source-merge pass.",
+            ),
+        )
+
+    def synthesizer_for(
+        self,
+        finding: RefactorFinding,
+    ) -> FindingRecipeSynthesizer | None:
+        if self.detector_ids and finding.detector_id not in self.detector_ids:
+            return None
+        synthesizer_type = FindingRecipeSynthesizer.__registry__.get(
+            finding.detector_id
+        )
+        if synthesizer_type is None:
+            return None
+        return synthesizer_type()
+
+
+def codemod_plan_from_findings(
+    findings: Iterable[RefactorFinding],
+    *,
+    detector_ids: Iterable[str] = (),
+) -> FindingRecipePlan:
+    """Build executable recipes for supported high-confidence findings."""
+
+    return FindingRecipePlanBuilder(
+        findings=tuple(findings),
+        detector_ids=frozenset(detector_ids),
+    ).plan()
 
 
 @dataclass(frozen=True)

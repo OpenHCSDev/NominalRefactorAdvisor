@@ -80,6 +80,7 @@ from nominal_refactor_advisor.codemod import (
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
+    codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
     format_codemod_unified_diff,
@@ -733,12 +734,14 @@ def test_refactor_recipe_converts_product_records_to_dataclasses(
         ")\n\n\n"
         "class SemanticRecord:\n"
         "    pass\n\n\n"
+        "# fmt: off\n"
         "LocalRecord = product_record(\n"
         '    "LocalRecord",\n'
         '    "name: str; value: int",\n'
         '    defaults={"value": 0},\n'
         '    doc="Local docs.",\n'
         ")\n"
+        "# fmt: on\n"
         "materialize_product_record(\n"
         "    product_record_spec(\n"
         '        "GeneratedRecord",\n'
@@ -767,7 +770,7 @@ def test_refactor_recipe_converts_product_records_to_dataclasses(
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+class LocalRecord:" in diff
-    assert "+    'Local docs.'" in diff
+    assert '+    """Local docs."""' in diff
     assert "+    value: int = 0" in diff
     assert "+@dataclass(frozen=True, kw_only=True)" in diff
     assert "+class GeneratedRecord(SemanticRecord):" in diff
@@ -775,6 +778,8 @@ def test_refactor_recipe_converts_product_records_to_dataclasses(
     simulation.apply()
     rewritten = module_path.read_text()
     assert "LocalRecord = product_record" not in rewritten
+    assert "# fmt: off" not in rewritten
+    assert "# fmt: on" not in rewritten
     assert "materialize_product_record(" not in rewritten
     assert "class LocalRecord:" in rewritten
     assert "class GeneratedRecord(SemanticRecord):" in rewritten
@@ -850,7 +855,7 @@ def test_json_recipe_converts_batched_product_record_spec_to_dataclass(
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+class ClusterRecord(LineWitnessCandidate):" in diff
-    assert "+    'Cluster docs.'" in diff
+    assert '+    """Cluster docs."""' in diff
     assert (
         "+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = "
         "ZippedSourceLocationEvidenceProperty("
@@ -861,6 +866,131 @@ def test_json_recipe_converts_batched_product_record_spec_to_dataclass(
     assert 'product_record_spec(\n        "ClusterRecord"' not in rewritten
     assert "class ClusterRecord(LineWitnessCandidate):" in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_runtime_product_record_findings_synthesize_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n"
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_record,\n"
+        "    product_record_spec,\n"
+        ")\n\n\n"
+        "class SemanticRecord:\n"
+        "    pass\n\n\n"
+        "materialize_product_record(\n"
+        "    product_record_spec(\n"
+        '        "GeneratedRecord",\n'
+        '        "path: str",\n'
+        '        "SemanticRecord",\n'
+        '        doc="Generated docs.",\n'
+        "    )\n"
+        ")\n",
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "runtime_product_record_schema"
+    ]
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(findings)
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    assert plan.document.recipes[0].operations[0].to_dict()["operation"] == (
+        "product_record_to_dataclass"
+    )
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+class GeneratedRecord(SemanticRecord):" in diff
+    assert '+    """Generated docs."""' in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "materialize_product_record(" not in rewritten
+    assert "class GeneratedRecord(SemanticRecord):" in rewritten
+
+
+def test_runtime_product_record_batch_findings_synthesize_ordered_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n"
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_records,\n"
+        "    product_record_spec,\n"
+        ")\n\n\n"
+        "class SemanticRecord:\n"
+        "    pass\n\n\n"
+        "# fmt: off\n"
+        "materialize_product_records((\n"
+        "    product_record_spec(\n"
+        '        "ParentRecord",\n'
+        '        "name: str",\n'
+        '        "SemanticRecord",\n'
+        '        doc="Parent docs.",\n'
+        "    ),\n"
+        "    product_record_spec(\n"
+        '        "ChildRecord",\n'
+        '        "value: int",\n'
+        '        "ParentRecord",\n'
+        '        doc="Child docs.",\n'
+        "    ),\n"
+        "))\n"
+        "# fmt: on\n",
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "runtime_product_record_schema"
+    ]
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(findings)
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert plan.expected_removed_finding_count == 1
+    assert len(plan.document.recipes) == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "product_records_to_dataclasses"
+    assert operation["record_names"] == ("ParentRecord", "ChildRecord")
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+class ParentRecord(SemanticRecord):" in diff
+    assert "+class ChildRecord(ParentRecord):" in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert rewritten.index("class ParentRecord") < rewritten.index("class ChildRecord")
+    assert "materialize_product_records(" not in rewritten
+    assert "product_record_spec(" not in rewritten
+    assert "# fmt: off" not in rewritten
+    assert "# fmt: on" not in rewritten
+    remaining = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "runtime_product_record_schema"
+    ]
+    assert remaining == []
 
 
 def test_refactor_recipe_inserts_after_module_imports(
@@ -967,6 +1097,48 @@ def test_refactor_recipe_ensures_import_and_deletes_target(
         )
     )
     assert second_simulation.simulation.applied_rewrite_count == 0
+
+
+def test_refactor_recipe_removes_import_names(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from pkg.alpha import (\n"
+        "    Alpha,\n"
+        "    Beta,\n"
+        "    Gamma as LocalGamma,\n"
+        ")\n\n"
+        "value = Alpha\n"
+        "alias = LocalGamma\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(recipe_id="remove-unused-import").remove_import_names(
+        module_path.as_posix(),
+        "pkg.alpha",
+        ("Beta",),
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "-    Beta," in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "Beta" not in rewritten
+    assert "Alpha" in rewritten
+    assert "Gamma as LocalGamma" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
 
 
 def test_refactor_recipe_extracts_authority(

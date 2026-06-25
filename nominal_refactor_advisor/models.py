@@ -7,11 +7,6 @@ record vocabulary.
 
 from __future__ import annotations
 
-from .record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
 
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
@@ -51,9 +46,13 @@ class SemanticRecord(ABC, metaclass=AutoRegisterMeta):
         return asdict(record)
 
 
-# fmt: off
-materialize_product_record(product_record_spec('SourceLocation', 'file_path: str; line: int; symbol: str', 'SemanticRecord', doc='One evidence site in source code.'))
-# fmt: on
+@dataclass(frozen=True)
+class SourceLocation(SemanticRecord):
+    """One evidence site in source code."""
+
+    file_path: str
+    line: int
+    symbol: str
 
 
 def stable_source_location_id(source_location: SourceLocation) -> str:
@@ -448,9 +447,10 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('SentinelSimulationMetrics', 'class_count: int; branch_site_count: int', 'FindingMetrics'))
-# fmt: on
+@dataclass(frozen=True)
+class SentinelSimulationMetrics(FindingMetrics):
+    class_count: int
+    branch_site_count: int
 
 
 class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegisterMeta):
@@ -492,9 +492,9 @@ class BranchCountMetrics(CountedDispatchMetrics):
     count_value = AliasProperty[int]("branch_site_count")
 
 
-# fmt: off
-materialize_product_record(product_record_spec('ResolutionAxisMetrics', 'resolution_axis_count: int', 'FindingMetrics'))
-# fmt: on
+@dataclass(frozen=True)
+class ResolutionAxisMetrics(FindingMetrics):
+    resolution_axis_count: int
 
 
 @dataclass(frozen=True)
@@ -577,9 +577,19 @@ class ParameterThreadMetrics(FindingMetrics):
     )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('FindingSemantics', 'pattern_id: PatternId; title: str; why: str; capability_gap: str; relation_context: str; confidence: ConfidenceLevel; certification: CertificationLevel; capability_tags: tuple[CapabilityTag, ...]; observation_tags: tuple[ObservationTag, ...]', 'SemanticRecord', defaults={'confidence': MEDIUM_CONFIDENCE, 'certification': STRONG_HEURISTIC, 'capability_tags': field(default_factory=tuple), 'observation_tags': field(default_factory=tuple)}, doc='Stable descriptive fields shared by specs and emitted findings.', kw_only=True))
-# fmt: on
+@dataclass(frozen=True, kw_only=True)
+class FindingSemantics(SemanticRecord):
+    """Stable descriptive fields shared by specs and emitted findings."""
+
+    pattern_id: PatternId
+    title: str
+    why: str
+    capability_gap: str
+    relation_context: str
+    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
+    certification: CertificationLevel = STRONG_HEURISTIC
+    capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
+    observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -706,18 +716,96 @@ class FindingSpec(FindingSemantics):
         )
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('HighConfidenceFindingSpec', 'confidence: ConfidenceLevel', 'FindingSpec', defaults={'confidence': HIGH_CONFIDENCE}, doc='Finding spec whose confidence is intentionally high by construction.'),
-    product_record_spec('CertifiedFindingSpec', 'certification: CertificationLevel', 'FindingSpec', defaults={'certification': CERTIFIED}, doc='Finding spec whose certification is intentionally certified by construction.'),
-    product_record_spec('HighConfidenceCertifiedFindingSpec', 'certification: CertificationLevel', 'HighConfidenceFindingSpec', defaults={'certification': CERTIFIED}, doc='Finding spec whose high-confidence certified status is constructor-level.'),
-    product_record_spec('RefactorAction', 'kind: str; description: str; target: str | None; create_symbol: str | None; replace_with: str | None; statement_operation: str | None; symbols: tuple[str, ...]; remove_symbols: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; statement_sites: tuple[SourceLocation, ...]; confidence: ConfidenceLevel', 'SemanticRecord', defaults={'target': None, 'create_symbol': None, 'replace_with': None, 'statement_operation': None, 'symbols': (), 'remove_symbols': (), 'evidence': (), 'statement_sites': (), 'confidence': MEDIUM_CONFIDENCE}, doc='One proposed transformation step inside a subsystem refactor plan.'),
-    product_record_spec('RefactorTrajectorySummary', 'steps: tuple[str, ...]; blocked_moves: tuple[str, ...]; missing_capabilities: tuple[str, ...]; temporary_debt: int; certified_net_savings: int; escape_summary: str; debt_justifications: tuple[str, ...]; expected_removed_findings: tuple[str, ...]; expected_emergent_findings: tuple[str, ...]', 'SemanticRecord', defaults={'debt_justifications': (), 'expected_removed_findings': (), 'expected_emergent_findings': ()}, doc='One multi-step escape path out of a local refactor minimum.'),
-    product_record_spec('RefactorPlan', 'subsystem: str; summary: str; current_partial_view: str; collapsed_distinctions: tuple[str, ...]; missing_capabilities: tuple[str, ...]; certification: CertificationLevel; primary_pattern_id: PatternId; secondary_pattern_ids: tuple[PatternId, ...]; application_order: tuple[PatternId, ...]; canonical_normal_form: str; plan_steps: tuple[str, ...]; supporting_findings: tuple[str, ...]; evidence: tuple[SourceLocation, ...]; outcome: OutcomeEstimate; actions: tuple[RefactorAction, ...]; trajectories: tuple[RefactorTrajectorySummary, ...]', 'SemanticRecord', defaults={'actions': (), 'trajectories': ()}, doc='Subsystem-level composition of findings into an ordered refactor plan.'),
-    product_record_spec('AnalysisReport', 'findings: tuple[RefactorFinding, ...]; plans: tuple[RefactorPlan, ...]', 'SemanticRecord', defaults={'findings': (), 'plans': ()}, doc='Top-level report containing findings and synthesized plans.'),
-    product_record_spec('SemanticBagDescriptor', 'class_name: str; base_class_name: str; accepted_key_sets: tuple[frozenset[str], ...]', 'SemanticRecord', doc='Schema descriptor for metric bags accepted by semantic dict-bag detection.'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class HighConfidenceFindingSpec(FindingSpec):
+    """Finding spec whose confidence is intentionally high by construction."""
+
+    confidence: ConfidenceLevel = HIGH_CONFIDENCE
+
+
+@dataclass(frozen=True)
+class CertifiedFindingSpec(FindingSpec):
+    """Finding spec whose certification is intentionally certified by construction."""
+
+    certification: CertificationLevel = CERTIFIED
+
+
+@dataclass(frozen=True)
+class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
+    """Finding spec whose high-confidence certified status is constructor-level."""
+
+    certification: CertificationLevel = CERTIFIED
+
+
+@dataclass(frozen=True)
+class RefactorAction(SemanticRecord):
+    """One proposed transformation step inside a subsystem refactor plan."""
+
+    kind: str
+    description: str
+    target: str | None = None
+    create_symbol: str | None = None
+    replace_with: str | None = None
+    statement_operation: str | None = None
+    symbols: tuple[str, ...] = ()
+    remove_symbols: tuple[str, ...] = ()
+    evidence: tuple[SourceLocation, ...] = ()
+    statement_sites: tuple[SourceLocation, ...] = ()
+    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
+
+
+@dataclass(frozen=True)
+class RefactorTrajectorySummary(SemanticRecord):
+    """One multi-step escape path out of a local refactor minimum."""
+
+    steps: tuple[str, ...]
+    blocked_moves: tuple[str, ...]
+    missing_capabilities: tuple[str, ...]
+    temporary_debt: int
+    certified_net_savings: int
+    escape_summary: str
+    debt_justifications: tuple[str, ...] = ()
+    expected_removed_findings: tuple[str, ...] = ()
+    expected_emergent_findings: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class RefactorPlan(SemanticRecord):
+    """Subsystem-level composition of findings into an ordered refactor plan."""
+
+    subsystem: str
+    summary: str
+    current_partial_view: str
+    collapsed_distinctions: tuple[str, ...]
+    missing_capabilities: tuple[str, ...]
+    certification: CertificationLevel
+    primary_pattern_id: PatternId
+    secondary_pattern_ids: tuple[PatternId, ...]
+    application_order: tuple[PatternId, ...]
+    canonical_normal_form: str
+    plan_steps: tuple[str, ...]
+    supporting_findings: tuple[str, ...]
+    evidence: tuple[SourceLocation, ...]
+    outcome: OutcomeEstimate
+    actions: tuple[RefactorAction, ...] = ()
+    trajectories: tuple[RefactorTrajectorySummary, ...] = ()
+
+
+@dataclass(frozen=True)
+class AnalysisReport(SemanticRecord):
+    """Top-level report containing findings and synthesized plans."""
+
+    findings: tuple[RefactorFinding, ...] = ()
+    plans: tuple[RefactorPlan, ...] = ()
+
+
+@dataclass(frozen=True)
+class SemanticBagDescriptor(SemanticRecord):
+    """Schema descriptor for metric bags accepted by semantic dict-bag detection."""
+
+    class_name: str
+    base_class_name: str
+    accepted_key_sets: tuple[frozenset[str], ...]
 
 
 def metric_semantic_bag_descriptors() -> tuple[SemanticBagDescriptor, ...]:
