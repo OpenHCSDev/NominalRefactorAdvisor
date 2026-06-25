@@ -105,6 +105,16 @@ class CodemodActionability(StrEnum):
     SEMANTIC_UNCERTAINTY_REVIEW = "semantic_uncertainty_review"
 
 
+class FindingRecipeSynthesisStatus(StrEnum):
+    """Recipe-synthesis outcome for one advisor finding."""
+
+    PLANNED = "planned"
+    NO_SYNTHESIZER = "no_synthesizer"
+    NO_ACTION_KEYS = "no_action_keys"
+    DUPLICATE_ACTION_KEYS = "duplicate_action_keys"
+    REJECTED_BY_SAFETY_CHECK = "rejected_by_safety_check"
+
+
 class CancelableCompositionKind(StrEnum):
     """Kinds of product-carrier compositions that can be factored away."""
 
@@ -2181,6 +2191,13 @@ class SourceRewritePlanItem:
         if self.rationale:
             return self.rationale
         return default
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceRewritePlanRow(SourceRewritePlanItem):
+    """Validated source rewrite row shared by recipe and boundary parsing."""
+
+    replacement_source: str
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -7049,6 +7066,14 @@ class CodemodPlanDocument:
     recipes: tuple[RefactorRecipe, ...] = ()
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
 
+    @classmethod
+    def from_json_value(
+        cls,
+        payload: JsonObject | JsonArray,
+    ) -> "CodemodPlanDocument":
+        del cls
+        return CodemodPlanJsonParser().parse_document(payload)
+
     @property
     def has_authority_boundaries(self) -> bool:
         return bool(self.authority_boundaries)
@@ -7122,6 +7147,198 @@ class CodemodPlanDocument:
             "recipes": tuple(recipe.to_dict() for recipe in self.recipes),
             "architecture_guards": self.guard_suite.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class CodemodPlanJsonParser:
+    """Decode codemod-plan JSON into nominal codemod DSL records."""
+
+    authority_boundaries_field: str = "authority_boundaries"
+    recipes_field: str = "recipes"
+    architecture_guards_field: str = "architecture_guards"
+
+    def parse_document(self, payload: JsonObject | JsonArray) -> CodemodPlanDocument:
+        if isinstance(payload, dict):
+            return CodemodPlanDocument(
+                authority_boundaries=self.authority_boundaries(payload),
+                recipes=self.recipes(payload),
+                guard_suite=self.architecture_guard_suite(payload),
+            )
+        return CodemodPlanDocument(
+            authority_boundaries=tuple(
+                self.authority_boundary_plan(row) for row in payload
+            ),
+        )
+
+    def authority_boundaries(
+        self,
+        payload: JsonObject,
+    ) -> tuple[AuthorityBoundaryPlan, ...]:
+        return tuple(
+            self.authority_boundary_plan(row)
+            for row in self.array_field(payload, self.authority_boundaries_field)
+        )
+
+    def recipes(
+        self,
+        payload: JsonObject,
+    ) -> tuple[RefactorRecipe, ...]:
+        return tuple(
+            self.refactor_recipe(row)
+            for row in self.array_field(payload, self.recipes_field)
+        )
+
+    def architecture_guard_suite(
+        self,
+        payload: JsonObject,
+    ) -> ArchitectureGuardSuite:
+        return ArchitectureGuardSuite(
+            tuple(
+                self.architecture_guard_rule(row)
+                for row in self.array_field(payload, self.architecture_guards_field)
+            )
+        )
+
+    def authority_boundary_plan(self, row: JsonValue) -> AuthorityBoundaryPlan:
+        payload = self.object_row(row, "authority boundary plan rows")
+        boundary_id = self.required_string_field(payload, "boundary_id")
+        return AuthorityBoundaryPlan(
+            boundary_id=boundary_id,
+            rewrites=tuple(
+                self.authority_boundary_rewrite(item)
+                for item in self.array_field(payload, "rewrites")
+            ),
+            detector_ids=self.string_tuple_field(payload, "detector_ids"),
+            opportunity_kinds=self.string_tuple_field(payload, "opportunity_kinds"),
+            opportunity_labels=self.string_tuple_field(payload, "opportunity_labels"),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def authority_boundary_rewrite(self, row: JsonValue) -> AuthorityBoundaryRewrite:
+        rewrite_row = self.source_rewrite_plan_row(row, "authority boundary rewrites")
+        return AuthorityBoundaryRewrite(
+            target=rewrite_row.target,
+            replacement_source=rewrite_row.replacement_source,
+            rationale=rewrite_row.rationale,
+        )
+
+    def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
+        payload = self.object_row(row, "refactor recipe rows")
+        return RefactorRecipe(
+            recipe_id=self.required_string_field(payload, "recipe_id"),
+            rewrites=tuple(
+                self.refactor_recipe_rewrite(item)
+                for item in self.array_field(payload, "rewrites")
+            ),
+            operations=tuple(
+                self.refactor_recipe_operation(item)
+                for item in self.array_field(payload, "operations")
+            ),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
+        rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
+        return RefactorRecipeRewrite(
+            target=rewrite_row.target,
+            replacement_source=rewrite_row.replacement_source,
+            rationale=rewrite_row.rationale,
+        )
+
+    def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
+        payload = self.object_row(row, "refactor recipe operations")
+        return RefactorRecipeOperation.from_dict(payload)
+
+    def source_rewrite_plan_row(
+        self,
+        row: JsonValue,
+        row_role: str,
+    ) -> SourceRewritePlanRow:
+        payload = self.object_row(row, row_role)
+        return SourceRewritePlanRow(
+            target=self.source_rewrite_target(payload),
+            replacement_source=self.required_string_field(
+                payload,
+                "replacement_source",
+            ),
+            rationale=self.optional_string_field(payload, "rationale"),
+        )
+
+    def source_rewrite_target(self, payload: JsonObject) -> SourceRewriteTarget:
+        return SourceRewriteTarget(
+            target_identifier=self.optional_string_or_none_field(
+                payload,
+                "target_id",
+            ),
+            qualname=self.optional_string_or_none_field(
+                payload,
+                "target_qualname",
+            ),
+            source_path=self.optional_string_or_none_field(payload, "file_path"),
+        )
+
+    def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
+        payload = self.object_row(row, "architecture guard rules")
+        return ArchitectureGuardRule(
+            rule_id=self.required_string_field(payload, "rule_id"),
+            forbidden_call_names=self.string_tuple_field(
+                payload,
+                "forbidden_call_names",
+            ),
+            forbidden_literal_dispatch_subjects=self.string_tuple_field(
+                payload,
+                "forbidden_literal_dispatch_subjects",
+            ),
+            file_path_suffixes=self.string_tuple_field(payload, "file_path_suffixes"),
+            reason=self.optional_string_field(payload, "reason"),
+        )
+
+    def object_row(self, value: JsonValue, row_role: str) -> JsonObject:
+        if not isinstance(value, dict):
+            raise ValueError(f"{row_role} must be objects")
+        return JsonObject(value)
+
+    def array_field(self, row: JsonObject, field_name: str) -> tuple[JsonValue, ...]:
+        if field_name not in row or row[field_name] is None:
+            return ()
+        value = row[field_name]
+        if not isinstance(value, list):
+            raise ValueError(f"{field_name} must be a list")
+        return tuple(value)
+
+    def string_tuple_field(
+        self,
+        row: JsonObject,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        values = self.array_field(row, field_name)
+        if not all(isinstance(item, str) for item in values):
+            raise ValueError(f"{field_name} must be a list of strings")
+        return tuple(values)
+
+    def optional_string_field(self, row: JsonObject, field_name: str) -> str:
+        if field_name not in row or row[field_name] is None:
+            return ""
+        value = row[field_name]
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name} must be a string")
+        return value
+
+    def optional_string_or_none_field(
+        self,
+        row: JsonObject,
+        field_name: str,
+    ) -> str | None:
+        value = self.optional_string_field(row, field_name)
+        if value:
+            return value
+        return None
+
+    def required_string_field(self, row: JsonObject, field_name: str) -> str:
+        value = self.optional_string_field(row, field_name)
+        if not value:
+            raise ValueError(f"{field_name} is required")
+        return value
 
 
 @dataclass(frozen=True)
@@ -7300,6 +7517,172 @@ class FindingRecipeActionKey:
             for file_path, subject_name in file_subjects
         )
 
+    def to_dict(self) -> JsonObject:
+        return {
+            "detector_id": self.detector_id,
+            "file_path": self.file_path,
+            "subject_name": self.subject_name,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisRecord:
+    """Recipe-synthesis outcome for one finding."""
+
+    finding_id: str
+    detector_id: str
+    status: FindingRecipeSynthesisStatus
+    synthesizer_name: str = ""
+    action_keys: tuple[FindingRecipeActionKey, ...] = ()
+    recipe_id: str = ""
+    reason: str = ""
+
+    @classmethod
+    def for_finding(
+        cls,
+        finding: RefactorFinding,
+        status: FindingRecipeSynthesisStatus,
+        *,
+        synthesizer: "FindingRecipeSynthesizer | None" = None,
+        action_keys: tuple[FindingRecipeActionKey, ...] = (),
+        recipe: RefactorRecipe | None = None,
+        reason: str = "",
+    ) -> "FindingRecipeSynthesisRecord":
+        return cls(
+            finding_id=finding.stable_id,
+            detector_id=finding.detector_id,
+            status=status,
+            synthesizer_name="" if synthesizer is None else type(synthesizer).__name__,
+            action_keys=action_keys,
+            recipe_id="" if recipe is None else recipe.recipe_id,
+            reason=reason,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "finding_id": self.finding_id,
+            "detector_id": self.detector_id,
+            "status": self.status.value,
+            "synthesizer_name": self.synthesizer_name,
+            "action_keys": tuple(action_key.to_dict() for action_key in self.action_keys),
+            "recipe_id": self.recipe_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisReport:
+    """Coverage report for finding-backed DSL recipe synthesis."""
+
+    records: tuple[FindingRecipeSynthesisRecord, ...] = ()
+
+    @property
+    def planned_count(self) -> int:
+        return self.count_status(FindingRecipeSynthesisStatus.PLANNED)
+
+    @property
+    def rejected_count(self) -> int:
+        return self.count_status(FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK)
+
+    @property
+    def unsupported_count(self) -> int:
+        return self.count_status(FindingRecipeSynthesisStatus.NO_SYNTHESIZER)
+
+    def count_status(self, status: FindingRecipeSynthesisStatus) -> int:
+        return sum(1 for record in self.records if record.status == status)
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "records": tuple(record.to_dict() for record in self.records),
+            "planned_count": self.planned_count,
+            "rejected_count": self.rejected_count,
+            "unsupported_count": self.unsupported_count,
+        }
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisResult:
+    """Recipe, action-key claims, and report record for one synthesis attempt."""
+
+    record: FindingRecipeSynthesisRecord
+    recipe: RefactorRecipe | None = None
+    action_keys: tuple[FindingRecipeActionKey, ...] = ()
+
+    @property
+    def planned(self) -> bool:
+        return self.recipe is not None
+
+
+@dataclass(frozen=True)
+class FindingRecipeSynthesisAttempt:
+    """Evaluate one finding against the registered executable DSL bridge."""
+
+    finding: RefactorFinding
+    synthesizer: "FindingRecipeSynthesizer | None"
+    selector_context: CodemodSelectorContext | None
+    seen_action_keys: frozenset[FindingRecipeActionKey]
+
+    def evaluate(self) -> FindingRecipeSynthesisResult:
+        if self.synthesizer is None:
+            return self.result(
+                FindingRecipeSynthesisStatus.NO_SYNTHESIZER,
+                reason="no registered finding-to-recipe synthesizer",
+            )
+        raw_action_keys = self.synthesizer.action_keys_for_finding(self.finding)
+        action_keys = tuple(
+            key for key in raw_action_keys if key not in self.seen_action_keys
+        )
+        if not raw_action_keys:
+            return self.result(
+                FindingRecipeSynthesisStatus.NO_ACTION_KEYS,
+                reason="synthesizer produced no source action keys",
+            )
+        if not action_keys:
+            return self.result(
+                FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS,
+                action_keys=raw_action_keys,
+                reason="all source action keys were claimed by earlier recipes",
+            )
+        recipe = self.synthesizer.recipe_for_finding(
+            self.finding,
+            self.selector_context,
+        )
+        if recipe is None:
+            return self.result(
+                FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
+                action_keys=action_keys,
+                reason=self.synthesizer.rejection_reason_for_finding(
+                    self.finding,
+                    self.selector_context,
+                ),
+            )
+        return self.result(
+            FindingRecipeSynthesisStatus.PLANNED,
+            action_keys=action_keys,
+            recipe=recipe,
+        )
+
+    def result(
+        self,
+        status: FindingRecipeSynthesisStatus,
+        *,
+        action_keys: tuple[FindingRecipeActionKey, ...] = (),
+        recipe: RefactorRecipe | None = None,
+        reason: str = "",
+    ) -> FindingRecipeSynthesisResult:
+        return FindingRecipeSynthesisResult(
+            record=FindingRecipeSynthesisRecord.for_finding(
+                self.finding,
+                status,
+                synthesizer=self.synthesizer,
+                action_keys=action_keys,
+                recipe=recipe,
+                reason=reason,
+            ),
+            recipe=recipe,
+            action_keys=action_keys,
+        )
+
 
 @dataclass(frozen=True)
 class FindingRecipePlan:
@@ -7307,6 +7690,9 @@ class FindingRecipePlan:
 
     document: CodemodPlanDocument
     expected_removed_finding_ids: tuple[str, ...] = ()
+    synthesis_report: FindingRecipeSynthesisReport = field(
+        default_factory=FindingRecipeSynthesisReport
+    )
 
     @property
     def expected_removed_finding_count(self) -> int:
@@ -7343,6 +7729,7 @@ class FindingRecipePlan:
             "document": self.document.to_dict(),
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
             "expected_removed_finding_count": self.expected_removed_finding_count,
+            "synthesis_report": self.synthesis_report.to_dict(),
         }
 
 
@@ -7396,6 +7783,14 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
         return ()
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        del finding, context
+        return "synthesizer returned no executable recipe"
 
 
 class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesizer):
@@ -7494,6 +7889,23 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
         if not self.action_keys_are_safe(action_keys, context):
             return None
         return action_keys
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        if context is None:
+            return "class-declaration promotion requires a source selector context"
+        action_keys = self.action_keys_for_finding(finding)
+        if not action_keys:
+            return "finding exposes no class-declaration action keys"
+        if not self.action_keys_are_safe(action_keys, context):
+            return (
+                "class-declaration promotion rejected because at least one target "
+                "is unresolved or is an Enum class"
+            )
+        return super().rejection_reason_for_finding(finding, context)
 
     @staticmethod
     def recipe_from_action_keys(
@@ -7620,6 +8032,34 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
             .filter(lambda plan: self.promotion_is_executable(plan, context))
             .unwrap_or_none()
         )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        if context is None:
+            return "method-promotion recipes require a source selector context"
+        source_path = self.source_path(finding)
+        if source_path is None:
+            return "method-promotion finding spans more than one source file"
+        names = self.class_and_method_names_or_none(finding)
+        if names is None:
+            return "finding metrics do not expose class-qualified method symbols"
+        class_names, method_names = names
+        try:
+            targets = ClassMemberPromotionTargets.resolve(
+                context,
+                source_path=source_path,
+                class_names=class_names,
+            )
+        except ValueError as error:
+            return str(error)
+        if not self.methods_are_identical(targets, method_names):
+            return "method bodies are not exact AST duplicates"
+        if self.direct_bases_define_methods(targets, method_names, context):
+            return "a direct base already defines at least one promoted method name"
+        return super().rejection_reason_for_finding(finding, context)
 
     def class_and_method_names(
         self,
@@ -7759,6 +8199,22 @@ class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
     """Only execute semantic-overlap findings that are already exact duplicates."""
 
     detector_id = "semantic_overlap_abc_optimization"
+
+
+class CrossClassSmallMethodTemplateFindingRecipeSynthesizer(
+    RepeatedMethodPromotionFindingRecipeSynthesizer
+):
+    """Promote repeated public method templates reported by method-symbol detectors."""
+
+    detector_id = "cross_class_small_method_template"
+
+
+class HelperBackedObservationSpecFindingRecipeSynthesizer(
+    RepeatedMethodPromotionFindingRecipeSynthesizer
+):
+    """Promote helper-backed wrapper entrypoints when they are exact duplicates."""
+
+    detector_id = "helper_backed_observation_spec"
 
 
 class DerivableClassAssignmentFindingRecipeSynthesizer(FindingRecipeSynthesizer):
@@ -8223,27 +8679,27 @@ class FindingRecipePlanBuilder:
     ) -> FindingRecipePlan:
         recipes = []
         expected_removed_finding_ids = []
+        synthesis_records: list[FindingRecipeSynthesisRecord] = []
         seen_action_keys: set[FindingRecipeActionKey] = set()
         for finding in self.findings:
-            synthesizer = self.synthesizer_for(finding)
-            if synthesizer is None:
+            result = FindingRecipeSynthesisAttempt(
+                finding=finding,
+                synthesizer=self.synthesizer_for(finding),
+                selector_context=selector_context,
+                seen_action_keys=frozenset(seen_action_keys),
+            ).evaluate()
+            synthesis_records.append(result.record)
+            if not result.planned:
                 continue
-            action_keys = tuple(
-                key
-                for key in synthesizer.action_keys_for_finding(finding)
-                if key not in seen_action_keys
-            )
-            if not action_keys:
-                continue
-            recipe = synthesizer.recipe_for_finding(finding, selector_context)
-            if recipe is None:
-                continue
-            recipes.append(recipe)
+            if result.recipe is None:
+                raise RuntimeError("planned synthesis result must include a recipe")
+            recipes.append(result.recipe)
             expected_removed_finding_ids.append(finding.stable_id)
-            seen_action_keys.update(action_keys)
+            seen_action_keys.update(result.action_keys)
         return FindingRecipePlan(
             document=CodemodPlanDocument(recipes=self.merged_recipes(recipes)),
             expected_removed_finding_ids=tuple(expected_removed_finding_ids),
+            synthesis_report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
         )
 
     def merged_recipes(

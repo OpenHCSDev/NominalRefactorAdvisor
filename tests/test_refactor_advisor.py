@@ -137,6 +137,8 @@ from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     FindingSpec,
     MappingMetrics,
+    RefactorFinding,
+    RepeatedMethodMetrics,
     SourceLocation,
 )
 from nominal_refactor_advisor.impact_ranking import (
@@ -1451,6 +1453,59 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
         if finding.detector_id == "repeated_property_alias_hooks"
     ]
     assert remaining == []
+
+
+def test_method_promotion_synthesis_reports_direct_base_rejection(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class SharedBase:\n"
+        "    def emit(self, rows):\n"
+        "        raise NotImplementedError\n\n\n"
+        "class Alpha(SharedBase):\n"
+        "    def emit(self, rows):\n"
+        "        return self.write(rows)\n\n\n"
+        "class Beta(SharedBase):\n"
+        "    def emit(self, rows):\n"
+        "        return self.write(rows)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Public authority methods repeat across class leaves",
+        why="Repeated methods should move behind a shared authority.",
+        capability_gap="one inherited authority algorithm",
+        relation_context="same public method template repeats",
+        detector_id="cross_class_small_method_template",
+        summary="Alpha and Beta repeat emit.",
+        evidence=(
+            SourceLocation(module_path.as_posix(), 6, "Alpha.emit"),
+            SourceLocation(module_path.as_posix(), 11, "Beta.emit"),
+        ),
+        metrics=RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=2,
+            statement_count=1,
+            class_count=2,
+            method_symbols=("Alpha.emit", "Beta.emit"),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = snapshot.plan_from_findings(
+        (finding,),
+        detector_ids=("cross_class_small_method_template",),
+    )
+    record = plan.synthesis_report.records[0]
+
+    assert plan.document.recipes == ()
+    assert plan.synthesis_report.rejected_count == 1
+    assert record.status.value == "rejected_by_safety_check"
+    assert record.reason == (
+        "a direct base already defines at least one promoted method name"
+    )
 
 
 def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
@@ -8839,6 +8894,57 @@ def test_load_authority_boundary_plans_from_json(tmp_path: Path) -> None:
     assert plans[0].rewrites[0].target.qualname == "Alpha.run"
 
 
+def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
+    document = CodemodPlanDocument.from_json_value(
+        {
+            "authority_boundaries": [
+                {
+                    "boundary_id": "alpha-run",
+                    "rewrites": [
+                        {
+                            "target_qualname": "Alpha.run",
+                            "replacement_source": (
+                                "    def run(self, value):\n"
+                                "        return AlphaRunAuthority.run(value)\n"
+                            ),
+                        }
+                    ],
+                }
+            ],
+            "architecture_guards": [
+                {
+                    "rule_id": "alpha-boundary",
+                    "forbidden_call_names": ["legacy_alpha"],
+                    "file_path_suffixes": ["alpha.py"],
+                }
+            ],
+            "recipes": [
+                {
+                    "recipe_id": "alpha-recipe",
+                    "rewrites": [
+                        {
+                            "target_qualname": "Alpha.run",
+                            "file_path": "pkg/mod.py",
+                            "replacement_source": (
+                                "    def run(self, value):\n"
+                                "        return AlphaRunAuthority.run(value)\n"
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert document.has_authority_boundaries is True
+    assert document.has_recipes is True
+    assert document.has_architecture_guards is True
+    assert document.authority_boundaries[0].boundary_id == "alpha-run"
+    assert document.guard_suite.rules[0].rule_id == "alpha-boundary"
+    assert document.recipes[0].recipe_id == "alpha-recipe"
+    assert document.recipes[0].rewrites[0].target.source_path == "pkg/mod.py"
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:
@@ -9685,12 +9791,64 @@ def test_module_cli_codemod_fixpoint_applies_and_rescans(
     assert remaining == ()
 
 
+def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-cache",
+            "--codemod-fixpoint",
+            "--codemod-fixpoint-max-iterations",
+            "4",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["completed"] is True
+    assert payload["applied"] is False
+    assert payload["stop_reason"] == "dry_run"
+    assert payload["iteration_count"] == 1
+    assert payload["total_applied_rewrite_count"] == 0
+    iteration = payload["iterations"][0]
+    assert iteration["applied"] is False
+    assert iteration["recipe_count"] == 1
+    assert iteration["synthesis_report"]["planned_count"] == 1
+    assert iteration["synthesis_report"]["records"][0]["status"] == "planned"
+    assert len(iteration["document"]["recipes"]) == 1
+    operation = iteration["document"]["recipes"][0]["operations"][0]
+    assert operation["operation"] == "convert_manual_registry_to_autoregister"
+    assert operation["class_key_pairs"] == [
+        "AlphaHandler='alpha'",
+        "BetaHandler='beta'",
+    ]
+    assert iteration["simulation"]["applied_rewrite_count"] == 1
+    assert iteration["simulation"]["parse_valid"] is True
+    assert module_path.read_text() == original_source
+
+
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointRunner
+    from nominal_refactor_advisor import CodemodPlanJsonParser
     from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
+
+    assert CodemodPlanJsonParser().recipes({}) == ()
 
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),

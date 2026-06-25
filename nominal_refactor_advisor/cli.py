@@ -50,7 +50,6 @@ from .codemod import (
     RefactorRecipe,
     RefactorRecipeOperation,
     RefactorRecipeRewrite,
-    SourceRewritePlanItem,
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
@@ -335,8 +334,8 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-fixpoint",),
             action="store_true",
             help=(
-                "Iteratively synthesize finding-backed DSL recipes, apply clean "
-                "batches, and rescan until no executable recipes remain."
+                "Iteratively synthesize finding-backed DSL recipes. Without "
+                "--codemod-apply, run the first clean batch as a dry run."
             ),
         ),
         CliArgumentSpec(
@@ -442,205 +441,6 @@ class JsonPayloadBuilder:
         return payload
 
 
-@dataclass(frozen=True, kw_only=True)
-class SourceRewritePlanRow(SourceRewritePlanItem):
-    """Validated source rewrite row shared by recipe and boundary parsing."""
-
-    replacement_source: str
-
-
-@dataclass(frozen=True)
-class CodemodPlanJsonParser:
-    """Decode codemod-plan JSON into nominal advisor plan records."""
-
-    authority_boundaries_field: str = "authority_boundaries"
-    recipes_field: str = "recipes"
-    architecture_guards_field: str = "architecture_guards"
-
-    def parse_document(self, payload: JsonObject | JsonArray) -> CodemodPlanDocument:
-        if isinstance(payload, dict):
-            return CodemodPlanDocument(
-                authority_boundaries=self.authority_boundaries(payload),
-                recipes=self.recipes(payload),
-                guard_suite=self.architecture_guard_suite(payload),
-            )
-        return CodemodPlanDocument(
-            authority_boundaries=tuple(
-                self.authority_boundary_plan(row) for row in payload
-            ),
-        )
-
-    def authority_boundaries(
-        self,
-        payload: JsonObject,
-    ) -> tuple[AuthorityBoundaryPlan, ...]:
-        return tuple(
-            self.authority_boundary_plan(row)
-            for row in self.array_field(payload, self.authority_boundaries_field)
-        )
-
-    def recipes(
-        self,
-        payload: JsonObject,
-    ) -> tuple[RefactorRecipe, ...]:
-        return tuple(
-            self.refactor_recipe(row)
-            for row in self.array_field(payload, self.recipes_field)
-        )
-
-    def architecture_guard_suite(
-        self,
-        payload: JsonObject,
-    ) -> ArchitectureGuardSuite:
-        return ArchitectureGuardSuite(
-            tuple(
-                self.architecture_guard_rule(row)
-                for row in self.array_field(payload, self.architecture_guards_field)
-            )
-        )
-
-    def authority_boundary_plan(self, row: JsonValue) -> AuthorityBoundaryPlan:
-        payload = self.object_row(row, "authority boundary plan rows")
-        boundary_id = self.required_string_field(payload, "boundary_id")
-        return AuthorityBoundaryPlan(
-            boundary_id=boundary_id,
-            rewrites=tuple(
-                self.authority_boundary_rewrite(item)
-                for item in self.array_field(payload, "rewrites")
-            ),
-            detector_ids=self.string_tuple_field(payload, "detector_ids"),
-            opportunity_kinds=self.string_tuple_field(payload, "opportunity_kinds"),
-            opportunity_labels=self.string_tuple_field(payload, "opportunity_labels"),
-            reason=self.optional_string_field(payload, "reason"),
-        )
-
-    def authority_boundary_rewrite(self, row: JsonValue) -> AuthorityBoundaryRewrite:
-        rewrite_row = self.source_rewrite_plan_row(row, "authority boundary rewrites")
-        return AuthorityBoundaryRewrite(
-            target=rewrite_row.target,
-            replacement_source=rewrite_row.replacement_source,
-            rationale=rewrite_row.rationale,
-        )
-
-    def refactor_recipe(self, row: JsonValue) -> RefactorRecipe:
-        payload = self.object_row(row, "refactor recipe rows")
-        return RefactorRecipe(
-            recipe_id=self.required_string_field(payload, "recipe_id"),
-            rewrites=tuple(
-                self.refactor_recipe_rewrite(item)
-                for item in self.array_field(payload, "rewrites")
-            ),
-            operations=tuple(
-                self.refactor_recipe_operation(item)
-                for item in self.array_field(payload, "operations")
-            ),
-            reason=self.optional_string_field(payload, "reason"),
-        )
-
-    def refactor_recipe_rewrite(self, row: JsonValue) -> RefactorRecipeRewrite:
-        rewrite_row = self.source_rewrite_plan_row(row, "refactor recipe rewrites")
-        return RefactorRecipeRewrite(
-            target=rewrite_row.target,
-            replacement_source=rewrite_row.replacement_source,
-            rationale=rewrite_row.rationale,
-        )
-
-    def refactor_recipe_operation(self, row: JsonValue) -> RefactorRecipeOperation:
-        payload = self.object_row(row, "refactor recipe operations")
-        return RefactorRecipeOperation.from_dict(payload)
-
-    def source_rewrite_plan_row(
-        self,
-        row: JsonValue,
-        row_role: str,
-    ) -> SourceRewritePlanRow:
-        payload = self.object_row(row, row_role)
-        return SourceRewritePlanRow(
-            target=self.source_rewrite_target(payload),
-            replacement_source=self.required_string_field(
-                payload,
-                "replacement_source",
-            ),
-            rationale=self.optional_string_field(payload, "rationale"),
-        )
-
-    def source_rewrite_target(self, payload: JsonObject) -> SourceRewriteTarget:
-        return SourceRewriteTarget(
-            target_identifier=self.optional_string_or_none_field(
-                payload,
-                "target_id",
-            ),
-            qualname=self.optional_string_or_none_field(
-                payload,
-                "target_qualname",
-            ),
-            source_path=self.optional_string_or_none_field(payload, "file_path"),
-        )
-
-    def architecture_guard_rule(self, row: JsonValue) -> ArchitectureGuardRule:
-        payload = self.object_row(row, "architecture guard rules")
-        return ArchitectureGuardRule(
-            rule_id=self.required_string_field(payload, "rule_id"),
-            forbidden_call_names=self.string_tuple_field(
-                payload,
-                "forbidden_call_names",
-            ),
-            forbidden_literal_dispatch_subjects=self.string_tuple_field(
-                payload,
-                "forbidden_literal_dispatch_subjects",
-            ),
-            file_path_suffixes=self.string_tuple_field(payload, "file_path_suffixes"),
-            reason=self.optional_string_field(payload, "reason"),
-        )
-
-    def object_row(self, value: JsonValue, row_role: str) -> JsonObject:
-        if not isinstance(value, dict):
-            raise ValueError(f"{row_role} must be objects")
-        return value
-
-    def array_field(self, row: JsonObject, field_name: str) -> tuple[JsonValue, ...]:
-        if field_name not in row or row[field_name] is None:
-            return ()
-        value = row[field_name]
-        if not isinstance(value, list):
-            raise ValueError(f"{field_name} must be a list")
-        return tuple(value)
-
-    def string_tuple_field(
-        self,
-        row: JsonObject,
-        field_name: str,
-    ) -> tuple[str, ...]:
-        values = self.array_field(row, field_name)
-        if not all(isinstance(item, str) for item in values):
-            raise ValueError(f"{field_name} must be a list of strings")
-        return tuple(values)
-
-    def optional_string_field(self, row: JsonObject, field_name: str) -> str:
-        if field_name not in row or row[field_name] is None:
-            return ""
-        value = row[field_name]
-        if not isinstance(value, str):
-            raise ValueError(f"{field_name} must be a string")
-        return value
-
-    def optional_string_or_none_field(
-        self,
-        row: JsonObject,
-        field_name: str,
-    ) -> str | None:
-        value = self.optional_string_field(row, field_name)
-        if value:
-            return value
-        return None
-
-    def required_string_field(self, row: JsonObject, field_name: str) -> str:
-        value = self.optional_string_field(row, field_name)
-        if not value:
-            raise ValueError(f"{field_name} is required")
-        return value
-
-
 def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ...]:
     """Load caller-supplied authority boundary plans from JSON."""
 
@@ -654,7 +454,7 @@ def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
         JsonObject | JsonArray,
         json.loads(path.read_text(encoding="utf-8")),
     )
-    return CodemodPlanJsonParser().parse_document(payload)
+    return CodemodPlanDocument.from_json_value(payload)
 
 
 @dataclass(frozen=True)
@@ -1545,8 +1345,6 @@ def main() -> int:
         if args.codemod_plan is not None
         else CodemodPlanDocument()
     )
-    if args.codemod_fixpoint and not args.codemod_apply:
-        parser.error("--codemod-fixpoint requires --codemod-apply")
     if args.codemod_fixpoint and args.codemod_diff:
         parser.error("--codemod-fixpoint cannot be combined with --codemod-diff")
     if args.codemod_fixpoint and args.codemod_fixpoint_max_iterations < 1:
@@ -1703,6 +1501,7 @@ def main() -> int:
             parse_workers=args.parse_workers,
             max_iterations=args.codemod_fixpoint_max_iterations,
             guard_suite=codemod_plan_document.guard_suite,
+            dry_run=not args.codemod_apply,
             initial_scan=CodemodFixpointScan(
                 modules=modules,
                 findings=findings,

@@ -16,6 +16,7 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     FindingRecipePlan,
+    FindingRecipeSynthesisReport,
     JsonObject,
 )
 from .detectors import DetectorConfig
@@ -26,6 +27,7 @@ from .source_index import SourceIndex
 class CodemodFixpointStopReason(StrEnum):
     """Terminal state for the finding-backed codemod fixpoint runner."""
 
+    DRY_RUN = "dry_run"
     NO_EXECUTABLE_RECIPES = "no_executable_recipes"
     EMPTY_REWRITE_BATCH = "empty_rewrite_batch"
     ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
@@ -201,6 +203,8 @@ class CodemodFixpointIteration:
     finding_count: int
     recipe_count: int
     expected_removed_finding_ids: tuple[str, ...]
+    document: CodemodPlanDocument | None = None
+    synthesis_report: FindingRecipeSynthesisReport | None = None
     simulation: CodemodSimulationReport | None = None
     architecture_guard_report: ArchitectureGuardReport | None = None
     finding_delta: CodemodFindingDelta | None = None
@@ -250,6 +254,10 @@ class CodemodFixpointIteration:
                 None if self.stop_reason is None else self.stop_reason.value
             ),
         }
+        if self.document is not None:
+            payload["document"] = self.document.to_dict()
+        if self.synthesis_report is not None:
+            payload["synthesis_report"] = self.synthesis_report.to_dict()
         if self.simulation is not None:
             payload["simulation"] = self.simulation.to_dict()
         if self.architecture_guard_report is not None:
@@ -314,6 +322,129 @@ class CodemodFixpointReport:
         }
 
 
+@dataclass(frozen=True)
+class CodemodFixpointStop:
+    """Terminal decision for one fixpoint iteration."""
+
+    completed: bool
+    reason: CodemodFixpointStopReason
+    simulation: CodemodPlanDocumentSimulation | None = None
+
+    @classmethod
+    def no_executable_recipes(cls) -> "CodemodFixpointStop":
+        return cls(
+            completed=True,
+            reason=CodemodFixpointStopReason.NO_EXECUTABLE_RECIPES,
+        )
+
+    @classmethod
+    def from_simulation(
+        cls,
+        simulation: CodemodPlanDocumentSimulation,
+        *,
+        dry_run: bool,
+    ) -> "CodemodFixpointStop | None":
+        if simulation.simulation.applied_rewrite_count == 0:
+            return cls(
+                completed=False,
+                reason=CodemodFixpointStopReason.EMPTY_REWRITE_BATCH,
+                simulation=simulation,
+            )
+        if not simulation.is_clean:
+            return cls(
+                completed=False,
+                reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
+                simulation=simulation,
+            )
+        if dry_run:
+            return cls(
+                completed=True,
+                reason=CodemodFixpointStopReason.DRY_RUN,
+                simulation=simulation,
+            )
+        return None
+
+
+@dataclass(frozen=True)
+class CodemodFixpointIterationIdentity:
+    """Stable identity for one fixpoint iteration."""
+
+    index: int
+
+
+@dataclass(frozen=True)
+class CodemodFixpointIterationBuilder:
+    """Build iteration and terminal reports for one fixpoint scan/plan pair."""
+
+    prior_iterations: tuple[CodemodFixpointIteration, ...]
+    identity: CodemodFixpointIterationIdentity
+    scan: CodemodFixpointScan
+    plan: FindingRecipePlan
+
+    @property
+    def recipe_count(self) -> int:
+        return len(self.plan.document.recipes)
+
+    @property
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return self.plan.expected_removed_finding_ids
+
+    def stopped_report(
+        self,
+        stop: CodemodFixpointStop,
+    ) -> CodemodFixpointReport:
+        return CodemodFixpointReport(
+            iterations=(
+                *self.prior_iterations,
+                self.iteration(
+                    simulation=stop.simulation,
+                    stop_reason=stop.reason,
+                ),
+            ),
+            completed=stop.completed,
+            terminal_reason=stop.reason,
+            final_finding_count=len(self.scan.findings),
+        )
+
+    def applied_iteration(
+        self,
+        simulation: CodemodPlanDocumentSimulation,
+        post_scan: CodemodFixpointScan,
+    ) -> CodemodFixpointIteration:
+        return self.iteration(
+            simulation=simulation,
+            finding_delta=CodemodFindingDelta.from_findings(
+                tuple(self.scan.findings),
+                tuple(post_scan.findings),
+            ),
+            applied=True,
+        )
+
+    def iteration(
+        self,
+        *,
+        simulation: CodemodPlanDocumentSimulation | None = None,
+        finding_delta: CodemodFindingDelta | None = None,
+        applied: bool = False,
+        stop_reason: CodemodFixpointStopReason | None = None,
+    ) -> CodemodFixpointIteration:
+        return CodemodFixpointIteration(
+            iteration_index=self.identity.index,
+            finding_count=len(self.scan.findings),
+            recipe_count=self.recipe_count,
+            expected_removed_finding_ids=self.expected_removed_finding_ids,
+            document=self.plan.document,
+            synthesis_report=self.plan.synthesis_report,
+            simulation=None if simulation is None else simulation.simulation,
+            architecture_guard_report=(
+                None if simulation is None else simulation.architecture_guard_report
+            ),
+            finding_delta=finding_delta,
+            applied=applied,
+            stop_reason=stop_reason,
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodFixpointRunner(ParseCacheRequest):
     """Iteratively apply finding-backed DSL recipes until reaching a fixpoint."""
@@ -323,6 +454,7 @@ class CodemodFixpointRunner(ParseCacheRequest):
     parse_workers: int
     max_iterations: int
     guard_suite: ArchitectureGuardSuite
+    dry_run: bool = False
     initial_scan: CodemodFixpointScan | None = None
 
     def run(self) -> CodemodFixpointReport:
@@ -335,47 +467,33 @@ class CodemodFixpointRunner(ParseCacheRequest):
             next_scan = None
             snapshot = scan.source_snapshot
             plan = snapshot.plan_from_findings(scan.findings)
+            iteration_builder = CodemodFixpointIterationBuilder(
+                prior_iterations=tuple(iterations),
+                identity=CodemodFixpointIterationIdentity(index=iteration_index),
+                scan=scan,
+                plan=plan,
+            )
             if not plan.document.has_recipes:
-                return self.stopped_report(
-                    iterations,
-                    iteration_index,
-                    scan,
-                    plan,
-                    completed=True,
-                    stop_reason=CodemodFixpointStopReason.NO_EXECUTABLE_RECIPES,
+                return iteration_builder.stopped_report(
+                    CodemodFixpointStop.no_executable_recipes()
                 )
             guarded_document = CodemodPlanDocument(
                 recipes=plan.document.recipes,
                 guard_suite=self.guard_suite,
             )
             simulation = guarded_document.simulate_snapshot(snapshot)
-            if simulation.simulation.applied_rewrite_count == 0:
-                return self.stopped_report(
-                    iterations,
-                    iteration_index,
-                    scan,
-                    plan,
-                    completed=False,
-                    stop_reason=CodemodFixpointStopReason.EMPTY_REWRITE_BATCH,
-                    simulation=simulation,
-                )
-            if not simulation.is_clean:
-                return self.stopped_report(
-                    iterations,
-                    iteration_index,
-                    scan,
-                    plan,
-                    completed=False,
-                    stop_reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
-                    simulation=simulation,
+            stop = CodemodFixpointStop.from_simulation(
+                simulation,
+                dry_run=self.dry_run,
+            )
+            if stop is not None:
+                return iteration_builder.stopped_report(
+                    stop
                 )
             simulation.apply()
             next_scan = self.scan(iteration_index + 1)
             iterations.append(
-                self.applied_iteration(
-                    iteration_index,
-                    scan,
-                    plan,
+                iteration_builder.applied_iteration(
                     simulation,
                     next_scan,
                 )
@@ -386,82 +504,6 @@ class CodemodFixpointRunner(ParseCacheRequest):
             completed=False,
             terminal_reason=CodemodFixpointStopReason.MAX_ITERATIONS,
             final_finding_count=len(final_scan.findings),
-        )
-
-    def stopped_report(
-        self,
-        prior_iterations: list[CodemodFixpointIteration],
-        iteration_index: int,
-        scan: CodemodFixpointScan,
-        plan: FindingRecipePlan,
-        *,
-        completed: bool,
-        stop_reason: CodemodFixpointStopReason,
-        simulation: CodemodPlanDocumentSimulation | None = None,
-    ) -> CodemodFixpointReport:
-        iterations = (
-            *prior_iterations,
-            self.iteration(
-                iteration_index,
-                scan,
-                recipe_count=len(plan.document.recipes),
-                expected_removed_finding_ids=plan.expected_removed_finding_ids,
-                simulation=simulation,
-                stop_reason=stop_reason,
-            ),
-        )
-        return CodemodFixpointReport(
-            iterations=iterations,
-            completed=completed,
-            terminal_reason=stop_reason,
-            final_finding_count=len(scan.findings),
-        )
-
-    def applied_iteration(
-        self,
-        iteration_index: int,
-        scan: CodemodFixpointScan,
-        plan: FindingRecipePlan,
-        simulation: CodemodPlanDocumentSimulation,
-        post_scan: CodemodFixpointScan,
-    ) -> CodemodFixpointIteration:
-        return self.iteration(
-            iteration_index,
-            scan,
-            recipe_count=len(plan.document.recipes),
-            expected_removed_finding_ids=plan.expected_removed_finding_ids,
-            simulation=simulation,
-            finding_delta=CodemodFindingDelta.from_findings(
-                tuple(scan.findings),
-                tuple(post_scan.findings),
-            ),
-            applied=True,
-        )
-
-    def iteration(
-        self,
-        iteration_index: int,
-        scan: CodemodFixpointScan,
-        *,
-        recipe_count: int = 0,
-        expected_removed_finding_ids: tuple[str, ...] = (),
-        simulation: CodemodPlanDocumentSimulation | None = None,
-        finding_delta: CodemodFindingDelta | None = None,
-        applied: bool = False,
-        stop_reason: CodemodFixpointStopReason | None = None,
-    ) -> CodemodFixpointIteration:
-        return CodemodFixpointIteration(
-            iteration_index=iteration_index,
-            finding_count=len(scan.findings),
-            recipe_count=recipe_count,
-            expected_removed_finding_ids=expected_removed_finding_ids,
-            simulation=None if simulation is None else simulation.simulation,
-            architecture_guard_report=(
-                None if simulation is None else simulation.architecture_guard_report
-            ),
-            finding_delta=finding_delta,
-            applied=applied,
-            stop_reason=stop_reason,
         )
 
     def scan(self, iteration_index: int) -> CodemodFixpointScan:
