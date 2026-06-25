@@ -12,6 +12,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, Generic, TypeAlias, TypeVar
 
 from ..factorization import (
@@ -1356,15 +1357,21 @@ def _string_keyed_formula_subclass_family_candidates(
         )
         if method_names == ("eval",):
             continue
-        base_line = classes.get(base_name).lineno if base_name in classes else rows[0][0].lineno
+        base_line = (
+            classes.get(base_name).lineno if base_name in classes else rows[0][0].lineno
+        )
         candidates.append(
             StringKeyedFormulaSubclassFamilyCandidate(
                 file_path=str(module.path),
                 line=base_line,
                 base_class_name=base_name,
                 key_attr_name=key_attr_name,
-                subclass_names=tuple(class_node.name for class_node, _key, _methods in rows),
-                key_values=tuple(key_value for _class_node, key_value, _methods in rows),
+                subclass_names=tuple(
+                    class_node.name for class_node, _key, _methods in rows
+                ),
+                key_values=tuple(
+                    key_value for _class_node, key_value, _methods in rows
+                ),
                 method_names=method_names,
                 expression_snippets=tuple(
                     method_source
@@ -3160,7 +3167,9 @@ def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
             if not statement.name.startswith("__"):
                 members.add(statement.name)
             continue
-        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
+        if isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target, ast.Name
+        ):
             members.add(statement.target.id)
             continue
         if isinstance(statement, ast.Assign):
@@ -3233,7 +3242,10 @@ def _accessed_declared_members(
             del node
 
         def visit_Attribute(self, node: ast.Attribute) -> None:
-            if node.attr in declared_member_set and ast.unparse(node.value) == subject_expression:
+            if (
+                node.attr in declared_member_set
+                and ast.unparse(node.value) == subject_expression
+            ):
                 accessed.add(node.attr)
             self.generic_visit(node)
 
@@ -3252,7 +3264,11 @@ def _role_guarded_surface_access_candidates_for_function(
     for node in ast.walk(function):
         if not isinstance(node, ast.If):
             continue
-        for subject_expression, type_name, guard_expression in _isinstance_guard_bindings(node.test):
+        for (
+            subject_expression,
+            type_name,
+            guard_expression,
+        ) in _isinstance_guard_bindings(node.test):
             if type_name not in role_surfaces:
                 continue
             declared_members = role_surfaces[type_name]
@@ -5562,7 +5578,9 @@ class _FailSoftFallbackVisitor(ast.NodeVisitor):
     def _visit_statement_sequence(self, statements: list[ast.stmt]) -> None:
         for index, statement in enumerate(statements):
             if isinstance(statement, ast.If):
-                self._record_guarded_broadening_return(statement, statements[index + 1 :])
+                self._record_guarded_broadening_return(
+                    statement, statements[index + 1 :]
+                )
             self.visit(statement)
 
     def visit_If(self, node: ast.If) -> None:
@@ -6430,6 +6448,7 @@ class SurfaceFunctionIndex:
     functions: _SurfaceFunctionItems
 
     @classmethod
+    @lru_cache(maxsize=None)
     def from_module(cls, module_node: ast.Module) -> "SurfaceFunctionIndex":
         functions: list[tuple[str, _RuntimeFunctionNode]] = []
 
@@ -6885,26 +6904,41 @@ _DETECTOR_BASE_NAME_SUFFIXES = (
     "IssueDetector",
     "ModuleDetector",
 )
+ClassBaseNameRows: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 
 
-def _class_base_names_by_qualname(module: ast.Module) -> dict[str, tuple[str, ...]]:
-    base_names_by_qualname: dict[str, tuple[str, ...]] = {}
-    class_stack: list[str] = []
+@dataclass(frozen=True)
+class ClassBaseNameIndex:
+    """Immutable class-base lookup for one AST module."""
 
-    class Visitor(ast.NodeVisitor):
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            class_stack.append(node.name)
-            base_names_by_qualname[".".join(class_stack)] = tuple(
-                base_name
-                for base in node.bases
-                for base_name in (_ast_terminal_name(base),)
-                if base_name is not None
-            )
-            self.generic_visit(node)
-            class_stack.pop()
+    base_names_by_qualname: ClassBaseNameRows
 
-    Visitor().visit(module)
-    return base_names_by_qualname
+    @classmethod
+    @lru_cache(maxsize=None)
+    def from_module(cls, module: ast.Module) -> "ClassBaseNameIndex":
+        base_names_by_qualname: dict[str, tuple[str, ...]] = {}
+        class_stack: list[str] = []
+
+        class Visitor(ast.NodeVisitor):
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                class_stack.append(node.name)
+                base_names_by_qualname[".".join(class_stack)] = tuple(
+                    base_name
+                    for base in node.bases
+                    for base_name in (_ast_terminal_name(base),)
+                    if base_name is not None
+                )
+                self.generic_visit(node)
+                class_stack.pop()
+
+        Visitor().visit(module)
+        return cls(tuple(sorted(base_names_by_qualname.items())))
+
+    def base_names(self, owner_name: str) -> tuple[str, ...]:
+        for qualname, base_names in self.base_names_by_qualname:
+            if qualname == owner_name:
+                return base_names
+        return ()
 
 
 def _is_detector_override_hook(
@@ -6914,12 +6948,9 @@ def _is_detector_override_hook(
 ) -> bool:
     if method_name not in _DETECTOR_OVERRIDE_HOOK_NAMES:
         return False
-    base_names_by_qualname = _class_base_names_by_qualname(module.module)
-    if owner_name not in base_names_by_qualname:
-        return False
+    base_names = ClassBaseNameIndex.from_module(module.module).base_names(owner_name)
     return any(
-        base_name.endswith(_DETECTOR_BASE_NAME_SUFFIXES)
-        for base_name in base_names_by_qualname[owner_name]
+        base_name.endswith(_DETECTOR_BASE_NAME_SUFFIXES) for base_name in base_names
     )
 
 
@@ -8778,7 +8809,9 @@ def _shared_nominal_base_classes(
         _indexed_ancestor_symbols(class_index, indexed_classes[0].symbol)
     )
     for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(_indexed_ancestor_symbols(class_index, indexed_class.symbol))
+        common_symbols &= set(
+            _indexed_ancestor_symbols(class_index, indexed_class.symbol)
+        )
     base_classes = tuple(
         indexed_class
         for symbol in sorted(common_symbols)
@@ -8825,11 +8858,18 @@ def _related_composition_signals(
             signal.source_name,
             *signal.field_names,
         )
-        if (source_tokens & signal_tokens) or len(field_name_set & set(signal.field_names)) >= 2:
+        if (source_tokens & signal_tokens) or len(
+            field_name_set & set(signal.field_names)
+        ) >= 2:
             related.append(signal)
     return sorted_tuple(
         related,
-        key=lambda item: (-item.load_bearing_score, item.file_path, item.line, item.qualname),
+        key=lambda item: (
+            -item.load_bearing_score,
+            item.file_path,
+            item.line,
+            item.qualname,
+        ),
     )
 
 
@@ -8847,7 +8887,11 @@ def _related_wrapper_chains(
         chain_tokens = _semantic_tokens(
             chain.leaf_delegate_symbol,
             *(wrapper.qualname for wrapper in chain.wrappers),
-            *(attr for wrapper in chain.wrappers for attr in wrapper.projected_attributes),
+            *(
+                attr
+                for wrapper in chain.wrappers
+                for attr in wrapper.projected_attributes
+            ),
         )
         if source_tokens & chain_tokens:
             related.append(chain)
@@ -8972,7 +9016,9 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
         )
         branch_summary = ", ".join(scatter.test_expressions[:4])
         template_summary = ", ".join(
-            sorted_tuple({template.method_name for template in candidate.repeated_templates})
+            sorted_tuple(
+                {template.method_name for template in candidate.repeated_templates}
+            )
         )
         composition_summary = ", ".join(
             signal.qualname for signal in candidate.composition_signals[:3]
@@ -8990,7 +9036,9 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
             )
         if wrapper_summary:
             extra_context.append(f"wrapper chain(s): {wrapper_summary}")
-        context_suffix = f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        context_suffix = (
+            f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        )
         evidence = tuple(
             [
                 *(
@@ -9285,9 +9333,7 @@ def _variant_method_family_candidates(
             ].append(surface)
     candidates = []
     for surfaces in grouped.values():
-        ordered = sorted_tuple(
-            surfaces, key=lambda item: (item.line, item.method_name)
-        )
+        ordered = sorted_tuple(surfaces, key=lambda item: (item.line, item.method_name))
         candidate = _variant_method_family_candidate(
             ordered,
             wrapper_chains=wrapper_chains,
@@ -9336,7 +9382,11 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
         variant_summary = ", ".join(candidate.variant_tokens[:8])
         field_summary = ", ".join(candidate.shared_field_names[:8])
         parameter_summary = ", ".join(candidate.shared_product_parameter_names)
-        authority_kind = "ABC/public authority" if candidate.owner_is_abstract else "public authority"
+        authority_kind = (
+            "ABC/public authority"
+            if candidate.owner_is_abstract
+            else "public authority"
+        )
         composition_summary = ", ".join(
             signal.qualname for signal in candidate.composition_signals[:3]
         )
@@ -9351,7 +9401,9 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
             )
         if wrapper_summary:
             extra_context.append(f"wrapper chain(s): {wrapper_summary}")
-        context_suffix = f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        context_suffix = (
+            f" It also intersects {'; '.join(extra_context)}." if extra_context else ""
+        )
         return self.build_finding(
             (
                 f"`{candidate.owner_class_name}` inflates its {authority_kind} surface "
