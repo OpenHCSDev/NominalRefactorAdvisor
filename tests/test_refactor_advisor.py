@@ -83,6 +83,7 @@ from nominal_refactor_advisor.codemod import (
     RefactorRecipe,
     RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
+    SelectionCountExpectation,
     SourceRewriteTarget,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
@@ -9019,6 +9020,7 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
                                     "file_paths": [module_path.as_posix()],
                                     "qualname_patterns": ["^(Alpha|Beta)\\.run$"],
                                 },
+                                "selection_count": {"exact": 2},
                                 "operation_templates": [
                                     {
                                         "operation": "replace_function_signature",
@@ -9044,6 +9046,9 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
         encoding="utf-8",
     )
     document = load_codemod_plan_document(plan_path)
+    assert document.recipes[0].operations[0].to_dict()["selection_count"] == {
+        "exact": 2
+    }
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
@@ -9097,7 +9102,9 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
                 }
             ),
         ),
+        selection_count=SelectionCountExpectation(exact=2),
     )
+    assert recipe.operations[0].to_dict()["selection_count"] == {"exact": 2}
 
     simulation = recipe.simulate(
         source_index,
@@ -9109,6 +9116,144 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
     assert simulation.simulation.applied_rewrite_count == 2
     simulation.apply()
     assert module_path.read_text().count("modern(value)") == 2
+
+
+def test_apply_selected_targets_rejects_selection_count_underflow(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self):\n"
+        "        return legacy()\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "missing-selected",
+                        "operations": [
+                            {
+                                "operation": "apply_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method"],
+                                    "file_paths": [module_path.as_posix()],
+                                    "qualnames": ["Beta.run"],
+                                },
+                                "selection_count": {"min": 1},
+                                "operation_templates": [
+                                    {
+                                        "operation": "replace_text",
+                                        "old_source": "legacy()",
+                                        "new_source": "modern()",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = load_codemod_plan_document(plan_path)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    with pytest.raises(ValueError, match="expected at least 1 target"):
+        document.simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+
+def test_delete_selected_targets_rejects_selection_count_overflow(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def first(self):\n"
+        "        return 1\n\n"
+        "    def second(self):\n"
+        "        return 2\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "too-many-selected",
+                        "operations": [
+                            {
+                                "operation": "delete_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method"],
+                                    "file_paths": [module_path.as_posix()],
+                                    "qualname_patterns": [r"^Alpha\."],
+                                },
+                                "selection_count": {"max": 1},
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = load_codemod_plan_document(plan_path)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    with pytest.raises(ValueError, match="expected at most 1 target"):
+        document.simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
+
+
+def test_selected_targets_rejects_invalid_selection_count_contract(
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "invalid-selection-count",
+                        "operations": [
+                            {
+                                "operation": "delete_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method"],
+                                },
+                                "selection_count": {"min": 2, "max": 1},
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="selection_count min cannot exceed max"):
+        load_codemod_plan_document(plan_path)
 
 
 def test_apply_selected_targets_accepts_selector_set_expression_json(

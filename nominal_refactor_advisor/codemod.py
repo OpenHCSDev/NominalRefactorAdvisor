@@ -176,6 +176,7 @@ RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
 REGISTRY_KEY_ATTRIBUTE_PAYLOAD_FIELD = "registry_key_attribute"
 REGISTRY_NAME_PAYLOAD_FIELD = "registry_name"
+SELECTION_COUNT_PAYLOAD_FIELD = "selection_count"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
@@ -873,6 +874,97 @@ class CodemodTargetSelection:
         return tuple(
             source_index.target_by_id[target_id] for target_id in self.target_ids
         )
+
+
+@dataclass(frozen=True)
+class SelectionCountExpectation:
+    """Cardinality contract for selector-backed codemod operations."""
+
+    minimum: int | None = None
+    maximum: int | None = None
+    exact: int | None = None
+
+    @classmethod
+    def from_mapping(
+        cls,
+        payload: Mapping[str, JsonValue] | None,
+    ) -> "SelectionCountExpectation":
+        if payload is None:
+            return cls()
+        unknown_fields = tuple(sorted(set(payload) - {"min", "max", "exact"}))
+        if unknown_fields:
+            raise ValueError(
+                "Unsupported selection_count field(s): "
+                f"{', '.join(unknown_fields)}"
+            )
+        expectation = cls(
+            minimum=cls.optional_non_negative_int(payload, "min"),
+            maximum=cls.optional_non_negative_int(payload, "max"),
+            exact=cls.optional_non_negative_int(payload, "exact"),
+        )
+        expectation.validate_definition()
+        return expectation
+
+    @staticmethod
+    def optional_non_negative_int(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> int | None:
+        value = payload.get(field_name)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"Expected non-negative integer selection_count field {field_name!r}"
+            )
+        if value < 0:
+            raise ValueError(
+                f"Expected non-negative integer selection_count field {field_name!r}"
+            )
+        return value
+
+    @property
+    def is_empty(self) -> bool:
+        return self.minimum is None and self.maximum is None and self.exact is None
+
+    def validate_definition(self) -> None:
+        if self.minimum is not None and self.maximum is not None:
+            if self.minimum > self.maximum:
+                raise ValueError("selection_count min cannot exceed max")
+        if self.exact is None:
+            return
+        if self.minimum is not None and self.exact < self.minimum:
+            raise ValueError("selection_count exact cannot be less than min")
+        if self.maximum is not None and self.exact > self.maximum:
+            raise ValueError("selection_count exact cannot exceed max")
+
+    def require_actual_count(self, actual_count: int) -> None:
+        self.validate_definition()
+        if self.exact is not None and actual_count != self.exact:
+            raise ValueError(
+                "Selected-target operation expected exactly "
+                f"{self.exact} target(s), but selector resolved {actual_count}"
+            )
+        if self.minimum is not None and actual_count < self.minimum:
+            raise ValueError(
+                "Selected-target operation expected at least "
+                f"{self.minimum} target(s), but selector resolved {actual_count}"
+            )
+        if self.maximum is not None and actual_count > self.maximum:
+            raise ValueError(
+                "Selected-target operation expected at most "
+                f"{self.maximum} target(s), but selector resolved {actual_count}"
+            )
+
+    def to_dict(self) -> JsonObject:
+        payload: JsonObject = {}
+        if self.minimum is not None:
+            payload["min"] = self.minimum
+        if self.maximum is not None:
+            payload["max"] = self.maximum
+        if self.exact is not None:
+            payload["exact"] = self.exact
+        return payload
 
 
 def _required_source_plan_payload_string(
@@ -1588,6 +1680,14 @@ class SourceRewritePlanPayload:
 
     def required_object(self, field_name: str) -> Mapping[str, JsonValue]:
         value = self.fields.get(field_name)
+        if not isinstance(value, Mapping):
+            raise ValueError(f"Expected object field {field_name!r}")
+        return value
+
+    def optional_object(self, field_name: str) -> Mapping[str, JsonValue] | None:
+        value = self.fields.get(field_name)
+        if value is None:
+            return None
         if not isinstance(value, Mapping):
             raise ValueError(f"Expected object field {field_name!r}")
         return value
@@ -3032,6 +3132,9 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
     """Operation base whose target set comes from a registered selector."""
 
     selector: CodemodTargetSelector
+    selection_count: SelectionCountExpectation = field(
+        default_factory=SelectionCountExpectation
+    )
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -3052,6 +3155,28 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
             raise TypeError("selector binding requires selected-targets operation")
         return operation.selector.to_dict()
 
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "SelectedTargetsOperation":
+        operation = super().from_operation_payload(target, payload)
+        if not isinstance(operation, SelectedTargetsOperation):
+            raise TypeError("selected-target operation payload resolved incorrectly")
+        return replace(
+            operation,
+            selection_count=SelectionCountExpectation.from_mapping(
+                payload.optional_object(SELECTION_COUNT_PAYLOAD_FIELD)
+            ),
+        )
+
+    def operation_payload(self) -> JsonObject:
+        payload = super().operation_payload()
+        if not self.selection_count.is_empty:
+            payload[SELECTION_COUNT_PAYLOAD_FIELD] = self.selection_count.to_dict()
+        return payload
+
     def selector_context(
         self,
         source_index: SourceIndex,
@@ -3064,6 +3189,14 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
             source_index=source_index,
             sources_by_file_path=source_by_path,
         )
+
+    def selected_target_ids(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[str, ...]:
+        target_ids = self.selector.target_ids(context)
+        self.selection_count.require_actual_count(len(target_ids))
+        return target_ids
 
     def line_replacements(
         self,
@@ -3124,7 +3257,7 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
     ) -> tuple[SourceLineReplacement, ...]:
         return tuple(
             replacement
-            for target_id in self.selector.target_ids(
+            for target_id in self.selected_target_ids(
                 self.selector_context(source_index, source_by_path, selector_context)
             )
             for template in self.operation_templates
@@ -3161,7 +3294,7 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
     ) -> tuple[SourceLineReplacement, ...]:
         return tuple(
             self.line_replacement_for(source_index.target_by_id[target_id])
-            for target_id in self.selector.target_ids(
+            for target_id in self.selected_target_ids(
                 self.selector_context(source_index, source_by_path, selector_context)
             )
         )
@@ -6333,12 +6466,29 @@ class RefactorRecipe:
         selector: CodemodTargetSelector,
         operation_templates: Iterable[RefactorRecipeOperationTemplate],
         *,
+        selection_count: SelectionCountExpectation | None = None,
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ApplySelectedTargetsOperation(
             target=SourceRewriteTarget(),
             selector=selector,
+            selection_count=selection_count or SelectionCountExpectation(),
             operation_templates=tuple(operation_templates),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def delete_selected_targets(
+        self,
+        selector: CodemodTargetSelector,
+        *,
+        selection_count: SelectionCountExpectation | None = None,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DeleteSelectedTargetsOperation(
+            target=SourceRewriteTarget(),
+            selector=selector,
+            selection_count=selection_count or SelectionCountExpectation(),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
