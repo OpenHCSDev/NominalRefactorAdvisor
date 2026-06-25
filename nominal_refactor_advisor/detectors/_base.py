@@ -10096,6 +10096,7 @@ _materialize_product_records((
     _product_record_spec('ManualPublicApiSurfaceCandidate', 'source_name_count: int', 'ExportSurfaceCandidate'),
     _product_record_spec('DerivedIndexedSurfaceCandidate', 'surface_name: str; key_kind: str; value_names: tuple[str, ...]; derivable_root_names: tuple[str, ...]', 'LineWitnessCandidate'),
     _product_record_spec('RegisteredUnionSurfaceCandidate', 'owner_name: str; accessor_name: str; root_names: tuple[str, ...]', 'LineWitnessCandidate'),
+    _product_record_spec('ConcreteTypeUnionContractCandidate', 'function_name: str; parameter_name: str; member_type_names: tuple[str, ...]; observed_attribute_names: tuple[str, ...]; suggested_contract_name: str; common_base_names: tuple[str, ...]', 'LineWitnessCandidate'),
     _product_record_spec('ExportPolicyPredicateCandidate', 'role_names: tuple[str, ...]; root_type_names: tuple[str, ...]', 'WitnessCarrierCandidate SubjectNameFunctionNameMixin'),
     _product_record_spec('RegistryTraversalGroup', 'method_names: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
 ))

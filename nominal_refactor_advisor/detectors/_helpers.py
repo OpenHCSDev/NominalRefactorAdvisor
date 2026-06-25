@@ -6550,6 +6550,246 @@ def _registered_union_surface_candidates(
     )
 
 
+_CLASS_OBJECT_TYPE_ANNOTATION_ROOTS = frozenset({"type", "Type"})
+_CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES = frozenset(
+    {"ABC", "ABCMeta", "Generic", "Protocol", "object"}
+)
+_CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES = (
+    "build",
+    "create",
+    "from_",
+    "make",
+)
+
+
+def _annotation_union_members(node: ast.AST) -> tuple[ast.AST, ...]:
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return (
+            *_annotation_union_members(node.left),
+            *_annotation_union_members(node.right),
+        )
+    if isinstance(node, ast.Subscript):
+        root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+        if root_name != "Union":
+            return (node,)
+        if isinstance(node.slice, ast.Tuple):
+            return tuple(node.slice.elts)
+        if isinstance(node.slice, ast.List):
+            return tuple(node.slice.elts)
+    return (node,)
+
+
+def _class_object_type_argument_name(node: ast.AST) -> str | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+    if root_name not in _CLASS_OBJECT_TYPE_ANNOTATION_ROOTS:
+        return None
+    return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
+
+
+def _concrete_class_object_union_member_names(
+    annotation: ast.AST | None,
+) -> tuple[str, ...]:
+    if annotation is None:
+        return ()
+    union_members = _annotation_union_members(annotation)
+    member_names = tuple(
+        (
+            member_name
+            for member in union_members
+            if (member_name := _class_object_type_argument_name(member)) is not None
+        )
+    )
+    if len(member_names) != len(union_members):
+        return ()
+    return tuple(dict.fromkeys(member_names))
+
+
+def _parameter_class_call_attribute_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    parameter_name: str,
+) -> tuple[str, ...]:
+    attribute_names: set[str] = set()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == parameter_name
+            ):
+                attribute_names.add(node.func.attr)
+            self.generic_visit(node)
+
+    Visitor().visit(
+        ast.Module(body=_trim_docstring_body(function.body), type_ignores=[])
+    )
+    return sorted_tuple(attribute_names)
+
+
+def _class_def_declared_and_ancestor_names(
+    class_defs_by_name: dict[str, ast.ClassDef],
+    ancestor_names_by_class: dict[str, tuple[str, ...]],
+    class_name: str,
+) -> set[str]:
+    node = class_defs_by_name[class_name]
+    return set(CLASS_NODE_AUTHORITY.declared_base_names(node)) | set(
+        ancestor_names_by_class[class_name]
+    )
+
+
+def _base_defines_contract_attributes(
+    class_defs_by_name: dict[str, ast.ClassDef],
+    base_name: str,
+    observed_attribute_names: tuple[str, ...],
+) -> bool:
+    base_node = class_defs_by_name.get(base_name)
+    if base_node is None:
+        return False
+    return all(
+        (
+            CLASS_NODE_AUTHORITY.method_named(base_node, attribute_name) is not None
+            for attribute_name in observed_attribute_names
+        )
+    )
+
+
+def _common_contract_base_names(
+    class_defs_by_name: dict[str, ast.ClassDef],
+    ancestor_names_by_class: dict[str, tuple[str, ...]],
+    member_type_names: tuple[str, ...],
+    observed_attribute_names: tuple[str, ...],
+) -> tuple[str, ...]:
+    base_sets = tuple(
+        (
+            _class_def_declared_and_ancestor_names(
+                class_defs_by_name, ancestor_names_by_class, member_type_name
+            )
+            for member_type_name in member_type_names
+        )
+    )
+    common_base_names = (
+        set.intersection(*base_sets) - _CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES
+    )
+    return sorted_tuple(
+        (
+            base_name
+            for base_name in common_base_names
+            if _base_defines_contract_attributes(
+                class_defs_by_name, base_name, observed_attribute_names
+            )
+        )
+    )
+
+
+def _shared_edge_tokens(member_type_names: tuple[str, ...]) -> tuple[str, ...]:
+    token_rows = tuple(
+        (
+            CLASS_NAME_ALGEBRA.ordered_tokens(member_type_name)
+            for member_type_name in member_type_names
+        )
+    )
+    if not token_rows or not all(token_rows):
+        return ()
+    prefix_tokens: list[str] = []
+    for column in zip(*token_rows, strict=False):
+        if len(set(column)) != 1:
+            break
+        prefix_tokens.append(column[0])
+    suffix_tokens: list[str] = []
+    reversed_rows = tuple(tuple(reversed(row)) for row in token_rows)
+    for column in zip(*reversed_rows, strict=False):
+        if len(set(column)) != 1:
+            break
+        suffix_tokens.append(column[0])
+    return (*prefix_tokens, *tuple(reversed(suffix_tokens)))
+
+
+def _concrete_union_contract_name(
+    member_type_names: tuple[str, ...],
+    observed_attribute_names: tuple[str, ...],
+) -> str:
+    edge_tokens = _shared_edge_tokens(member_type_names)
+    base_name = (
+        "".join((token.title() for token in edge_tokens))
+        if edge_tokens
+        else f"{member_type_names[0]}Family"
+    )
+    role_suffix = (
+        "Factory"
+        if any(
+            (
+                attribute_name.startswith(_CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES)
+                for attribute_name in observed_attribute_names
+            )
+        )
+        else "Contract"
+    )
+    return base_name if base_name.endswith(role_suffix) else f"{base_name}{role_suffix}"
+
+
+def _concrete_type_union_contract_candidates(
+    module: ParsedModule,
+) -> tuple[ConcreteTypeUnionContractCandidate, ...]:
+    class_defs_by_name = _module_class_defs_by_name(module)
+    base_lookup = {
+        class_name: set(CLASS_NODE_AUTHORITY.declared_base_names(node))
+        for class_name, node in class_defs_by_name.items()
+    }
+    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
+    candidates: list[ConcreteTypeUnionContractCandidate] = []
+    for function_name, function in _iter_named_functions(module):
+        arguments = (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+        for argument in arguments:
+            if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
+                continue
+            member_type_names = _concrete_class_object_union_member_names(
+                argument.annotation
+            )
+            if len(member_type_names) < 2 or not set(member_type_names) <= set(
+                class_defs_by_name
+            ):
+                continue
+            observed_attribute_names = _parameter_class_call_attribute_names(
+                function, argument.arg
+            )
+            if not observed_attribute_names:
+                continue
+            common_base_names = _common_contract_base_names(
+                class_defs_by_name,
+                ancestor_names_by_class,
+                member_type_names,
+                observed_attribute_names,
+            )
+            candidates.append(
+                ConcreteTypeUnionContractCandidate(
+                    file_path=str(module.path),
+                    line=argument.lineno,
+                    function_name=function_name,
+                    parameter_name=argument.arg,
+                    member_type_names=member_type_names,
+                    observed_attribute_names=observed_attribute_names,
+                    suggested_contract_name=(
+                        common_base_names[0]
+                        if common_base_names
+                        else _concrete_union_contract_name(
+                            member_type_names, observed_attribute_names
+                        )
+                    ),
+                    common_base_names=common_base_names,
+                )
+            )
+    return sorted_tuple(
+        candidates,
+        key=lambda item: (item.file_path, item.line, item.function_name),
+    )
+
+
 def _export_policy_role_names(node: ast.FunctionDef) -> tuple[str, ...]:
     body_text = "\n".join(ast.unparse(statement) for statement in node.body)
     roles: set[str] = set()

@@ -621,9 +621,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
-        "    def run(self, value):\n"
-        "        return value\n",
+        "\nclass Alpha:\n" "    def run(self, value):\n" "        return value\n",
     )
     modules = parse_python_modules(tmp_path)
     snapshot = CodemodSourceSnapshot.from_modules(modules)
@@ -1834,10 +1832,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert "+class CsvRenderDispatchCase(RenderDispatchCase):" in diff
     assert "+    case = 'csv'" in diff
     assert "+        return render_csv(value)" in diff
-    assert (
-        "+    return RenderDispatchCase.for_case(kind).apply(value)"
-        in diff
-    )
+    assert "+    return RenderDispatchCase.for_case(kind).apply(value)" in diff
     simulation.apply()
     rewritten = module_path.read_text()
     assert 'if kind == "csv"' not in rewritten
@@ -8973,9 +8968,12 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
-    assert operations["apply_selected_targets"]["example_payload"][
-        "operation_templates"
-    ][0]["operation"] == "replace_text"
+    assert (
+        operations["apply_selected_targets"]["example_payload"]["operation_templates"][
+            0
+        ]["operation"]
+        == "replace_text"
+    )
     assert operations["apply_selected_targets"]["example_payload"][
         "selection_count"
     ] == {"exact": 1}
@@ -8998,9 +8996,10 @@ def test_codemod_dsl_example_plan_document_round_trips() -> None:
     assert parsed_document.recipes[0].operations[1].to_dict()["operation"] == (
         "apply_selected_targets"
     )
-    assert parsed_document.recipes[0].operations[1].to_dict()["selector"][
-        "selector"
-    ] == "source_index_target"
+    assert (
+        parsed_document.recipes[0].operations[1].to_dict()["selector"]["selector"]
+        == "source_index_target"
+    )
 
 
 def test_module_cli_emits_codemod_dsl_manifest() -> None:
@@ -9020,8 +9019,7 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
 
     assert result.returncode == 0, result.stderr
     assert any(
-        operation["operation"] == "replace_text"
-        for operation in payload["operations"]
+        operation["operation"] == "replace_text" for operation in payload["operations"]
     )
     assert any(
         selector["selector"] == "source_index_target"
@@ -9288,9 +9286,12 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.recipes[0].operations[6].to_dict()["operation"] == (
         "apply_selected_targets"
     )
-    assert document.recipes[0].operations[6].to_dict()["operation_templates"][0][
-        "operation"
-    ] == "replace_text"
+    assert (
+        document.recipes[0]
+        .operations[6]
+        .to_dict()["operation_templates"][0]["operation"]
+        == "replace_text"
+    )
     assert document.recipes[0].operations[7].to_dict()["operation"] == (
         "extract_authority"
     )
@@ -9512,9 +9513,7 @@ def test_apply_selected_targets_rejects_selection_count_underflow(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
-        "    def run(self):\n"
-        "        return legacy()\n",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return legacy()\n",
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -9737,9 +9736,7 @@ def test_apply_selected_targets_rejects_unknown_target_template_field(
     _write_module(
         tmp_path,
         "pkg/mod.py",
-        "\nclass Alpha:\n"
-        "    def run(self):\n"
-        "        return legacy()\n",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return legacy()\n",
     )
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
@@ -15236,6 +15233,28 @@ def test_detects_manual_registered_union_surface(tmp_path: Path) -> None:
     assert "from metaclass_registry import AutoRegisterMeta" in (finding.scaffold or "")
     assert "__key_extractor__" in (finding.scaffold or "")
     assert "UnifiedRegistryRoot.__registry__.values()" in (finding.scaffold or "")
+
+
+def test_detects_concrete_type_union_annotation_contract(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ViewerWindowSnapshotResult:\n    pass\n\n\nclass ViewerWindowStateResult:\n    pass\n\n\nclass ViewerWindowPayloadResult:\n    pass\n\n\ndef _exception_result(result_type: type[ViewerWindowSnapshotResult] | type[ViewerWindowStateResult] | type[ViewerWindowPayloadResult], context):\n    return result_type.from_error_context(context)\n",
+    )
+    findings = analyze_path(tmp_path)
+    finding = next(
+        (
+            finding
+            for finding in findings
+            if finding.detector_id == "concrete_type_union_contract"
+        )
+    )
+    assert "_exception_result.result_type" in finding.summary
+    assert "ViewerWindowSnapshotResult" in finding.summary
+    assert "from_error_context" in finding.summary
+    assert "type[ViewerWindowResultFactory]" in finding.summary
+    assert "class ViewerWindowResultFactory(ABC)" in (finding.scaffold or "")
+    assert "Do not hide this behind a TypeAlias" in (finding.codemod_patch or "")
 
 
 def test_detects_repeated_registry_traversal_substrate(tmp_path: Path) -> None:

@@ -1963,6 +1963,74 @@ declare_candidate_rule_detector(
 )
 
 
+def _concrete_type_union_contract_scaffold(
+    candidate: ConcreteTypeUnionContractCandidate,
+) -> str:
+    method_block = "\n".join(
+        (
+            f"    @classmethod\n    @abstractmethod\n    def {attribute_name}(cls, context): ..."
+            for attribute_name in candidate.observed_attribute_names
+        )
+    )
+    member_block = "\n".join(
+        (
+            f"class {member_type_name}({candidate.suggested_contract_name}, ...): ..."
+            for member_type_name in candidate.member_type_names
+        )
+    )
+    return (
+        "from abc import ABC, abstractmethod\n\n"
+        f"class {candidate.suggested_contract_name}(ABC):\n"
+        f"{method_block}\n\n"
+        f"{member_block}\n\n"
+        f"def {candidate.function_name}({candidate.parameter_name}: type[{candidate.suggested_contract_name}], ...): ..."
+    )
+
+
+def _concrete_type_union_contract_patch(
+    candidate: ConcreteTypeUnionContractCandidate,
+) -> str:
+    base_action = (
+        f"`{candidate.suggested_contract_name}` already declares the observed contract; use it directly."
+        if candidate.common_base_names
+        else f"Introduce `{candidate.suggested_contract_name}` as the shared constructor contract and make {candidate.member_type_names} inherit it."
+    )
+    return (
+        f"# Replace the concrete class-object union on `{candidate.function_name}.{candidate.parameter_name}` "
+        f"with `type[{candidate.suggested_contract_name}]` or a TypeVar bound to `{candidate.suggested_contract_name}`.\n"
+        f"# {base_action}\n"
+        "# Do not hide this behind a TypeAlias for the same concrete union; the consumer is depending on the shared nominal behavior."
+    )
+
+
+declare_candidate_rule_detector(
+    ConcreteTypeUnionContractCandidate,
+    high_confidence_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Concrete class-object union should be a shared nominal contract",
+        "A function accepts a union of concrete class objects, then treats the parameter as one constructor or class-level capability. That concrete roster is a local re-encoding of a nominal contract.",
+        "one shared ABC/protocol/base type used as type[SharedContract] or a TypeVar bound to it",
+        "function parameter annotation unions concrete class objects while the body calls common class-level behavior on that parameter",
+        _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS,
+    ),
+    summary=lambda candidate: (
+        f"`{candidate.function_name}.{candidate.parameter_name}` is annotated as a concrete class-object union "
+        f"{candidate.member_type_names}, but the function only uses class-level operations "
+        f"{candidate.observed_attribute_names}. Type it as `type[{candidate.suggested_contract_name}]` instead."
+    ),
+    evidence=lambda candidate: (
+        SourceLocation(
+            candidate.file_path,
+            candidate.line,
+            f"{candidate.function_name}.{candidate.parameter_name}",
+        ),
+    ),
+    scaffold=_concrete_type_union_contract_scaffold,
+    codemod_patch=_concrete_type_union_contract_patch,
+    candidate_collector=_concrete_type_union_contract_candidates,
+)
+
+
 class RegistryTraversalSubstrateDetector(IssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
