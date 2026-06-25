@@ -241,6 +241,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "RefactorRecipeSimulation",
     ),
+    "SourceRewriteSimulationPayload": (
+        "nominal_refactor_advisor.codemod",
+        "SourceRewriteSimulationPayload",
+    ),
     "ResolvedSourceRewrite": (
         "nominal_refactor_advisor.codemod",
         "ResolvedSourceRewrite",

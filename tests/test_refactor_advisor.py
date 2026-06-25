@@ -86,6 +86,7 @@ from nominal_refactor_advisor.codemod import (
     RecipeCallReplacement,
     SelectionCountExpectation,
     SourceRewriteTarget,
+    SourceRewriteSimulationPayload,
     SourceIndexTargetSelector,
     TargetSetExpressionSelector,
     apply_codemod_simulation,
@@ -650,6 +651,7 @@ def test_codemod_source_snapshot_executes_recipe_document(
     diff = snapshot.unified_diff(simulation.simulation)
 
     assert simulation.is_clean is True
+    assert isinstance(simulation.simulation_payload(), SourceRewriteSimulationPayload)
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+        return AlphaAuthority.run(value)" in diff
     assert simulation.apply() == (module_path.as_posix(),)
@@ -9638,6 +9640,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import ParseCacheRequest
+    from nominal_refactor_advisor import SourceRewriteSimulationPayload
 
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),
@@ -9647,6 +9650,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
     assert ParseCacheRequest(enabled=True).enabled is True
+    assert SourceRewriteSimulationPayload.__name__ == "SourceRewriteSimulationPayload"
     assert delta.removed_finding_ids == ("a",)
     assert delta.added_finding_ids == ("c",)
     assert delta.fulfilled_expected_removals(("a",)) is True

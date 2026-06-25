@@ -7197,14 +7197,26 @@ class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
                 f"{self.guard_subject} still violates "
                 f"{self.architecture_guard_report.violation_count} "
                 "architecture guard(s)"
-            )
+        )
         return apply_codemod_simulation(self.simulation)
 
-    def simulation_payload(self) -> JsonObject:
+    def simulation_payload(self) -> SourceRewriteSimulationPayload:
+        return SourceRewriteSimulationPayload(
+            result=self,
+        )
+
+
+@dataclass(frozen=True)
+class SourceRewriteSimulationPayload:
+    """Nominal JSON payload for guarded source rewrite simulation results."""
+
+    result: SourceRewriteSimulationResult
+
+    def to_dict(self) -> JsonObject:
         return {
-            "simulation": self.simulation.to_dict(),
-            "architecture_guard_report": self.architecture_guard_report.to_dict(),
-            "is_clean": self.is_clean,
+            "simulation": self.result.simulation.to_dict(),
+            "architecture_guard_report": self.result.architecture_guard_report.to_dict(),
+            "is_clean": self.result.is_clean,
         }
 
 
@@ -7222,7 +7234,7 @@ class RefactorRecipeSimulation(SourceRewriteSimulationResult):
     def to_dict(self) -> JsonObject:
         return {
             "recipe": self.recipe.to_dict(),
-            **self.simulation_payload(),
+            **self.simulation_payload().to_dict(),
         }
 
 
@@ -7240,7 +7252,7 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
     def to_dict(self) -> JsonObject:
         return {
             "document": self.document.to_dict(),
-            **self.simulation_payload(),
+            **self.simulation_payload().to_dict(),
         }
 
 
