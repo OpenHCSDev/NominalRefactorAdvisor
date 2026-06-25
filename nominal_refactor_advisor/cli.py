@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
@@ -237,9 +238,7 @@ _CLI_ARGUMENT_SPECS = (
             action="store_false",
             dest="auto_context_root",
             default=True,
-            help=(
-                "Do not infer package-level context roots for file-only scans."
-            ),
+            help=("Do not infer package-level context roots for file-only scans."),
         ),
         CliArgumentSpec(
             flags=("--no-cache",),
@@ -363,8 +362,8 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             help=(
                 "Load caller-supplied authority boundary codemod plan JSON. "
-                "Plans enable simulatable rewrites for semantic agent-required "
-                "candidates."
+                "Use '-' to read the plan from stdin. Plans enable "
+                "simulatable rewrites for semantic agent-required candidates."
             ),
         ),
         CliArgumentSpec(
@@ -390,9 +389,9 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             nargs="+",
             help=(
-                "Load one or more codemod plan JSON documents, compose them in "
-                "argument order, emit a normalized CodemodPlanDocument, and exit "
-                "without scanning."
+                "Load one or more codemod plan JSON documents; use '-' for one "
+                "stdin document. Compose them in argument order, emit a "
+                "normalized CodemodPlanDocument, and exit without scanning."
             ),
         ),
         CliArgumentSpec(
@@ -435,7 +434,8 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             help=(
                 "Load one codemod target selector JSON object, resolve it "
-                "against scanned paths, emit selected target rows, and exit."
+                "against scanned paths, emit selected target rows, and exit. "
+                "Use '-' to read the selector from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -444,7 +444,7 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Load one codemod target selector JSON object, resolve it "
                 "against scanned paths, emit exact selected target source spans, "
-                "and exit."
+                "and exit. Use '-' to read the selector from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -453,7 +453,8 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Load one codemod target selector JSON object, resolve it "
                 "against scanned paths, emit an editable replacement-source "
-                "CodemodPlanDocument scaffold, and exit."
+                "CodemodPlanDocument scaffold, and exit. Use '-' to read "
+                "the selector from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -462,7 +463,8 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "Load one codemod target selector JSON object and, with "
                 "--codemod-operation-template, emit an editable "
-                "apply-selected-targets CodemodPlanDocument scaffold."
+                "apply-selected-targets CodemodPlanDocument scaffold. Use '-' "
+                "to read the selector from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -470,7 +472,8 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             help=(
                 "JSON object or array of target-local operation templates used "
-                "by --codemod-selected-operation-plan."
+                "by --codemod-selected-operation-plan. Use '-' to read "
+                "templates from stdin."
             ),
         ),
         CliArgumentSpec(
@@ -579,10 +582,8 @@ class JsonPayloadBuilder:
                     self.impact_ranking,
                     source_index,
                 )
-                codemod_candidates = (
-                    source_snapshot.candidates_with_automated_rewrites(
-                        codemod_candidates,
-                    )
+                codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
+                    codemod_candidates,
                 )
         payload["semantic_refactor_gate"] = (
             SemanticRefactorGateReport.from_optional_scan(
@@ -603,6 +604,71 @@ class JsonPayloadBuilder:
         return payload
 
 
+STDIN_JSON_DOCUMENT_TOKEN = "-"
+
+
+@dataclass(frozen=True)
+class JsonDocumentSource:
+    """CLI JSON source backed by one path or the stdin token."""
+
+    path: Path
+
+    @property
+    def reads_stdin(self) -> bool:
+        return self.path.as_posix() == STDIN_JSON_DOCUMENT_TOKEN
+
+    def load(self) -> JsonValue:
+        if self.reads_stdin:
+            return cast(JsonValue, json.loads(sys.stdin.read()))
+        return cast(JsonValue, json.loads(self.path.read_text(encoding="utf-8")))
+
+
+@dataclass(frozen=True)
+class JsonDocumentInput:
+    """One user-facing CLI option that may consume a JSON document."""
+
+    option_name: str
+    path: Path
+
+    @property
+    def reads_stdin(self) -> bool:
+        return JsonDocumentSource(self.path).reads_stdin
+
+
+@dataclass(frozen=True)
+class JsonDocumentInputSet:
+    """Validate stdin document use across one CLI invocation."""
+
+    inputs: tuple[JsonDocumentInput, ...]
+
+    @classmethod
+    def from_option_paths(
+        cls,
+        option_paths: tuple[tuple[str, tuple[Path | None, ...]], ...],
+    ) -> "JsonDocumentInputSet":
+        return cls(
+            tuple(
+                JsonDocumentInput(option_name, path)
+                for option_name, paths in option_paths
+                for path in paths
+                if path is not None
+            )
+        )
+
+    @property
+    def stdin_inputs(self) -> tuple[JsonDocumentInput, ...]:
+        return tuple(item for item in self.inputs if item.reads_stdin)
+
+    def require_at_most_one_stdin(self, parser: argparse.ArgumentParser) -> None:
+        if len(self.stdin_inputs) <= 1:
+            return
+        option_names = ", ".join(item.option_name for item in self.stdin_inputs)
+        parser.error(
+            "stdin JSON document token '-' can be used by only one codemod "
+            f"document option per invocation: {option_names}"
+        )
+
+
 def load_authority_boundary_plans(path: Path) -> tuple[AuthorityBoundaryPlan, ...]:
     """Load caller-supplied authority boundary plans from JSON."""
 
@@ -614,7 +680,7 @@ def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
 
     payload = cast(
         JsonObject | JsonArray,
-        json.loads(path.read_text(encoding="utf-8")),
+        JsonDocumentSource(path).load(),
     )
     return CodemodPlanDocument.from_json_value(payload)
 
@@ -622,7 +688,7 @@ def load_codemod_plan_document(path: Path) -> CodemodPlanDocument:
 def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
     """Load one registry-backed codemod target selector from JSON."""
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = JsonDocumentSource(path).load()
     if not isinstance(payload, Mapping):
         raise ValueError("codemod selector JSON must be an object")
     return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
@@ -633,7 +699,7 @@ def load_codemod_operation_templates(
 ) -> tuple[RefactorRecipeOperationTemplate, ...]:
     """Load one or more target-local codemod operation templates from JSON."""
 
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = JsonDocumentSource(path).load()
     if isinstance(payload, Mapping):
         return (
             RefactorRecipeOperationTemplate.from_json_value(
@@ -1405,10 +1471,13 @@ class CodemodComposePlansCliCommand(CliEarlyExitCommand):
         return self.args.codemod_compose_plans is not None
 
     def run(self) -> int:
+        paths = tuple(self.args.codemod_compose_plans)
+        JsonDocumentInputSet.from_option_paths(
+            (("--codemod-compose-plans", paths),)
+        ).require_at_most_one_stdin(self.parser)
         try:
             document = CodemodPlanDocument.compose(
-                load_codemod_plan_document(path)
-                for path in self.args.codemod_compose_plans
+                load_codemod_plan_document(path) for path in paths
             )
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
@@ -1868,9 +1937,7 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                     finding_recipe_plan.synthesis_report.authoring_report().to_dict()
                 )
             print(json.dumps(payload, indent=2))
-            return CodemodSynthesisExitCodeAuthority(
-                simulation.is_clean
-            ).exit_code()
+            return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
         if (
             self.args.codemod_synthesize_document_only
             and self.args.codemod_synthesis_authoring
@@ -2061,6 +2128,19 @@ def main() -> int:
     config = DetectorConfig.from_namespace(args)
     codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(args)
     codemod_scan_query_mode.require_valid(parser)
+    JsonDocumentInputSet.from_option_paths(
+        (
+            ("--codemod-plan", (args.codemod_plan,)),
+            ("--codemod-resolve-selector", (args.codemod_resolve_selector,)),
+            ("--codemod-target-source", (args.codemod_target_source,)),
+            ("--codemod-replacement-plan", (args.codemod_replacement_plan,)),
+            (
+                "--codemod-selected-operation-plan",
+                (args.codemod_selected_operation_plan,),
+            ),
+            ("--codemod-operation-template", (args.codemod_operation_template,)),
+        )
+    ).require_at_most_one_stdin(parser)
     codemod_execution_mode = CodemodExecutionMode.from_namespace(args)
     codemod_execution_mode.require_valid(parser)
     codemod_requested = (
@@ -2070,9 +2150,7 @@ def main() -> int:
         or codemod_scan_query_mode.requested
     )
     if args.codemod_synthesis_authoring and not args.codemod_synthesize_plan:
-        parser.error(
-            "--codemod-synthesis-authoring requires --codemod-synthesize-plan"
-        )
+        parser.error("--codemod-synthesis-authoring requires --codemod-synthesize-plan")
     codemod_plan_document = (
         load_codemod_plan_document(args.codemod_plan)
         if args.codemod_plan is not None

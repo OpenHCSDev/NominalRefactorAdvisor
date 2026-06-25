@@ -158,9 +158,7 @@ class RefactorRecipeOperationKind(StrEnum):
 
     ADD_CLASS_BASE = "add_class_base"
     APPLY_SELECTED_TARGETS = "apply_selected_targets"
-    CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = (
-        "convert_manual_registry_to_autoregister"
-    )
+    CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = "convert_manual_registry_to_autoregister"
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
     DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
     DELETE_SELECTED_TARGETS = "delete_selected_targets"
@@ -1217,8 +1215,7 @@ class SelectionCountExpectation:
         unknown_fields = tuple(sorted(set(payload) - {"min", "max", "exact"}))
         if unknown_fields:
             raise ValueError(
-                "Unsupported selection_count field(s): "
-                f"{', '.join(unknown_fields)}"
+                "Unsupported selection_count field(s): " f"{', '.join(unknown_fields)}"
             )
         expectation = cls(
             minimum=cls.optional_non_negative_int(payload, "min"),
@@ -1306,9 +1303,9 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
     field_name: str
     constructor_argument_name: str
     value_projector: Callable[[PayloadOwnerT], JsonValue]
-    constructor_value_reader: Callable[
-        [PayloadSourceT, str], PayloadValueT
-    ] = required_source_plan_payload_string
+    constructor_value_reader: Callable[[PayloadSourceT, str], PayloadValueT] = (
+        required_source_plan_payload_string
+    )
     dsl_value_kind: CodemodDslFieldKind | None = None
 
     def constructor_kwargs(
@@ -1322,9 +1319,7 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
             )
         }
 
-    def payload_items(
-        self, owner: PayloadOwnerT
-    ) -> tuple[tuple[str, JsonValue], ...]:
+    def payload_items(self, owner: PayloadOwnerT) -> tuple[tuple[str, JsonValue], ...]:
         return ((self.field_name, self.value_projector(owner)),)
 
 
@@ -1337,7 +1332,9 @@ def selector_payload_bindings(
             Callable[[Mapping[str, JsonValue], str], JsonValue],
         ]
     ],
-) -> tuple[PayloadBinding["CodemodTargetSelector", Mapping[str, JsonValue], JsonValue], ...]:
+) -> tuple[
+    PayloadBinding["CodemodTargetSelector", Mapping[str, JsonValue], JsonValue], ...
+]:
     return tuple(
         PayloadBinding(
             field_name=field_name,
@@ -1509,16 +1506,14 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "finding_ids",
-                    "finding_ids",
-                    lambda selector: selector.finding_ids,
-                    SelectorPayloadReader.string_tuple,
-                ),
-            )
+                "finding_ids",
+                "finding_ids",
+                lambda selector: selector.finding_ids,
+                SelectorPayloadReader.string_tuple,
+            ),
         )
     )
 
@@ -1549,28 +1544,26 @@ class TargetSetExpressionSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "include",
-                    "include",
-                    lambda selector: tuple(item.to_dict() for item in selector.include),
-                    SelectorPayloadReader.selector_tuple,
-                ),
-                (
-                    "require",
-                    "require",
-                    lambda selector: tuple(item.to_dict() for item in selector.require),
-                    SelectorPayloadReader.selector_tuple,
-                ),
-                (
-                    "exclude",
-                    "exclude",
-                    lambda selector: tuple(item.to_dict() for item in selector.exclude),
-                    SelectorPayloadReader.selector_tuple,
-                ),
-            )
+                "include",
+                "include",
+                lambda selector: tuple(item.to_dict() for item in selector.include),
+                SelectorPayloadReader.selector_tuple,
+            ),
+            (
+                "require",
+                "require",
+                lambda selector: tuple(item.to_dict() for item in selector.require),
+                SelectorPayloadReader.selector_tuple,
+            ),
+            (
+                "exclude",
+                "exclude",
+                lambda selector: tuple(item.to_dict() for item in selector.exclude),
+                SelectorPayloadReader.selector_tuple,
+            ),
         )
     )
 
@@ -1631,48 +1624,46 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "node_kinds",
-                    "node_kinds",
-                    lambda selector: tuple(
-                        node_kind.value for node_kind in selector.node_kinds
-                    ),
-                    SelectorPayloadReader.node_kind_tuple,
+                "node_kinds",
+                "node_kinds",
+                lambda selector: tuple(
+                    node_kind.value for node_kind in selector.node_kinds
                 ),
-                (
-                    "file_paths",
-                    "file_paths",
-                    lambda selector: selector.file_paths,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "qualnames",
-                    "qualnames",
-                    lambda selector: selector.qualnames,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "file_path_patterns",
-                    "file_path_patterns",
-                    lambda selector: selector.file_path_patterns,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "name_patterns",
-                    "name_patterns",
-                    lambda selector: selector.name_patterns,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "qualname_patterns",
-                    "qualname_patterns",
-                    lambda selector: selector.qualname_patterns,
-                    SelectorPayloadReader.string_tuple,
-                ),
-            )
+                SelectorPayloadReader.node_kind_tuple,
+            ),
+            (
+                "file_paths",
+                "file_paths",
+                lambda selector: selector.file_paths,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "qualnames",
+                "qualnames",
+                lambda selector: selector.qualnames,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "file_path_patterns",
+                "file_path_patterns",
+                lambda selector: selector.file_path_patterns,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "name_patterns",
+                "name_patterns",
+                lambda selector: selector.name_patterns,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "qualname_patterns",
+                "qualname_patterns",
+                lambda selector: selector.qualname_patterns,
+                SelectorPayloadReader.string_tuple,
+            ),
         )
     )
 
@@ -1712,34 +1703,32 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "class_symbols",
-                    "class_symbols",
-                    lambda selector: selector.class_symbols,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "include_self",
-                    "include_self",
-                    lambda selector: selector.include_self,
-                    SelectorPayloadReader.true_bool,
-                ),
-                (
-                    "include_ancestors",
-                    "include_ancestors",
-                    lambda selector: selector.include_ancestors,
-                    SelectorPayloadReader.false_bool,
-                ),
-                (
-                    "include_descendants",
-                    "include_descendants",
-                    lambda selector: selector.include_descendants,
-                    SelectorPayloadReader.false_bool,
-                ),
-            )
+                "class_symbols",
+                "class_symbols",
+                lambda selector: selector.class_symbols,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "include_self",
+                "include_self",
+                lambda selector: selector.include_self,
+                SelectorPayloadReader.true_bool,
+            ),
+            (
+                "include_ancestors",
+                "include_ancestors",
+                lambda selector: selector.include_ancestors,
+                SelectorPayloadReader.false_bool,
+            ),
+            (
+                "include_descendants",
+                "include_descendants",
+                lambda selector: selector.include_descendants,
+                SelectorPayloadReader.false_bool,
+            ),
         )
     )
 
@@ -1793,34 +1782,32 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "parent_symbols",
-                    "parent_symbols",
-                    lambda selector: selector.parent_symbols,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "child_symbols",
-                    "child_symbols",
-                    lambda selector: selector.child_symbols,
-                    SelectorPayloadReader.string_tuple,
-                ),
-                (
-                    "include_parents",
-                    "include_parents",
-                    lambda selector: selector.include_parents,
-                    SelectorPayloadReader.true_bool,
-                ),
-                (
-                    "include_children",
-                    "include_children",
-                    lambda selector: selector.include_children,
-                    SelectorPayloadReader.true_bool,
-                ),
-            )
+                "parent_symbols",
+                "parent_symbols",
+                lambda selector: selector.parent_symbols,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "child_symbols",
+                "child_symbols",
+                lambda selector: selector.child_symbols,
+                SelectorPayloadReader.string_tuple,
+            ),
+            (
+                "include_parents",
+                "include_parents",
+                lambda selector: selector.include_parents,
+                SelectorPayloadReader.true_bool,
+            ),
+            (
+                "include_children",
+                "include_children",
+                lambda selector: selector.include_children,
+                SelectorPayloadReader.true_bool,
+            ),
         )
     )
 
@@ -1896,16 +1883,14 @@ class CallSiteTargetSelector(CodemodTargetSelector):
             ],
             ...,
         ]
-    ] = (
-        selector_payload_bindings(
+    ] = selector_payload_bindings(
+        (
             (
-                (
-                    "callee_names",
-                    "callee_names",
-                    lambda selector: selector.callee_names,
-                    SelectorPayloadReader.string_tuple,
-                ),
-            )
+                "callee_names",
+                "callee_names",
+                lambda selector: selector.callee_names,
+                SelectorPayloadReader.string_tuple,
+            ),
         )
     )
 
@@ -2159,18 +2144,14 @@ class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
     ) -> "CodemodPlanDocument":
         recipe = RefactorRecipe(
             recipe_id="selected-operation-plan-scaffold",
-            reason=(
-                "Apply target-local operation templates to the resolved selector."
-            ),
+            reason=("Apply target-local operation templates to the resolved selector."),
             operations=(
                 ApplySelectedTargetsOperation(
                     target=SourceRewriteTarget(),
                     selector=selector,
                     selection_count=SelectionCountExpectation(exact=selected_count),
                     operation_templates=operation_templates,
-                    rationale=(
-                        "Apply operation templates to the selected target set."
-                    ),
+                    rationale=("Apply operation templates to the selected target set."),
                 ),
             ),
         )
@@ -2383,10 +2364,7 @@ class OperationTemplateTargetContext:
         if isinstance(value, (list, tuple)):
             return tuple(self.expanded_json_value(item) for item in value)
         if isinstance(value, dict):
-            return {
-                key: self.expanded_json_value(item)
-                for key, item in value.items()
-            }
+            return {key: self.expanded_json_value(item) for key, item in value.items()}
         return value
 
     def expanded_string(self, value: str) -> str:
@@ -2999,19 +2977,26 @@ class RefactorRecipeOperation(
         del selector_context
         return self.line_replacements(source_index, source_by_path)
 
+    def target_digest(
+        self,
+        source_index: SourceIndex,
+    ) -> tuple[str, AstTargetDigest]:
+        target_identifier = self.target.required_identifier(source_index)
+        return target_identifier, source_index.target_by_id[target_identifier]
+
     def target_node(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[str, AstTargetDigest, _TargetNode]:
-        target_identifier = self.target.required_identifier(source_index)
+        target_identifier, target_digest = self.target_digest(source_index)
         nodes_by_target_identifier = AstTargetNodeIndex(
             source_index,
             source_by_path,
         ).nodes_by_target_identifier()
         return (
             target_identifier,
-            source_index.target_by_id[target_identifier],
+            target_digest,
             nodes_by_target_identifier[target_identifier],
         )
 
@@ -3100,7 +3085,7 @@ class ReplaceTextOperation(RefactorRecipeOperation):
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        _, target_digest, _ = self.target_node(source_index, source_by_path)
+        _, target_digest = self.target_digest(source_index)
         return (
             SourceTargetEditor(source_by_path, target_digest).exact_text_replacement(
                 self.old_source,
@@ -5168,15 +5153,15 @@ class ConvertManualRegistryToAutoregisterOperation(
         if pair is None:
             return ()
         return tuple(
-                SourceLineReplacement(
-                    file_path=source_path,
-                    start_line=decorator.lineno,
-                    end_line=decorator.end_lineno or decorator.lineno,
-                    replacement_lines=(),
-                    rationale=self.rationale_text(
-                        f"Delete manual registration decorator for {node.name!r}."
-                    ),
-                )
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=decorator.lineno,
+                end_line=decorator.end_lineno or decorator.lineno,
+                replacement_lines=(),
+                rationale=self.rationale_text(
+                    f"Delete manual registration decorator for {node.name!r}."
+                ),
+            )
             for decorator in node.decorator_list
             if self.decorator_matches_registration(decorator, pair)
         )
@@ -5256,6 +5241,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             replacement_lines=(),
             rationale=self.rationale_text("Delete manual registry write."),
         )
+
 
 @dataclass(frozen=True)
 class DispatchPolymorphismCase:
@@ -5559,10 +5545,7 @@ class DispatchPolymorphismSource(DispatchPolymorphismFamilySpec):
 
     @staticmethod
     def return_statement_lines(statement: ast.Return) -> tuple[str, ...]:
-        return tuple(
-            f"        {line}"
-            for line in ast.unparse(statement).splitlines()
-        )
+        return tuple(f"        {line}" for line in ast.unparse(statement).splitlines())
 
     def case_class_name(self, literal_source: str) -> str:
         literal_name = literal_source.strip("'\"")
@@ -5765,6 +5748,7 @@ class DispatchToPolymorphismOperation(
             and target.matches_symbol(self.base_name)
             for target in source_index.ast_targets
         )
+
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionSignatureOperation(StringPayloadOperation):
@@ -6044,9 +6028,7 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
         ),
         CodemodDslPayloadReaderProfileRule(
             RecipeCallReplacement.tuple_from_payload,
-            CodemodDslPayloadReaderProfile(
-                CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY
-            ),
+            CodemodDslPayloadReaderProfile(CodemodDslFieldKind.CALL_REPLACEMENT_ARRAY),
         ),
         CodemodDslPayloadReaderProfileRule(
             SelectorPayloadReader.required_string,
@@ -6387,9 +6369,13 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
             "operation": self.operation,
             "class_name": self.class_name,
             "description": self.description,
-            "target_fields": tuple(field.to_dict() for field in codemod_target_fields()),
+            "target_fields": tuple(
+                field.to_dict() for field in codemod_target_fields()
+            ),
             "payload_fields": self.payload_field_dicts(),
-            "common_fields": tuple(field.to_dict() for field in codemod_common_fields()),
+            "common_fields": tuple(
+                field.to_dict() for field in codemod_common_fields()
+            ),
             "supports_selection_count": self.supports_selection_count,
             "example_payload": self.example_payload(),
         }
@@ -6401,10 +6387,7 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
         }
         payload.update(codemod_dsl_target_example_payload())
         payload.update(
-            {
-                field.field_name: field.example_value()
-                for field in self.payload_fields
-            }
+            {field.field_name: field.example_value() for field in self.payload_fields}
         )
         if self.supports_selection_count:
             payload[SELECTION_COUNT_PAYLOAD_FIELD] = {"exact": 1}
@@ -6446,8 +6429,7 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
         return {
             "selector": self.selector,
             **{
-                field.field_name: field.example_value()
-                for field in self.payload_fields
+                field.field_name: field.example_value() for field in self.payload_fields
             },
         }
 
@@ -6514,9 +6496,7 @@ def codemod_dsl_example_plan_document() -> CodemodPlanDocument:
             RefactorRecipe(
                 recipe_id="codemod-dsl-example",
                 operations=tuple(
-                    RefactorRecipeOperation.from_dict(
-                        operation.example_payload()
-                    )
+                    RefactorRecipeOperation.from_dict(operation.example_payload())
                     for operation in operation_manifests
                 ),
                 reason="Starter document for registry-derived codemod DSL authoring.",
@@ -8712,7 +8692,7 @@ class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
                 f"{self.guard_subject} still violates "
                 f"{self.architecture_guard_report.violation_count} "
                 "architecture guard(s)"
-        )
+            )
         return apply_codemod_simulation(self.simulation)
 
     def simulation_payload(self) -> SourceRewriteSimulationPayload:
@@ -8874,8 +8854,7 @@ class FindingRecipeSynthesisAuthoringReport(FindingRecipeSynthesisReportView):
 
     def record_payloads(self) -> tuple[JsonObject, ...]:
         return tuple(
-            record.authoring_record().to_dict()
-            for record in self.source_report.records
+            record.authoring_record().to_dict() for record in self.source_report.records
         )
 
     @property
@@ -8952,7 +8931,9 @@ class FindingRecipeSynthesisRecord(FindingRecipeSynthesisRecordIdentity):
             "capability_gap": self.capability_gap,
             "status": self.status.value,
             "synthesizer_name": self.synthesizer_name,
-            "action_keys": tuple(action_key.to_dict() for action_key in self.action_keys),
+            "action_keys": tuple(
+                action_key.to_dict() for action_key in self.action_keys
+            ),
             "recipe_id": self.recipe_id,
             "reason": self.reason,
             "scaffold": self.scaffold,
@@ -9058,7 +9039,9 @@ class RejectedFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
 class PlannedFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
     """The bridge produced an executable recipe."""
 
-    status: ClassVar[FindingRecipeSynthesisStatus] = FindingRecipeSynthesisStatus.PLANNED
+    status: ClassVar[FindingRecipeSynthesisStatus] = (
+        FindingRecipeSynthesisStatus.PLANNED
+    )
 
 
 @dataclass(frozen=True)
@@ -9930,8 +9913,7 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         class_key_pairs: tuple[str, ...],
     ) -> bool:
         class_names = tuple(
-            ClassRegistryKeyPair.parse(source).class_name
-            for source in class_key_pairs
+            ClassRegistryKeyPair.parse(source).class_name for source in class_key_pairs
         )
         targets = ClassMemberPromotionTargets.resolve_or_none(
             context,
@@ -11586,9 +11568,7 @@ class DetectorClassNameStem:
     stem: str
     value: str
 
-    pattern: ClassVar[re.Pattern[str]] = re.compile(
-        r"^(?P<stem>.+)Detector$"
-    )
+    pattern: ClassVar[re.Pattern[str]] = re.compile(r"^(?P<stem>.+)Detector$")
 
     @classmethod
     def parse(cls, class_name: str) -> "DetectorClassNameStem | None":

@@ -760,6 +760,58 @@ def test_replace_text_operation_allows_empty_json_replacement(
     assert "obsolete_flag" not in module_path.read_text()
 
 
+def test_replace_text_operation_can_target_module_source(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "import json\n\nVALUE = 1\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    module_target = next(
+        target
+        for target in source_index.target_by_id.values()
+        if target.file_path == module_path.as_posix() and target.is_module
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "replace-module-import",
+                        "operations": [
+                            {
+                                "operation": "replace_text",
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": module_target.qualname,
+                                "old_source": "import json\n",
+                                "new_source": "import json\nimport sys\n",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = load_codemod_plan_document(plan_path).simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    assert "import sys" in module_path.read_text()
+
+
 def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     tmp_path: Path,
 ) -> None:
@@ -9305,9 +9357,7 @@ def test_codemod_dsl_example_plan_document_round_trips() -> None:
     operation_payloads = tuple(
         operation.to_dict() for operation in parsed_document.recipes[0].operations
     )
-    assert any(
-        payload["operation"] == "replace_text" for payload in operation_payloads
-    )
+    assert any(payload["operation"] == "replace_text" for payload in operation_payloads)
     assert any(
         payload["operation"] == "move_symbol_to_module"
         and payload["destination_path"] == "<destination_path>"
@@ -9506,9 +9556,120 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
         "replace-alpha",
         "ensure-modern-import",
     ]
-    assert validation_payload["architecture_guards"][0]["rule_id"] == (
-        "alpha-boundary"
+    assert validation_payload["architecture_guards"][0]["rule_id"] == ("alpha-boundary")
+
+
+def test_module_cli_validates_codemod_plan_from_stdin() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-plan",
+                "operations": [
+                    {
+                        "operation": "ensure_import",
+                        "file_path": "pkg/mod.py",
+                        "import_source": "from pkg.modern import modern\n",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-plan",
+            "-",
+            "--codemod-validate-plan",
+        ],
+        cwd=repo_root,
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
     )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["recipes"][0]["recipe_id"] == "stdin-plan"
+
+
+def test_module_cli_rejects_multiple_compose_stdin_documents() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-compose-plans",
+            "-",
+            "-",
+        ],
+        cwd=repo_root,
+        input="{}",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "stdin JSON document token '-'" in result.stderr
+
+
+def test_module_cli_simulates_codemod_plan_from_stdin(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    plan_payload = {
+        "recipes": [
+            {
+                "recipe_id": "stdin-simulate-alpha",
+                "operations": [
+                    {
+                        "operation": "replace_text",
+                        "file_path": module_path.as_posix(),
+                        "target_qualname": "Alpha.run",
+                        "old_source": "return value",
+                        "new_source": "return value + 1",
+                    }
+                ],
+            }
+        ]
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            "-",
+            "--codemod-simulate",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input=json.dumps(plan_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 1
+    assert payload["parse_valid"] is True
+    assert "+        return value + 1" in payload["unified_diff"]
+    assert "return value + 1" not in module_path.read_text()
 
 
 def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
@@ -9598,9 +9759,10 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     selector_payload = records[0]["evidence_selector"]
 
     assert result.returncode == 0, result.stderr
-    assert records[0]["finding_id"] == payload["synthesis_report"]["records"][0][
-        "finding_id"
-    ]
+    assert (
+        records[0]["finding_id"]
+        == payload["synthesis_report"]["records"][0]["finding_id"]
+    )
     assert selector_payload["selector"] == "finding_evidence_target"
     assert selector_payload["finding_ids"] == [records[0]["finding_id"]]
 
@@ -9713,9 +9875,7 @@ def test_module_cli_emits_codemod_source_index_targets(tmp_path: Path) -> None:
         check=False,
     )
     payload = json.loads(result.stdout)
-    targets_by_qualname = {
-        target["qualname"]: target for target in payload["targets"]
-    }
+    targets_by_qualname = {target["qualname"]: target for target in payload["targets"]}
 
     assert result.returncode == 0, result.stderr
     assert payload["target_count"] == 3
@@ -9766,6 +9926,44 @@ def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
     assert payload["selected_targets"][0]["qualname"] == "Alpha.run"
     assert payload["selected_targets"][0]["node_type"] == "method"
     assert payload["missing_target_ids"] == []
+
+
+def test_module_cli_resolves_codemod_target_selector_from_stdin(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    selector_payload = {
+        "selector": "source_index_target",
+        "node_kinds": ["method"],
+        "qualnames": ["Alpha.run"],
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-resolve-selector",
+            "-",
+        ],
+        cwd=repo_root,
+        input=json.dumps(selector_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["selected_count"] == 1
+    assert payload["selected_targets"][0]["qualname"] == "Alpha.run"
 
 
 def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
@@ -10011,9 +10209,101 @@ def test_module_cli_scaffolds_selected_operation_plan(
     assert simulate_payload["applied"] is False
     assert simulate_payload["applied_rewrite_count"] == 2
     assert simulate_payload["parse_valid"] is True
-    assert "+        return modern('Alpha.run', value)" in simulate_payload["unified_diff"]
-    assert "+        return modern('Beta.run', value)" in simulate_payload["unified_diff"]
+    assert (
+        "+        return modern('Alpha.run', value)" in simulate_payload["unified_diff"]
+    )
+    assert (
+        "+        return modern('Beta.run', value)" in simulate_payload["unified_diff"]
+    )
     assert "modern('Alpha.run', value)" not in module_path.read_text()
+
+
+def test_module_cli_scaffolds_selected_operation_plan_from_stdin_template(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return legacy(value)\n",
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "file_paths": [module_path.as_posix()],
+                "qualnames": ["Alpha.run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    template_payload = {
+        "operation": "replace_text",
+        "old_source": "legacy(value)",
+        "new_source": "modern('${target.qualname}', value)",
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            selector_path.as_posix(),
+            "--codemod-operation-template",
+            "-",
+        ],
+        cwd=repo_root,
+        input=json.dumps(template_payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["selected_count"] == 1
+    assert payload["operation_templates"][0]["operation"] == "replace_text"
+    assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
+        "apply_selected_targets"
+    )
+
+
+def test_module_cli_rejects_multiple_scan_query_stdin_documents(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            "-",
+            "--codemod-operation-template",
+            "-",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        input="{}",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "stdin JSON document token '-'" in result.stderr
 
 
 def test_load_codemod_plan_document_includes_architecture_guards(
@@ -10973,14 +11263,8 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     ]
     assert iteration["simulation"]["applied_rewrite_count"] == 1
     assert iteration["simulation"]["parse_valid"] is True
-    assert (
-        iteration["finding_delta"]["confirmed_expected_removed_finding_count"]
-        == 1
-    )
-    assert (
-        iteration["finding_delta"]["surviving_expected_removed_finding_count"]
-        == 0
-    )
+    assert iteration["finding_delta"]["confirmed_expected_removed_finding_count"] == 1
+    assert iteration["finding_delta"]["surviving_expected_removed_finding_count"] == 0
     assert iteration["finding_delta"]["fulfilled_expected_removals"] is True
     assert terminal_iteration["applied"] is False
     assert terminal_iteration["recipe_count"] == 0
@@ -12703,9 +12987,7 @@ def test_module_cli_can_disable_auto_context_root_for_file_scope(
 
     assert result.returncode == 0, result.stderr
     assert {
-        target["qualname"]
-        for target in ast_targets
-        if target["node_type"] == "class"
+        target["qualname"] for target in ast_targets if target["node_type"] == "class"
     } == {"Alpha"}
     assert not any(
         finding["detector_id"] == "class_level_inheritance_optimization"
