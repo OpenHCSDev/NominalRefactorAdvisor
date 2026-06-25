@@ -544,6 +544,14 @@ _CLI_ARGUMENT_SPECS = (
             default=8,
             help="Maximum apply/rescan iterations for --codemod-fixpoint.",
         ),
+        CliArgumentSpec(
+            flags=("--codemod-fixpoint-plan-out",),
+            value_type=Path,
+            help=(
+                "With --codemod-fixpoint, write the replayable staged "
+                "CodemodPlanSequence JSON synthesized by the fixpoint run."
+            ),
+        ),
     )
     + _config_argument_specs()
     + (
@@ -2685,6 +2693,8 @@ def main() -> int:
         parser.error(
             "--codemod-continuation-plan-out requires --codemod-project-findings"
         )
+    if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
+        parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
@@ -2862,6 +2872,12 @@ def main() -> int:
                 findings=findings,
             ),
         ).run()
+        if args.codemod_fixpoint_plan_out is not None:
+            args.codemod_fixpoint_plan_out.parent.mkdir(parents=True, exist_ok=True)
+            args.codemod_fixpoint_plan_out.write_text(
+                json.dumps(report.replay_plan.sequence.to_dict(), indent=2) + "\n",
+                encoding="utf-8",
+            )
         if args.json:
             print(json.dumps(report.to_dict(), indent=2))
         else:

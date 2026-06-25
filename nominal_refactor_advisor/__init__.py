@@ -87,6 +87,7 @@ from .codemod_workflow import (
     CodemodFindingDelta,
     CodemodFixpointIteration,
     CodemodFixpointReport,
+    CodemodFixpointReplayPlan,
     CodemodFixpointRunner,
     CodemodFixpointScan,
     CodemodFixpointStopReason,

@@ -369,6 +369,42 @@ class CodemodFixpointIteration:
 
 
 @dataclass(frozen=True)
+class CodemodFixpointReplayPlan:
+    """Runnable staged DSL plan assembled from successful fixpoint iterations."""
+
+    iterations: tuple[CodemodFixpointIteration, ...]
+
+    @property
+    def documents(self) -> tuple[CodemodPlanDocument, ...]:
+        return tuple(
+            iteration.document
+            for iteration in self.iterations
+            if iteration.stop_reason is None
+            and iteration.document is not None
+            and iteration.document.has_recipes
+        )
+
+    @property
+    def sequence(self) -> CodemodPlanSequence:
+        return CodemodPlanSequence(documents=self.documents)
+
+    @property
+    def stage_count(self) -> int:
+        return len(self.documents)
+
+    @property
+    def has_stages(self) -> bool:
+        return self.stage_count > 0
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "stage_count": self.stage_count,
+            "has_stages": self.has_stages,
+            "sequence": self.sequence.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodFixpointReport:
     """Machine-readable result of an iterative DSL codemod workflow."""
 
@@ -422,6 +458,10 @@ class CodemodFixpointReport:
             )
         )
 
+    @property
+    def replay_plan(self) -> CodemodFixpointReplayPlan:
+        return CodemodFixpointReplayPlan(iterations=self.iterations)
+
     def to_dict(self) -> JsonObject:
         return {
             "completed": self.completed,
@@ -433,6 +473,7 @@ class CodemodFixpointReport:
             "changed_file_paths": self.changed_file_paths,
             "simulated_changed_file_paths": self.simulated_changed_file_paths,
             "final_finding_count": self.final_finding_count,
+            "replay_plan": self.replay_plan.to_dict(),
             "iterations": tuple(iteration.to_dict() for iteration in self.iterations),
         }
 

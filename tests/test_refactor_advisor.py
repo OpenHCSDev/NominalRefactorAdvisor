@@ -12244,6 +12244,81 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     assert module_path.read_text() == original_source
 
 
+def test_module_cli_codemod_fixpoint_plan_out_replays_as_staged_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+    replay_plan_path = tmp_path / "fixpoint-replay-plan.json"
+
+    dry_run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-cache",
+            "--codemod-fixpoint",
+            "--codemod-fixpoint-max-iterations",
+            "4",
+            "--codemod-fixpoint-plan-out",
+            replay_plan_path.as_posix(),
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    dry_run_payload = json.loads(dry_run.stdout)
+    replay_payload = json.loads(replay_plan_path.read_text(encoding="utf-8"))
+    replay_sequence = load_codemod_plan_sequence(replay_plan_path)
+
+    assert dry_run.returncode == 0, dry_run.stderr
+    assert dry_run_payload["completed"] is True
+    assert dry_run_payload["applied"] is False
+    assert dry_run_payload["replay_plan"]["stage_count"] == 1
+    assert dry_run_payload["replay_plan"]["has_stages"] is True
+    assert replay_sequence.has_recipes
+    assert len(replay_payload["stages"]) == 1
+    assert (
+        replay_payload["stages"][0]["recipes"][0]["operations"][0]["operation"]
+        == "convert_manual_registry_to_autoregister"
+    )
+    assert module_path.read_text() == original_source
+
+    apply_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-cache",
+            "--codemod-plan",
+            replay_plan_path.as_posix(),
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    apply_payload = json.loads(apply_result.stdout)
+
+    assert apply_result.returncode == 0, apply_result.stderr
+    assert apply_payload["applied"] is True
+    assert apply_payload["applied_rewrite_count"] == 1
+    assert "REGISTRY[" not in module_path.read_text()
+    remaining = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "manual_class_registration"
+    )
+    assert remaining == ()
+
+
 def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
     tmp_path: Path,
 ) -> None:
@@ -12525,6 +12600,7 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
+    from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodDslManifest
     from nominal_refactor_advisor import CodemodPlanJsonParser
@@ -12549,6 +12625,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
 
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert CodemodFixpointReplayPlan.__name__ == "CodemodFixpointReplayPlan"
     assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
     assert (
         CodemodPlanSequenceContinuationReport.__name__
