@@ -9259,6 +9259,91 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
     )
 
 
+def test_module_cli_scaffolds_editable_replacement_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        prepared = value + 1\n"
+            "        return prepared\n"
+        ),
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "qualnames": ["Alpha.run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    scaffold_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-replacement-plan",
+            selector_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    scaffold_payload = json.loads(scaffold_result.stdout)
+    plan_payload = scaffold_payload["document"]
+    rewrite = plan_payload["recipes"][0]["rewrites"][0]
+
+    assert scaffold_result.returncode == 0, scaffold_result.stderr
+    assert scaffold_payload["selected_count"] == 1
+    assert rewrite["target_qualname"] == "Alpha.run"
+    assert rewrite["replacement_source"] == (
+        "    def run(self, value):\n"
+        "        prepared = value + 1\n"
+        "        return prepared\n"
+    )
+
+    rewrite["replacement_source"] = rewrite["replacement_source"].replace(
+        "return prepared",
+        "return prepared + 1",
+    )
+    plan_path = tmp_path / "replacement-plan.json"
+    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
+    simulate_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    simulate_payload = json.loads(simulate_result.stdout)
+
+    assert simulate_result.returncode == 0, simulate_result.stderr
+    assert simulate_payload["applied"] is False
+    assert simulate_payload["parse_valid"] is True
+    assert "+        return prepared + 1" in simulate_payload["unified_diff"]
+    assert "return prepared + 1" not in module_path.read_text()
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:

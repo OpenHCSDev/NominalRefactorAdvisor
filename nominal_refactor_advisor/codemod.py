@@ -61,6 +61,23 @@ PayloadSourceT = TypeVar("PayloadSourceT")
 PayloadValueT = TypeVar("PayloadValueT")
 
 
+def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
+    return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
+
+
+class CodemodJsonReport(ABC, metaclass=AutoRegisterMeta):
+    """Nominal boundary for codemod reports that serialize to JSON."""
+
+    __registry__: ClassVar[dict[str, type["CodemodJsonReport"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = _suffix_trimmed_class_name_registry_key
+    registry_key_suffix: ClassVar[str] = "Report"
+
+    @abstractmethod
+    def to_dict(self) -> JsonObject:
+        raise NotImplementedError
+
+
 class RewriteOperation(StrEnum):
     """Supported source-index anchored rewrite operations."""
 
@@ -222,10 +239,6 @@ SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
 )
 TARGET_TEMPLATE_FIELD_PATTERN = re.compile(r"\$\{target\.([a-z_][a-z0-9_]*)\}")
 UNKNOWN_CONFIDENCE_BASIS = "unknown"
-
-
-def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
-    return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1032,6 +1045,15 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         selector: "CodemodTargetSelector",
     ) -> "CodemodTargetSourceReport":
         return CodemodTargetSourceReport.from_selector_context(selector, self)
+
+    def replacement_plan_scaffold_report(
+        self,
+        selector: "CodemodTargetSelector",
+    ) -> "CodemodReplacementPlanScaffoldReport":
+        return CodemodReplacementPlanScaffoldReport.from_selector_context(
+            selector,
+            self,
+        )
 
     def candidates_with_automated_rewrites(
         self,
@@ -1885,7 +1907,7 @@ class CallSiteTargetSelector(CodemodTargetSelector):
 
 
 @dataclass(frozen=True)
-class CodemodSelectorResolutionReport:
+class CodemodSelectorResolutionReport(CodemodJsonReport):
     """JSON-ready report for a codemod target selector dry run."""
 
     selector: CodemodTargetSelector
@@ -1943,6 +1965,19 @@ class CodemodTargetSourceRecord:
     target: AstTargetDigest
     source: str
 
+    @classmethod
+    def from_context(
+        cls,
+        target: AstTargetDigest,
+        context: CodemodSourceSnapshot,
+    ) -> "CodemodTargetSourceRecord":
+        return cls(
+            target=target,
+            source="".join(
+                SourceTargetEditor(context.sources_by_file_path, target).target_lines
+            ),
+        )
+
     @property
     def line_count(self) -> int:
         return self.target.end_line - self.target.line + 1
@@ -1958,7 +1993,7 @@ class CodemodTargetSourceRecord:
 
 
 @dataclass(frozen=True)
-class CodemodTargetSourceReport:
+class CodemodTargetSourceReport(CodemodJsonReport):
     """JSON-ready exact source spans for selected codemod targets."""
 
     selector_resolution: CodemodSelectorResolutionReport
@@ -1983,13 +2018,7 @@ class CodemodTargetSourceReport:
         return cls(
             selector_resolution=selector_resolution,
             records=tuple(
-                CodemodTargetSourceRecord(
-                    target=target,
-                    source="".join(
-                        SourceTargetEditor(context.sources_by_file_path, target)
-                        .target_lines
-                    ),
-                )
+                CodemodTargetSourceRecord.from_context(target, context)
                 for target in selector_resolution.selected_targets
             ),
         )
@@ -2002,6 +2031,74 @@ class CodemodTargetSourceReport:
                 "selected_target_ids": self.selector_resolution.selected_target_ids,
                 "missing_target_ids": self.selector_resolution.missing_target_ids,
                 "targets": tuple(record.to_dict() for record in self.records),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CodemodReplacementPlanScaffoldReport(CodemodJsonReport):
+    """Editable CodemodPlanDocument seeded with exact selected target source."""
+
+    selector_resolution: CodemodSelectorResolutionReport
+    records: tuple[CodemodTargetSourceRecord, ...]
+    document: "CodemodPlanDocument"
+
+    @property
+    def selected_count(self) -> int:
+        return len(self.records)
+
+    @classmethod
+    def from_selector_context(
+        cls,
+        selector: CodemodTargetSelector,
+        context: CodemodSelectorContext,
+    ) -> "CodemodReplacementPlanScaffoldReport":
+        source_report = CodemodTargetSourceReport.from_selector_context(
+            selector,
+            context,
+        )
+        return cls(
+            selector_resolution=source_report.selector_resolution,
+            records=source_report.records,
+            document=cls.document_for_records(source_report.records),
+        )
+
+    @classmethod
+    def document_for_records(
+        cls,
+        records: Iterable[CodemodTargetSourceRecord],
+    ) -> "CodemodPlanDocument":
+        recipe = RefactorRecipe(
+            recipe_id="selected-target-replacement-scaffold",
+            reason="Edit replacement_source values, then run --codemod-simulate.",
+            rewrites=tuple(cls.rewrite_for_record(record) for record in records),
+        )
+        return CodemodPlanDocument(recipes=(recipe,))
+
+    @staticmethod
+    def rewrite_for_record(
+        record: CodemodTargetSourceRecord,
+    ) -> "RefactorRecipeRewrite":
+        target = record.target
+        return RefactorRecipeRewrite(
+            target=SourceRewriteTarget(
+                target_identifier=target.target_id,
+                qualname=target.qualname,
+                source_path=target.file_path,
+            ),
+            replacement_source=record.source,
+            rationale=f"Exact current source scaffold for {target.qualname}.",
+        )
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "selector": self.selector_resolution.selector.to_dict(),
+                "selected_count": self.selected_count,
+                "selected_target_ids": self.selector_resolution.selected_target_ids,
+                "missing_target_ids": self.selector_resolution.missing_target_ids,
+                "targets": tuple(record.to_dict() for record in self.records),
+                "document": self.document.to_dict(),
             }
         )
 

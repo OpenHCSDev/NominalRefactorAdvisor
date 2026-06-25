@@ -11,7 +11,7 @@ import argparse
 import ast
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
@@ -41,6 +41,7 @@ from .codemod import (
     AuthorityBoundaryRewrite,
     CodemodCandidate,
     CodemodAutomationLevel,
+    CodemodJsonReport,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodTargetSelector,
@@ -118,6 +119,24 @@ CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
 CliArgumentKwargValue: TypeAlias = CliArgumentDefault | CliArgumentValueType
 CodemodCandidateSelection: TypeAlias = tuple[CodemodCandidate, ...] | None
+CodemodSelectorReportFactory: TypeAlias = Callable[
+    [CodemodSourceSnapshot, CodemodTargetSelector],
+    CodemodJsonReport,
+]
+
+
+@dataclass(frozen=True)
+class CodemodSelectorPayloadBuilder:
+    """Build JSON payloads from one declared selector-report authority."""
+
+    report_factory: CodemodSelectorReportFactory
+
+    def __call__(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        return self.report_factory(snapshot, selector).to_dict()
 
 
 @dataclass(frozen=True)
@@ -384,6 +403,15 @@ _CLI_ARGUMENT_SPECS = (
                 "Load one codemod target selector JSON object, resolve it "
                 "against scanned paths, emit exact selected target source spans, "
                 "and exit."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-replacement-plan",),
+            value_type=Path,
+            help=(
+                "Load one codemod target selector JSON object, resolve it "
+                "against scanned paths, emit an editable replacement-source "
+                "CodemodPlanDocument scaffold, and exit."
             ),
         ),
         CliArgumentSpec(
@@ -1592,6 +1620,7 @@ class CodemodScanQueryMode:
     source_index: bool
     selector_path: Path | None
     target_source_selector_path: Path | None
+    replacement_plan_selector_path: Path | None
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -1600,6 +1629,7 @@ class CodemodScanQueryMode:
             source_index=args.codemod_source_index,
             selector_path=args.codemod_resolve_selector,
             target_source_selector_path=args.codemod_target_source,
+            replacement_plan_selector_path=args.codemod_replacement_plan,
         )
 
     @property
@@ -1618,6 +1648,7 @@ class CodemodScanQueryMode:
                 self.source_index,
                 self.selector_path is not None,
                 self.target_source_selector_path is not None,
+                self.replacement_plan_selector_path is not None,
             )
         )
 
@@ -1626,8 +1657,8 @@ class CodemodScanQueryMode:
             return
         parser.error(
             "--codemod-synthesize-plan, --codemod-source-index, "
-            "--codemod-resolve-selector, and --codemod-target-source are "
-            "mutually exclusive"
+            "--codemod-resolve-selector, --codemod-target-source, and "
+            "--codemod-replacement-plan are mutually exclusive"
         )
 
 
@@ -1700,6 +1731,8 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
 class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     """Scan-backed command that loads one selector and emits a JSON payload."""
 
+    payload_builder: ClassVar[CodemodSelectorPayloadBuilder]
+
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
         try:
@@ -1708,7 +1741,7 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
             self.parser.error(str(error))
         print(
             json.dumps(
-                self.payload_for_selector(snapshot, selector),
+                self.payload_builder(snapshot, selector),
                 indent=2,
             )
         )
@@ -1719,19 +1752,14 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     def selector_path(self) -> Path:
         raise NotImplementedError
 
-    @abstractmethod
-    def payload_for_selector(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        selector: CodemodTargetSelector,
-    ) -> JsonObject:
-        raise NotImplementedError
-
 
 class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
     """Resolve one registry-backed target selector against scanned source."""
 
     command_id = "codemod_resolve_selector"
+    payload_builder = CodemodSelectorPayloadBuilder(
+        CodemodSourceSnapshot.resolve_selector
+    )
 
     @property
     def requested(self) -> bool:
@@ -1741,18 +1769,14 @@ class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
     def selector_path(self) -> Path:
         return self.args.codemod_resolve_selector
 
-    def payload_for_selector(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        selector: CodemodTargetSelector,
-    ) -> JsonObject:
-        return snapshot.resolve_selector(selector).to_dict()
-
 
 class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
     """Emit exact source spans for one resolved target selector."""
 
     command_id = "codemod_target_source"
+    payload_builder = CodemodSelectorPayloadBuilder(
+        CodemodSourceSnapshot.target_source_report
+    )
 
     @property
     def requested(self) -> bool:
@@ -1762,12 +1786,22 @@ class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
     def selector_path(self) -> Path:
         return self.args.codemod_target_source
 
-    def payload_for_selector(
-        self,
-        snapshot: CodemodSourceSnapshot,
-        selector: CodemodTargetSelector,
-    ) -> JsonObject:
-        return snapshot.target_source_report(selector).to_dict()
+
+class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
+    """Emit an editable replacement-source plan for selected targets."""
+
+    command_id = "codemod_replacement_plan"
+    payload_builder = CodemodSelectorPayloadBuilder(
+        CodemodSourceSnapshot.replacement_plan_scaffold_report
+    )
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_replacement_plan is not None
+
+    @property
+    def selector_path(self) -> Path:
+        return self.args.codemod_replacement_plan
 
 
 def main() -> int:
