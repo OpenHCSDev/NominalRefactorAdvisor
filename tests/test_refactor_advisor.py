@@ -1080,6 +1080,59 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
     ) == ("Alpha.run",)
 
 
+def test_source_index_target_selector_supports_regex_patterns(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self):\n"
+        "        return 1\n\n\n"
+        "class Beta:\n"
+        "    def run(self):\n"
+        "        return 2\n\n\n"
+        "class Gamma:\n"
+        "    def skip(self):\n"
+        "        return 3\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+    )
+
+    selected = SourceIndexTargetSelector(
+        node_kinds=(AstTargetNodeKind.METHOD,),
+        file_path_patterns=(r"pkg/mod\.py$",),
+        name_patterns=(r"^run$",),
+        qualname_patterns=(r"^(Alpha|Beta)\.run$",),
+    ).select(context)
+
+    assert {
+        source_index.target_by_id[target_id].qualname
+        for target_id in selected.target_ids
+    } == {"Alpha.run", "Beta.run"}
+
+
+def test_source_index_target_selector_rejects_invalid_regex_patterns(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "\ndef target():\n    return 1\n")
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path={module_path.as_posix(): module_path.read_text()},
+    )
+
+    with pytest.raises(ValueError, match="Invalid selector regex pattern"):
+        SourceIndexTargetSelector(qualname_patterns=("[",)).select(context)
+
+
 def test_class_level_inheritance_findings_synthesize_promotion_recipe(
     tmp_path: Path,
 ) -> None:
@@ -8921,10 +8974,7 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
                                     "selector": "source_index_target",
                                     "node_kinds": ["method"],
                                     "file_paths": [module_path.as_posix()],
-                                    "qualnames": [
-                                        "Alpha.run",
-                                        "Beta.run",
-                                    ],
+                                    "qualname_patterns": ["^(Alpha|Beta)\\.run$"],
                                 },
                                 "operation_templates": [
                                     {

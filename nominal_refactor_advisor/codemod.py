@@ -1101,12 +1101,34 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
 
 
 @dataclass(frozen=True)
+class RegexPatternSet:
+    """Validated regular-expression filter set for source-index selectors."""
+
+    patterns: tuple[re.Pattern[str], ...] = ()
+
+    @classmethod
+    def from_patterns(cls, patterns: Iterable[str]) -> "RegexPatternSet":
+        try:
+            return cls(tuple(re.compile(pattern) for pattern in patterns))
+        except re.error as error:
+            raise ValueError(f"Invalid selector regex pattern: {error}") from error
+
+    def matches(self, value: str) -> bool:
+        if not self.patterns:
+            return True
+        return any(pattern.search(value) is not None for pattern in self.patterns)
+
+
+@dataclass(frozen=True)
 class SourceIndexTargetSelector(CodemodTargetSelector):
     """Select source-index targets by kind, file, and qualname."""
 
     node_kinds: tuple[AstTargetNodeKind, ...] = ()
     file_paths: tuple[str, ...] = ()
     qualnames: tuple[str, ...] = ()
+    file_path_patterns: tuple[str, ...] = ()
+    name_patterns: tuple[str, ...] = ()
+    qualname_patterns: tuple[str, ...] = ()
     selector_payload_bindings: ClassVar[
         tuple[
             PayloadBinding[
@@ -1139,6 +1161,24 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
                     lambda selector: selector.qualnames,
                     SelectorPayloadReader.string_tuple,
                 ),
+                (
+                    "file_path_patterns",
+                    "file_path_patterns",
+                    lambda selector: selector.file_path_patterns,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "name_patterns",
+                    "name_patterns",
+                    lambda selector: selector.name_patterns,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "qualname_patterns",
+                    "qualname_patterns",
+                    lambda selector: selector.qualname_patterns,
+                    SelectorPayloadReader.string_tuple,
+                ),
             )
         )
     )
@@ -1147,12 +1187,18 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
         node_kinds = frozenset(self.node_kinds)
         file_paths = frozenset(self.file_paths)
         qualnames = frozenset(self.qualnames)
+        file_path_patterns = RegexPatternSet.from_patterns(self.file_path_patterns)
+        name_patterns = RegexPatternSet.from_patterns(self.name_patterns)
+        qualname_patterns = RegexPatternSet.from_patterns(self.qualname_patterns)
         return sorted_tuple(
             target.target_id
             for target in context.source_index.ast_targets
             if (not node_kinds or target.node_kind in node_kinds)
             and (not file_paths or target.file_path in file_paths)
             and (not qualnames or target.qualname in qualnames)
+            and file_path_patterns.matches(target.file_path)
+            and name_patterns.matches(target.name)
+            and qualname_patterns.matches(target.qualname)
         )
 
 
