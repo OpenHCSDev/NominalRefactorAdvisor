@@ -981,6 +981,18 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
         )
 
+    def plan_from_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+        *,
+        detector_ids: Iterable[str] = (),
+    ) -> "FindingRecipePlan":
+        return codemod_plan_from_findings(
+            findings,
+            detector_ids=detector_ids,
+            selector_context=self,
+        )
+
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],

@@ -51,7 +51,6 @@ from .codemod import (
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
-    codemod_plan_from_findings,
     evaluate_architecture_guards,
 )
 from .codemod_workflow import (
@@ -434,9 +433,8 @@ class JsonPayloadBuilder:
             payload["codemod_candidates"] = tuple(
                 candidate.to_dict() for candidate in codemod_candidates
             )
-        payload["finding_recipe_plan"] = codemod_plan_from_findings(
+        payload["finding_recipe_plan"] = source_snapshot.plan_from_findings(
             self.findings,
-            selector_context=source_snapshot,
         ).to_dict()
         if self.scan_guard_report is not None:
             payload["architecture_guard_report"] = self.scan_guard_report.to_dict()

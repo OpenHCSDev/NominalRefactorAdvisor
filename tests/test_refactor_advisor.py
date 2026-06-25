@@ -963,16 +963,14 @@ def test_runtime_product_record_findings_synthesize_recipe_plan(
         for finding in analyze_path(tmp_path)
         if finding.detector_id == "runtime_product_record_schema"
     ]
-    source_index = build_source_index(parse_python_modules(tmp_path), ())
-    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
-    plan = codemod_plan_from_findings(findings)
-    simulation = plan.simulate(
-        source_index,
-        source_by_path,
+    plan = snapshot.plan_from_findings(findings)
+    simulation = plan.simulate_snapshot(
+        snapshot,
         backend=CodemodBackend.AST_SPAN,
     )
-    diff = simulation.document_simulation.unified_diff(source_by_path)
+    diff = snapshot.unified_diff(simulation.simulation)
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1

@@ -17,7 +17,6 @@ from .codemod import (
     CodemodSourceSnapshot,
     FindingRecipePlan,
     JsonObject,
-    codemod_plan_from_findings,
 )
 from .detectors import DetectorConfig
 from .models import RefactorFinding
@@ -335,10 +334,7 @@ class CodemodFixpointRunner(ParseCacheRequest):
             scan = next_scan or self.scan(iteration_index)
             next_scan = None
             snapshot = scan.source_snapshot
-            plan = codemod_plan_from_findings(
-                scan.findings,
-                selector_context=snapshot,
-            )
+            plan = snapshot.plan_from_findings(scan.findings)
             if not plan.document.has_recipes:
                 return self.stopped_report(
                     iterations,
