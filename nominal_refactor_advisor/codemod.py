@@ -1023,6 +1023,22 @@ class CallSiteSelector:
         )
 
 
+@dataclass(frozen=True)
+class CallSiteTargetSelector(CodemodTargetSelector):
+    """Select source-index targets that enclose matching call sites."""
+
+    callee_names: tuple[str, ...]
+
+    def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                site.enclosing_target_id
+                for site in CallSiteSelector(self.callee_names).call_sites(context)
+                if site.enclosing_target_id is not None
+            }
+        )
+
+
 class _CallSiteSelectorVisitor(ast.NodeVisitor):
     def __init__(
         self,
