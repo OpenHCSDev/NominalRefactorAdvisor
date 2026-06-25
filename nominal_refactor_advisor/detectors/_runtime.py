@@ -5533,14 +5533,6 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
         return findings
 
 
-_FAIL_LOUD_CONTRACTS_PROVENANCE_CAPABILITY_TAGS = (
-    CapabilityTag.FAIL_LOUD_CONTRACTS,
-    CapabilityTag.PROVENANCE,
-)
-_PARTIAL_VIEW_BRANCH_DISPATCH_OBSERVATION_TAGS = (
-    ObservationTag.PARTIAL_VIEW,
-    ObservationTag.BRANCH_DISPATCH,
-)
 
 
 @dataclass(frozen=True, slots=True)
