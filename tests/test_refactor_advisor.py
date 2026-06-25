@@ -8734,6 +8734,20 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 },
                             },
                             {
+                                "operation": "apply_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method"],
+                                    "file_paths": ["pkg/mod.py"],
+                                    "qualnames": ["Alpha.run"],
+                                },
+                                "operation_template": {
+                                    "operation": "replace_text",
+                                    "old_source": "legacy(value)",
+                                    "new_source": "modern(value)",
+                                },
+                            },
+                            {
                                 "operation": "extract_authority",
                                 "target_qualname": "legacy_helper",
                                 "file_path": "pkg/mod.py",
@@ -8785,11 +8799,17 @@ def test_load_codemod_plan_document_includes_architecture_guards(
         "source_index_target"
     )
     assert document.recipes[0].operations[6].to_dict()["operation"] == (
+        "apply_selected_targets"
+    )
+    assert document.recipes[0].operations[6].to_dict()["operation_template"][
+        "operation"
+    ] == "replace_text"
+    assert document.recipes[0].operations[7].to_dict()["operation"] == (
         "extract_authority"
     )
     assert (
         document.recipes[0]
-        .operations[6]
+        .operations[7]
         .to_dict()["call_replacements"][0]["new_source"]
         == "LegacyHelperAuthority().run(value)"
     )
@@ -8864,6 +8884,76 @@ def test_selector_backed_recipe_operation_deletes_json_selected_targets(
     assert "def keep" in rewritten
     assert "obsolete_method" not in rewritten
     assert "obsolete_function" not in rewritten
+
+
+def test_apply_selected_targets_operation_projects_template_over_selector(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return legacy(value)\n\n\n"
+        "class Beta:\n"
+        "    def run(self, value):\n"
+        "        return legacy(value)\n\n\n"
+        "class Gamma:\n"
+        "    def run(self, value):\n"
+        "        return stable(value)\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "replace-selected",
+                        "reason": "replace selected method bodies consistently",
+                        "operations": [
+                            {
+                                "operation": "apply_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method"],
+                                    "file_paths": [module_path.as_posix()],
+                                    "qualnames": [
+                                        "Alpha.run",
+                                        "Beta.run",
+                                    ],
+                                },
+                                "operation_template": {
+                                    "operation": "replace_text",
+                                    "old_source": "legacy(value)",
+                                    "new_source": "modern(value)",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = load_codemod_plan_document(plan_path)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert rewritten.count("modern(value)") == 2
+    assert "legacy(value)" not in rewritten
+    assert "stable(value)" in rewritten
 
 
 def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:

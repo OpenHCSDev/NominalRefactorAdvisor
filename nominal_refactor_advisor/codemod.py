@@ -118,6 +118,7 @@ class RefactorRecipeOperationKind(StrEnum):
     """Agent-facing codemod DSL operation kinds."""
 
     ADD_CLASS_BASE = "add_class_base"
+    APPLY_SELECTED_TARGETS = "apply_selected_targets"
     CONVERT_MANUAL_REGISTRY_TO_AUTOREGISTER = (
         "convert_manual_registry_to_autoregister"
     )
@@ -169,6 +170,7 @@ LITERAL_CASES_PAYLOAD_FIELD = "literal_cases"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
+OPERATION_TEMPLATE_PAYLOAD_FIELD = "operation_template"
 REPLACEMENT_IMPORT_PAYLOAD_FIELD = "replacement_import"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
@@ -186,6 +188,15 @@ NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
 INLINE_LITERAL_DISPATCH_FINDING_ID = "inline_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
+)
+SOURCE_REWRITE_TARGET_PAYLOAD_FIELDS = frozenset(
+    ("target_id", "target_qualname", "file_path")
+)
+SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
+    (
+        RefactorRecipeOperationKind.APPLY_SELECTED_TARGETS.value,
+        RefactorRecipeOperationKind.DELETE_SELECTED_TARGETS.value,
+    )
 )
 
 
@@ -1524,8 +1535,62 @@ class RecipeCallReplacement:
         )
 
 
+@dataclass(frozen=True)
+class RefactorRecipeOperationTemplate:
+    """Target-free operation payload applied to selected source-index targets."""
+
+    fields: Mapping[str, JsonValue]
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "RefactorRecipeOperationTemplate":
+        template = cls(dict(payload))
+        template.validate()
+        return template
+
+    def validate(self) -> None:
+        operation_key = SourceRewritePlanPayload(self.fields).required_string(
+            "operation"
+        )
+        if operation_key in SELECTED_TARGET_OPERATION_KIND_VALUES:
+            raise ValueError(
+                "Selected-target operation templates must wrap a target-local "
+                "operation"
+            )
+        if operation_key not in RefactorRecipeOperation.__registry__:
+            raise ValueError(f"Unsupported recipe operation: {operation_key}")
+        target_fields = tuple(
+            field_name
+            for field_name in sorted(SOURCE_REWRITE_TARGET_PAYLOAD_FIELDS)
+            if field_name in self.fields
+        )
+        if target_fields:
+            raise ValueError(
+                "Selected-target operation templates must not declare target "
+                f"fields: {target_fields!r}"
+            )
+
+    def operation_for_target(
+        self,
+        target: SourceRewriteTarget,
+        *,
+        default_rationale: str = "",
+    ) -> "RefactorRecipeOperation":
+        payload = dict(self.fields)
+        payload.update(target.to_dict())
+        if default_rationale and "rationale" not in payload:
+            payload["rationale"] = default_rationale
+        return RefactorRecipeOperation.from_dict(payload)
+
+    def to_dict(self) -> JsonObject:
+        return dict(self.fields)
+
+
 OperationConstructorValue: TypeAlias = (
     CodemodTargetSelector
+    | RefactorRecipeOperationTemplate
     | JsonValue
     | tuple[RecipeCallReplacement, ...]
     | tuple[str, ...]
@@ -1558,6 +1623,15 @@ class OperationPayloadReader:
         field_name: str,
     ) -> OperationConstructorValue:
         return CodemodTargetSelector.from_dict(payload.required_object(field_name))
+
+    @staticmethod
+    def required_operation_template(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> OperationConstructorValue:
+        return RefactorRecipeOperationTemplate.from_payload(
+            payload.required_object(field_name)
+        )
 
 
 def operation_payload_bindings(
@@ -2756,8 +2830,8 @@ class DeleteTargetOperation(RefactorRecipeOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class DeleteSelectedTargetsOperation(RefactorRecipeOperation):
-    """Delete every source-index target selected by a registered selector."""
+class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
+    """Operation base whose target set comes from a registered selector."""
 
     selector: CodemodTargetSelector
 
@@ -2776,22 +2850,97 @@ class DeleteSelectedTargetsOperation(RefactorRecipeOperation):
 
     @staticmethod
     def selector_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, DeleteSelectedTargetsOperation):
-            raise TypeError("selector binding requires delete-selected-targets operation")
+        if not isinstance(operation, SelectedTargetsOperation):
+            raise TypeError("selector binding requires selected-targets operation")
         return operation.selector.to_dict()
+
+    def selected_target_ids(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[str, ...]:
+        return self.selector.target_ids(
+            CodemodSelectorContext(
+                source_index=source_index,
+                sources_by_file_path=source_by_path,
+            )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ApplySelectedTargetsOperation(SelectedTargetsOperation):
+    """Apply one target-local operation template to every selected target."""
+
+    operation_template: RefactorRecipeOperationTemplate
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        return (
+            *super().payload_bindings(),
+            *operation_payload_bindings(
+                (
+                    (
+                        OPERATION_TEMPLATE_PAYLOAD_FIELD,
+                        "operation_template",
+                        cls.operation_template_from_operation,
+                        OperationPayloadReader.required_operation_template,
+                    ),
+                )
+            ),
+        )
+
+    @staticmethod
+    def operation_template_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, ApplySelectedTargetsOperation):
+            raise TypeError(
+                "operation_template binding requires apply-selected-targets operation"
+            )
+        return operation.operation_template.to_dict()
 
     def line_replacements(
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
-        context = CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=source_by_path,
+        return tuple(
+            replacement
+            for target_id in self.selected_target_ids(source_index, source_by_path)
+            for replacement in self.operation_for_target_id(
+                source_index,
+                target_id,
+            ).line_replacements(source_index, source_by_path)
         )
+
+    def operation_for_target_id(
+        self,
+        source_index: SourceIndex,
+        target_id: str,
+    ) -> RefactorRecipeOperation:
+        target_digest = source_index.target_by_id[target_id]
+        return self.operation_template.operation_for_target(
+            SourceRewriteTarget(
+                target_identifier=target_digest.target_id,
+                qualname=target_digest.qualname,
+                source_path=target_digest.file_path,
+            ),
+            default_rationale=self.rationale,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
+    """Delete every source-index target selected by a registered selector."""
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
         return tuple(
             self.line_replacement_for(source_index.target_by_id[target_id])
-            for target_id in self.selector.target_ids(context)
+            for target_id in self.selected_target_ids(source_index, source_by_path)
         )
 
     def line_replacement_for(
@@ -5954,6 +6103,21 @@ class RefactorRecipe:
                 qualname=target_qualname,
                 source_path=source_path,
             ),
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def apply_selected_targets(
+        self,
+        selector: CodemodTargetSelector,
+        operation_template: RefactorRecipeOperationTemplate,
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ApplySelectedTargetsOperation(
+            target=SourceRewriteTarget(),
+            selector=selector,
+            operation_template=operation_template,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
