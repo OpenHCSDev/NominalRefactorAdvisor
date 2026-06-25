@@ -8061,6 +8061,28 @@ class CodemodPlanDocument:
     guard_suite: ArchitectureGuardSuite = field(default_factory=ArchitectureGuardSuite)
 
     @classmethod
+    def compose(
+        cls,
+        documents: Iterable["CodemodPlanDocument"],
+    ) -> "CodemodPlanDocument":
+        """Compose normalized plan documents in caller-provided order."""
+
+        document_tuple = tuple(documents)
+        return cls(
+            authority_boundaries=tuple(
+                boundary
+                for document in document_tuple
+                for boundary in document.authority_boundaries
+            ),
+            recipes=tuple(
+                recipe for document in document_tuple for recipe in document.recipes
+            ),
+            guard_suite=ArchitectureGuardSuite().merge(
+                *(document.guard_suite for document in document_tuple)
+            ),
+        )
+
+    @classmethod
     def from_json_value(
         cls,
         payload: JsonObject | JsonArray,

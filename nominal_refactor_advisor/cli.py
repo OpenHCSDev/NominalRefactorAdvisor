@@ -365,6 +365,16 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-compose-plans",),
+            value_type=Path,
+            nargs="+",
+            help=(
+                "Load one or more codemod plan JSON documents, compose them in "
+                "argument order, emit a normalized CodemodPlanDocument, and exit "
+                "without scanning."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-synthesize-plan",),
             action="store_true",
             help=(
@@ -1337,6 +1347,27 @@ class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
         if self.args.codemod_plan is None:
             self.parser.error("--codemod-validate-plan requires --codemod-plan")
         return self.args.codemod_plan
+
+
+class CodemodComposePlansCliCommand(CliEarlyExitCommand):
+    """Compose normalized codemod DSL plan documents."""
+
+    command_id = "codemod_compose_plans"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_compose_plans is not None
+
+    def run(self) -> int:
+        try:
+            document = CodemodPlanDocument.compose(
+                load_codemod_plan_document(path)
+                for path in self.args.codemod_compose_plans
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self.parser.error(str(error))
+        print(json.dumps(document.to_dict(), indent=2))
+        return 0
 
 
 def _default_parse_cache_base(root: Path) -> Path:

@@ -9073,6 +9073,119 @@ def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
     )
 
 
+def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    first_plan_path = tmp_path / "first-plan.json"
+    second_plan_path = tmp_path / "second-plan.json"
+    first_plan_path.write_text(
+        json.dumps(
+            {
+                "authority_boundaries": [
+                    {
+                        "boundary_id": "alpha-run",
+                        "rewrites": [
+                            {
+                                "target_qualname": "Alpha.run",
+                                "file_path": "pkg/mod.py",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return modern(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "recipes": [
+                    {
+                        "recipe_id": "replace-alpha",
+                        "rewrites": [
+                            {
+                                "target_qualname": "Alpha.run",
+                                "file_path": "pkg/mod.py",
+                                "replacement_source": (
+                                    "    def run(self, value):\n"
+                                    "        return modern(value)\n"
+                                ),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_plan_path.write_text(
+        json.dumps(
+            {
+                "architecture_guards": [
+                    {
+                        "rule_id": "alpha-boundary",
+                        "forbidden_call_names": ["legacy"],
+                        "file_path_suffixes": ["pkg/mod.py"],
+                    }
+                ],
+                "recipes": [
+                    {
+                        "recipe_id": "ensure-modern-import",
+                        "operations": [
+                            {
+                                "operation": "ensure_import",
+                                "file_path": "pkg/mod.py",
+                                "import_source": "from pkg.modern import modern\n",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    compose_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-compose-plans",
+            first_plan_path.as_posix(),
+            second_plan_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    composed_payload = json.loads(compose_result.stdout)
+    composed_plan_path = tmp_path / "composed-plan.json"
+    composed_plan_path.write_text(json.dumps(composed_payload), encoding="utf-8")
+    validation_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-plan",
+            composed_plan_path.as_posix(),
+            "--codemod-validate-plan",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    validation_payload = json.loads(validation_result.stdout)
+
+    assert compose_result.returncode == 0, compose_result.stderr
+    assert validation_result.returncode == 0, validation_result.stderr
+    assert validation_payload["authority_boundaries"][0]["boundary_id"] == "alpha-run"
+    assert [recipe["recipe_id"] for recipe in validation_payload["recipes"]] == [
+        "replace-alpha",
+        "ensure-modern-import",
+    ]
+    assert validation_payload["architecture_guards"][0]["rule_id"] == (
+        "alpha-boundary"
+    )
+
+
 def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     tmp_path: Path,
 ) -> None:
