@@ -8936,7 +8936,9 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
                                     {
                                         "operation": "replace_function_body",
                                         "body_source": (
-                                            "return annotate(value, tagged=tagged)\n"
+                                            "return annotate("
+                                            "'${target.qualname}', "
+                                            "value, tagged=tagged)\n"
                                         ),
                                     },
                                 ],
@@ -8964,7 +8966,8 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
     simulation.apply()
     rewritten = module_path.read_text()
     assert rewritten.count("def run(self, value, *, tagged=False):") == 2
-    assert rewritten.count("annotate(value, tagged=tagged)") == 2
+    assert "annotate('Alpha.run', value, tagged=tagged)" in rewritten
+    assert "annotate('Beta.run', value, tagged=tagged)" in rewritten
     assert "legacy(value)" not in rewritten
     assert "stable(value)" in rewritten
 
@@ -9013,6 +9016,45 @@ def test_apply_selected_targets_builder_accepts_template_sequence(
     assert simulation.simulation.applied_rewrite_count == 2
     simulation.apply()
     assert module_path.read_text().count("modern(value)") == 2
+
+
+def test_apply_selected_targets_rejects_unknown_target_template_field(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self):\n"
+        "        return legacy()\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = RefactorRecipe(recipe_id="bad-template").apply_selected_targets(
+        SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.METHOD,),
+            file_paths=(module_path.as_posix(),),
+            qualnames=("Alpha.run",),
+        ),
+        (
+            RefactorRecipeOperationTemplate.from_payload(
+                {
+                    "operation": "replace_text",
+                    "old_source": "legacy()",
+                    "new_source": "${target.missing_field}()",
+                }
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="Unsupported target template field"):
+        recipe.simulate(
+            source_index,
+            source_by_path,
+            backend=CodemodBackend.AST_SPAN,
+        )
 
 
 def test_apply_selected_targets_operation_uses_class_family_selector_context(

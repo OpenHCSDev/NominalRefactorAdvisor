@@ -198,6 +198,7 @@ SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
         RefactorRecipeOperationKind.DELETE_SELECTED_TARGETS.value,
     )
 )
+TARGET_TEMPLATE_FIELD_PATTERN = re.compile(r"\$\{target\.([a-z_][a-z0-9_]*)\}")
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -1536,6 +1537,51 @@ class RecipeCallReplacement:
 
 
 @dataclass(frozen=True)
+class OperationTemplateTargetContext:
+    """Whitelisted target metadata available to operation-template strings."""
+
+    target: AstTargetDigest
+
+    @property
+    def target_bindings(self) -> Mapping[str, str]:
+        return {
+            "target_id": self.target.target_id,
+            "file_path": self.target.file_path,
+            "node_kind": self.target.node_kind.value,
+            "name": self.target.name,
+            "qualname": self.target.qualname,
+            "line": str(self.target.line),
+            "end_line": str(self.target.end_line),
+        }
+
+    def expanded_json_value(self, value: JsonValue) -> JsonValue:
+        if isinstance(value, str):
+            return self.expanded_string(value)
+        if isinstance(value, (list, tuple)):
+            return tuple(self.expanded_json_value(item) for item in value)
+        if isinstance(value, dict):
+            return {
+                key: self.expanded_json_value(item)
+                for key, item in value.items()
+            }
+        return value
+
+    def expanded_string(self, value: str) -> str:
+        return TARGET_TEMPLATE_FIELD_PATTERN.sub(self.replacement_value, value)
+
+    def replacement_value(self, match: re.Match[str]) -> str:
+        field_name = match.group(1)
+        bindings = self.target_bindings
+        if field_name not in bindings:
+            allowed = ", ".join(sorted(bindings))
+            raise ValueError(
+                f"Unsupported target template field {field_name!r}; "
+                f"allowed fields: {allowed}"
+            )
+        return bindings[field_name]
+
+
+@dataclass(frozen=True)
 class RefactorRecipeOperationTemplate:
     """Target-free operation payload applied to selected source-index targets."""
 
@@ -1583,12 +1629,21 @@ class RefactorRecipeOperationTemplate:
 
     def operation_for_target(
         self,
-        target: SourceRewriteTarget,
+        target: AstTargetDigest,
         *,
         default_rationale: str = "",
     ) -> "RefactorRecipeOperation":
-        payload = dict(self.fields)
-        payload.update(target.to_dict())
+        payload = {
+            key: OperationTemplateTargetContext(target).expanded_json_value(value)
+            for key, value in self.fields.items()
+        }
+        payload.update(
+            SourceRewriteTarget(
+                target_identifier=target.target_id,
+                qualname=target.qualname,
+                source_path=target.file_path,
+            ).to_dict()
+        )
         if default_rationale and "rationale" not in payload:
             payload["rationale"] = default_rationale
         return RefactorRecipeOperation.from_dict(payload)
@@ -2965,11 +3020,7 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
     ) -> RefactorRecipeOperation:
         target_digest = source_index.target_by_id[target_id]
         return template.operation_for_target(
-            SourceRewriteTarget(
-                target_identifier=target_digest.target_id,
-                qualname=target_digest.qualname,
-                source_path=target_digest.file_path,
-            ),
+            target_digest,
             default_rationale=self.rationale,
         )
 
