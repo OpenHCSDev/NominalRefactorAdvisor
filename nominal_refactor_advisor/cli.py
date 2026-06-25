@@ -14,7 +14,9 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from time import perf_counter
-from typing import TypeAlias, cast
+from typing import ClassVar, TypeAlias, cast
+
+from metaclass_registry import AutoRegisterMeta
 
 from .analysis import (
     analyze_lean_export,
@@ -53,6 +55,7 @@ from .codemod import (
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
+    codemod_dsl_example_plan_payload,
     codemod_dsl_manifest,
     evaluate_architecture_guards,
 )
@@ -325,6 +328,35 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-dsl-manifest",),
             action="store_true",
             help="Emit the registry-derived codemod DSL JSON manifest and exit.",
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-dsl-example-plan",),
+            action="store_true",
+            help="Emit a registry-derived codemod DSL example plan JSON and exit.",
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-validate-plan",),
+            action="store_true",
+            help=(
+                "Load --codemod-plan, validate codemod DSL JSON structure, emit "
+                "the normalized plan, and exit without scanning."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-synthesize-plan",),
+            action="store_true",
+            help=(
+                "Scan paths, synthesize executable finding-backed codemod DSL "
+                "recipes, emit the synthesis report, and exit."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-synthesize-document-only",),
+            action="store_true",
+            help=(
+                "With --codemod-synthesize-plan, emit only the reusable "
+                "CodemodPlanDocument JSON."
+            ),
         ),
         CliArgumentSpec(
             flags=("--codemod-diff",),
@@ -1094,6 +1126,99 @@ class SingleRootModeAuthority:
             self.parser.error(f"{self.option_name} accepts exactly one path root")
 
 
+@dataclass(frozen=True)
+class CliCommand(ABC, metaclass=AutoRegisterMeta):
+    """Registered CLI command owner with shared parser and argument context."""
+
+    __registry_key__ = "command_id"
+    __skip_if_no_key__ = True
+
+    parser: argparse.ArgumentParser
+    args: argparse.Namespace
+    command_id: ClassVar[str | None] = None
+
+    @property
+    @abstractmethod
+    def requested(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def run(self) -> int:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CliEarlyExitCommand(CliCommand, ABC):
+    """Registered command that can satisfy CLI execution before source scanning."""
+
+    @classmethod
+    def run_first(
+        cls,
+        parser: argparse.ArgumentParser,
+        args: argparse.Namespace,
+    ) -> int | None:
+        for command_type in CliCommand.__registry__.values():
+            if not issubclass(command_type, cls):
+                continue
+            command = command_type(parser, args)
+            if command.requested:
+                return command.run()
+        return None
+
+
+class CodemodDslManifestCliCommand(CliEarlyExitCommand):
+    """Emit the registry-derived codemod DSL manifest."""
+
+    command_id = "codemod_dsl_manifest"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_dsl_manifest
+
+    def run(self) -> int:
+        print(json.dumps(codemod_dsl_manifest().to_dict(), indent=2))
+        return 0
+
+
+class CodemodDslExamplePlanCliCommand(CliEarlyExitCommand):
+    """Emit a registry-derived codemod DSL starter plan."""
+
+    command_id = "codemod_dsl_example_plan"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_dsl_example_plan
+
+    def run(self) -> int:
+        print(json.dumps(codemod_dsl_example_plan_payload(), indent=2))
+        return 0
+
+
+class CodemodValidatePlanCliCommand(CliEarlyExitCommand):
+    """Validate a supplied codemod DSL plan and emit its normalized form."""
+
+    command_id = "codemod_validate_plan"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_validate_plan
+
+    def run(self) -> int:
+        print(
+            json.dumps(
+                load_codemod_plan_document(self.plan_path).to_dict(),
+                indent=2,
+            )
+        )
+        return 0
+
+    @property
+    def plan_path(self) -> Path:
+        if self.args.codemod_plan is None:
+            self.parser.error("--codemod-validate-plan requires --codemod-plan")
+        return self.args.codemod_plan
+
+
 def _default_parse_cache_base(root: Path) -> Path:
     if root.is_file():
         return root.parent
@@ -1167,11 +1292,10 @@ class ArchitectureGuardSourceEvaluator:
 
 
 @dataclass(frozen=True)
-class CodemodCliExecution:
+class CodemodCliExecution(CliCommand):
     """Run the CLI codemod simulation/apply phase through plan-level DSL APIs."""
 
-    parser: argparse.ArgumentParser
-    args: argparse.Namespace
+    command_id = "codemod_execution"
     source_snapshot: CodemodSourceSnapshot | None
     impact_candidates: CodemodCandidateSelection
     codemod_plan_document: CodemodPlanDocument
@@ -1339,9 +1463,9 @@ def main() -> int:
         spec.add_to_parser(parser)
     args = parser.parse_args()
 
-    if args.codemod_dsl_manifest:
-        print(json.dumps(codemod_dsl_manifest().to_dict(), indent=2))
-        return 0
+    early_exit_code = CliEarlyExitCommand.run_first(parser, args)
+    if early_exit_code is not None:
+        return early_exit_code
 
     config = DetectorConfig.from_namespace(args)
     codemod_requested = (
@@ -1349,6 +1473,7 @@ def main() -> int:
         or args.codemod_diff
         or args.codemod_apply
         or args.codemod_fixpoint
+        or args.codemod_synthesize_plan
     )
     codemod_plan_document = (
         load_codemod_plan_document(args.codemod_plan)
@@ -1362,6 +1487,7 @@ def main() -> int:
     if (
         codemod_requested
         and not args.codemod_fixpoint
+        and not args.codemod_synthesize_plan
         and not args.include_impact_ranking
         and not codemod_plan_document.has_recipes
     ):
@@ -1451,7 +1577,8 @@ def main() -> int:
     try:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
-            or args.codemod_fixpoint,
+            or args.codemod_fixpoint
+            or args.codemod_synthesize_plan,
             raw_findings=args.raw_findings,
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
@@ -1525,10 +1652,24 @@ def main() -> int:
     impact_ranking = None
     architecture_guard_report = None
     source_snapshot = None
-    if args.include_impact_ranking or codemod_plan_document.has_recipes:
+    if (
+        args.include_impact_ranking
+        or codemod_plan_document.has_recipes
+        or args.codemod_synthesize_plan
+    ):
         started = perf_counter()
         source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)
+
+    if args.codemod_synthesize_plan:
+        if source_snapshot is None:
+            raise RuntimeError("codemod synthesis requires a source snapshot")
+        finding_recipe_plan = source_snapshot.plan_from_findings(findings)
+        if args.codemod_synthesize_document_only:
+            print(json.dumps(finding_recipe_plan.document.to_dict(), indent=2))
+        else:
+            print(json.dumps(finding_recipe_plan.to_dict(), indent=2))
+        return 0
 
     if args.include_impact_ranking:
         source_index = source_snapshot.source_index

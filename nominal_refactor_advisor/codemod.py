@@ -221,6 +221,7 @@ SELECTED_TARGET_OPERATION_KIND_VALUES = frozenset(
     )
 )
 TARGET_TEMPLATE_FIELD_PATTERN = re.compile(r"\$\{target\.([a-z_][a-z0-9_]*)\}")
+UNKNOWN_CONFIDENCE_BASIS = "unknown"
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -664,9 +665,9 @@ def _candidate_confidence_basis(candidate: "CodemodCandidate") -> str:
     confidence_levels = ", ".join(candidate.opportunity.confidence_levels)
     certification_levels = ", ".join(candidate.opportunity.certification_levels)
     if not confidence_levels:
-        confidence_levels = "unknown"
+        confidence_levels = UNKNOWN_CONFIDENCE_BASIS
     if not certification_levels:
-        certification_levels = "unknown"
+        certification_levels = UNKNOWN_CONFIDENCE_BASIS
     return f"confidence={confidence_levels}; certification={certification_levels}"
 
 
@@ -5373,13 +5374,24 @@ class CodemodDslFieldKind(StrEnum):
 
 
 @dataclass(frozen=True)
+class CodemodDslPlaceholder:
+    """Typed placeholder token used only in agent-facing DSL examples."""
+
+    field_name: str
+
+    @property
+    def value(self) -> str:
+        return f"<{self.field_name}>"
+
+
+@dataclass(frozen=True)
 class CodemodDslPayloadReaderProfile:
     """Value-shape profile inferred from a registered payload reader."""
 
     value_kind: CodemodDslFieldKind
     required: bool = True
     empty_string_allowed: bool = False
-    default_value: JsonValue = None
+    default_value: JsonScalar = None
 
     @classmethod
     def string(cls) -> "CodemodDslPayloadReaderProfile":
@@ -5510,7 +5522,7 @@ class CodemodDslFieldManifest:
     value_kind: CodemodDslFieldKind
     required: bool = True
     empty_string_allowed: bool = False
-    default_value: JsonValue = None
+    default_value: JsonScalar = None
 
     @classmethod
     def from_binding(
@@ -5537,7 +5549,182 @@ class CodemodDslFieldManifest:
             "required": self.required,
             "empty_string_allowed": self.empty_string_allowed,
             "default_value": self.default_value,
+            "example_value": self.example_value(),
         }
+
+    def example_value(self) -> JsonValue:
+        return CodemodDslExampleValueProvider.example_for(self)
+
+
+def codemod_dsl_selector_example_payload() -> JsonObject:
+    """Return a minimal selector payload agents can adapt in plan templates."""
+
+    return SourceIndexTargetSelector(
+        node_kinds=(AstTargetNodeKind.FUNCTION,),
+        qualnames=(CodemodDslPlaceholder("target_qualname").value,),
+    ).to_dict()
+
+
+def codemod_dsl_target_example_payload() -> JsonObject:
+    """Return a source-index target example payload."""
+
+    return SourceRewriteTarget(
+        qualname=CodemodDslPlaceholder("target_qualname").value,
+        source_path=CodemodDslPlaceholder("file_path").value,
+    ).to_dict()
+
+
+def codemod_dsl_operation_template_example_payload() -> JsonObject:
+    """Return a target-free operation template payload for selected targets."""
+
+    return RefactorRecipeOperationTemplate.from_payload(
+        {
+            "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
+            OLD_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
+                OLD_SOURCE_PAYLOAD_FIELD
+            ).value,
+            NEW_SOURCE_PAYLOAD_FIELD: CodemodDslPlaceholder(
+                NEW_SOURCE_PAYLOAD_FIELD
+            ).value,
+        }
+    ).to_dict()
+
+
+class CodemodDslExampleValueProvider(ABC, metaclass=AutoRegisterMeta):
+    """Registered field-kind strategy for agent-facing DSL example values."""
+
+    __registry__: ClassVar[
+        dict[CodemodDslFieldKind, type["CodemodDslExampleValueProvider"]]
+    ] = {}
+    __registry_key__ = "value_kind"
+    __skip_if_no_key__ = True
+
+    value_kind: ClassVar[CodemodDslFieldKind | None] = None
+
+    @classmethod
+    def example_for(cls, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        provider_type = cls.__registry__.get(field_manifest.value_kind)
+        if provider_type is None:
+            provider_type = cls.__registry__[CodemodDslFieldKind.UNKNOWN]
+        return provider_type().example_value(field_manifest)
+
+    @abstractmethod
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        raise NotImplementedError
+
+    @staticmethod
+    def placeholder(field_manifest: CodemodDslFieldManifest) -> str:
+        return CodemodDslPlaceholder(field_manifest.field_name).value
+
+
+class StringCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
+    """Example value for one scalar string field."""
+
+    value_kind = CodemodDslFieldKind.STRING
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        if field_manifest.default_value not in (None, ""):
+            return field_manifest.default_value
+        return self.placeholder(field_manifest)
+
+
+class StringArrayCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
+    """Example value for string-array fields."""
+
+    value_kind = CodemodDslFieldKind.STRING_ARRAY
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        return (self.placeholder(field_manifest),)
+
+
+class NodeKindArrayCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
+    """Example value for AST node-kind selector fields."""
+
+    value_kind = CodemodDslFieldKind.NODE_KIND_ARRAY
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        del field_manifest
+        return (AstTargetNodeKind.FUNCTION.value,)
+
+
+class SelectorObjectCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
+    """Example value for nested selector object fields."""
+
+    value_kind = CodemodDslFieldKind.SELECTOR_OBJECT
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        del field_manifest
+        return codemod_dsl_selector_example_payload()
+
+
+class SingleItemArrayCodemodDslExampleValueProvider(
+    CodemodDslExampleValueProvider,
+    ABC,
+):
+    """Field-kind provider whose example is a single nested object array."""
+
+    item_factory: ClassVar[Callable[[], JsonValue]]
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        del field_manifest
+        return (self.item_factory(),)
+
+
+class SelectorArrayCodemodDslExampleValueProvider(
+    SingleItemArrayCodemodDslExampleValueProvider
+):
+    """Example value for nested selector-array fields."""
+
+    value_kind = CodemodDslFieldKind.SELECTOR_ARRAY
+    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
+        codemod_dsl_selector_example_payload
+    )
+
+
+class OperationTemplateArrayCodemodDslExampleValueProvider(
+    SingleItemArrayCodemodDslExampleValueProvider
+):
+    """Example value for selected-target operation-template fields."""
+
+    value_kind = CodemodDslFieldKind.OPERATION_TEMPLATE_ARRAY
+    item_factory: ClassVar[Callable[[], JsonValue]] = staticmethod(
+        codemod_dsl_operation_template_example_payload
+    )
+
+
+class BooleanCodemodDslExampleValueProvider(CodemodDslExampleValueProvider):
+    """Example value for boolean fields."""
+
+    value_kind = CodemodDslFieldKind.BOOLEAN
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        if field_manifest.default_value is not None:
+            return field_manifest.default_value
+        return True
+
+
+class ConstantCodemodDslExampleValueProvider(CodemodDslExampleValueProvider, ABC):
+    """Field-kind provider whose example is a class-declared constant."""
+
+    constant_example_value: ClassVar[JsonValue]
+
+    def example_value(self, field_manifest: CodemodDslFieldManifest) -> JsonValue:
+        del field_manifest
+        return self.constant_example_value
+
+
+class IntegerCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
+    """Example value for integer fields."""
+
+    value_kind = CodemodDslFieldKind.INTEGER
+    constant_example_value = 1
+
+
+class UnknownCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
+    """Null example for unclassified value shapes."""
+
+    value_kind = CodemodDslFieldKind.UNKNOWN
+    constant_example_value = None
 
 
 @dataclass(frozen=True)
@@ -5585,7 +5772,24 @@ class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
             "payload_fields": self.payload_field_dicts(),
             "common_fields": tuple(field.to_dict() for field in codemod_common_fields()),
             "supports_selection_count": self.supports_selection_count,
+            "example_payload": self.example_payload(),
         }
+
+    def example_payload(self) -> JsonObject:
+        payload: JsonObject = {
+            "operation": self.operation,
+            "rationale": CodemodDslPlaceholder("rationale").value,
+        }
+        payload.update(codemod_dsl_target_example_payload())
+        payload.update(
+            {
+                field.field_name: field.example_value()
+                for field in self.payload_fields
+            }
+        )
+        if self.supports_selection_count:
+            payload[SELECTION_COUNT_PAYLOAD_FIELD] = {"exact": 1}
+        return payload
 
 
 @dataclass(frozen=True)
@@ -5614,6 +5818,16 @@ class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
             "selector": self.selector,
             "class_name": self.class_name,
             "payload_fields": self.payload_field_dicts(),
+            "example_payload": self.example_payload(),
+        }
+
+    def example_payload(self) -> JsonObject:
+        return {
+            "selector": self.selector,
+            **{
+                field.field_name: field.example_value()
+                for field in self.payload_fields
+            },
         }
 
 
@@ -5657,6 +5871,41 @@ def codemod_dsl_manifest() -> CodemodDslManifest:
             for key, selector_type in sorted(CodemodTargetSelector.__registry__.items())
         ),
     )
+
+
+def codemod_dsl_example_plan_document() -> CodemodPlanDocument:
+    """Return a parseable starter document for agent-authored codemod plans."""
+
+    operation_manifests = {
+        operation.operation: operation
+        for operation in codemod_dsl_manifest().operations
+    }
+    return CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe(
+                recipe_id="codemod-dsl-example",
+                operations=(
+                    RefactorRecipeOperation.from_dict(
+                        operation_manifests[
+                            RefactorRecipeOperationKind.REPLACE_TEXT.value
+                        ].example_payload()
+                    ),
+                    RefactorRecipeOperation.from_dict(
+                        operation_manifests[
+                            RefactorRecipeOperationKind.APPLY_SELECTED_TARGETS.value
+                        ].example_payload()
+                    ),
+                ),
+                reason="Starter document for registry-derived codemod DSL authoring.",
+            ),
+        )
+    )
+
+
+def codemod_dsl_example_plan_payload() -> JsonObject:
+    """Return a JSON-ready starter document for agent-authored codemod plans."""
+
+    return codemod_dsl_example_plan_document().to_dict()
 
 
 def codemod_common_fields() -> tuple[CodemodDslFieldManifest, ...]:
@@ -7673,7 +7922,7 @@ class CodemodPlanJsonParser:
         if field_name not in row or row[field_name] is None:
             return ()
         value = row[field_name]
-        if not isinstance(value, list):
+        if not isinstance(value, (list, tuple)):
             raise ValueError(f"{field_name} must be a list")
         return tuple(value)
 

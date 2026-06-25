@@ -93,6 +93,7 @@ from nominal_refactor_advisor.codemod import (
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
+    codemod_dsl_example_plan_document,
     codemod_dsl_manifest,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
@@ -8970,8 +8971,36 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert replace_text_fields["old_source"]["required"] is True
     assert replace_text_fields["new_source"]["empty_string_allowed"] is True
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
+    assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
+    assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
+    assert operations["apply_selected_targets"]["example_payload"][
+        "operation_templates"
+    ][0]["operation"] == "replace_text"
+    assert operations["apply_selected_targets"]["example_payload"][
+        "selection_count"
+    ] == {"exact": 1}
     assert source_index_fields["node_kinds"]["value_kind"] == "node_kind_array"
     assert source_index_fields["node_kinds"]["required"] is False
+    assert selectors["source_index_target"]["example_payload"]["selector"] == (
+        "source_index_target"
+    )
+
+
+def test_codemod_dsl_example_plan_document_round_trips() -> None:
+    document = codemod_dsl_example_plan_document()
+    parsed_document = CodemodPlanDocument.from_json_value(document.to_dict())
+
+    assert parsed_document.has_recipes is True
+    assert parsed_document.recipes[0].recipe_id == "codemod-dsl-example"
+    assert parsed_document.recipes[0].operations[0].to_dict()["operation"] == (
+        "replace_text"
+    )
+    assert parsed_document.recipes[0].operations[1].to_dict()["operation"] == (
+        "apply_selected_targets"
+    )
+    assert parsed_document.recipes[0].operations[1].to_dict()["selector"][
+        "selector"
+    ] == "source_index_target"
 
 
 def test_module_cli_emits_codemod_dsl_manifest() -> None:
@@ -8997,6 +9026,105 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert any(
         selector["selector"] == "source_index_target"
         for selector in payload["selectors"]
+    )
+
+
+def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    example_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-dsl-example-plan",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    example_payload = json.loads(example_result.stdout)
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(json.dumps(example_payload), encoding="utf-8")
+
+    validation_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-validate-plan",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    validation_payload = json.loads(validation_result.stdout)
+
+    assert example_result.returncode == 0, example_result.stderr
+    assert validation_result.returncode == 0, validation_result.stderr
+    assert validation_payload["recipes"][0]["operations"][0]["operation"] == (
+        "replace_text"
+    )
+    assert validation_payload["recipes"][0]["operations"][1]["operation"] == (
+        "apply_selected_targets"
+    )
+
+
+def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass SyntaxProjectionAuthority:\n    def field_names(self, node):\n        return tuple(node.fields)\n\n    def method_names(self, node):\n        return tuple(node.methods)\n\n\nSYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()\nfield_names = SYNTAX_PROJECTION_AUTHORITY.field_names\nmethod_names = SYNTAX_PROJECTION_AUTHORITY.method_names\n",
+    )
+    plan_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-synthesize-document-only",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    plan_payload = json.loads(plan_result.stdout)
+    plan_path = tmp_path / "synthesized-plan.json"
+    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
+    validation_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-validate-plan",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    validation_payload = json.loads(validation_result.stdout)
+    operations = validation_payload["recipes"][0]["operations"]
+
+    assert plan_result.returncode == 0, plan_result.stderr
+    assert validation_result.returncode == 0, validation_result.stderr
+    assert any(
+        operation["operation"] == "delete_module_assignments"
+        and operation["assignment_names"] == ["field_names", "method_names"]
+        for operation in operations
     )
 
 
