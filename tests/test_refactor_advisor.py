@@ -2002,6 +2002,70 @@ def test_derivable_detector_declaration_codemod_builder_merges_class_deletions(
     assert "detector_priority = 10" in rewritten
 
 
+def test_derivable_detector_declaration_findings_synthesize_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRuleDetector(ModuleCollectorCandidateDetector[LocalRuleCandidate]):\n"
+        '    detector_id = "local_rule"\n'
+        "    candidate_collector = _local_rule_candidates\n"
+        "    finding_spec = HighConfidenceFindingSpec(\n"
+        "        pattern_id=PatternId.AUTHORITATIVE_SCHEMA,\n"
+        '        title="Local rule",\n'
+        '        why="Local rule",\n'
+        '        capability_gap="local rule",\n'
+        '        relation_context="local rule",\n'
+        "    )\n"
+        "    detector_priority = 10\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id
+        in {"derivable_detector_id", "derivable_candidate_collector"}
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=("derivable_detector_id", "derivable_candidate_collector"),
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 2
+    assert len(plan.document.recipes) == 1
+    operations = tuple(
+        operation.to_dict() for operation in plan.document.recipes[0].operations
+    )
+    assert {operation["attribute_name"] for operation in operations} == {
+        "detector_id",
+        "candidate_collector",
+    }
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert 'detector_id = "local_rule"' not in rewritten
+    assert "candidate_collector = _local_rule_candidates" not in rewritten
+    assert "finding_spec = HighConfidenceFindingSpec(" in rewritten
+    remaining = [
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id
+        in {"derivable_detector_id", "derivable_candidate_collector"}
+    ]
+    assert remaining == []
+
+
 def test_detects_generic_cancelable_product_composition_signal(
     tmp_path: Path,
 ) -> None:

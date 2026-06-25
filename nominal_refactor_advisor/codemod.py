@@ -154,6 +154,10 @@ OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
+DETECTOR_ID_FIELD_NAME = "detector_id"
+CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
+DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
+DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -2578,7 +2582,7 @@ class ImportFromSource:
 class AddClassBaseOperation(StringPayloadOperation):
     """Add one base class to a single-line class declaration."""
 
-    payload_field_name = "base_name"
+    payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
     def line_replacements(
         self,
@@ -2614,7 +2618,7 @@ class AddClassBaseOperation(StringPayloadOperation):
 class RemoveClassBaseOperation(StringPayloadOperation):
     """Remove one base class from a single-line class declaration."""
 
-    payload_field_name = "base_name"
+    payload_field_name = BASE_NAME_PAYLOAD_FIELD
 
     def line_replacements(
         self,
@@ -4641,7 +4645,7 @@ class FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):
     """Registry-backed bridge from advisor findings to executable recipes."""
 
     __registry__: ClassVar[dict[str, type["FindingRecipeSynthesizer"]]] = {}
-    __registry_key__ = "detector_id"
+    __registry_key__ = DETECTOR_ID_FIELD_NAME
     __skip_if_no_key__ = True
 
     detector_id: ClassVar[str]
@@ -5031,6 +5035,64 @@ class SemanticOverlapAbcOptimizationFindingRecipeSynthesizer(
     detector_id = "semantic_overlap_abc_optimization"
 
 
+class DerivableClassAssignmentFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Build assignment-deletion recipes for derivable detector declarations."""
+
+    assignment_name: ClassVar[str]
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        del context
+        action_keys = self.action_keys_for_finding(finding)
+        if len(action_keys) != 1:
+            return None
+        action_key = action_keys[0]
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-delete-derivable-assignment",
+            reason="Delete class assignment derived by the detector base.",
+        ).delete_class_assignment(
+            action_key.subject_name,
+            self.assignment_name,
+            source_path=action_key.file_path,
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return (
+            FindingRecipeActionKey(
+                detector_id=finding.detector_id,
+                file_path=evidence.file_path,
+                subject_name=evidence.symbol,
+            ),
+        )
+
+
+class DerivableDetectorIdFindingRecipeSynthesizer(
+    DerivableClassAssignmentFindingRecipeSynthesizer
+):
+    """Build recipes for detector_id values derivable from class names."""
+
+    detector_id = DERIVABLE_DETECTOR_ID_FINDING_ID
+    assignment_name = DETECTOR_ID_FIELD_NAME
+
+
+class DerivableCandidateCollectorFindingRecipeSynthesizer(
+    DerivableClassAssignmentFindingRecipeSynthesizer
+):
+    """Build recipes for candidate collectors derivable from class names."""
+
+    detector_id = DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID
+    assignment_name = CANDIDATE_COLLECTOR_FIELD_NAME
+
+
 def _pascal_case_identifier(value: str) -> str:
     parts = tuple(part for part in re.split(r"[^0-9A-Za-z]+", value) if part)
     if not parts:
@@ -5289,7 +5351,7 @@ def _derivable_detector_id_assignment(node: ast.ClassDef) -> tuple[ast.stmt, ...
     for statement in node.body:
         if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
             continue
-        if _name_id(statement.targets[0]) != "detector_id":
+        if _name_id(statement.targets[0]) != DETECTOR_ID_FIELD_NAME:
             continue
         if (
             isinstance(statement.value, ast.Constant)
@@ -5320,7 +5382,7 @@ def _derivable_candidate_collector_assignment(
             value = statement.value
         else:
             continue
-        if len(targets) != 1 or _name_id(targets[0]) != "candidate_collector":
+        if len(targets) != 1 or _name_id(targets[0]) != CANDIDATE_COLLECTOR_FIELD_NAME:
             continue
         if value is not None and _name_id(value) == expected_collector_name:
             return (statement,)
@@ -5451,7 +5513,7 @@ class DetectorDeclarationSelector(ABC, metaclass=AutoRegisterMeta):
     """Registered selector for derivable detector class declarations."""
 
     __registry__: ClassVar[dict[str, type["DetectorDeclarationSelector"]]] = {}
-    __registry_key__ = "detector_id"
+    __registry_key__ = DETECTOR_ID_FIELD_NAME
     __skip_if_no_key__ = True
 
     detector_id: ClassVar[str]
@@ -5479,14 +5541,14 @@ class DetectorDeclarationSelector(ABC, metaclass=AutoRegisterMeta):
 class DerivableDetectorIdDeclarationSelector(DetectorDeclarationSelector):
     """Select detector_id assignments derivable from the detector class name."""
 
-    detector_id = "derivable_detector_id"
+    detector_id = DERIVABLE_DETECTOR_ID_FINDING_ID
     statement_selector = staticmethod(_derivable_detector_id_assignment)
 
 
 class DerivableCandidateCollectorDeclarationSelector(DetectorDeclarationSelector):
     """Select candidate_collector assignments derivable from detector class name."""
 
-    detector_id = "derivable_candidate_collector"
+    detector_id = DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID
     statement_selector = staticmethod(_derivable_candidate_collector_assignment)
 
 
@@ -5653,7 +5715,7 @@ class DerivableDetectorIdCodemodBuilder(
 
     registry_order = 40
     rewrite_strategy = DERIVABLE_DETECTOR_ID_CODEMOD_STRATEGY
-    detector_ids = frozenset(("derivable_detector_id",))
+    detector_ids = frozenset((DERIVABLE_DETECTOR_ID_FINDING_ID,))
     statement_selector = DerivableDetectorIdDeclarationSelector
     rewrite_rationale = (
         "Delete redundant detector_id; IssueDetector derives the registry key "
@@ -5669,7 +5731,7 @@ class DerivableCandidateCollectorCodemodBuilder(
 
     registry_order = 50
     rewrite_strategy = DERIVABLE_CANDIDATE_COLLECTOR_CODEMOD_STRATEGY
-    detector_ids = frozenset(("derivable_candidate_collector",))
+    detector_ids = frozenset((DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID,))
     statement_selector = DerivableCandidateCollectorDeclarationSelector
     rewrite_rationale = (
         "Delete redundant candidate_collector; the collector base derives "
@@ -5685,7 +5747,9 @@ class DerivableDetectorDeclarationsCodemodBuilder(
 
     registry_order = 30
     rewrite_strategy = DERIVABLE_DETECTOR_DECLARATIONS_CODEMOD_STRATEGY
-    detector_ids = frozenset(("derivable_detector_id", "derivable_candidate_collector"))
+    detector_ids = frozenset(
+        (DERIVABLE_DETECTOR_ID_FINDING_ID, DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID)
+    )
     rewrite_rationale = (
         "Delete redundant detector declarations derived from the detector class name."
     )
