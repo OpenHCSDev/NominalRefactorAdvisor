@@ -48,9 +48,14 @@ from .source_index import (
 )
 
 JsonScalar: TypeAlias = str | int | float | bool | None
+
+
+class JsonObject(dict[str, "JsonValue"]):
+    """Nominal JSON object payload at codemod and CLI boundaries."""
+
+
 JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
-JsonValue: TypeAlias = JsonScalar | JsonArray | dict[str, "JsonValue"]
-JsonObject: TypeAlias = dict[str, JsonValue]
+JsonValue: TypeAlias = JsonScalar | JsonArray | JsonObject
 PayloadOwnerT = TypeVar("PayloadOwnerT")
 PayloadSourceT = TypeVar("PayloadSourceT")
 PayloadValueT = TypeVar("PayloadValueT")
@@ -410,7 +415,7 @@ class CodemodApplicability:
     def agent_action(self) -> str:
         return CodemodAgentActionPolicy.message_for(self)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> JsonObject:
         return {
             "strategy_id": self.strategy_id,
             "automation_level": self.automation_level.value,
@@ -2091,6 +2096,12 @@ OperationConstructorValue: TypeAlias = (
     | tuple[RefactorRecipeOperationTemplate, ...]
     | tuple[str, ...]
 )
+OperationPayloadBinding: TypeAlias = PayloadBinding[
+    "RefactorRecipeOperation",
+    SourceRewritePlanPayload,
+    OperationConstructorValue,
+]
+OperationPayloadBindings: TypeAlias = tuple[OperationPayloadBinding, ...]
 
 
 class OperationPayloadReader:
@@ -2140,14 +2151,7 @@ def operation_payload_bindings(
             Callable[[SourceRewritePlanPayload, str], OperationConstructorValue],
         ]
     ],
-) -> tuple[
-    PayloadBinding[
-        "RefactorRecipeOperation",
-        SourceRewritePlanPayload,
-        OperationConstructorValue,
-    ],
-    ...,
-]:
+) -> OperationPayloadBindings:
     """Materialize declarative recipe-operation payload binding specs."""
 
     return tuple(
@@ -2574,16 +2578,7 @@ class RefactorRecipeOperation(
         )
 
     @classmethod
-    def payload_bindings(
-        cls,
-    ) -> tuple[
-        PayloadBinding[
-            "RefactorRecipeOperation",
-            SourceRewritePlanPayload,
-            OperationConstructorValue,
-        ],
-        ...,
-    ]:
+    def payload_bindings(cls) -> OperationPayloadBindings:
         return ()
 
     def operation_payload(self) -> JsonObject:
@@ -8343,7 +8338,7 @@ class CodemodCandidate:
     def applicability(self) -> CodemodApplicability:
         return DEFAULT_CODEMOD_STRATEGY_REGISTRY.applicability_for_candidate(self)
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> JsonObject:
         return {
             "candidate_id": self.candidate_id,
             "origin": self.origin.value,

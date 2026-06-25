@@ -43,6 +43,9 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
+    JsonArray,
+    JsonObject,
+    JsonValue,
     PlannedSourceRewrite,
     RefactorRecipe,
     RefactorRecipeOperation,
@@ -106,12 +109,10 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
 )
 _DEFAULT_PARSE_CACHE_RELATIVE_PATH = Path(".nra-cache") / "ast"
 
-JsonScalar: TypeAlias = str | int | float | bool | None
-JsonValue: TypeAlias = (
-    JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
-)
-JsonObject: TypeAlias = dict[str, JsonValue]
-JsonArray: TypeAlias = list[JsonValue]
+CliArgumentDefault: TypeAlias = JsonValue | Path
+CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
+CliArgumentKwargValue: TypeAlias = CliArgumentDefault | CliArgumentValueType
+CodemodCandidateSelection: TypeAlias = tuple[CodemodCandidate, ...] | None
 
 
 @dataclass(frozen=True)
@@ -119,13 +120,13 @@ class CliArgumentSpec:
     flags: tuple[str, ...]
     help: str
     action: str | None = None
-    default: object | None = None
+    default: CliArgumentDefault | None = None
     dest: str | None = None
     nargs: str | int | None = None
-    value_type: type[object] | None = None
+    value_type: CliArgumentValueType | None = None
 
     def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
-        kwargs: dict[str, object] = {"help": self.help}
+        kwargs: dict[str, CliArgumentKwargValue] = {"help": self.help}
         if self.action is not None:
             kwargs["action"] = self.action
         if self.default is not None:
@@ -370,12 +371,12 @@ class JsonPayloadBuilder:
     change_budget: RepositoryChangeBudget | None = None
     timing: ScanTiming | None = None
     impact_ranking: RefactorImpactRankingReport | None = None
-    codemod_candidates: tuple[CodemodCandidate, ...] | None = None
+    codemod_candidates: CodemodCandidateSelection = None
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> JsonObject:
         report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
         graph = build_observation_graph(self.modules)
         payload = report.to_dict()
@@ -1079,7 +1080,7 @@ class MarkdownReportRenderer(ABC):
         change_budget: RepositoryChangeBudget | None = None,
         timing: ScanTiming | None = None,
         impact_ranking: RefactorImpactRankingReport | None = None,
-        codemod_candidates: tuple[CodemodCandidate, ...] | None = None,
+        codemod_candidates: CodemodCandidateSelection = None,
         architecture_guard_report: ArchitectureGuardReport | None = None,
         raw_findings: bool = False,
     ) -> str:
@@ -1366,7 +1367,7 @@ class CodemodCliExecution:
     parser: argparse.ArgumentParser
     args: argparse.Namespace
     source_snapshot: CodemodSourceSnapshot | None
-    impact_candidates: tuple[CodemodCandidate, ...] | None
+    impact_candidates: CodemodCandidateSelection
     codemod_plan_document: CodemodPlanDocument
     architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
 
