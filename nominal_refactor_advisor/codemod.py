@@ -2924,8 +2924,10 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
         source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
         targets = ClassMemberPromotionTargets.resolve(
-            source_index,
-            source_by_path,
+            CodemodSelectorContext(
+                source_index=source_index,
+                sources_by_file_path=source_by_path,
+            ),
             source_path=self.target.source_path,
             class_names=self.class_names,
         )
@@ -2994,37 +2996,37 @@ class PromoteClassMethodsOperation(ClassMemberPromotionOperation):
         return ClassMethodPromotionStatement
 
 
-@dataclass(frozen=True)
-class ClassMemberPromotionTargets:
+@dataclass(frozen=True, kw_only=True)
+class ClassMemberPromotionTargets(CodemodSelectorContext):
     """Resolved class nodes participating in a class-member promotion."""
 
     targets: tuple[tuple[AstTargetDigest, ast.ClassDef], ...]
-    sources_by_file_path: Mapping[str, str]
 
     @classmethod
     def resolve(
         cls,
-        source_index: SourceIndex,
-        source_by_path: Mapping[str, str],
+        context: CodemodSelectorContext,
         *,
         source_path: str | None,
         class_names: tuple[str, ...],
     ) -> "ClassMemberPromotionTargets":
         nodes_by_target_id = AstTargetNodeIndex(
-            source_index,
-            source_by_path,
+            context.source_index,
+            context.sources_by_file_path,
         ).nodes_by_target_identifier()
         return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
             targets=tuple(
                 cls.class_target(
-                    source_index,
+                    context.source_index,
                     nodes_by_target_id,
                     source_path=source_path,
                     class_name=class_name,
                 )
                 for class_name in class_names
             ),
-            sources_by_file_path=source_by_path,
         )
 
     @staticmethod
@@ -3056,7 +3058,10 @@ class ClassMemberPromotionTargets:
 
     @property
     def first_source(self) -> str:
-        return self.sources_by_file_path[self.insertion_target[0].file_path]
+        return self.source_for(self.insertion_target[0].file_path)
+
+    def source_for(self, file_path: str) -> str:
+        return self.sources_by_file_path[file_path]
 
 
 @dataclass(frozen=True)
@@ -3115,7 +3120,7 @@ class ClassMemberPromotionReplacementPlan(ClassMemberPromotionSpec):
         for target, node in targets.targets:
             if self.base_name in _class_base_source_names(node):
                 continue
-            original_line = targets.sources_by_file_path[target.file_path].splitlines(
+            original_line = targets.source_for(target.file_path).splitlines(
                 keepends=True
             )[node.lineno - 1]
             replacements.append(
@@ -4293,8 +4298,10 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
         module = ast.parse(source_by_path[source_path], filename=source_path)
         class_key_pairs = self.parsed_class_key_pairs
         class_targets = ClassMemberPromotionTargets.resolve(
-            source_index,
-            source_by_path,
+            CodemodSelectorContext(
+                source_index=source_index,
+                sources_by_file_path=source_by_path,
+            ),
             source_path=source_path,
             class_names=tuple(pair.class_name for pair in class_key_pairs),
         )
@@ -4306,11 +4313,10 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
         return (
             *self.import_replacements(source_index, source_by_path, source_path),
             *self.base_insertion_replacements(source_index, class_targets),
-            *self.class_base_replacements(class_targets, source_by_path),
+            *self.class_base_replacements(class_targets),
             *self.class_key_replacements(
                 class_targets,
                 class_key_pairs,
-                source_by_path,
             ),
             *deletion_replacements,
             *self.empty_registry_assignment_replacements(
@@ -4373,15 +4379,14 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
     def class_base_replacements(
         self,
         targets: ClassMemberPromotionTargets,
-        source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
         replacements = []
         for target, node in targets.targets:
             if self.base_name in _class_base_source_names(node):
                 continue
-            original_line = source_by_path[target.file_path].splitlines(keepends=True)[
-                node.lineno - 1
-            ]
+            original_line = targets.source_for(target.file_path).splitlines(
+                keepends=True
+            )[node.lineno - 1]
             replacements.append(
                 SourceLineReplacement(
                     file_path=target.file_path,
@@ -4404,7 +4409,6 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
         self,
         targets: ClassMemberPromotionTargets,
         class_key_pairs: tuple[ClassRegistryKeyPair, ...],
-        source_by_path: Mapping[str, str],
     ) -> tuple[SourceLineReplacement, ...]:
         pair_by_class_name = {pair.class_name: pair for pair in class_key_pairs}
         replacements = []
@@ -4412,9 +4416,7 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
             if self.class_declares_registry_key(node):
                 continue
             pair = pair_by_class_name[node.name]
-            replacements.append(
-                self.class_key_replacement(target, node, pair, source_by_path)
-            )
+            replacements.append(self.class_key_replacement(targets, target, node, pair))
         return tuple(replacements)
 
     def class_declares_registry_key(self, node: ast.ClassDef) -> bool:
@@ -4426,10 +4428,10 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
 
     def class_key_replacement(
         self,
+        targets: ClassMemberPromotionTargets,
         target: AstTargetDigest,
         node: ast.ClassDef,
         pair: ClassRegistryKeyPair,
-        source_by_path: Mapping[str, str],
     ) -> SourceLineReplacement:
         body_without_docstring = self.class_body_without_docstring(node)
         if len(body_without_docstring) == 1 and isinstance(
@@ -4443,10 +4445,10 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
                 end_line=pass_statement.end_lineno or pass_statement.lineno,
                 replacement_lines=(
                     self.class_key_assignment_line(
+                        targets,
                         target,
                         node,
                         pair,
-                        source_by_path,
                     ),
                 ),
                 rationale=self.rationale_text(
@@ -4459,7 +4461,7 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
             start_line=insert_after_line + 1,
             end_line=insert_after_line,
             replacement_lines=(
-                self.class_key_assignment_line(target, node, pair, source_by_path),
+                self.class_key_assignment_line(targets, target, node, pair),
             ),
             rationale=self.rationale_text(
                 f"Insert registry key on {target.qualname!r}."
@@ -4490,12 +4492,12 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
 
     def class_key_assignment_line(
         self,
+        targets: ClassMemberPromotionTargets,
         target: AstTargetDigest,
         node: ast.ClassDef,
         pair: ClassRegistryKeyPair,
-        source_by_path: Mapping[str, str],
     ) -> str:
-        source_lines = source_by_path[target.file_path].splitlines(keepends=True)
+        source_lines = targets.source_for(target.file_path).splitlines(keepends=True)
         if node.body:
             body_line = source_lines[node.body[0].lineno - 1]
             indent = body_line[: len(body_line) - len(body_line.lstrip())]
@@ -7638,8 +7640,7 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         context: CodemodSelectorContext,
     ) -> bool:
         targets = ClassMemberPromotionTargets.resolve(
-            context.source_index,
-            context.sources_by_file_path,
+            context,
             source_path=promotion.source_path,
             class_names=promotion.class_names,
         )
