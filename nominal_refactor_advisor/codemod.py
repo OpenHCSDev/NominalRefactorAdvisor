@@ -212,14 +212,20 @@ def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
-@dataclass(frozen=True)
-class PlannedSourceRewrite:
-    """One planned source rewrite against an AST target digest."""
+@dataclass(frozen=True, kw_only=True)
+class SourceRewriteDelta:
+    """Replacement source and operation shared by planned and simulated rewrites."""
 
-    target_id: str
     replacement_source: str
     operation: RewriteOperation = RewriteOperation.REPLACE_TARGET
     rationale: str = ""
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlannedSourceRewrite(SourceRewriteDelta):
+    """One planned source rewrite against an AST target digest."""
+
+    target_id: str
 
 
 @dataclass(frozen=True)
@@ -741,19 +747,22 @@ SUPPLIED_AUTHORITY_BOUNDARY_CODEMOD_STRATEGY = (
 )
 
 
-@dataclass(frozen=True)
-class SimulatedSourceRewrite:
-    """Resolved source span and replacement preview for one planned rewrite."""
+@dataclass(frozen=True, kw_only=True)
+class SourceTargetSpan:
+    """Resolved source-index target span shared by codemod analyses."""
 
     target_id: str
     file_path: str
     qualname: str
-    operation: RewriteOperation
     line: int
     end_line: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class SimulatedSourceRewrite(SourceTargetSpan, SourceRewriteDelta):
+    """Resolved source span and replacement preview for one planned rewrite."""
+
     original_source: str
-    replacement_source: str
-    rationale: str = ""
 
     def to_dict(self) -> JsonObject:
         return {
@@ -9028,19 +9037,20 @@ class DiffPathPrefixAuthority:
         return f"{self.prefix}{file_path.removeprefix('/')}"
 
 
-@dataclass(frozen=True)
-class CancelableCompositionSignal:
-    """Generic factorable morphism over product carrier fields."""
+@dataclass(frozen=True, kw_only=True)
+class ProductForwardIdentity:
+    """Product carrier/source/field identity shared by forward projections."""
 
-    target_id: str
-    file_path: str
-    qualname: str
-    line: int
-    end_line: int
-    composition_kind: CancelableCompositionKind
     carrier_name: str
     source_name: str
     field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class CancelableCompositionSignal(SourceTargetSpan, ProductForwardIdentity):
+    """Generic factorable morphism over product carrier fields."""
+
+    composition_kind: CancelableCompositionKind
     covered_finding_ids: tuple[str, ...] = ()
 
     @property
@@ -9716,11 +9726,9 @@ class AstTargetGeometryKey:
     end_line: int
 
 
-@dataclass(frozen=True)
-class _ProductForward:
-    carrier_name: str
-    source_name: str
-    field_names: tuple[str, ...]
+@dataclass(frozen=True, kw_only=True)
+class _ProductForward(ProductForwardIdentity):
+    """AST-local product-forward projection fact."""
 
 
 class _AstTargetNodeIndexer(ast.NodeVisitor):
