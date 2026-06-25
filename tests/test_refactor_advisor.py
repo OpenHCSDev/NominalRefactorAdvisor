@@ -1532,6 +1532,55 @@ def test_refactor_recipe_converts_manual_registry_to_autoregister(
     assert "registry_key = 'beta'" in rewritten
 
 
+def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    recipe = RefactorRecipe(
+        recipe_id="literal-dispatch-to-polymorphism"
+    ).dispatch_to_polymorphism(
+        "render",
+        source_path=module_path.as_posix(),
+        axis_expression="kind",
+        literal_cases=("'csv'", "'json'"),
+        base_name="RenderDispatchCase",
+        case_key_attribute="case",
+        method_name="apply",
+    )
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+from abc import ABC, abstractmethod" in diff
+    assert "+class RenderDispatchCase(ABC, metaclass=AutoRegisterMeta):" in diff
+    assert "+class CsvRenderDispatchCase(RenderDispatchCase):" in diff
+    assert "+    case = 'csv'" in diff
+    assert "+        return render_csv(value)" in diff
+    assert (
+        "+    return RenderDispatchCase.for_case(kind).apply(value)"
+        in diff
+    )
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert 'if kind == "csv"' not in rewritten
+    assert "class JsonRenderDispatchCase(RenderDispatchCase):" in rewritten
+    assert "return render_json(value)" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
 def test_refactor_recipe_moves_decorated_symbol_between_modules(
     tmp_path: Path,
 ) -> None:
@@ -8151,6 +8200,56 @@ def test_detects_string_dispatch(tmp_path: Path) -> None:
     assert finding.certification == "certified"
 
 
+def test_string_dispatch_findings_synthesize_polymorphism_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
+    )
+    source_index = build_source_index(modules, findings)
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+    )
+
+    plan = codemod_plan_from_findings(
+        findings,
+        detector_ids=(STRING_DISPATCH_DETECTOR_ID,),
+        selector_context=context,
+    )
+    simulation = plan.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert plan.expected_removed_finding_count == 1
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    assert operation["operation"] == "dispatch_to_polymorphism"
+    assert operation["base_name"] == "RenderDispatchCase"
+    assert operation["axis_expression"] == "kind"
+    assert operation["literal_cases"] == ("'csv'", "'json'")
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    simulation.apply()
+    remaining = tuple(
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
+    )
+    assert remaining == ()
+
+
 def test_string_dispatch_ignores_literal_fallback_tables(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
@@ -11947,6 +12046,34 @@ def test_json_payload_includes_finding_backed_recipe_plan(
     operation = recipe_plan["document"]["recipes"][0]["operations"][0]
     assert operation["operation"] == "delete_module_assignments"
     assert operation["assignment_names"] == ("field_names", "method_names")
+
+
+def test_json_payload_uses_selector_context_for_dispatch_recipe_plan(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndef render(kind, value):\n    if kind == "csv":\n        return render_csv(value)\n    elif kind == "json":\n        return render_json(value)\n    raise ValueError(kind)\n',
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = list(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == STRING_DISPATCH_DETECTOR_ID
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=findings,
+        plans=[],
+        modules=modules,
+    ).to_dict()
+
+    recipe_plan = payload["finding_recipe_plan"]
+    assert recipe_plan["expected_removed_finding_count"] == 1
+    operation = recipe_plan["document"]["recipes"][0]["operations"][0]
+    assert operation["operation"] == "dispatch_to_polymorphism"
+    assert operation["base_name"] == "RenderDispatchCase"
 
 
 def test_detects_collection_authority_stream_algebra(tmp_path: Path) -> None:

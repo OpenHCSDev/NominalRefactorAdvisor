@@ -40,6 +40,7 @@ from .codemod import (
     CodemodAutomationLevel,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
+    CodemodSelectorContext,
     CodemodSimulationReport,
     CodemodSimulationStatus,
     PlannedSourceRewrite,
@@ -416,6 +417,12 @@ class JsonPayloadBuilder:
             )
         payload["finding_recipe_plan"] = codemod_plan_from_findings(
             self.findings,
+            selector_context=CodemodSelectorContext(
+                source_index=source_index,
+                sources_by_file_path={
+                    str(module.path): module.source for module in self.modules
+                },
+            ),
         ).to_dict()
         if self.scan_guard_report is not None:
             payload["architecture_guard_report"] = self.scan_guard_report.to_dict()

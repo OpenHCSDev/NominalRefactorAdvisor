@@ -121,6 +121,7 @@ class RefactorRecipeOperationKind(StrEnum):
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
     DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
     DELETE_TARGET = "delete_target"
+    DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
     ENSURE_IMPORT = "ensure_import"
     EXTRACT_AUTHORITY = "extract_authority"
     INSERT_AFTER_TARGET = "insert_after_target"
@@ -148,15 +149,19 @@ class SourceNodeDecoratorPolicy(StrEnum):
 SOURCE_PAYLOAD_FIELD = "source"
 AUTHORITY_SOURCE_PAYLOAD_FIELD = "authority_source"
 ASSIGNMENT_NAMES_PAYLOAD_FIELD = "assignment_names"
+AXIS_EXPRESSION_PAYLOAD_FIELD = "axis_expression"
 BASE_NAME_PAYLOAD_FIELD = "base_name"
 CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
+CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD = "case_key_attribute"
 CLASS_NAMES_PAYLOAD_FIELD = "class_names"
 CLASS_KEY_PAIRS_PAYLOAD_FIELD = "class_key_pairs"
 DECLARATION_NAMES_PAYLOAD_FIELD = "declaration_names"
 DESTINATION_PATH_PAYLOAD_FIELD = "destination_path"
 METHOD_NAMES_PAYLOAD_FIELD = "method_names"
+METHOD_NAME_PAYLOAD_FIELD = "method_name"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
 IMPORT_NAMES_PAYLOAD_FIELD = "import_names"
+LITERAL_CASES_PAYLOAD_FIELD = "literal_cases"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
@@ -172,6 +177,9 @@ DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
 MODULE_AUTHORITY_REEXPORT_CATALOG_FINDING_ID = "module_authority_reexport_catalog"
 MANUAL_CLASS_REGISTRATION_FINDING_ID = "manual_class_registration"
+STRING_DISPATCH_FINDING_ID = "string_dispatch"
+NUMERIC_LITERAL_DISPATCH_FINDING_ID = "numeric_literal_dispatch"
+INLINE_LITERAL_DISPATCH_FINDING_ID = "inline_literal_dispatch"
 DERIVED_SEMANTIC_TAG_CONSTANT_MAPPING_NAMES = frozenset(
     ("capability_tag_constants", "observation_tag_constants")
 )
@@ -1259,6 +1267,11 @@ class SourceRewritePlanItem:
     target: SourceRewriteTarget = field(default_factory=SourceRewriteTarget)
     rationale: str = ""
 
+    def rationale_text(self, default: str) -> str:
+        if self.rationale:
+            return self.rationale
+        return default
+
 
 @dataclass(frozen=True, kw_only=True)
 class AuthorityBoundaryRewrite(SourceRewritePlanItem):
@@ -1714,6 +1727,19 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
         if not isinstance(operation, StringPayloadOperation):
             raise TypeError("String payload binding requires StringPayloadOperation")
         return operation.payload_value
+
+
+@dataclass(frozen=True, kw_only=True)
+class BaseNamePayloadOperation(RefactorRecipeOperation, ABC):
+    """Recipe operation whose JSON payload declares a generated base class."""
+
+    base_name: str
+
+    @staticmethod
+    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, BaseNamePayloadOperation):
+            raise TypeError("base_name binding requires base-name operation")
+        return operation.base_name
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3083,10 +3109,9 @@ class ClassRegistryKeyPair:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ConvertManualRegistryToAutoregisterOperation(RefactorRecipeOperation):
+class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
     """Convert manual class registry writes into an AutoRegisterMeta base."""
 
-    base_name: str
     registry_name: str
     registry_key_attribute: str
     class_key_pairs: tuple[str, ...]
@@ -3099,7 +3124,7 @@ class ConvertManualRegistryToAutoregisterOperation(RefactorRecipeOperation):
                 (
                     BASE_NAME_PAYLOAD_FIELD,
                     BASE_NAME_PAYLOAD_FIELD,
-                    ConvertManualRegistryToAutoregisterOperation.base_name_from_operation,
+                    BaseNamePayloadOperation.base_name_from_operation,
                     OperationPayloadReader.required_string,
                 ),
                 (
@@ -3122,12 +3147,6 @@ class ConvertManualRegistryToAutoregisterOperation(RefactorRecipeOperation):
                 ),
             )
         )
-
-    @staticmethod
-    def base_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
-        if not isinstance(operation, ConvertManualRegistryToAutoregisterOperation):
-            raise TypeError("base_name binding requires registry conversion")
-        return operation.base_name
 
     @staticmethod
     def registry_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
@@ -3559,11 +3578,495 @@ class ConvertManualRegistryToAutoregisterOperation(RefactorRecipeOperation):
             rationale=self.rationale_text("Delete manual registry write."),
         )
 
-    def rationale_text(self, default: str) -> str:
-        if self.rationale:
-            return self.rationale
-        return default
+@dataclass(frozen=True)
+class DispatchPolymorphismCase:
+    """One literal dispatch case lifted into a concrete strategy class."""
 
+    literal_source: str
+    return_statement: ast.Return
+
+
+DispatchPolymorphismCases: TypeAlias = tuple[DispatchPolymorphismCase, ...]
+
+
+@dataclass(frozen=True)
+class DispatchPolymorphismExtraction:
+    """AST-derived dispatch data for one mechanically convertible function."""
+
+    cases: DispatchPolymorphismCases
+    apply_argument_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DispatchPolymorphismSpec:
+    """Shared identity for a generated dispatch strategy family."""
+
+    base_name: str
+    case_key_attribute: str
+    method_name: str
+    axis_expression: str
+
+
+@dataclass(frozen=True)
+class DispatchPolymorphismFunction:
+    """Strict recognizer for literal branch functions convertible to strategies."""
+
+    node: ast.FunctionDef
+    axis_expression: str
+    literal_cases: tuple[str, ...]
+
+    def extraction(self) -> DispatchPolymorphismExtraction | None:
+        if self.unsupported_signature:
+            return None
+        cases = self.branch_cases()
+        if cases is None:
+            cases = self.match_cases()
+        if cases is None:
+            return None
+        if frozenset(case.literal_source for case in cases) != frozenset(
+            self.literal_cases
+        ):
+            return None
+        return DispatchPolymorphismExtraction(
+            cases=cases,
+            apply_argument_names=self.apply_argument_names,
+        )
+
+    @property
+    def unsupported_signature(self) -> bool:
+        return bool(
+            self.node.args.vararg
+            or self.node.args.kwarg
+            or self.node.args.kwonlyargs
+            or self.node.args.posonlyargs
+            or "." in self.node.name
+        )
+
+    @property
+    def parameter_names(self) -> tuple[str, ...]:
+        return tuple(parameter.arg for parameter in self.node.args.args)
+
+    @property
+    def apply_argument_names(self) -> tuple[str, ...]:
+        if self.axis_expression not in self.parameter_names:
+            return ()
+        return tuple(
+            name for name in self.parameter_names if name != self.axis_expression
+        )
+
+    def branch_cases(self) -> DispatchPolymorphismCases | None:
+        if not self.node.body or not isinstance(self.node.body[0], ast.If):
+            return None
+        cases: list[DispatchPolymorphismCase] = []
+        current = self.node.body[0]
+        fallback: tuple[ast.stmt, ...] = tuple(self.node.body[1:])
+        while True:
+            literals = self.test_literals(current.test)
+            return_statement = self.single_return(current.body)
+            if not literals or return_statement is None:
+                return None
+            cases.extend(
+                DispatchPolymorphismCase(literal, return_statement)
+                for literal in literals
+            )
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            fallback = (*current.orelse, *fallback)
+            break
+        if not self.is_raising_fallback(fallback):
+            return None
+        return tuple(cases)
+
+    def match_cases(self) -> DispatchPolymorphismCases | None:
+        if len(self.node.body) != 1 or not isinstance(self.node.body[0], ast.Match):
+            return None
+        match_node = self.node.body[0]
+        if ast.unparse(match_node.subject) != self.axis_expression:
+            return None
+        cases: list[DispatchPolymorphismCase] = []
+        fallback_seen = False
+        for match_case in match_node.cases:
+            if self.is_default_match_pattern(match_case.pattern):
+                fallback_seen = self.is_raising_fallback(tuple(match_case.body))
+                continue
+            literals = self.pattern_literals(match_case.pattern)
+            return_statement = self.single_return(match_case.body)
+            if not literals or return_statement is None:
+                return None
+            cases.extend(
+                DispatchPolymorphismCase(literal, return_statement)
+                for literal in literals
+            )
+        if not fallback_seen:
+            return None
+        return tuple(cases)
+
+    def test_literals(self, test: ast.expr) -> tuple[str, ...]:
+        if not isinstance(test, ast.Compare) or len(test.ops) != 1:
+            return ()
+        operator = test.ops[0]
+        comparator = test.comparators[0]
+        sides = ((test.left, comparator, True), (comparator, test.left, False))
+        for subject, candidate, allow_collection in sides:
+            literals = self.dispatch_literals_for_side(
+                subject,
+                candidate,
+                operator,
+                allow_collection=allow_collection,
+            )
+            if literals:
+                return literals
+        return ()
+
+    def dispatch_literals_for_side(
+        self,
+        subject: ast.expr,
+        candidate: ast.expr,
+        operator: ast.cmpop,
+        *,
+        allow_collection: bool,
+    ) -> tuple[str, ...]:
+        if ast.unparse(subject) != self.axis_expression:
+            return ()
+        if isinstance(operator, ast.Eq) and self.is_literal(candidate):
+            return (ast.unparse(candidate),)
+        if allow_collection and isinstance(operator, ast.In):
+            return self.collection_literals(candidate)
+        return ()
+
+    def pattern_literals(self, pattern: ast.pattern) -> tuple[str, ...]:
+        if isinstance(pattern, ast.MatchValue) and self.is_literal(pattern.value):
+            return (ast.unparse(pattern.value),)
+        if isinstance(pattern, ast.MatchOr):
+            return tuple(
+                literal
+                for child_pattern in pattern.patterns
+                for literal in self.pattern_literals(child_pattern)
+            )
+        return ()
+
+    @staticmethod
+    def collection_literals(node: ast.expr) -> tuple[str, ...]:
+        if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return ()
+        literals = tuple(ast.unparse(element) for element in node.elts)
+        if len(literals) != len(node.elts):
+            return ()
+        if not all(
+            DispatchPolymorphismFunction.is_literal(element) for element in node.elts
+        ):
+            return ()
+        return literals
+
+    @staticmethod
+    def single_return(statements: list[ast.stmt]) -> ast.Return | None:
+        if len(statements) != 1 or not isinstance(statements[0], ast.Return):
+            return None
+        return statements[0]
+
+    @staticmethod
+    def is_raising_fallback(statements: tuple[ast.stmt, ...]) -> bool:
+        return len(statements) == 1 and isinstance(statements[0], ast.Raise)
+
+    @staticmethod
+    def is_default_match_pattern(pattern: ast.pattern) -> bool:
+        return isinstance(pattern, ast.MatchAs) and pattern.name is None
+
+    @staticmethod
+    def is_literal(node: ast.AST) -> bool:
+        return isinstance(node, ast.Constant) and isinstance(
+            node.value,
+            (str, int, float),
+        )
+
+
+@dataclass(frozen=True)
+class DispatchPolymorphismSource:
+    """Render an extracted dispatch family and replacement function body."""
+
+    spec: DispatchPolymorphismSpec
+    extraction: DispatchPolymorphismExtraction
+
+    @property
+    def for_method_name(self) -> str:
+        return f"for_{self.spec.case_key_attribute}"
+
+    @property
+    def apply_signature(self) -> str:
+        parameters = ", ".join(("self", *self.extraction.apply_argument_names))
+        return f"def {self.spec.method_name}({parameters})"
+
+    @property
+    def apply_call_arguments(self) -> str:
+        return ", ".join(self.extraction.apply_argument_names)
+
+    @property
+    def dispatch_call_source(self) -> str:
+        apply_arguments = self.apply_call_arguments
+        return (
+            f"return {self.spec.base_name}.{self.for_method_name}"
+            f"({self.spec.axis_expression}).{self.spec.method_name}({apply_arguments})"
+        )
+
+    def family_source(self) -> str:
+        return "\n".join(
+            (
+                self.base_source(),
+                *(self.case_source(case) for case in self.extraction.cases),
+            )
+        )
+
+    def base_source(self) -> str:
+        return "\n".join(
+            (
+                f"class {self.spec.base_name}(ABC, metaclass=AutoRegisterMeta):",
+                f'    __registry_key__ = "{self.spec.case_key_attribute}"',
+                "    __skip_if_no_key__ = True",
+                f"    {self.spec.case_key_attribute}: ClassVar[object] = None",
+                "",
+                "    @classmethod",
+                f"    def {self.for_method_name}(cls, key):",
+                "        try:",
+                "            return cls.__registry__[key]()",
+                "        except KeyError as exc:",
+                "            raise ValueError(key) from exc",
+                "",
+                "    @abstractmethod",
+                f"    {self.apply_signature}:",
+                "        raise NotImplementedError",
+                "",
+            )
+        )
+
+    def case_source(self, dispatch_case: DispatchPolymorphismCase) -> str:
+        return "\n".join(
+            (
+                f"class {self.case_class_name(dispatch_case.literal_source)}({self.spec.base_name}):",
+                f"    {self.spec.case_key_attribute} = {dispatch_case.literal_source}",
+                "",
+                f"    {self.apply_signature}:",
+                *self.return_statement_lines(dispatch_case.return_statement),
+                "",
+            )
+        )
+
+    @staticmethod
+    def return_statement_lines(statement: ast.Return) -> tuple[str, ...]:
+        return tuple(
+            f"        {line}"
+            for line in ast.unparse(statement).splitlines()
+        )
+
+    def case_class_name(self, literal_source: str) -> str:
+        literal_name = literal_source.strip("'\"")
+        case_name = _pascal_case_identifier(literal_name)
+        if not case_name:
+            case_name = "Case"
+        return f"{case_name}{self.spec.base_name}"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DispatchToPolymorphismOperation(BaseNamePayloadOperation):
+    """Replace simple literal dispatch functions with strategy subclasses."""
+
+    axis_expression: str
+    literal_cases: tuple[str, ...]
+    case_key_attribute: str
+    method_name: str
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+        del cls
+        return operation_payload_bindings(
+            (
+                (
+                    AXIS_EXPRESSION_PAYLOAD_FIELD,
+                    AXIS_EXPRESSION_PAYLOAD_FIELD,
+                    DispatchToPolymorphismOperation.axis_expression_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    LITERAL_CASES_PAYLOAD_FIELD,
+                    LITERAL_CASES_PAYLOAD_FIELD,
+                    DispatchToPolymorphismOperation.literal_cases_from_operation,
+                    OperationPayloadReader.required_string_tuple,
+                ),
+                (
+                    BASE_NAME_PAYLOAD_FIELD,
+                    BASE_NAME_PAYLOAD_FIELD,
+                    BaseNamePayloadOperation.base_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                    CASE_KEY_ATTRIBUTE_PAYLOAD_FIELD,
+                    DispatchToPolymorphismOperation.case_key_attribute_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+                (
+                    METHOD_NAME_PAYLOAD_FIELD,
+                    METHOD_NAME_PAYLOAD_FIELD,
+                    DispatchToPolymorphismOperation.method_name_from_operation,
+                    OperationPayloadReader.required_string,
+                ),
+            )
+        )
+
+    @staticmethod
+    def axis_expression_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, DispatchToPolymorphismOperation):
+            raise TypeError("axis_expression binding requires dispatch conversion")
+        return operation.axis_expression
+
+    @staticmethod
+    def literal_cases_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, DispatchToPolymorphismOperation):
+            raise TypeError("literal_cases binding requires dispatch conversion")
+        return operation.literal_cases
+
+    @staticmethod
+    def case_key_attribute_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, DispatchToPolymorphismOperation):
+            raise TypeError("case_key_attribute binding requires dispatch conversion")
+        return operation.case_key_attribute
+
+    @staticmethod
+    def method_name_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, DispatchToPolymorphismOperation):
+            raise TypeError("method_name binding requires dispatch conversion")
+        return operation.method_name
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        if not isinstance(node, ast.FunctionDef):
+            raise ValueError("dispatch_to_polymorphism requires a function target")
+        if target_digest.node_kind is not AstTargetNodeKind.FUNCTION:
+            raise ValueError("dispatch_to_polymorphism does not rewrite methods")
+        extraction = self.extraction_for(node)
+        if extraction is None:
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a supported literal dispatch"
+            )
+        source = DispatchPolymorphismSource(
+            spec=self.spec,
+            extraction=extraction,
+        )
+        return (
+            *self.import_replacements(
+                source_index,
+                source_by_path,
+                target_digest.file_path,
+            ),
+            self.family_insertion_replacement(source_index, target_digest, source),
+            self.function_body_replacement(target_digest, node, source, source_by_path),
+        )
+
+    @property
+    def spec(self) -> DispatchPolymorphismSpec:
+        return DispatchPolymorphismSpec(
+            base_name=self.base_name,
+            case_key_attribute=self.case_key_attribute,
+            method_name=self.method_name,
+            axis_expression=self.axis_expression,
+        )
+
+    def extraction_for(
+        self,
+        node: ast.FunctionDef,
+    ) -> DispatchPolymorphismExtraction | None:
+        if not self.case_key_attribute.isidentifier():
+            return None
+        if not self.method_name.isidentifier():
+            return None
+        if not self.base_name.isidentifier():
+            return None
+        return DispatchPolymorphismFunction(
+            node=node,
+            axis_expression=self.axis_expression,
+            literal_cases=self.literal_cases,
+        ).extraction()
+
+    def import_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+        source_path: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        return tuple(
+            replacement
+            for import_source in (
+                "from abc import ABC, abstractmethod\n",
+                "from typing import ClassVar\n",
+                "from metaclass_registry import AutoRegisterMeta\n",
+            )
+            for replacement in EnsureImportOperation(
+                target=SourceRewriteTarget(source_path=source_path),
+                payload_value=import_source,
+                rationale=self.rationale_text("Import dispatch strategy support."),
+            ).line_replacements(source_index, source_by_path)
+        )
+
+    def family_insertion_replacement(
+        self,
+        source_index: SourceIndex,
+        target_digest: AstTargetDigest,
+        source: DispatchPolymorphismSource,
+    ) -> SourceLineReplacement:
+        if self.base_exists(source_index, target_digest.file_path):
+            raise ValueError(f"Dispatch base {self.base_name!r} already exists")
+        return SourceLineReplacement(
+            file_path=target_digest.file_path,
+            start_line=target_digest.line,
+            end_line=target_digest.line - 1,
+            replacement_lines=SourceTargetEditor.source_lines(
+                f"{source.family_source()}\n"
+            ),
+            rationale=self.rationale_text(
+                f"Insert dispatch strategy family {self.base_name!r}."
+            ),
+        )
+
+    def function_body_replacement(
+        self,
+        target_digest: AstTargetDigest,
+        node: ast.FunctionDef,
+        source: DispatchPolymorphismSource,
+        source_by_path: Mapping[str, str],
+    ) -> SourceLineReplacement:
+        if not node.body:
+            raise ValueError("dispatch function has no body")
+        body_start = node.body[0].lineno
+        body_end = node.body[-1].end_lineno or node.body[-1].lineno
+        body_indent = SourceTargetEditor(
+            source_by_path,
+            target_digest,
+        ).indentation_for_line(body_start)
+        return SourceLineReplacement(
+            file_path=target_digest.file_path,
+            start_line=body_start,
+            end_line=body_end,
+            replacement_lines=(f"{body_indent}{source.dispatch_call_source}\n",),
+            rationale=self.rationale_text(
+                f"Replace literal dispatch in {target_digest.qualname!r}."
+            ),
+        )
+
+    def base_exists(self, source_index: SourceIndex, source_path: str) -> bool:
+        return any(
+            target.is_class
+            and target.file_path == source_path
+            and target.matches_symbol(self.base_name)
+            for target in source_index.ast_targets
+        )
 
 @dataclass(frozen=True, kw_only=True)
 class ReplaceFunctionSignatureOperation(StringPayloadOperation):
@@ -5136,6 +5639,32 @@ class RefactorRecipe:
         )
         return replace(self, operations=(*self.operations, operation))
 
+    def dispatch_to_polymorphism(
+        self,
+        function_qualname: str,
+        *,
+        source_path: str | None,
+        axis_expression: str,
+        literal_cases: Iterable[str],
+        base_name: str,
+        case_key_attribute: str,
+        method_name: str,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = DispatchToPolymorphismOperation(
+            target=SourceRewriteTarget(
+                qualname=function_qualname,
+                source_path=source_path,
+            ),
+            axis_expression=axis_expression,
+            literal_cases=tuple(literal_cases),
+            base_name=base_name,
+            case_key_attribute=case_key_attribute,
+            method_name=method_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
     def promote_class_declarations(
         self,
         source_path: str,
@@ -6266,6 +6795,136 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         )
 
 
+class LiteralDispatchFindingRecipeSynthesizer(FindingRecipeSynthesizer, ABC):
+    """Build strategy-family recipes for simple literal dispatch findings."""
+
+    case_key_attribute: ClassVar[str] = "case"
+    method_name: ClassVar[str] = "apply"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(context)
+            .combine(
+                lambda selector_context: self.dispatch_target(
+                    finding,
+                    selector_context,
+                ),
+                lambda selector_context, target: self.recipe_from_target(
+                    finding,
+                    target,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    def dispatch_target(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> tuple[AstTargetDigest, ast.FunctionDef] | None:
+        action_keys = self.action_keys_for_finding(finding)
+        if len(action_keys) != 1:
+            return None
+        action_key = action_keys[0]
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.FUNCTION,),
+            file_paths=(action_key.file_path,),
+            qualnames=(action_key.subject_name,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target_digest = context.source_index.target_by_id[target_ids[0]]
+        nodes_by_target_id = AstTargetNodeIndex(
+            context.source_index,
+            context.sources_by_file_path,
+        ).nodes_by_target_identifier()
+        node = nodes_by_target_id[target_digest.target_id]
+        if not isinstance(node, ast.FunctionDef):
+            return None
+        if self.extraction_for(finding, node) is None:
+            return None
+        return target_digest, node
+
+    def extraction_for(
+        self,
+        finding: RefactorFinding,
+        node: ast.FunctionDef,
+    ) -> DispatchPolymorphismExtraction | None:
+        axis_expression = finding.metrics.plan_dispatch_axis
+        literal_cases = finding.metrics.plan_literal_cases
+        if axis_expression is None or not literal_cases:
+            return None
+        return DispatchPolymorphismFunction(
+            node=node,
+            axis_expression=axis_expression,
+            literal_cases=literal_cases,
+        ).extraction()
+
+    def recipe_from_target(
+        self,
+        finding: RefactorFinding,
+        target: tuple[AstTargetDigest, ast.FunctionDef],
+    ) -> RefactorRecipe:
+        target_digest, node = target
+        axis_expression = finding.metrics.plan_dispatch_axis
+        if axis_expression is None:
+            raise ValueError("dispatch recipe requires dispatch axis")
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-dispatch-to-polymorphism",
+            reason="Replace literal dispatch with AutoRegisterMeta strategy family.",
+        ).dispatch_to_polymorphism(
+            target_digest.qualname,
+            source_path=target_digest.file_path,
+            axis_expression=axis_expression,
+            literal_cases=finding.metrics.plan_literal_cases,
+            base_name=dispatch_strategy_base_name(node.name),
+            case_key_attribute=self.case_key_attribute,
+            method_name=self.method_name,
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        if finding.metrics.plan_dispatch_axis is None:
+            return ()
+        if not finding.metrics.plan_literal_cases:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, dispatch_evidence_subject(evidence.symbol)),),
+        )
+
+
+class StringDispatchFindingRecipeSynthesizer(LiteralDispatchFindingRecipeSynthesizer):
+    """Build recipes for closed string-literal dispatch functions."""
+
+    detector_id = STRING_DISPATCH_FINDING_ID
+
+
+class NumericLiteralDispatchFindingRecipeSynthesizer(
+    LiteralDispatchFindingRecipeSynthesizer
+):
+    """Build recipes for closed numeric-literal dispatch functions."""
+
+    detector_id = NUMERIC_LITERAL_DISPATCH_FINDING_ID
+
+
+class InlineLiteralDispatchFindingRecipeSynthesizer(
+    LiteralDispatchFindingRecipeSynthesizer
+):
+    """Build recipes for inline literal dispatch functions."""
+
+    detector_id = INLINE_LITERAL_DISPATCH_FINDING_ID
+
+
 def autoregister_base_name(
     class_names: tuple[str, ...],
     registry_name: str,
@@ -6277,6 +6936,17 @@ def autoregister_base_name(
     if registry_suffix:
         return f"Registered{registry_suffix}"
     return "RegisteredRegistry"
+
+
+def dispatch_strategy_base_name(function_name: str) -> str:
+    function_suffix = _pascal_case_identifier(function_name)
+    if function_suffix:
+        return f"{function_suffix}DispatchCase"
+    return "DispatchCase"
+
+
+def dispatch_evidence_subject(symbol: str) -> str:
+    return symbol.split(":", 1)[0]
 
 
 def shared_pascal_suffix(class_names: tuple[str, ...]) -> str:
