@@ -9520,6 +9520,91 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
     )
 
 
+def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
+    _write_module(tmp_path, "pkg/mod.py", original_source)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-simulate",
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["is_clean"] is True
+    assert payload["simulation"]["parse_valid"] is True
+    assert payload["expected_removed_finding_count"] == 1
+    assert payload["synthesis_report"]["planned_count"] == 1
+    assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
+        "convert_manual_registry_to_autoregister"
+    )
+    assert "+class RegisteredHandler(metaclass=AutoRegisterMeta):" in (
+        payload["unified_diff"]
+    )
+    assert module_path.read_text() == original_source
+
+
+def test_module_cli_synthesizes_and_applies_finding_backed_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-apply",
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is True
+    assert payload["is_clean"] is True
+    assert payload["simulation"]["parse_valid"] is True
+    rewritten = module_path.read_text()
+    assert "class RegisteredHandler(metaclass=AutoRegisterMeta):" in rewritten
+    assert "REGISTRY[" not in rewritten
+    remaining = tuple(
+        finding
+        for finding in analyze_modules(parse_python_modules(tmp_path))
+        if finding.detector_id == "manual_class_registration"
+    )
+    assert remaining == ()
+
+
 def test_module_cli_emits_codemod_source_index_targets(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     _write_module(

@@ -379,7 +379,9 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             help=(
                 "Scan paths, synthesize executable finding-backed codemod DSL "
-                "recipes, emit the synthesis report, and exit."
+                "recipes, emit the synthesis report, and exit. Combine with "
+                "--codemod-simulate, --codemod-diff, or --codemod-apply to "
+                "execute the synthesized batch in the same scan."
             ),
         ),
         CliArgumentSpec(
@@ -1247,6 +1249,18 @@ class CalibrationExitCodeAuthority:
 
 
 @dataclass(frozen=True)
+class CodemodSynthesisExitCodeAuthority:
+    """Exit-code policy for one synthesized codemod batch."""
+
+    is_clean: bool
+
+    def exit_code(self) -> int:
+        if self.is_clean:
+            return 0
+        return 1
+
+
+@dataclass(frozen=True)
 class SingleRootModeAuthority:
     """Validate CLI modes that accept exactly one path root."""
 
@@ -1799,15 +1813,54 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
         return self.args.codemod_synthesize_plan
 
     def run(self) -> int:
-        finding_recipe_plan = self.required_source_snapshot().plan_from_findings(
-            self.findings
-        )
+        snapshot = self.required_source_snapshot()
+        finding_recipe_plan = snapshot.plan_from_findings(self.findings)
+        if self.synthesis_execution_requested:
+            if self.args.codemod_synthesize_document_only:
+                self.parser.error(
+                    "--codemod-synthesize-document-only cannot be combined with "
+                    "--codemod-diff, --codemod-simulate, or --codemod-apply"
+                )
+            simulation = finding_recipe_plan.simulate_snapshot(snapshot)
+            unified_diff = snapshot.unified_diff(simulation.simulation)
+            applied = self.apply_synthesized_plan(simulation)
+            if self.args.codemod_diff and not self.args.json:
+                print(unified_diff, end="")
+                return CodemodSynthesisExitCodeAuthority(
+                    simulation.is_clean
+                ).exit_code()
+            payload = {
+                **simulation.to_dict(),
+                "applied": applied,
+                "unified_diff": unified_diff,
+            }
+            print(json.dumps(payload, indent=2))
+            return CodemodSynthesisExitCodeAuthority(
+                simulation.is_clean
+            ).exit_code()
         if self.args.codemod_synthesize_document_only:
             payload = finding_recipe_plan.document.to_dict()
         else:
             payload = finding_recipe_plan.to_dict()
         print(json.dumps(payload, indent=2))
         return 0
+
+    @property
+    def synthesis_execution_requested(self) -> bool:
+        return (
+            self.args.codemod_diff
+            or self.args.codemod_simulate
+            or self.args.codemod_apply
+        )
+
+    def apply_synthesized_plan(
+        self,
+        simulation: "FindingRecipePlanSimulation",
+    ) -> bool:
+        if not self.args.codemod_apply:
+            return False
+        simulation.document_simulation.apply()
+        return True
 
 
 class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
