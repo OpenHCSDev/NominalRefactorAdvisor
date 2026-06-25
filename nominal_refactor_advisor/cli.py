@@ -30,7 +30,6 @@ from .calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
-from .class_index import build_class_family_index
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
@@ -41,9 +40,9 @@ from .codemod import (
     CodemodAutomationLevel,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
-    CodemodSelectorContext,
     CodemodSimulationReport,
     CodemodSimulationStatus,
+    CodemodSourceSnapshot,
     PlannedSourceRewrite,
     RefactorRecipe,
     RefactorRecipeOperation,
@@ -52,13 +51,8 @@ from .codemod import (
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
-    codemod_candidates_with_automated_rewrites,
-    codemod_candidates_with_supplied_authority_boundaries,
     codemod_plan_from_findings,
     evaluate_architecture_guards,
-    format_codemod_unified_diff,
-    simulate_planned_rewrites,
-    source_by_path_with_simulation,
 )
 from .codemod_workflow import (
     CodemodFixpointReport,
@@ -380,7 +374,7 @@ class JsonPayloadBuilder:
     codemod_candidates: tuple[CodemodCandidate, ...] | None = None
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
-    source_index: SourceIndex | None = None
+    source_snapshot: CodemodSourceSnapshot | None = None
 
     def to_dict(self) -> dict[str, object]:
         report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
@@ -388,14 +382,18 @@ class JsonPayloadBuilder:
         payload = report.to_dict()
         payload["findings"] = [finding.to_dict() for finding in self.findings]
         started = perf_counter()
-        source_index = self.source_index
+        source_snapshot = self.source_snapshot
         built_source_index_seconds = 0.0
-        if source_index is None:
-            source_index = build_source_index(self.modules, self.findings)
+        if source_snapshot is None:
+            source_snapshot = CodemodSourceSnapshot.from_modules(
+                self.modules,
+                self.findings,
+            )
             built_source_index_seconds = round(perf_counter() - started, 3)
+        source_index = source_snapshot.source_index
         payload["source_index"] = source_index.to_dict()
         timing = self.timing
-        if timing is not None and self.source_index is None:
+        if timing is not None and self.source_snapshot is None:
             timing = ScanTiming(
                 parse_seconds=timing.parse_seconds,
                 analysis_seconds=timing.analysis_seconds,
@@ -420,10 +418,10 @@ class JsonPayloadBuilder:
                     self.impact_ranking,
                     source_index,
                 )
-                codemod_candidates = codemod_candidates_with_automated_rewrites(
-                    codemod_candidates,
-                    source_index,
-                    {str(module.path): module.source for module in self.modules},
+                codemod_candidates = (
+                    source_snapshot.candidates_with_automated_rewrites(
+                        codemod_candidates,
+                    )
                 )
         payload["semantic_refactor_gate"] = (
             SemanticRefactorGateReport.from_optional_scan(
@@ -438,13 +436,7 @@ class JsonPayloadBuilder:
             )
         payload["finding_recipe_plan"] = codemod_plan_from_findings(
             self.findings,
-            selector_context=CodemodSelectorContext(
-                source_index=source_index,
-                sources_by_file_path={
-                    str(module.path): module.source for module in self.modules
-                },
-                class_family_index=build_class_family_index(self.modules),
-            ),
+            selector_context=source_snapshot,
         ).to_dict()
         if self.scan_guard_report is not None:
             payload["architecture_guard_report"] = self.scan_guard_report.to_dict()
@@ -1340,6 +1332,12 @@ class ArchitectureGuardSourceEvaluator:
             self.rules,
         )
 
+    def report_for_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> ArchitectureGuardReport | None:
+        return self.report_for_sources(dict(snapshot.sources_by_file_path))
+
     def modules_with_sources(
         self,
         source_by_path: dict[str, str],
@@ -1369,8 +1367,7 @@ class CodemodCliExecution:
 
     parser: argparse.ArgumentParser
     args: argparse.Namespace
-    source_index: SourceIndex | None
-    sources_by_file_path: dict[str, str]
+    source_snapshot: CodemodSourceSnapshot | None
     impact_candidates: tuple[CodemodCandidate, ...] | None
     codemod_plan_document: CodemodPlanDocument
     architecture_guard_evaluator: ArchitectureGuardSourceEvaluator
@@ -1382,22 +1379,26 @@ class CodemodCliExecution:
     def run(self) -> int | None:
         if not self.requested:
             return None
-        source_index = self.required_source_index()
+        snapshot = self.required_source_snapshot()
         simulation, architecture_guard_report, plan_document_simulation = (
-            self.simulation_context(source_index)
+            self.simulation_context(snapshot)
         )
         if (
             architecture_guard_report is not None
             and not architecture_guard_report.is_clean
         ):
-            return self.emit_guard_failure(simulation, architecture_guard_report)
+            return self.emit_guard_failure(
+                snapshot,
+                simulation,
+                architecture_guard_report,
+            )
         applied = self.apply_if_requested(simulation, plan_document_simulation)
-        self.emit_success(simulation, applied, architecture_guard_report)
+        self.emit_success(snapshot, simulation, applied, architecture_guard_report)
         return 0
 
-    def required_source_index(self) -> SourceIndex:
-        if self.source_index is not None:
-            return self.source_index
+    def required_source_snapshot(self) -> CodemodSourceSnapshot:
+        if self.source_snapshot is not None:
+            return self.source_snapshot
         self.parser.error(
             "--codemod-diff/--codemod-apply require codemod candidates "
             "or recipe rewrites"
@@ -1406,48 +1407,35 @@ class CodemodCliExecution:
 
     def simulation_context(
         self,
-        source_index: SourceIndex,
+        snapshot: CodemodSourceSnapshot,
     ) -> tuple[
         CodemodSimulationReport,
         ArchitectureGuardReport | None,
         CodemodPlanDocumentSimulation | None,
     ]:
         if self.impact_candidates is None and self.codemod_plan_document.has_recipes:
-            plan_document_simulation = self.codemod_plan_document.simulate(
-                source_index,
-                self.sources_by_file_path,
-                selector_context=self.selector_context(source_index),
+            plan_document_simulation = self.codemod_plan_document.simulate_snapshot(
+                snapshot
             )
             return (
                 plan_document_simulation.simulation,
                 self.plan_document_guard_report(plan_document_simulation),
                 plan_document_simulation,
             )
-        simulation = simulate_planned_rewrites(
-            source_index,
+        simulation = snapshot.simulate_rewrites(
             (
                 *self.candidate_rewrite_batch(),
-                *self.codemod_plan_document.source_rewrite_batch(
-                    source_index,
-                    self.sources_by_file_path,
-                    selector_context=self.selector_context(source_index),
+                *self.codemod_plan_document.source_rewrite_batch_from_snapshot(
+                    snapshot
                 ),
             ),
-            self.sources_by_file_path,
         )
         return (
             simulation,
-            self.architecture_guard_report_for(simulation),
-            None,
-        )
-
-    def selector_context(self, source_index: SourceIndex) -> CodemodSelectorContext:
-        return CodemodSelectorContext(
-            source_index=source_index,
-            sources_by_file_path=self.sources_by_file_path,
-            class_family_index=build_class_family_index(
-                self.architecture_guard_evaluator.modules
+            self.architecture_guard_evaluator.report_for_snapshot(
+                snapshot.with_simulation(simulation),
             ),
+            None,
         )
 
     def candidate_rewrite_batch(self) -> tuple[PlannedSourceRewrite, ...]:
@@ -1467,19 +1455,9 @@ class CodemodCliExecution:
             return None
         return plan_document_simulation.architecture_guard_report
 
-    def architecture_guard_report_for(
-        self,
-        simulation: CodemodSimulationReport,
-    ) -> ArchitectureGuardReport | None:
-        return self.architecture_guard_evaluator.report_for_sources(
-            source_by_path_with_simulation(
-                self.sources_by_file_path,
-                simulation,
-            )
-        )
-
     def emit_guard_failure(
         self,
+        snapshot: CodemodSourceSnapshot,
         simulation: CodemodSimulationReport,
         architecture_guard_report: ArchitectureGuardReport,
     ) -> int:
@@ -1497,10 +1475,7 @@ class CodemodCliExecution:
         else:
             if self.args.codemod_diff:
                 print(
-                    format_codemod_unified_diff(
-                        simulation,
-                        self.sources_by_file_path,
-                    ),
+                    snapshot.unified_diff(simulation),
                     end="",
                 )
             print(format_architecture_guard_markdown(architecture_guard_report))
@@ -1521,6 +1496,7 @@ class CodemodCliExecution:
 
     def emit_success(
         self,
+        snapshot: CodemodSourceSnapshot,
         simulation: CodemodSimulationReport,
         applied: bool,
         architecture_guard_report: ArchitectureGuardReport | None,
@@ -1538,10 +1514,7 @@ class CodemodCliExecution:
             )
         elif self.args.codemod_diff:
             print(
-                format_codemod_unified_diff(
-                    simulation,
-                    self.sources_by_file_path,
-                ),
+                snapshot.unified_diff(simulation),
                 end="",
             )
         else:
@@ -1743,13 +1716,14 @@ def main() -> int:
         return 0 if report.completed else 1
     impact_ranking = None
     architecture_guard_report = None
+    source_snapshot = None
     if args.include_impact_ranking or codemod_plan_document.has_recipes:
         started = perf_counter()
-        source_index = build_source_index(modules, findings)
+        source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
         source_index_seconds = round(perf_counter() - started, 3)
-        source_by_path = {str(module.path): module.source for module in modules}
 
     if args.include_impact_ranking:
+        source_index = source_snapshot.source_index
         impact_ranking = build_refactor_impact_ranking(
             findings,
             source_index,
@@ -1764,26 +1738,23 @@ def main() -> int:
             impact_ranking,
             source_index,
         )
-        codemod_candidates = codemod_candidates_with_automated_rewrites(
+        codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
             codemod_candidates,
-            source_index,
-            source_by_path,
         )
         if authority_boundary_plans:
-            codemod_candidates = codemod_candidates_with_supplied_authority_boundaries(
-                codemod_candidates,
-                source_index,
-                source_by_path,
-                authority_boundary_plans,
+            codemod_candidates = (
+                source_snapshot.candidates_with_supplied_authority_boundaries(
+                    codemod_candidates,
+                    authority_boundary_plans,
+                )
             )
-        architecture_guard_report = architecture_guard_evaluator.report_for_sources(
-            source_by_path
+        architecture_guard_report = architecture_guard_evaluator.report_for_snapshot(
+            source_snapshot
         )
     else:
         codemod_candidates = None
         if not codemod_plan_document.has_recipes:
-            source_index = None
-            source_by_path = {}
+            source_snapshot = None
     timing = ScanTiming(
         parse_seconds=parse_seconds,
         analysis_seconds=analysis_seconds,
@@ -1794,8 +1765,7 @@ def main() -> int:
     codemod_execution_result = CodemodCliExecution(
         parser=parser,
         args=args,
-        source_index=source_index,
-        sources_by_file_path=source_by_path,
+        source_snapshot=source_snapshot,
         impact_candidates=codemod_candidates,
         codemod_plan_document=codemod_plan_document,
         architecture_guard_evaluator=architecture_guard_evaluator,
@@ -1818,7 +1788,7 @@ def main() -> int:
                     codemod_candidates=codemod_candidates,
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
-                    source_index=source_index,
+                    source_snapshot=source_snapshot,
                 ).to_dict(),
                 indent=2,
             )

@@ -75,6 +75,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSelectorContext,
     CodemodRewriteBuilder,
     CodemodSimulationStatus,
+    CodemodSourceSnapshot,
     CodemodStrategy,
     CodemodStrategyRegistry,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
@@ -608,6 +609,53 @@ def test_refactor_recipe_simulates_and_applies_qualname_batch(
     assert "return BetaAuthority.render(value)" in rewritten
 
 
+def test_codemod_source_snapshot_executes_recipe_document(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return value\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    snapshot = CodemodSourceSnapshot.from_modules(modules)
+    recipe = RefactorRecipe(
+        recipe_id="route-alpha",
+        reason="route through authority",
+    ).replace_target(
+        "    def run(self, value):\n" "        return AlphaAuthority.run(value)\n",
+        qualname="Alpha.run",
+        source_path=module_path.as_posix(),
+    )
+    document = CodemodPlanDocument(
+        recipes=(recipe,),
+        guard_suite=ArchitectureGuardSuite(
+            (
+                ArchitectureGuardRule(
+                    rule_id="no-old-alpha-call",
+                    forbidden_call_names=("old_alpha",),
+                    file_path_suffixes=("pkg/mod.py",),
+                ),
+            )
+        ),
+    )
+
+    simulation = snapshot.simulate_document(
+        document,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = snapshot.unified_diff(simulation.simulation)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+        return AlphaAuthority.run(value)" in diff
+    assert simulation.apply() == (module_path.as_posix(),)
+    assert "return AlphaAuthority.run(value)" in module_path.read_text()
+
+
 def test_refactor_recipe_dsl_operations_compile_to_rewrites(
     tmp_path: Path,
 ) -> None:
@@ -924,7 +972,7 @@ def test_runtime_product_record_findings_synthesize_recipe_plan(
         source_by_path,
         backend=CodemodBackend.AST_SPAN,
     )
-    diff = simulation.unified_diff(source_by_path)
+    diff = simulation.document_simulation.unified_diff(source_by_path)
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
@@ -935,7 +983,7 @@ def test_runtime_product_record_findings_synthesize_recipe_plan(
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+class GeneratedRecord(SemanticRecord):" in diff
     assert '+    """Generated docs."""' in diff
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "materialize_product_record(" not in rewritten
     assert "class GeneratedRecord(SemanticRecord):" in rewritten
@@ -986,7 +1034,7 @@ def test_runtime_product_record_batch_findings_synthesize_ordered_recipe_plan(
         source_by_path,
         backend=CodemodBackend.AST_SPAN,
     )
-    diff = simulation.unified_diff(source_by_path)
+    diff = simulation.document_simulation.unified_diff(source_by_path)
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
@@ -997,7 +1045,7 @@ def test_runtime_product_record_batch_findings_synthesize_ordered_recipe_plan(
     assert simulation.simulation.applied_rewrite_count == 1
     assert "+class ParentRecord(SemanticRecord):" in diff
     assert "+class ChildRecord(ParentRecord):" in diff
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert rewritten.index("class ParentRecord") < rewritten.index("class ChildRecord")
     assert "materialize_product_records(" not in rewritten
@@ -1216,7 +1264,7 @@ def test_class_level_inheritance_findings_synthesize_promotion_recipe(
         source_by_path,
         backend=CodemodBackend.AST_SPAN,
     )
-    diff = simulation.unified_diff(source_by_path)
+    diff = simulation.document_simulation.unified_diff(source_by_path)
 
     assert plan.expected_removed_finding_count == 1
     assert len(plan.document.recipes) == 1
@@ -1226,7 +1274,7 @@ def test_class_level_inheritance_findings_synthesize_promotion_recipe(
     assert "+class SharedKindFlagBase:" in diff
     assert "+class Alpha(SharedKindFlagBase):" in diff
     assert "+class Beta(SharedKindFlagBase):" in diff
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "class SharedKindFlagBase:" in rewritten
     assert rewritten.count("KIND: ClassVar[str] = 'shared'") == 1
@@ -1329,7 +1377,7 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
         source_by_path,
         backend=CodemodBackend.AST_SPAN,
     )
-    diff = simulation.unified_diff(source_by_path)
+    diff = simulation.document_simulation.unified_diff(source_by_path)
 
     assert plan.expected_removed_finding_count == 1
     operation = plan.document.recipes[0].operations[0].to_dict()
@@ -1344,7 +1392,7 @@ def test_repeated_property_alias_findings_synthesize_method_promotion_recipe(
     assert (
         "+class BetaProjection(ProjectionTemplate, SharedObservationLineMixin):" in diff
     )
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert rewritten.count("def observation_line") == 1
     remaining = [
@@ -2322,7 +2370,7 @@ def test_derivable_detector_declaration_findings_synthesize_recipe_plan(
     }
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert 'detector_id = "local_rule"' not in rewritten
     assert "candidate_collector = _local_rule_candidates" not in rewritten
@@ -7369,7 +7417,7 @@ def test_derived_semantic_tag_constants_synthesize_recipe_plan(
     }
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "CAPABILITY_TAGS" not in rewritten
     assert "OBSERVATION_TAGS" not in rewritten
@@ -8349,7 +8397,7 @@ def test_string_dispatch_findings_synthesize_polymorphism_recipe_plan(
     assert operation["literal_cases"] == ("'csv'", "'json'")
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    simulation.apply()
+    simulation.document_simulation.apply()
     remaining = tuple(
         finding
         for finding in analyze_modules(parse_python_modules(tmp_path))
@@ -9590,6 +9638,7 @@ def test_module_cli_codemod_fixpoint_applies_and_rescans(
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointRunner
+    from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import ParseCacheRequest
 
     delta = CodemodFindingDelta(
@@ -9598,6 +9647,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
 
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
     assert ParseCacheRequest(enabled=True).enabled is True
     assert delta.removed_finding_ids == ("a",)
     assert delta.added_finding_ids == ("c",)
@@ -9881,7 +9931,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     assert simulation.to_dict()["simulation"]["validated_file_paths"] == (
         module_path.as_posix(),
     )
-    simulation.apply()
+    simulation.document_simulation.apply()
     remaining = tuple(
         finding
         for finding in analyze_modules(parse_python_modules(tmp_path))
@@ -11111,6 +11161,10 @@ def test_json_payload_reuses_supplied_source_index(
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
     source_index = build_source_index(modules, ())
+    source_snapshot = CodemodSourceSnapshot(
+        source_index=source_index,
+        sources_by_file_path={str(module.path): module.source for module in modules},
+    )
 
     def fail_rebuild(*args: object, **kwargs: object) -> SourceIndex:
         raise AssertionError("source index should be supplied by the caller")
@@ -11122,7 +11176,7 @@ def test_json_payload_reuses_supplied_source_index(
         plans=[],
         modules=modules,
         timing=ScanTiming(source_index_seconds=0.123),
-        source_index=source_index,
+        source_snapshot=source_snapshot,
     ).to_dict()
     timing = cast(dict[str, object], payload["timing"])
 
@@ -12775,7 +12829,7 @@ def test_module_authority_reexport_catalog_findings_synthesize_recipe_plan(
     assert operation["assignment_names"] == ("field_names", "method_names")
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
-    simulation.apply()
+    simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "field_names = SYNTAX_PROJECTION_AUTHORITY.field_names" not in rewritten
     assert "method_names = SYNTAX_PROJECTION_AUTHORITY.method_names" not in rewritten

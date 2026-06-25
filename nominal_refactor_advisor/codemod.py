@@ -28,7 +28,8 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from .class_index import ClassFamilyIndex
+from .ast_tools import ParsedModule
+from .class_index import ClassFamilyIndex, build_class_family_index
 from .collection_algebra import sorted_tuple
 from .impact_ranking import (
     RefactorImpactKey,
@@ -39,7 +40,12 @@ from .models import ImpactDelta, RefactorFinding, RepeatedMethodMetrics, SourceL
 from .patterns import PatternId
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import Maybe
-from .source_index import AstTargetDigest, AstTargetNodeKind, SourceIndex
+from .source_index import (
+    AstTargetDigest,
+    AstTargetNodeKind,
+    SourceIndex,
+    build_source_index,
+)
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
@@ -858,6 +864,188 @@ class CodemodSelectorContext:
         if self.class_family_index is None:
             raise ValueError("Class-family selector requires ClassFamilyIndex")
         return self.class_family_index
+
+
+@dataclass(frozen=True)
+class CodemodSourceSnapshot(CodemodSelectorContext):
+    """Source-index, source text, and semantic indexes for codemod execution."""
+
+    @classmethod
+    def from_modules(
+        cls,
+        modules: Iterable[ParsedModule],
+        findings: Iterable[RefactorFinding] = (),
+    ) -> "CodemodSourceSnapshot":
+        module_tuple = tuple(modules)
+        finding_tuple = tuple(findings)
+        return cls(
+            source_index=build_source_index(module_tuple, finding_tuple),
+            sources_by_file_path={
+                str(module.path): module.source for module in module_tuple
+            },
+            class_family_index=build_class_family_index(module_tuple),
+        )
+
+    def simulate_rewrites(
+        self,
+        rewrites: Iterable["PlannedSourceRewrite"],
+        *,
+        backend: "CodemodBackend" | None = None,
+    ) -> "CodemodSimulationReport":
+        return simulate_planned_rewrites(
+            self.source_index,
+            rewrites,
+            self.sources_by_file_path,
+            backend=backend,
+        )
+
+    def source_rewrite_batch_for_recipe(
+        self,
+        recipe: "RefactorRecipe",
+    ) -> tuple["PlannedSourceRewrite", ...]:
+        return recipe.source_rewrite_batch(
+            self.source_index,
+            self.sources_by_file_path,
+            selector_context=self,
+        )
+
+    def source_rewrite_batch_for_document(
+        self,
+        document: "CodemodPlanDocument",
+    ) -> tuple["PlannedSourceRewrite", ...]:
+        return tuple(
+            rewrite
+            for recipe in document.recipes
+            for rewrite in self.source_rewrite_batch_for_recipe(recipe)
+        )
+
+    def evaluate_guard_suite(
+        self,
+        guard_suite: "ArchitectureGuardSuite",
+    ) -> "ArchitectureGuardReport":
+        return guard_suite.evaluate(self.source_index, self.sources_by_file_path)
+
+    def simulate_recipe(
+        self,
+        recipe: "RefactorRecipe",
+        *,
+        backend: "CodemodBackend" | None = None,
+        guard_suite: "ArchitectureGuardSuite" | None = None,
+    ) -> "RefactorRecipeSimulation":
+        active_guard_suite = guard_suite or ArchitectureGuardSuite()
+        simulation = self.simulate_rewrites(
+            self.source_rewrite_batch_for_recipe(recipe),
+            backend=backend,
+        )
+        return RefactorRecipeSimulation(
+            recipe=recipe,
+            simulation=simulation,
+            architecture_guard_report=(
+                self.with_simulation(simulation).evaluate_guard_suite(
+                    active_guard_suite
+                )
+            ),
+        )
+
+    def simulate_document(
+        self,
+        document: "CodemodPlanDocument",
+        *,
+        backend: "CodemodBackend" | None = None,
+    ) -> "CodemodPlanDocumentSimulation":
+        simulation = self.simulate_rewrites(
+            self.source_rewrite_batch_for_document(document),
+            backend=backend,
+        )
+        return CodemodPlanDocumentSimulation(
+            document=document,
+            simulation=simulation,
+            architecture_guard_report=(
+                self.with_simulation(simulation).evaluate_guard_suite(
+                    document.guard_suite
+                )
+            ),
+        )
+
+    def simulate_finding_plan(
+        self,
+        plan: "FindingRecipePlan",
+        *,
+        backend: "CodemodBackend" | None = None,
+    ) -> "FindingRecipePlanSimulation":
+        return FindingRecipePlanSimulation(
+            plan=plan,
+            document_simulation=self.simulate_document(
+                plan.document,
+                backend=backend,
+            ),
+        )
+
+    def candidates_with_automated_rewrites(
+        self,
+        candidates: Iterable["CodemodCandidate"],
+        *,
+        builders: Iterable["CodemodRewriteBuilder"] | None = None,
+    ) -> tuple["CodemodCandidate", ...]:
+        return codemod_candidates_with_automated_rewrites(
+            candidates,
+            self.source_index,
+            self.sources_by_file_path,
+            builders=(
+                DEFAULT_CODEMOD_REWRITE_BUILDERS if builders is None else builders
+            ),
+        )
+
+    def candidates_with_supplied_authority_boundaries(
+        self,
+        candidates: Iterable["CodemodCandidate"],
+        boundaries: Iterable["AuthorityBoundaryPlan"],
+    ) -> tuple["CodemodCandidate", ...]:
+        return self.candidates_with_automated_rewrites(
+            candidates,
+            builders=(SuppliedAuthorityBoundaryCodemodBuilder(boundaries),),
+        )
+
+    def simulate_candidates(
+        self,
+        candidates: Iterable["CodemodCandidate"],
+        *,
+        backend: "CodemodBackend" | None = None,
+    ) -> "CodemodSimulationReport":
+        return self.simulate_rewrites(
+            (
+                rewrite
+                for candidate in candidates
+                for rewrite in candidate.planned_rewrites
+            ),
+            backend=backend,
+        )
+
+    def with_simulation(
+        self,
+        simulation: "CodemodSimulationReport",
+    ) -> "CodemodSourceSnapshot":
+        sources = dict(self.sources_by_file_path)
+        sources.update(simulation.rewritten_sources)
+        return CodemodSourceSnapshot(
+            self.source_index,
+            sources,
+            self.class_family_index,
+        )
+
+    def unified_diff(
+        self,
+        simulation: "CodemodSimulationReport",
+        *,
+        fromfile_prefix: str = "a/",
+        tofile_prefix: str = "b/",
+    ) -> str:
+        return format_codemod_unified_diff(
+            simulation,
+            self.sources_by_file_path,
+            fromfile_prefix=fromfile_prefix,
+            tofile_prefix=tofile_prefix,
+        )
 
 
 @dataclass(frozen=True)
@@ -6783,28 +6971,32 @@ class RefactorRecipe:
         guard_suite: ArchitectureGuardSuite | None = None,
         selector_context: CodemodSelectorContext | None = None,
     ) -> "RefactorRecipeSimulation":
-        if guard_suite is None:
-            active_guard_suite = ArchitectureGuardSuite()
-        else:
-            active_guard_suite = guard_suite
-        simulation = simulate_planned_rewrites(
-            source_index,
-            self.source_rewrite_batch(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
+        snapshot = CodemodSourceSnapshot(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
+            class_family_index=(
+                selector_context.class_family_index
+                if selector_context is not None
+                else None
             ),
-            source_by_path,
+        )
+        return self.simulate_snapshot(
+            snapshot,
             backend=backend,
+            guard_suite=guard_suite,
         )
-        guard_report = active_guard_suite.evaluate(
-            source_index,
-            source_by_path_with_simulation(source_by_path, simulation),
-        )
-        return RefactorRecipeSimulation(
-            recipe=self,
-            simulation=simulation,
-            architecture_guard_report=guard_report,
+
+    def simulate_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+        guard_suite: ArchitectureGuardSuite | None = None,
+    ) -> "RefactorRecipeSimulation":
+        return snapshot.simulate_recipe(
+            self,
+            backend=backend,
+            guard_suite=guard_suite,
         )
 
     def to_dict(self) -> JsonObject:
@@ -6853,6 +7045,12 @@ class CodemodPlanDocument:
             )
         )
 
+    def source_rewrite_batch_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PlannedSourceRewrite, ...]:
+        return snapshot.source_rewrite_batch_for_document(self)
+
     def simulate(
         self,
         source_index: SourceIndex,
@@ -6861,24 +7059,26 @@ class CodemodPlanDocument:
         backend: CodemodBackend | None = None,
         selector_context: CodemodSelectorContext | None = None,
     ) -> "CodemodPlanDocumentSimulation":
-        simulation = simulate_planned_rewrites(
-            source_index,
-            self.source_rewrite_batch(
-                source_index,
-                source_by_path,
-                selector_context=selector_context,
+        snapshot = CodemodSourceSnapshot(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
+            class_family_index=(
+                selector_context.class_family_index
+                if selector_context is not None
+                else None
             ),
-            source_by_path,
+        )
+        return self.simulate_snapshot(snapshot, backend=backend)
+
+    def simulate_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "CodemodPlanDocumentSimulation":
+        return snapshot.simulate_document(
+            self,
             backend=backend,
-        )
-        guard_report = self.guard_suite.evaluate(
-            source_index,
-            source_by_path_with_simulation(source_by_path, simulation),
-        )
-        return CodemodPlanDocumentSimulation(
-            document=self,
-            simulation=simulation,
-            architecture_guard_report=guard_report,
         )
 
     def to_dict(self) -> JsonObject:
@@ -7085,6 +7285,14 @@ class FindingRecipePlan:
             ),
         )
 
+    def simulate_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> "FindingRecipePlanSimulation":
+        return snapshot.simulate_finding_plan(self, backend=backend)
+
     def to_dict(self) -> JsonObject:
         return {
             "document": self.document.to_dict(),
@@ -7111,22 +7319,6 @@ class FindingRecipePlanSimulation:
     @property
     def is_clean(self) -> bool:
         return self.document_simulation.is_clean
-
-    def unified_diff(
-        self,
-        source_by_path: Mapping[str, str],
-        *,
-        fromfile_prefix: str = "a/",
-        tofile_prefix: str = "b/",
-    ) -> str:
-        return self.document_simulation.unified_diff(
-            source_by_path,
-            fromfile_prefix=fromfile_prefix,
-            tofile_prefix=tofile_prefix,
-        )
-
-    def apply(self, *, require_clean: bool = True) -> tuple[str, ...]:
-        return self.document_simulation.apply(require_clean=require_clean)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -8158,6 +8350,18 @@ class CodemodCandidate:
             backend=backend,
         )
 
+    def simulate_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        *,
+        backend: CodemodBackend | None = None,
+    ) -> CodemodSimulationReport:
+        if not self.planned_rewrites:
+            raise ValueError(
+                f"Candidate {self.candidate_id} has no planned source rewrites"
+            )
+        return snapshot.simulate_rewrites(self.planned_rewrites, backend=backend)
+
 
 _DescriptorAssignmentBuilder = Callable[
     [ast.FunctionDef | ast.AsyncFunctionDef], str | None
@@ -8771,15 +8975,6 @@ def apply_codemod_simulation(
     for file_path, source in simulation.rewritten_sources.items():
         Path(file_path).write_text(source, encoding=encoding)
     return simulation.changed_file_paths
-
-
-def source_by_path_with_simulation(
-    source_by_path: Mapping[str, str],
-    simulation: CodemodSimulationReport,
-) -> dict[str, str]:
-    """Return an in-memory source map after applying a simulation report."""
-
-    return {**source_by_path, **simulation.rewritten_sources}
 
 
 @dataclass(frozen=True)

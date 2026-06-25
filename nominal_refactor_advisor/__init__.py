@@ -108,6 +108,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "CodemodSimulationReport",
     ),
+    "CodemodSourceSnapshot": (
+        "nominal_refactor_advisor.codemod",
+        "CodemodSourceSnapshot",
+    ),
     "CodemodSimulationStatus": (
         "nominal_refactor_advisor.codemod",
         "CodemodSimulationStatus",
@@ -300,10 +304,6 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
     "apply_codemod_simulation": (
         "nominal_refactor_advisor.codemod",
         "apply_codemod_simulation",
-    ),
-    "source_by_path_with_simulation": (
-        "nominal_refactor_advisor.codemod",
-        "source_by_path_with_simulation",
     ),
     "simulate_planned_rewrites": (
         "nominal_refactor_advisor.codemod",

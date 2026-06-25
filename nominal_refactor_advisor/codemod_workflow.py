@@ -8,21 +8,20 @@ from pathlib import Path
 
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
-from .class_index import build_class_family_index
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardSuite,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
-    CodemodSelectorContext,
     CodemodSimulationReport,
+    CodemodSourceSnapshot,
     FindingRecipePlan,
     JsonObject,
     codemod_plan_from_findings,
 )
 from .detectors import DetectorConfig
 from .models import RefactorFinding
-from .source_index import SourceIndex, build_source_index
+from .source_index import SourceIndex
 
 
 class CodemodFixpointStopReason(StrEnum):
@@ -184,19 +183,15 @@ class CodemodFixpointScan:
 
     @property
     def source_index(self) -> SourceIndex:
-        return build_source_index(self.modules, self.findings)
+        return self.source_snapshot.source_index
 
     @property
     def sources_by_file_path(self) -> dict[str, str]:
-        return {str(module.path): module.source for module in self.modules}
+        return dict(self.source_snapshot.sources_by_file_path)
 
     @property
-    def selector_context(self) -> CodemodSelectorContext:
-        return CodemodSelectorContext(
-            source_index=self.source_index,
-            sources_by_file_path=self.sources_by_file_path,
-            class_family_index=build_class_family_index(self.modules),
-        )
+    def source_snapshot(self) -> CodemodSourceSnapshot:
+        return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
 
 @dataclass(frozen=True)
@@ -339,9 +334,10 @@ class CodemodFixpointRunner(ParseCacheRequest):
         for iteration_index in range(self.max_iterations):
             scan = next_scan or self.scan(iteration_index)
             next_scan = None
+            snapshot = scan.source_snapshot
             plan = codemod_plan_from_findings(
                 scan.findings,
-                selector_context=scan.selector_context,
+                selector_context=snapshot,
             )
             if not plan.document.has_recipes:
                 return self.stopped_report(
@@ -356,11 +352,7 @@ class CodemodFixpointRunner(ParseCacheRequest):
                 recipes=plan.document.recipes,
                 guard_suite=self.guard_suite,
             )
-            simulation = guarded_document.simulate(
-                scan.source_index,
-                scan.sources_by_file_path,
-                selector_context=scan.selector_context,
-            )
+            simulation = guarded_document.simulate_snapshot(snapshot)
             if simulation.simulation.applied_rewrite_count == 0:
                 return self.stopped_report(
                     iterations,
