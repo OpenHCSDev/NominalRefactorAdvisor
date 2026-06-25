@@ -1503,6 +1503,8 @@ def test_method_promotion_synthesis_reports_direct_base_rejection(
     assert plan.document.recipes == ()
     assert plan.synthesis_report.rejected_count == 1
     assert record.status.value == "rejected_by_safety_check"
+    assert record.summary == "Alpha and Beta repeat emit."
+    assert record.capability_gap == "one inherited authority algorithm"
     assert record.reason == (
         "a direct base already defines at least one promoted method name"
     )
@@ -9828,6 +9830,10 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     assert iteration["recipe_count"] == 1
     assert iteration["synthesis_report"]["planned_count"] == 1
     assert iteration["synthesis_report"]["records"][0]["status"] == "planned"
+    assert (
+        iteration["synthesis_report"]["records"][0]["title"]
+        == "Manual class registration should become metaclass-registry AutoRegisterMeta"
+    )
     assert len(iteration["document"]["recipes"]) == 1
     operation = iteration["document"]["recipes"][0]["operations"][0]
     assert operation["operation"] == "convert_manual_registry_to_autoregister"

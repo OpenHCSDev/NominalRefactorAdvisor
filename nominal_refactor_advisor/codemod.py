@@ -7531,11 +7531,16 @@ class FindingRecipeSynthesisRecord:
 
     finding_id: str
     detector_id: str
+    title: str
+    summary: str
+    capability_gap: str
     status: FindingRecipeSynthesisStatus
     synthesizer_name: str = ""
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
     recipe_id: str = ""
     reason: str = ""
+    scaffold: str = ""
+    codemod_patch: str = ""
 
     @classmethod
     def for_finding(
@@ -7551,22 +7556,32 @@ class FindingRecipeSynthesisRecord:
         return cls(
             finding_id=finding.stable_id,
             detector_id=finding.detector_id,
+            title=finding.title,
+            summary=finding.summary,
+            capability_gap=finding.capability_gap,
             status=status,
             synthesizer_name="" if synthesizer is None else type(synthesizer).__name__,
             action_keys=action_keys,
             recipe_id="" if recipe is None else recipe.recipe_id,
             reason=reason,
+            scaffold=finding.scaffold or "",
+            codemod_patch=finding.codemod_patch or "",
         )
 
     def to_dict(self) -> JsonObject:
         return {
             "finding_id": self.finding_id,
             "detector_id": self.detector_id,
+            "title": self.title,
+            "summary": self.summary,
+            "capability_gap": self.capability_gap,
             "status": self.status.value,
             "synthesizer_name": self.synthesizer_name,
             "action_keys": tuple(action_key.to_dict() for action_key in self.action_keys),
             "recipe_id": self.recipe_id,
             "reason": self.reason,
+            "scaffold": self.scaffold,
+            "codemod_patch": self.codemod_patch,
         }
 
 
