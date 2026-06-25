@@ -658,6 +658,9 @@ class CodemodSimulationPayload:
             "applied": self.applied,
             "applied_rewrite_count": self.simulation.applied_rewrite_count,
             "changed_file_paths": self.simulation.changed_file_paths,
+            "validated_file_paths": self.simulation.validated_file_paths,
+            "parse_valid": self.simulation.parse_valid,
+            "parse_validation": self.simulation.parse_validation.to_dict(),
             "rewrites": tuple(
                 rewrite.to_dict() for rewrite in self.simulation.rewrites
             ),

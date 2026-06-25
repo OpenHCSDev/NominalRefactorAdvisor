@@ -5939,12 +5939,29 @@ class CodemodPlanDocument:
 
 
 @dataclass(frozen=True)
+class CodemodParseValidationReport:
+    """Parse validation metadata for a simulated rewrite batch."""
+
+    backend: CodemodBackend
+    validated_file_paths: tuple[str, ...]
+    parse_valid: bool
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "backend": self.backend.value,
+            "validated_file_paths": self.validated_file_paths,
+            "parse_valid": self.parse_valid,
+        }
+
+
+@dataclass(frozen=True)
 class CodemodSimulationReport:
     """Result of simulating planned rewrites without writing files."""
 
     backend: CodemodBackend
     rewrites: tuple[SimulatedSourceRewrite, ...]
     rewritten_sources: dict[str, str]
+    parse_validation: CodemodParseValidationReport
 
     @property
     def applied_rewrite_count(self) -> int:
@@ -5954,11 +5971,22 @@ class CodemodSimulationReport:
     def changed_file_paths(self) -> tuple[str, ...]:
         return tuple(sorted(self.rewritten_sources))
 
+    @property
+    def validated_file_paths(self) -> tuple[str, ...]:
+        return self.parse_validation.validated_file_paths
+
+    @property
+    def parse_valid(self) -> bool:
+        return self.parse_validation.parse_valid
+
     def to_dict(self) -> JsonObject:
         return {
             "backend": self.backend.value,
             "applied_rewrite_count": self.applied_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
+            "validated_file_paths": self.validated_file_paths,
+            "parse_valid": self.parse_valid,
+            "parse_validation": self.parse_validation.to_dict(),
             "rewrites": tuple(rewrite.to_dict() for rewrite in self.rewrites),
         }
 
@@ -8030,6 +8058,11 @@ class SourceRewriteSimulationAuthority:
                 ),
             ),
             rewritten_sources=changed_sources,
+            parse_validation=CodemodParseValidationReport(
+                backend=self.backend,
+                validated_file_paths=tuple(sorted(changed_sources)),
+                parse_valid=True,
+            ),
         )
 
     def resolved_rewrites(

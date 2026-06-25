@@ -454,6 +454,10 @@ def test_impact_ranked_codemod_candidate_simulates_source_index_rewrite(
     )
     assert simulation.applied_rewrite_count == 1
     assert simulation.changed_file_paths == (module_path.as_posix(),)
+    assert simulation.validated_file_paths == (module_path.as_posix(),)
+    assert simulation.parse_valid is True
+    assert simulation.to_dict()["parse_valid"] is True
+    assert simulation.parse_validation.to_dict()["backend"] == "ast_span"
     assert "return value + 1" in simulation.rewritten_sources[module_path.as_posix()]
 
 
@@ -8838,6 +8842,9 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert apply_result.returncode == 0, apply_result.stderr
     assert payload["applied"] is True
     assert payload["applied_rewrite_count"] == 1
+    assert payload["parse_valid"] is True
+    assert payload["validated_file_paths"] == [module_path.as_posix()]
+    assert payload["parse_validation"]["parse_valid"] is True
     assert 'detector_id = "local_rule"' not in module_path.read_text()
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
 
@@ -9114,6 +9121,11 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     )
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
+    assert simulation.to_dict()["expected_removed_finding_count"] == 1
+    assert simulation.to_dict()["simulation"]["parse_valid"] is True
+    assert simulation.to_dict()["simulation"]["validated_file_paths"] == (
+        module_path.as_posix(),
+    )
     simulation.apply()
     remaining = tuple(
         finding
