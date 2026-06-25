@@ -9204,6 +9204,61 @@ def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
     assert payload["missing_target_ids"] == []
 
 
+def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        prepared = value + 1\n"
+            "        return prepared\n"
+            "\n\ndef helper():\n"
+            "    return Alpha()\n"
+        ),
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "qualnames": ["Alpha.run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-target-source",
+            selector_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    record = payload["targets"][0]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["selected_count"] == 1
+    assert record["target"]["qualname"] == "Alpha.run"
+    assert record["line_count"] == 3
+    assert record["source"] == (
+        "    def run(self, value):\n"
+        "        prepared = value + 1\n"
+        "        return prepared\n"
+    )
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:

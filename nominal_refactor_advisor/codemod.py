@@ -1027,6 +1027,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSelectorResolutionReport":
         return CodemodSelectorResolutionReport.from_selector_context(selector, self)
 
+    def target_source_report(
+        self,
+        selector: "CodemodTargetSelector",
+    ) -> "CodemodTargetSourceReport":
+        return CodemodTargetSourceReport.from_selector_context(selector, self)
+
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],
@@ -1926,6 +1932,76 @@ class CodemodSelectorResolutionReport:
                     for target in self.selected_targets
                 ),
                 "missing_target_ids": self.missing_target_ids,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CodemodTargetSourceRecord:
+    """One selected source-index target with its exact source span."""
+
+    target: AstTargetDigest
+    source: str
+
+    @property
+    def line_count(self) -> int:
+        return self.target.end_line - self.target.line + 1
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "target": CodemodSourceIndexReport.target_payload(self.target),
+                "source": self.source,
+                "line_count": self.line_count,
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CodemodTargetSourceReport:
+    """JSON-ready exact source spans for selected codemod targets."""
+
+    selector_resolution: CodemodSelectorResolutionReport
+    records: tuple[CodemodTargetSourceRecord, ...]
+
+    @property
+    def selected_count(self) -> int:
+        return len(self.records)
+
+    @classmethod
+    def from_selector_context(
+        cls,
+        selector: CodemodTargetSelector,
+        context: CodemodSelectorContext,
+    ) -> "CodemodTargetSourceReport":
+        if not isinstance(context, CodemodSourceSnapshot):
+            raise TypeError("Target source extraction requires CodemodSourceSnapshot")
+        selector_resolution = CodemodSelectorResolutionReport.from_selector_context(
+            selector,
+            context,
+        )
+        return cls(
+            selector_resolution=selector_resolution,
+            records=tuple(
+                CodemodTargetSourceRecord(
+                    target=target,
+                    source="".join(
+                        SourceTargetEditor(context.sources_by_file_path, target)
+                        .target_lines
+                    ),
+                )
+                for target in selector_resolution.selected_targets
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "selector": self.selector_resolution.selector.to_dict(),
+                "selected_count": self.selected_count,
+                "selected_target_ids": self.selector_resolution.selected_target_ids,
+                "missing_target_ids": self.selector_resolution.missing_target_ids,
+                "targets": tuple(record.to_dict() for record in self.records),
             }
         )
 

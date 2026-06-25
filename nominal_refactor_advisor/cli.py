@@ -378,6 +378,15 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-target-source",),
+            value_type=Path,
+            help=(
+                "Load one codemod target selector JSON object, resolve it "
+                "against scanned paths, emit exact selected target source spans, "
+                "and exit."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-diff",),
             action="store_true",
             help="Emit a unified diff for all currently planned codemod rewrites.",
@@ -1499,6 +1508,7 @@ class CodemodScanQueryMode:
     synthesize_plan: bool
     source_index: bool
     selector_path: Path | None
+    target_source_selector_path: Path | None
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -1506,6 +1516,7 @@ class CodemodScanQueryMode:
             synthesize_plan=args.codemod_synthesize_plan,
             source_index=args.codemod_source_index,
             selector_path=args.codemod_resolve_selector,
+            target_source_selector_path=args.codemod_target_source,
         )
 
     @property
@@ -1523,6 +1534,7 @@ class CodemodScanQueryMode:
                 self.synthesize_plan,
                 self.source_index,
                 self.selector_path is not None,
+                self.target_source_selector_path is not None,
             )
         )
 
@@ -1530,8 +1542,9 @@ class CodemodScanQueryMode:
         if self.mode_count <= 1:
             return
         parser.error(
-            "--codemod-synthesize-plan, --codemod-source-index, and "
-            "--codemod-resolve-selector are mutually exclusive"
+            "--codemod-synthesize-plan, --codemod-source-index, "
+            "--codemod-resolve-selector, and --codemod-target-source are "
+            "mutually exclusive"
         )
 
 
@@ -1601,7 +1614,38 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
         return 0
 
 
-class CodemodResolveSelectorCliCommand(CodemodScanQueryCliCommand):
+class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
+    """Scan-backed command that loads one selector and emits a JSON payload."""
+
+    def run(self) -> int:
+        snapshot = self.required_source_snapshot()
+        try:
+            selector = load_codemod_target_selector(self.selector_path)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self.parser.error(str(error))
+        print(
+            json.dumps(
+                self.payload_for_selector(snapshot, selector),
+                indent=2,
+            )
+        )
+        return 0
+
+    @property
+    @abstractmethod
+    def selector_path(self) -> Path:
+        raise NotImplementedError
+
+    @abstractmethod
+    def payload_for_selector(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        raise NotImplementedError
+
+
+class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
     """Resolve one registry-backed target selector against scanned source."""
 
     command_id = "codemod_resolve_selector"
@@ -1610,14 +1654,37 @@ class CodemodResolveSelectorCliCommand(CodemodScanQueryCliCommand):
     def requested(self) -> bool:
         return self.args.codemod_resolve_selector is not None
 
-    def run(self) -> int:
-        snapshot = self.required_source_snapshot()
-        try:
-            selector = load_codemod_target_selector(self.args.codemod_resolve_selector)
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            self.parser.error(str(error))
-        print(json.dumps(snapshot.resolve_selector(selector).to_dict(), indent=2))
-        return 0
+    @property
+    def selector_path(self) -> Path:
+        return self.args.codemod_resolve_selector
+
+    def payload_for_selector(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        return snapshot.resolve_selector(selector).to_dict()
+
+
+class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
+    """Emit exact source spans for one resolved target selector."""
+
+    command_id = "codemod_target_source"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_target_source is not None
+
+    @property
+    def selector_path(self) -> Path:
+        return self.args.codemod_target_source
+
+    def payload_for_selector(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        return snapshot.target_source_report(selector).to_dict()
 
 
 def main() -> int:
