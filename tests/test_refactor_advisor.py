@@ -9567,6 +9567,15 @@ def test_module_cli_codemod_fixpoint_applies_and_rescans(
     assert first_iteration["applied"] is True
     assert first_iteration["expected_removed_finding_count"] == 1
     assert first_iteration["simulation"]["parse_valid"] is True
+    assert (
+        first_iteration["finding_delta"]["confirmed_expected_removed_finding_count"]
+        == 1
+    )
+    assert (
+        first_iteration["finding_delta"]["surviving_expected_removed_finding_count"]
+        == 0
+    )
+    assert first_iteration["finding_delta"]["fulfilled_expected_removals"] is True
     assert terminal_iteration["applied"] is False
     assert terminal_iteration["recipe_count"] == 0
     assert "REGISTRY[" not in module_path.read_text()
@@ -9576,6 +9585,23 @@ def test_module_cli_codemod_fixpoint_applies_and_rescans(
         if finding.detector_id == "manual_class_registration"
     )
     assert remaining == ()
+
+
+def test_codemod_workflow_types_are_public_package_exports() -> None:
+    from nominal_refactor_advisor import CodemodFindingDelta
+    from nominal_refactor_advisor import CodemodFixpointRunner
+    from nominal_refactor_advisor import ParseCacheRequest
+
+    delta = CodemodFindingDelta(
+        before_finding_ids=("a", "b"),
+        after_finding_ids=("b", "c"),
+    )
+
+    assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert ParseCacheRequest(enabled=True).enabled is True
+    assert delta.removed_finding_ids == ("a",)
+    assert delta.added_finding_ids == ("c",)
+    assert delta.fulfilled_expected_removals(("a",)) is True
 
 
 def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(

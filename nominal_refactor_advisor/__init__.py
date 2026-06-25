@@ -169,6 +169,34 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, str]] = {
         "nominal_refactor_advisor.codemod",
         "CodemodPlanDocument",
     ),
+    "CodemodFindingDelta": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFindingDelta",
+    ),
+    "CodemodFixpointIteration": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFixpointIteration",
+    ),
+    "CodemodFixpointReport": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFixpointReport",
+    ),
+    "CodemodFixpointRunner": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFixpointRunner",
+    ),
+    "CodemodFixpointScan": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFixpointScan",
+    ),
+    "CodemodFixpointStopReason": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "CodemodFixpointStopReason",
+    ),
+    "ParseCacheRequest": (
+        "nominal_refactor_advisor.codemod_workflow",
+        "ParseCacheRequest",
+    ),
     "RefactorRecipe": (
         "nominal_refactor_advisor.codemod",
         "RefactorRecipe",
