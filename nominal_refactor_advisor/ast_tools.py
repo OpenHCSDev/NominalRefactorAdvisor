@@ -107,6 +107,7 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
 )
 _AST_PARSE_CACHE_VERSION = 1
 _DEFAULT_PARSE_WORKERS = 1
+_CACHE_PAYLOAD_UNAVAILABLE = object()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -156,8 +157,17 @@ def _load_cached_ast(
     try:
         with cache_path.open("rb") as handle:
             payload = cast(object, pickle.load(handle))
-    except (FileNotFoundError, OSError, pickle.PickleError):
-        return None
+    except (
+        FileNotFoundError,
+        OSError,
+        pickle.PickleError,
+        EOFError,
+        TypeError,
+        ValueError,
+        AttributeError,
+        ImportError,
+    ):
+        payload = _CACHE_PAYLOAD_UNAVAILABLE
     if not isinstance(payload, dict):
         return None
     if payload.get("version") != _AST_PARSE_CACHE_VERSION:

@@ -3340,7 +3340,11 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
         ).line_replacements(targets)
 
     def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
-        del targets
+        if not targets.supports_base_rewrites():
+            raise ValueError(
+                "Class member promotion requires single-line class headers "
+                "for base rewrites"
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3373,6 +3377,7 @@ class PromoteClassDeclarationsOperation(ClassMemberPromotionOperation):
             )
 
     def validate_targets(self, targets: "ClassMemberPromotionTargets") -> None:
+        super().validate_targets(targets)
         self.reject_enum_targets(targets)
 
 
@@ -3427,6 +3432,59 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             ),
         )
 
+    @classmethod
+    def resolve_or_none(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str | None,
+        class_names: tuple[str, ...],
+    ) -> "ClassMemberPromotionTargets | None":
+        nodes_by_target_id = AstTargetNodeIndex(
+            context.source_index,
+            context.sources_by_file_path,
+        ).nodes_by_target_identifier()
+        targets: list[tuple[AstTargetDigest, ast.ClassDef]] = []
+        for class_name in class_names:
+            target = cls.optional_class_target(
+                context.source_index,
+                nodes_by_target_id,
+                source_path=source_path,
+                class_name=class_name,
+            )
+            if target is None:
+                return None
+            targets.append(target)
+        return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            targets=tuple(targets),
+        )
+
+    @classmethod
+    def unresolved_class_target_reason(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str | None,
+        class_names: tuple[str, ...],
+    ) -> str:
+        nodes_by_target_id = AstTargetNodeIndex(
+            context.source_index,
+            context.sources_by_file_path,
+        ).nodes_by_target_identifier()
+        for class_name in class_names:
+            reason = cls.optional_class_target_rejection_reason(
+                context.source_index,
+                nodes_by_target_id,
+                source_path=source_path,
+                class_name=class_name,
+            )
+            if reason is not None:
+                return reason
+        return "class targets are unresolved"
+
     @staticmethod
     def class_target(
         source_index: SourceIndex,
@@ -3435,12 +3493,10 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
         source_path: str | None,
         class_name: str,
     ) -> tuple[AstTargetDigest, ast.ClassDef]:
-        matches = tuple(
-            target
-            for target in source_index.ast_targets
-            if target.is_class
-            and target.matches_symbol(class_name)
-            and (source_path is None or target.file_path == source_path)
+        matches = ClassMemberPromotionTargets.matching_class_targets(
+            source_index,
+            source_path=source_path,
+            class_name=class_name,
         )
         if len(matches) != 1:
             raise ValueError(f"Expected one class target for {class_name!r}")
@@ -3450,6 +3506,63 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
             raise ValueError(f"Target {target.qualname!r} is not a class definition")
         return target, node
 
+    @staticmethod
+    def optional_class_target(
+        source_index: SourceIndex,
+        nodes_by_target_id: Mapping[str, _TargetNode],
+        *,
+        source_path: str | None,
+        class_name: str,
+    ) -> tuple[AstTargetDigest, ast.ClassDef] | None:
+        matches = ClassMemberPromotionTargets.matching_class_targets(
+            source_index,
+            source_path=source_path,
+            class_name=class_name,
+        )
+        if len(matches) != 1:
+            return None
+        target = matches[0]
+        node = nodes_by_target_id[target.target_id]
+        if not isinstance(node, ast.ClassDef):
+            return None
+        return target, node
+
+    @staticmethod
+    def optional_class_target_rejection_reason(
+        source_index: SourceIndex,
+        nodes_by_target_id: Mapping[str, _TargetNode],
+        *,
+        source_path: str | None,
+        class_name: str,
+    ) -> str | None:
+        matches = ClassMemberPromotionTargets.matching_class_targets(
+            source_index,
+            source_path=source_path,
+            class_name=class_name,
+        )
+        if len(matches) != 1:
+            return f"Expected one class target for {class_name!r}"
+        target = matches[0]
+        node = nodes_by_target_id[target.target_id]
+        if not isinstance(node, ast.ClassDef):
+            return f"Target {target.qualname!r} is not a class definition"
+        return None
+
+    @staticmethod
+    def matching_class_targets(
+        source_index: SourceIndex,
+        *,
+        source_path: str | None,
+        class_name: str,
+    ) -> tuple[AstTargetDigest, ...]:
+        return tuple(
+            target
+            for target in source_index.ast_targets
+            if target.is_class
+            and target.matches_symbol(class_name)
+            and (source_path is None or target.file_path == source_path)
+        )
+
     @property
     def insertion_target(self) -> tuple[AstTargetDigest, ast.ClassDef]:
         return min(self.targets, key=lambda item: (item[0].file_path, item[0].line))
@@ -3457,6 +3570,15 @@ class ClassMemberPromotionTargets(CodemodSelectorContext):
     @property
     def first_source(self) -> str:
         return self.source_for(self.insertion_target[0].file_path)
+
+    def supports_base_rewrites(self) -> bool:
+        return all(
+            ClassBaseRewriteTarget(
+                node=node,
+                source=self.source_for(target.file_path),
+            ).supports_base_rewrite
+            for target, node in self.targets
+        )
 
     def source_for(self, file_path: str) -> str:
         return self.sources_by_file_path[file_path]
@@ -3610,6 +3732,27 @@ class ClassMemberPromotedBase(ClassMemberPromotionSpec):
                 f"on {self.source_class.name!r}"
             )
         return f"class {self.base_name}:\n{''.join(members)}"
+
+
+@dataclass(frozen=True)
+class ClassBaseRewriteTarget:
+    """Class declaration target supported by the line-based base rewrite engine."""
+
+    node: ast.ClassDef
+    source: str
+
+    @property
+    def supports_base_rewrite(self) -> bool:
+        source_lines = self.source.splitlines(keepends=True)
+        if self.node.lineno < 1 or self.node.lineno > len(source_lines):
+            return False
+        original_line = source_lines[self.node.lineno - 1]
+        line = SingleLogicalLineSource.parse(original_line, "class header")
+        if ":" not in line.body:
+            return False
+        if not line.body.startswith(f"class {self.node.name}"):
+            return False
+        return ClassHeaderParts.can_parse(line.body)
 
 
 @dataclass(frozen=True)
@@ -4634,12 +4777,21 @@ class ClassRegistryKeyPair:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
-    """Convert manual class registry writes into an AutoRegisterMeta base."""
+class ManualRegistryConversionCarrier:
+    """Shared registry conversion facts used by planning and operations."""
 
     registry_name: str
-    registry_key_attribute: str
     class_key_pairs: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConvertManualRegistryToAutoregisterOperation(
+    BaseNamePayloadOperation,
+    ManualRegistryConversionCarrier,
+):
+    """Convert manual class registry writes into an AutoRegisterMeta base."""
+
+    registry_key_attribute: str
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -7415,6 +7567,18 @@ class ClassHeaderParts:
             close_suffix=close_suffix,
         )
 
+    @staticmethod
+    def can_parse(header_body: str) -> bool:
+        colon_index = header_body.rfind(":")
+        if colon_index < 0:
+            return False
+        before_colon = header_body[:colon_index]
+        if "(" not in before_colon:
+            return True
+        open_index = before_colon.find("(")
+        close_index = before_colon.rfind(")")
+        return close_index >= open_index
+
     def with_added_base(self, base_name: str) -> "ClassHeaderParts":
         insert_index = self.first_keyword_index()
         return ClassHeaderParts(
@@ -9060,7 +9224,7 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
         if not self.action_keys_are_safe(action_keys, context):
             return (
                 "class-declaration promotion rejected because at least one target "
-                "is unresolved or is an Enum class"
+                "is unresolved, is an Enum class, or has an unsupported class header"
             )
         return super().rejection_reason_for_finding(finding, context)
 
@@ -9114,7 +9278,19 @@ class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
             node = nodes_by_target_id[target_ids[0]]
             if not isinstance(node, ast.ClassDef):
                 return False
-            if ClassDeclarationPromotionClass(node).is_enum_class:
+            if action_key.file_path not in context.sources_by_file_path:
+                return False
+            promotion_class = ClassDeclarationPromotionClass(node)
+            if promotion_class.is_enum_class:
+                return False
+            target = context.source_index.target_by_id[target_ids[0]]
+            targets = ClassMemberPromotionTargets(
+                source_index=context.source_index,
+                sources_by_file_path=context.sources_by_file_path,
+                class_family_index=context.class_family_index,
+                targets=((target, node),),
+            )
+            if not targets.supports_base_rewrites():
                 return False
         return True
 
@@ -9204,16 +9380,21 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         if names is None:
             return "finding metrics do not expose class-qualified method symbols"
         class_names, method_names = names
-        try:
-            targets = ClassMemberPromotionTargets.resolve(
+        targets = ClassMemberPromotionTargets.resolve_or_none(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+        )
+        if targets is None:
+            return ClassMemberPromotionTargets.unresolved_class_target_reason(
                 context,
                 source_path=source_path,
                 class_names=class_names,
             )
-        except ValueError as error:
-            return str(error)
         if not self.methods_are_identical(targets, method_names):
             return "method bodies are not exact AST duplicates"
+        if not targets.supports_base_rewrites():
+            return "method-promotion target has unsupported class header"
         if self.direct_bases_define_methods(targets, method_names, context):
             return "a direct base already defines at least one promoted method name"
         return super().rejection_reason_for_finding(finding, context)
@@ -9255,11 +9436,15 @@ class RepeatedMethodPromotionFindingRecipeSynthesizer(
         promotion: "RepeatedMethodPromotionPlan",
         context: CodemodSelectorContext,
     ) -> bool:
-        targets = ClassMemberPromotionTargets.resolve(
+        targets = ClassMemberPromotionTargets.resolve_or_none(
             context,
             source_path=promotion.source_path,
             class_names=promotion.class_names,
         )
+        if targets is None:
+            return False
+        if not targets.supports_base_rewrites():
+            return False
         return self.methods_are_identical(
             targets,
             promotion.method_names,
@@ -9529,6 +9714,13 @@ class ModuleAuthorityReexportCatalogFindingRecipeSynthesizer(
         return certificate is not None and not certificate.pays_rent
 
 
+@dataclass(frozen=True)
+class ManualRegistryRecipeParts(ManualRegistryConversionCarrier):
+    """Validated source facts needed to build a manual-registry codemod recipe."""
+
+    source_path: str
+
+
 class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
     """Build AutoRegisterMeta conversion recipes for manual class registries."""
 
@@ -9540,32 +9732,80 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        del context
         return (
-            Maybe.of(self.action_keys_for_finding(finding))
-            .filter(bool)
+            Maybe.of(context)
             .combine(
-                lambda action_keys: self.single_file_path(action_keys),
-                lambda action_keys, source_path: (action_keys, source_path),
-            )
-            .combine(
-                lambda _: finding.metrics.plan_registry_name,
-                lambda action_context, registry_name: (
-                    action_context[1],
-                    registry_name,
-                ),
-            )
-            .combine(
-                lambda _: self.nonempty_class_key_pairs(finding),
-                lambda registry_context, class_key_pairs: self.recipe_from_parts(
+                lambda selector_context: self.recipe_parts_for_finding(
                     finding,
-                    registry_context[0],
-                    registry_context[1],
-                    class_key_pairs,
+                    selector_context,
+                ),
+                lambda selector_context, parts: self.recipe_from_parts(
+                    finding,
+                    parts.source_path,
+                    parts.registry_name,
+                    parts.class_key_pairs,
                 ),
             )
             .unwrap_or_none()
         )
+
+    def recipe_parts_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> ManualRegistryRecipeParts | None:
+        return (
+            Maybe.of(self.action_keys_for_finding(finding))
+            .filter(bool)
+            .combine(
+                self.single_file_path,
+                lambda action_keys, source_path: source_path,
+            )
+            .combine(
+                lambda source_path: finding.metrics.plan_registry_name,
+                lambda source_path, registry_name: (
+                    source_path,
+                    registry_name,
+                ),
+            )
+            .combine(
+                lambda source_context: self.nonempty_class_key_pairs(finding),
+                lambda source_context, class_key_pairs: ManualRegistryRecipeParts(
+                    source_path=source_context[0],
+                    registry_name=source_context[1],
+                    class_key_pairs=class_key_pairs,
+                ),
+            )
+            .filter(
+                lambda parts: self.class_targets_are_safe(
+                    context,
+                    parts.source_path,
+                    parts.class_key_pairs,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        if context is None:
+            return "manual-registry conversion requires a source selector context"
+        action_keys = self.action_keys_for_finding(finding)
+        source_path = self.single_file_path(action_keys)
+        if source_path is None:
+            return "manual-registry conversion requires one source file"
+        registry_name = finding.metrics.plan_registry_name
+        if registry_name is None:
+            return "manual-registry finding exposes no registry name"
+        class_key_pairs = self.nonempty_class_key_pairs(finding)
+        if class_key_pairs is None:
+            return "manual-registry finding exposes no class key pairs"
+        if not self.class_targets_are_safe(context, source_path, class_key_pairs):
+            return "manual-registry conversion target has unsupported class header"
+        return super().rejection_reason_for_finding(finding, context)
 
     @staticmethod
     def single_file_path(
@@ -9586,6 +9826,23 @@ class ManualClassRegistrationFindingRecipeSynthesizer(FindingRecipeSynthesizer):
         if class_key_pairs:
             return class_key_pairs
         return None
+
+    @staticmethod
+    def class_targets_are_safe(
+        context: CodemodSelectorContext,
+        source_path: str,
+        class_key_pairs: tuple[str, ...],
+    ) -> bool:
+        class_names = tuple(
+            ClassRegistryKeyPair.parse(source).class_name
+            for source in class_key_pairs
+        )
+        targets = ClassMemberPromotionTargets.resolve_or_none(
+            context,
+            source_path=source_path,
+            class_names=class_names,
+        )
+        return targets is not None and targets.supports_base_rewrites()
 
     def recipe_from_parts(
         self,

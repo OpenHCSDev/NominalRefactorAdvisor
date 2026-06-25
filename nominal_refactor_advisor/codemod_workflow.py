@@ -567,10 +567,13 @@ class CodemodFixpointRunner(ParseCacheRequest):
         module: ParsedModule,
         simulation: CodemodSimulationReport,
     ) -> ParsedModule:
-        source = ProjectedModuleSource(
+        projection = ProjectedModuleSource(
             module=module,
             simulation=simulation,
-        ).source
+        )
+        if not projection.has_rewrite:
+            return module
+        source = projection.source
         return ParsedModule(
             path=module.path,
             module_name=module.module_name,
@@ -588,8 +591,15 @@ class ProjectedModuleSource:
     simulation: CodemodSimulationReport
 
     @property
+    def module_path(self) -> str:
+        return self.module.path.as_posix()
+
+    @property
+    def has_rewrite(self) -> bool:
+        return self.module_path in self.simulation.rewritten_sources
+
+    @property
     def source(self) -> str:
-        module_path = self.module.path.as_posix()
-        if module_path in self.simulation.rewritten_sources:
-            return self.simulation.rewritten_sources[module_path]
+        if self.has_rewrite:
+            return self.simulation.rewritten_sources[self.module_path]
         return self.module.source

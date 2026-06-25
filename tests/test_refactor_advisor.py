@@ -1341,6 +1341,48 @@ def test_class_level_inheritance_findings_synthesize_promotion_recipe(
     assert remaining == []
 
 
+def test_class_level_inheritance_bridge_rejects_multiline_class_headers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from typing import ClassVar\n\n\n"
+        "class Marker:\n"
+        "    pass\n\n\n"
+        "class Alpha(\n"
+        "    Marker\n"
+        "):\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n\n\n"
+        "class Beta:\n"
+        "    KIND: ClassVar[str] = 'shared'\n"
+        "    FLAG = 'enabled'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "class_level_inheritance_optimization"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = snapshot.plan_from_findings(
+        findings,
+        detector_ids=("class_level_inheritance_optimization",),
+    )
+    record = plan.synthesis_report.records[0]
+
+    assert plan.document.recipes == ()
+    assert plan.synthesis_report.rejected_count == 1
+    assert record.status.value == "rejected_by_safety_check"
+    assert record.reason == (
+        "class-declaration promotion rejected because at least one target "
+        "is unresolved, is an Enum class, or has an unsupported class header"
+    )
+
+
 def test_refactor_recipe_promotes_class_methods(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
@@ -1510,6 +1552,106 @@ def test_method_promotion_synthesis_reports_direct_base_rejection(
     assert record.reason == (
         "a direct base already defines at least one promoted method name"
     )
+
+
+def test_method_promotion_synthesis_rejects_unresolved_class_targets(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    def emit(self, rows):\n"
+        "        return rows\n\n\n"
+        "class Beta:\n"
+        "    def emit(self, rows):\n"
+        "        return rows\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Public authority methods repeat across class leaves",
+        why="Repeated methods should move behind a shared authority.",
+        capability_gap="one inherited authority algorithm",
+        relation_context="same public method template repeats",
+        detector_id="cross_class_small_method_template",
+        summary="Missing classes repeat emit.",
+        evidence=(
+            SourceLocation(module_path.as_posix(), 2, "MissingAlpha.emit"),
+            SourceLocation(module_path.as_posix(), 7, "MissingBeta.emit"),
+        ),
+        metrics=RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=2,
+            statement_count=1,
+            class_count=2,
+            method_symbols=("MissingAlpha.emit", "MissingBeta.emit"),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = snapshot.plan_from_findings(
+        (finding,),
+        detector_ids=("cross_class_small_method_template",),
+    )
+    record = plan.synthesis_report.records[0]
+
+    assert plan.document.recipes == ()
+    assert plan.synthesis_report.rejected_count == 1
+    assert record.status.value == "rejected_by_safety_check"
+    assert record.reason == "Expected one class target for 'MissingAlpha'"
+
+
+def test_method_promotion_synthesis_rejects_multiline_class_headers(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Marker:\n"
+        "    pass\n\n\n"
+        "class Alpha(\n"
+        "    Marker\n"
+        "):\n"
+        "    def emit(self, rows):\n"
+        "        return rows\n\n\n"
+        "class Beta:\n"
+        "    def emit(self, rows):\n"
+        "        return rows\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = RefactorFinding(
+        pattern_id=PatternId.ABC_TEMPLATE_METHOD,
+        title="Public authority methods repeat across class leaves",
+        why="Repeated methods should move behind a shared authority.",
+        capability_gap="one inherited authority algorithm",
+        relation_context="same public method template repeats",
+        detector_id="cross_class_small_method_template",
+        summary="Alpha and Beta repeat emit.",
+        evidence=(
+            SourceLocation(module_path.as_posix(), 8, "Alpha.emit"),
+            SourceLocation(module_path.as_posix(), 13, "Beta.emit"),
+        ),
+        metrics=RepeatedMethodMetrics.from_duplicate_family(
+            duplicate_site_count=2,
+            statement_count=1,
+            class_count=2,
+            method_symbols=("Alpha.emit", "Beta.emit"),
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = snapshot.plan_from_findings(
+        (finding,),
+        detector_ids=("cross_class_small_method_template",),
+    )
+    record = plan.synthesis_report.records[0]
+
+    assert plan.document.recipes == ()
+    assert plan.synthesis_report.rejected_count == 1
+    assert record.status.value == "rejected_by_safety_check"
+    assert record.reason == "method-promotion target has unsupported class header"
 
 
 def test_semantic_overlap_method_promotion_bridge_refuses_residue_methods(
@@ -4946,6 +5088,37 @@ def test_parse_python_modules_reuses_ast_cache(
     monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
 
     first_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
+    second_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
+
+    assert [module.module_name for module in first_modules] == ["mod"]
+    assert [module.module_name for module in second_modules] == ["mod"]
+    assert parse_calls == 1
+
+
+def test_parse_python_modules_treats_incompatible_ast_cache_as_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    cache_dir = tmp_path / ".cache" / "ast"
+    first_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
+    parse_calls = 0
+    real_parse = ast.parse
+
+    def failing_cache_load(handle: object) -> object:
+        raise TypeError("stale AST pickle")
+
+    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
+        nonlocal parse_calls
+        parse_calls += 1
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.ast_tools.pickle.load",
+        failing_cache_load,
+    )
+    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+
     second_modules = parse_python_modules(tmp_path / "pkg", cache_dir=cache_dir)
 
     assert [module.module_name for module in first_modules] == ["mod"]
@@ -10650,6 +10823,46 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     assert module_path.read_text() == original_source
 
 
+def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import CodemodParseValidationReport
+    from nominal_refactor_advisor.codemod import CodemodSimulationReport
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+
+    _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
+    beta_path = tmp_path / "pkg/beta.py"
+    _write_module(tmp_path, "pkg/beta.py", "\nclass Beta:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    scan = CodemodFixpointScan(modules=modules, findings=[])
+    simulation = CodemodSimulationReport(
+        backend=CodemodBackend.AST_SPAN,
+        rewrites=(),
+        rewritten_sources={
+            beta_path.as_posix(): "\nclass Beta:\n    pass\n\nclass BetaTwo:\n    pass\n"
+        },
+        parse_validation=CodemodParseValidationReport(
+            backend=CodemodBackend.AST_SPAN,
+            validated_file_paths=(beta_path.as_posix(),),
+            parse_valid=True,
+        ),
+    )
+    runner = CodemodFixpointRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        max_iterations=1,
+        guard_suite=ArchitectureGuardSuite(),
+    )
+
+    projected_scan = runner.projected_scan(scan, simulation)
+
+    assert projected_scan.modules[0] is modules[0]
+    assert projected_scan.modules[1] is not modules[1]
+    assert "BetaTwo" in projected_scan.modules[1].source
+
+
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointRunner
@@ -10927,10 +11140,16 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     )
     source_index = build_source_index(modules, findings)
     source_by_path = {module_path.as_posix(): module_path.read_text()}
+    selector_context = CodemodSelectorContext(
+        source_index=source_index,
+        sources_by_file_path=source_by_path,
+        class_family_index=build_class_family_index(modules),
+    )
 
     plan = codemod_plan_from_findings(
         findings,
         detector_ids=("manual_class_registration",),
+        selector_context=selector_context,
     )
     simulation = plan.simulate(
         source_index,
