@@ -54,6 +54,7 @@ from .codemod import (
     PlannedSourceRewrite,
     RefactorRecipe,
     RefactorRecipeOperation,
+    RefactorRecipeOperationTemplate,
     RefactorRecipeRewrite,
     SourceRewriteTarget,
     apply_codemod_simulation,
@@ -415,6 +416,23 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-selected-operation-plan",),
+            value_type=Path,
+            help=(
+                "Load one codemod target selector JSON object and, with "
+                "--codemod-operation-template, emit an editable "
+                "apply-selected-targets CodemodPlanDocument scaffold."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-operation-template",),
+            value_type=Path,
+            help=(
+                "JSON object or array of target-local operation templates used "
+                "by --codemod-selected-operation-plan."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-diff",),
             action="store_true",
             help="Emit a unified diff for all currently planned codemod rewrites.",
@@ -567,6 +585,31 @@ def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
     if not isinstance(payload, Mapping):
         raise ValueError("codemod selector JSON must be an object")
     return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
+
+
+def load_codemod_operation_templates(
+    path: Path,
+) -> tuple[RefactorRecipeOperationTemplate, ...]:
+    """Load one or more target-local codemod operation templates from JSON."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping):
+        return (
+            RefactorRecipeOperationTemplate.from_json_value(
+                cast(Mapping[str, JsonValue], payload)
+            ),
+        )
+    if isinstance(payload, list):
+        templates = tuple(
+            RefactorRecipeOperationTemplate.from_json_value(item)
+            for item in cast(list[JsonValue], payload)
+        )
+        if not templates:
+            raise ValueError(
+                "codemod operation template JSON must contain at least one template"
+            )
+        return templates
+    raise ValueError("codemod operation template JSON must be an object or array")
 
 
 @dataclass(frozen=True)
@@ -1621,6 +1664,8 @@ class CodemodScanQueryMode:
     selector_path: Path | None
     target_source_selector_path: Path | None
     replacement_plan_selector_path: Path | None
+    selected_operation_plan_selector_path: Path | None
+    operation_template_path: Path | None
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -1630,6 +1675,10 @@ class CodemodScanQueryMode:
             selector_path=args.codemod_resolve_selector,
             target_source_selector_path=args.codemod_target_source,
             replacement_plan_selector_path=args.codemod_replacement_plan,
+            selected_operation_plan_selector_path=(
+                args.codemod_selected_operation_plan
+            ),
+            operation_template_path=args.codemod_operation_template,
         )
 
     @property
@@ -1649,16 +1698,34 @@ class CodemodScanQueryMode:
                 self.selector_path is not None,
                 self.target_source_selector_path is not None,
                 self.replacement_plan_selector_path is not None,
+                self.selected_operation_plan_selector_path is not None,
             )
         )
 
     def require_valid(self, parser: argparse.ArgumentParser) -> None:
+        if (
+            self.operation_template_path is not None
+            and self.selected_operation_plan_selector_path is None
+        ):
+            parser.error(
+                "--codemod-operation-template requires "
+                "--codemod-selected-operation-plan"
+            )
+        if (
+            self.selected_operation_plan_selector_path is not None
+            and self.operation_template_path is None
+        ):
+            parser.error(
+                "--codemod-selected-operation-plan requires "
+                "--codemod-operation-template"
+            )
         if self.mode_count <= 1:
             return
         parser.error(
             "--codemod-synthesize-plan, --codemod-source-index, "
             "--codemod-resolve-selector, --codemod-target-source, and "
-            "--codemod-replacement-plan are mutually exclusive"
+            "--codemod-replacement-plan, and --codemod-selected-operation-plan "
+            "are mutually exclusive"
         )
 
 
@@ -1731,7 +1798,7 @@ class CodemodSourceIndexCliCommand(CodemodScanQueryCliCommand):
 class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     """Scan-backed command that loads one selector and emits a JSON payload."""
 
-    payload_builder: ClassVar[CodemodSelectorPayloadBuilder]
+    payload_builder: ClassVar[CodemodSelectorPayloadBuilder | None] = None
 
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
@@ -1741,7 +1808,7 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
             self.parser.error(str(error))
         print(
             json.dumps(
-                self.payload_builder(snapshot, selector),
+                self.payload_for_selector(snapshot, selector),
                 indent=2,
             )
         )
@@ -1751,6 +1818,18 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     @abstractmethod
     def selector_path(self) -> Path:
         raise NotImplementedError
+
+    def payload_for_selector(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        if self.payload_builder is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must declare a payload builder or override "
+                "payload_for_selector"
+            )
+        return self.payload_builder(snapshot, selector)
 
 
 class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
@@ -1802,6 +1881,36 @@ class CodemodReplacementPlanCliCommand(CodemodSelectorQueryCliCommand):
     @property
     def selector_path(self) -> Path:
         return self.args.codemod_replacement_plan
+
+
+class CodemodSelectedOperationPlanCliCommand(CodemodSelectorQueryCliCommand):
+    """Emit an apply-selected-targets plan for selector and operation templates."""
+
+    command_id = "codemod_selected_operation_plan"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_selected_operation_plan is not None
+
+    @property
+    def selector_path(self) -> Path:
+        return self.args.codemod_selected_operation_plan
+
+    def payload_for_selector(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        selector: CodemodTargetSelector,
+    ) -> JsonObject:
+        try:
+            operation_templates = load_codemod_operation_templates(
+                self.args.codemod_operation_template
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self.parser.error(str(error))
+        return snapshot.selected_operation_plan_scaffold_report(
+            selector,
+            operation_templates,
+        ).to_dict()
 
 
 def main() -> int:

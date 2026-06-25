@@ -9344,6 +9344,108 @@ def test_module_cli_scaffolds_editable_replacement_plan(
     assert "return prepared + 1" not in module_path.read_text()
 
 
+def test_module_cli_scaffolds_selected_operation_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n\n\n"
+            "class Beta:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n\n\n"
+            "class Gamma:\n"
+            "    def run(self, value):\n"
+            "        return stable(value)\n"
+        ),
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "file_paths": [module_path.as_posix()],
+                "qualname_patterns": ["^(Alpha|Beta)\\.run$"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    template_path = tmp_path / "operation-template.json"
+    template_path.write_text(
+        json.dumps(
+            [
+                {
+                    "operation": "replace_text",
+                    "old_source": "legacy(value)",
+                    "new_source": "modern('${target.qualname}', value)",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    scaffold_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            selector_path.as_posix(),
+            "--codemod-operation-template",
+            template_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    scaffold_payload = json.loads(scaffold_result.stdout)
+    plan_payload = scaffold_payload["document"]
+    operation = plan_payload["recipes"][0]["operations"][0]
+
+    assert scaffold_result.returncode == 0, scaffold_result.stderr
+    assert scaffold_payload["selected_count"] == 2
+    assert scaffold_payload["operation_templates"][0]["operation"] == "replace_text"
+    assert operation["operation"] == "apply_selected_targets"
+    assert operation["selection_count"] == {"exact": 2}
+    assert operation["selector"]["qualname_patterns"] == ["^(Alpha|Beta)\\.run$"]
+
+    plan_path = tmp_path / "selected-operation-plan.json"
+    plan_path.write_text(json.dumps(plan_payload), encoding="utf-8")
+    simulate_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--codemod-plan",
+            plan_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    simulate_payload = json.loads(simulate_result.stdout)
+
+    assert simulate_result.returncode == 0, simulate_result.stderr
+    assert simulate_payload["applied"] is False
+    assert simulate_payload["applied_rewrite_count"] == 2
+    assert simulate_payload["parse_valid"] is True
+    assert "+        return modern('Alpha.run', value)" in simulate_payload["unified_diff"]
+    assert "+        return modern('Beta.run', value)" in simulate_payload["unified_diff"]
+    assert "modern('Alpha.run', value)" not in module_path.read_text()
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:

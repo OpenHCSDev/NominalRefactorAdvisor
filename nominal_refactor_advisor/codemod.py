@@ -1055,6 +1055,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self,
         )
 
+    def selected_operation_plan_scaffold_report(
+        self,
+        selector: "CodemodTargetSelector",
+        operation_templates: Iterable["RefactorRecipeOperationTemplate"],
+    ) -> "CodemodSelectedOperationPlanScaffoldReport":
+        return CodemodSelectedOperationPlanScaffoldReport.from_selector_context(
+            selector,
+            operation_templates,
+            self,
+        )
+
     def candidates_with_automated_rewrites(
         self,
         candidates: Iterable["CodemodCandidate"],
@@ -2036,16 +2047,22 @@ class CodemodTargetSourceReport(CodemodJsonReport):
 
 
 @dataclass(frozen=True)
-class CodemodReplacementPlanScaffoldReport(CodemodJsonReport):
-    """Editable CodemodPlanDocument seeded with exact selected target source."""
+class CodemodPlanScaffoldReport(CodemodJsonReport, ABC):
+    """Shared report state for selector-backed CodemodPlanDocument scaffolds."""
 
     selector_resolution: CodemodSelectorResolutionReport
-    records: tuple[CodemodTargetSourceRecord, ...]
     document: "CodemodPlanDocument"
 
     @property
     def selected_count(self) -> int:
-        return len(self.records)
+        return self.selector_resolution.selected_count
+
+
+@dataclass(frozen=True)
+class CodemodReplacementPlanScaffoldReport(CodemodPlanScaffoldReport):
+    """Editable CodemodPlanDocument seeded with exact selected target source."""
+
+    records: tuple[CodemodTargetSourceRecord, ...]
 
     @classmethod
     def from_selector_context(
@@ -2059,8 +2076,8 @@ class CodemodReplacementPlanScaffoldReport(CodemodJsonReport):
         )
         return cls(
             selector_resolution=source_report.selector_resolution,
-            records=source_report.records,
             document=cls.document_for_records(source_report.records),
+            records=source_report.records,
         )
 
     @classmethod
@@ -2098,6 +2115,80 @@ class CodemodReplacementPlanScaffoldReport(CodemodJsonReport):
                 "selected_target_ids": self.selector_resolution.selected_target_ids,
                 "missing_target_ids": self.selector_resolution.missing_target_ids,
                 "targets": tuple(record.to_dict() for record in self.records),
+                "document": self.document.to_dict(),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class CodemodSelectedOperationPlanScaffoldReport(CodemodPlanScaffoldReport):
+    """Editable CodemodPlanDocument applying templates over selected targets."""
+
+    operation_templates: tuple["RefactorRecipeOperationTemplate", ...]
+
+    @classmethod
+    def from_selector_context(
+        cls,
+        selector: CodemodTargetSelector,
+        operation_templates: Iterable["RefactorRecipeOperationTemplate"],
+        context: CodemodSelectorContext,
+    ) -> "CodemodSelectedOperationPlanScaffoldReport":
+        template_tuple = tuple(operation_templates)
+        selector_resolution = CodemodSelectorResolutionReport.from_selector_context(
+            selector,
+            context,
+        )
+        return cls(
+            selector_resolution=selector_resolution,
+            document=cls.document_for_selection(
+                selector,
+                template_tuple,
+                selected_count=selector_resolution.selected_count,
+            ),
+            operation_templates=template_tuple,
+        )
+
+    @classmethod
+    def document_for_selection(
+        cls,
+        selector: CodemodTargetSelector,
+        operation_templates: tuple["RefactorRecipeOperationTemplate", ...],
+        *,
+        selected_count: int,
+    ) -> "CodemodPlanDocument":
+        recipe = RefactorRecipe(
+            recipe_id="selected-operation-plan-scaffold",
+            reason=(
+                "Apply target-local operation templates to the resolved selector."
+            ),
+            operations=(
+                ApplySelectedTargetsOperation(
+                    target=SourceRewriteTarget(),
+                    selector=selector,
+                    selection_count=SelectionCountExpectation(exact=selected_count),
+                    operation_templates=operation_templates,
+                    rationale=(
+                        "Apply operation templates to the selected target set."
+                    ),
+                ),
+            ),
+        )
+        return CodemodPlanDocument(recipes=(recipe,))
+
+    def to_dict(self) -> JsonObject:
+        return JsonObject(
+            {
+                "selector": self.selector_resolution.selector.to_dict(),
+                "selected_count": self.selected_count,
+                "selected_target_ids": self.selector_resolution.selected_target_ids,
+                "selected_targets": tuple(
+                    CodemodSourceIndexReport.target_payload(target)
+                    for target in self.selector_resolution.selected_targets
+                ),
+                "missing_target_ids": self.selector_resolution.missing_target_ids,
+                "operation_templates": tuple(
+                    template.to_dict() for template in self.operation_templates
+                ),
                 "document": self.document.to_dict(),
             }
         )
