@@ -78,6 +78,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     CodemodStrategy,
     CodemodStrategyRegistry,
+    CodemodTargetSelector,
     DEFAULT_CODEMOD_REWRITE_BUILDERS,
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
@@ -8960,6 +8961,10 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         field["field_name"]: field
         for field in operations["extract_authority"]["payload_fields"]
     }
+    move_symbol_fields = {
+        field["field_name"]: field
+        for field in operations["move_symbol_to_module"]["payload_fields"]
+    }
     source_index_fields = {
         field["field_name"]: field
         for field in selectors["source_index_target"]["payload_fields"]
@@ -8994,6 +8999,7 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         extract_authority_fields["call_replacements"]["value_kind"]
         == "call_replacement_array"
     )
+    assert move_symbol_fields["destination_path"]["value_kind"] == "string"
     assert operations["apply_selected_targets"]["supports_selection_count"] is True
     assert operations["replace_text"]["example_payload"]["operation"] == "replace_text"
     assert operations["replace_text"]["example_payload"]["old_source"] == "<old_source>"
@@ -9009,6 +9015,24 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         ).to_dict()["operation"]
         == "extract_authority"
     )
+    assert (
+        RefactorRecipeOperation.from_dict(
+            operations["move_symbol_to_module"]["example_payload"]
+        ).to_dict()["destination_path"]
+        == "<destination_path>"
+    )
+    assert [
+        RefactorRecipeOperation.from_dict(operation["example_payload"]).to_dict()[
+            "operation"
+        ]
+        for operation in manifest["operations"]
+    ] == [operation["operation"] for operation in manifest["operations"]]
+    assert [
+        CodemodTargetSelector.from_dict(selector["example_payload"]).to_dict()[
+            "selector"
+        ]
+        for selector in manifest["selectors"]
+    ] == [selector["selector"] for selector in manifest["selectors"]]
     assert (
         operations["apply_selected_targets"]["example_payload"]["operation_templates"][
             0
@@ -9031,14 +9055,26 @@ def test_codemod_dsl_example_plan_document_round_trips() -> None:
 
     assert parsed_document.has_recipes is True
     assert parsed_document.recipes[0].recipe_id == "codemod-dsl-example"
-    assert parsed_document.recipes[0].operations[0].to_dict()["operation"] == (
-        "replace_text"
+    assert len(parsed_document.recipes[0].operations) == len(
+        codemod_dsl_manifest().operations
     )
-    assert parsed_document.recipes[0].operations[1].to_dict()["operation"] == (
-        "apply_selected_targets"
+    operation_payloads = tuple(
+        operation.to_dict() for operation in parsed_document.recipes[0].operations
+    )
+    assert any(
+        payload["operation"] == "replace_text" for payload in operation_payloads
+    )
+    assert any(
+        payload["operation"] == "move_symbol_to_module"
+        and payload["destination_path"] == "<destination_path>"
+        for payload in operation_payloads
     )
     assert (
-        parsed_document.recipes[0].operations[1].to_dict()["selector"]["selector"]
+        next(
+            payload
+            for payload in operation_payloads
+            if payload["operation"] == "apply_selected_targets"
+        )["selector"]["selector"]
         == "source_index_target"
     )
 
@@ -9106,11 +9142,15 @@ def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
 
     assert example_result.returncode == 0, example_result.stderr
     assert validation_result.returncode == 0, validation_result.stderr
-    assert validation_payload["recipes"][0]["operations"][0]["operation"] == (
-        "replace_text"
-    )
-    assert validation_payload["recipes"][0]["operations"][1]["operation"] == (
-        "apply_selected_targets"
+    validated_operations = {
+        operation["operation"]: operation
+        for operation in validation_payload["recipes"][0]["operations"]
+    }
+    assert len(validated_operations) == len(codemod_dsl_manifest().operations)
+    assert "replace_text" in validated_operations
+    assert (
+        validated_operations["apply_selected_targets"]["selector"]["selector"]
+        == "source_index_target"
     )
 
 

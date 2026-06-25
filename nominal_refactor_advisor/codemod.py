@@ -4477,23 +4477,45 @@ class MoveSymbolToModuleOperation(RefactorRecipeOperation):
     )
 
     @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        del cls
+        return (
+            PayloadBinding(
+                field_name=DESTINATION_PATH_PAYLOAD_FIELD,
+                constructor_argument_name="destination_path",
+                value_projector=MoveSymbolToModuleOperation.destination_path_from_operation,
+            ),
+        )
+
+    @staticmethod
+    def destination_path_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        if not isinstance(operation, MoveSymbolToModuleOperation):
+            raise TypeError(
+                "destination_path binding requires MoveSymbolToModuleOperation"
+            )
+        return operation.destination_path
+
+    @classmethod
     def from_operation_payload(
         cls,
         target: SourceRewriteTarget,
         payload: SourceRewritePlanPayload,
     ) -> "MoveSymbolToModuleOperation":
-        return cls(
-            target=target,
-            destination_path=payload.required_string(DESTINATION_PATH_PAYLOAD_FIELD),
+        operation = super().from_operation_payload(target, payload)
+        if not isinstance(operation, MoveSymbolToModuleOperation):
+            raise TypeError("move-symbol operation payload resolved incorrectly")
+        return replace(
+            operation,
             import_policy=MovedSymbolImportPolicy.from_source(
                 payload.optional_string(REPLACEMENT_IMPORT_PAYLOAD_FIELD)
             ),
-            rationale=payload.string_or_empty("rationale"),
         )
 
     def operation_payload(self) -> JsonObject:
         return {
-            DESTINATION_PATH_PAYLOAD_FIELD: self.destination_path,
+            **super().operation_payload(),
             **self.import_policy.operation_payload,
         }
 
@@ -6281,27 +6303,18 @@ def codemod_dsl_manifest() -> CodemodDslManifest:
 
 
 def codemod_dsl_example_plan_document() -> CodemodPlanDocument:
-    """Return a parseable starter document for agent-authored codemod plans."""
+    """Return parseable examples for every registered operation."""
 
-    operation_manifests = {
-        operation.operation: operation
-        for operation in codemod_dsl_manifest().operations
-    }
+    operation_manifests = codemod_dsl_manifest().operations
     return CodemodPlanDocument(
         recipes=(
             RefactorRecipe(
                 recipe_id="codemod-dsl-example",
-                operations=(
+                operations=tuple(
                     RefactorRecipeOperation.from_dict(
-                        operation_manifests[
-                            RefactorRecipeOperationKind.REPLACE_TEXT.value
-                        ].example_payload()
-                    ),
-                    RefactorRecipeOperation.from_dict(
-                        operation_manifests[
-                            RefactorRecipeOperationKind.APPLY_SELECTED_TARGETS.value
-                        ].example_payload()
-                    ),
+                        operation.example_payload()
+                    )
+                    for operation in operation_manifests
                 ),
                 reason="Starter document for registry-derived codemod DSL authoring.",
             ),
