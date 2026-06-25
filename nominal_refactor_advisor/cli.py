@@ -357,6 +357,7 @@ class JsonPayloadBuilder:
     codemod_candidates: tuple[CodemodCandidate, ...] | None = None
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
+    source_index: SourceIndex | None = None
 
     def to_dict(self) -> dict[str, object]:
         report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
@@ -364,15 +365,19 @@ class JsonPayloadBuilder:
         payload = report.to_dict()
         payload["findings"] = [finding.to_dict() for finding in self.findings]
         started = perf_counter()
-        source_index = build_source_index(self.modules, self.findings)
+        source_index = self.source_index
+        built_source_index_seconds = 0.0
+        if source_index is None:
+            source_index = build_source_index(self.modules, self.findings)
+            built_source_index_seconds = round(perf_counter() - started, 3)
         payload["source_index"] = source_index.to_dict()
         timing = self.timing
-        if timing is not None:
+        if timing is not None and self.source_index is None:
             timing = ScanTiming(
                 parse_seconds=timing.parse_seconds,
                 analysis_seconds=timing.analysis_seconds,
                 planning_seconds=timing.planning_seconds,
-                source_index_seconds=round(perf_counter() - started, 3),
+                source_index_seconds=built_source_index_seconds,
             )
         payload["observations"] = [asdict(item) for item in graph.observations]
         payload["fibers"] = [asdict(item) for item in graph.fibers]
@@ -1603,6 +1608,7 @@ def main() -> int:
     plans = None
     execution_plan = None
     planning_seconds = 0.0
+    source_index_seconds = 0.0
     if args.include_plans or args.plans_only or args.include_execution_plan:
         started = perf_counter()
         if args.include_plans or args.plans_only:
@@ -1610,11 +1616,6 @@ def main() -> int:
         if args.include_execution_plan or args.plans_only:
             execution_plan = build_refactor_execution_plan(findings, root)
         planning_seconds = round(perf_counter() - started, 3)
-    timing = ScanTiming(
-        parse_seconds=parse_seconds,
-        analysis_seconds=analysis_seconds,
-        planning_seconds=planning_seconds,
-    )
     include_economics = args.include_economics or args.include_change_budget
     economics = (
         RecommendationEconomics.from_findings_and_plans(findings, plans or [])
@@ -1635,7 +1636,9 @@ def main() -> int:
     impact_ranking = None
     architecture_guard_report = None
     if args.include_impact_ranking or codemod_plan_document.has_recipes:
+        started = perf_counter()
         source_index = build_source_index(modules, findings)
+        source_index_seconds = round(perf_counter() - started, 3)
         source_by_path = {str(module.path): module.source for module in modules}
 
     if args.include_impact_ranking:
@@ -1673,6 +1676,12 @@ def main() -> int:
         if not codemod_plan_document.has_recipes:
             source_index = None
             source_by_path = {}
+    timing = ScanTiming(
+        parse_seconds=parse_seconds,
+        analysis_seconds=analysis_seconds,
+        planning_seconds=planning_seconds,
+        source_index_seconds=source_index_seconds,
+    )
 
     codemod_execution_result = CodemodCliExecution(
         parser=parser,
@@ -1701,6 +1710,7 @@ def main() -> int:
                     codemod_candidates=codemod_candidates,
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
+                    source_index=source_index,
                 ).to_dict(),
                 indent=2,
             )

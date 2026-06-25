@@ -9269,6 +9269,32 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
     assert evidence[0]["target_ids"]
 
 
+def test_json_payload_reuses_supplied_source_index(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+
+    def fail_rebuild(*args: object, **kwargs: object) -> SourceIndex:
+        raise AssertionError("source index should be supplied by the caller")
+
+    monkeypatch.setattr("nominal_refactor_advisor.cli.build_source_index", fail_rebuild)
+
+    payload = JsonPayloadBuilder(
+        findings=[],
+        plans=[],
+        modules=modules,
+        timing=ScanTiming(source_index_seconds=0.123),
+        source_index=source_index,
+    ).to_dict()
+    timing = cast(dict[str, object], payload["timing"])
+
+    assert payload["source_index"] == source_index.to_dict()
+    assert timing["source_index_seconds"] == 0.123
+
+
 def test_source_index_caches_lookup_maps_and_finding_target_keys(
     tmp_path: Path,
 ) -> None:
