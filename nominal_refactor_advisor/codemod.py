@@ -121,6 +121,7 @@ class RefactorRecipeOperationKind(StrEnum):
     INSERT_AFTER_TARGET = "insert_after_target"
     INSERT_AFTER_IMPORTS = "insert_after_imports"
     INSERT_BEFORE_TARGET = "insert_before_target"
+    PRODUCT_RECORD_TO_DATACLASS = "product_record_to_dataclass"
     REMOVE_CLASS_BASE = "remove_class_base"
     REPLACE_FUNCTION_BODY = "replace_function_body"
     REPLACE_FUNCTION_SIGNATURE = "replace_function_signature"
@@ -140,6 +141,7 @@ CALL_REPLACEMENTS_PAYLOAD_FIELD = "call_replacements"
 IMPORT_SOURCE_PAYLOAD_FIELD = "import_source"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
+RECORD_NAME_PAYLOAD_FIELD = "record_name"
 
 
 def _suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
@@ -1869,6 +1871,770 @@ class ReplaceFunctionBodyOperation(StringPayloadOperation):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class ProductRecordToDataclassOperation(StringPayloadOperation):
+    """Replace one runtime product-record schema with an explicit dataclass."""
+
+    payload_field_name = RECORD_NAME_PAYLOAD_FIELD
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        del source_index
+        if self.target.source_path is None:
+            raise ValueError("product_record_to_dataclass requires file_path")
+        source_path = self.target.source_path
+        source = source_by_path[source_path]
+        module = ast.parse(source, filename=source_path)
+        return ProductRecordDataclassRewriteAuthority(
+            source=source,
+            file_path=source_path,
+            record_name=self.payload_value,
+            rationale=self.rationale,
+        ).line_replacements(module)
+
+
+@dataclass(frozen=True)
+class ProductRecordDataclassField:
+    """One explicit dataclass field derived from product_record field text."""
+
+    name: str
+    annotation: str
+    default_source: str | None = None
+
+    @property
+    def declaration_source(self) -> str:
+        declaration = f"{self.name}: {self.annotation}"
+        if self.default_source is None:
+            return declaration
+        return f"{declaration} = {self.default_source}"
+
+
+class ProductRecordSchemaKind(StrEnum):
+    """Supported runtime schema call shapes."""
+
+    PRODUCT_RECORD = "product_record"
+    PRODUCT_RECORD_SPEC = "product_record_spec"
+
+
+@dataclass(frozen=True)
+class ProductRecordClassOptions:
+    """Class-level options shared by product_record schema declarations."""
+
+    base_sources: tuple[str, ...] = ()
+    doc_statement_source: str | None = None
+    kw_only: bool = False
+
+
+@dataclass(frozen=True)
+class ProductRecordDataclassDeclaration:
+    """Explicit dataclass declaration derived from product_record schema AST."""
+
+    record_name: str
+    fields: tuple[ProductRecordDataclassField, ...]
+    class_options: ProductRecordClassOptions = field(
+        default_factory=ProductRecordClassOptions
+    )
+
+    @classmethod
+    def from_schema_call(
+        cls,
+        schema_call: "ProductRecordSchemaCall",
+    ) -> "ProductRecordDataclassDeclaration":
+        return cls(
+            record_name=schema_call.record_name,
+            fields=ProductRecordDataclassFieldParser(
+                schema_call.field_spec,
+                schema_call.options.default_sources,
+            ).fields(),
+            class_options=schema_call.class_options,
+        )
+
+    @property
+    def source(self) -> str:
+        lines = (
+            self._decorator_source(),
+            self._class_header_source(),
+            *self._body_lines(),
+        )
+        return "\n".join(lines) + "\n"
+
+    def _decorator_source(self) -> str:
+        if self.class_options.kw_only:
+            return "@dataclass(frozen=True, kw_only=True)"
+        return "@dataclass(frozen=True)"
+
+    def _class_header_source(self) -> str:
+        if not self.class_options.base_sources:
+            return f"class {self.record_name}:"
+        return (
+            f"class {self.record_name}"
+            f"({', '.join(self.class_options.base_sources)}):"
+        )
+
+    def _body_lines(self) -> tuple[str, ...]:
+        body_lines = []
+        if self.class_options.doc_statement_source is not None:
+            body_lines.append(f"    {self.class_options.doc_statement_source}")
+        body_lines.extend(f"    {field.declaration_source}" for field in self.fields)
+        if not body_lines:
+            body_lines.append("    pass")
+        return tuple(body_lines)
+
+
+@dataclass(frozen=True)
+class ProductRecordSchemaCall:
+    """Parsed product_record or product_record_spec AST call."""
+
+    call: ast.Call
+    source: str
+    schema_kind: ProductRecordSchemaKind
+
+    @property
+    def declaration(self) -> ProductRecordDataclassDeclaration:
+        self._validate_minimum_arguments()
+        self.options.reject_unsupported_keywords(
+            ("bases", "defaults", "doc", "kw_only")
+        )
+        return ProductRecordDataclassDeclaration.from_schema_call(self)
+
+    @property
+    def options(self) -> "ProductRecordSchemaOptions":
+        return ProductRecordSchemaOptions.from_keywords(self.call.keywords, self.source)
+
+    @property
+    def record_name(self) -> str:
+        return ProductRecordAstLiteral.required_string(
+            self.call.args[0],
+            f"{self.schema_kind.value} class name",
+        )
+
+    @property
+    def field_spec(self) -> str:
+        return ProductRecordAstLiteral.required_string(
+            self.call.args[1],
+            f"{self.schema_kind.value} field spec",
+        )
+
+    @property
+    def class_options(self) -> ProductRecordClassOptions:
+        base_sources = self.options.class_options.base_sources
+        if (
+            not base_sources
+            and self.schema_kind is ProductRecordSchemaKind.PRODUCT_RECORD_SPEC
+        ):
+            base_sources = ProductRecordSpecPositionalBases(self.call).sources
+        return replace(self.options.class_options, base_sources=base_sources)
+
+    def _validate_minimum_arguments(self) -> None:
+        if len(self.call.args) < 2:
+            raise ValueError(
+                f"{self.schema_kind.value} calls require class name and fields"
+            )
+
+
+@dataclass(frozen=True)
+class ProductRecordSpecPositionalBases:
+    """Base class names encoded in positional product_record_spec arguments."""
+
+    call: ast.Call
+
+    @property
+    def sources(self) -> tuple[str, ...]:
+        base_sources = []
+        for argument in self.call.args[2:]:
+            base_group = ProductRecordAstLiteral.required_string(
+                argument,
+                "product_record_spec base names",
+            )
+            base_sources.extend(part for part in base_group.split() if part)
+        return tuple(base_sources)
+
+
+@dataclass(frozen=True)
+class ProductRecordSchemaOptions:
+    """Options shared by product_record and product_record_spec schema calls."""
+
+    keyword_names: frozenset[str]
+    default_sources: Mapping[str, str] = field(default_factory=dict)
+    class_options: ProductRecordClassOptions = field(
+        default_factory=ProductRecordClassOptions
+    )
+
+    @classmethod
+    def from_keywords(
+        cls,
+        keywords: list[ast.keyword],
+        source: str,
+    ) -> "ProductRecordSchemaOptions":
+        builder = ProductRecordSchemaOptionsBuilder(source=source)
+        for keyword in keywords:
+            builder = builder.with_keyword(keyword)
+        return builder.options
+
+    def reject_unsupported_keywords(self, allowed_names: tuple[str, ...]) -> None:
+        unsupported = self.keyword_names - frozenset(allowed_names)
+        if unsupported:
+            unsupported_names = ", ".join(sorted(unsupported))
+            raise ValueError(
+                "product_record schema codemod does not support option(s): "
+                f"{unsupported_names}"
+            )
+
+
+@dataclass(frozen=True)
+class ProductRecordSchemaOptionsBuilder:
+    """Incrementally build product_record schema options from keyword handlers."""
+
+    source: str
+    keyword_names: frozenset[str] = frozenset()
+    default_sources: Mapping[str, str] = field(default_factory=dict)
+    class_options: ProductRecordClassOptions = field(
+        default_factory=ProductRecordClassOptions
+    )
+
+    @property
+    def options(self) -> ProductRecordSchemaOptions:
+        return ProductRecordSchemaOptions(
+            keyword_names=self.keyword_names,
+            default_sources=self.default_sources,
+            class_options=self.class_options,
+        )
+
+    def with_keyword(self, keyword: ast.keyword) -> "ProductRecordSchemaOptionsBuilder":
+        if keyword.arg is None:
+            raise ValueError("product_record schema codemod does not support **kw")
+        builder = replace(
+            self,
+            keyword_names=frozenset((*self.keyword_names, keyword.arg)),
+        )
+        handler_type = ProductRecordSchemaKeywordHandler.__registry__.get(keyword.arg)
+        if handler_type is None:
+            return builder
+        return handler_type().apply(builder, keyword.value)
+
+    def with_class_options(
+        self,
+        class_options: ProductRecordClassOptions,
+    ) -> "ProductRecordSchemaOptionsBuilder":
+        return replace(self, class_options=class_options)
+
+    def with_default_sources(
+        self,
+        default_sources: Mapping[str, str],
+    ) -> "ProductRecordSchemaOptionsBuilder":
+        return replace(self, default_sources=default_sources)
+
+
+class ProductRecordSchemaKeywordHandler(ABC, metaclass=AutoRegisterMeta):
+    """Registry-backed product_record schema keyword handler."""
+
+    __registry__: ClassVar[dict[str, type["ProductRecordSchemaKeywordHandler"]]] = {}
+    __registry_key__ = "keyword_name"
+    __skip_if_no_key__ = True
+
+    keyword_name: ClassVar[str]
+
+    @abstractmethod
+    def apply(
+        self,
+        builder: ProductRecordSchemaOptionsBuilder,
+        value: ast.expr,
+    ) -> ProductRecordSchemaOptionsBuilder:
+        raise NotImplementedError
+
+
+class ProductRecordBasesKeywordHandler(ProductRecordSchemaKeywordHandler):
+    keyword_name = "bases"
+
+    def apply(
+        self,
+        builder: ProductRecordSchemaOptionsBuilder,
+        value: ast.expr,
+    ) -> ProductRecordSchemaOptionsBuilder:
+        return builder.with_class_options(
+            replace(
+                builder.class_options,
+                base_sources=ProductRecordBasesKeyword(value, builder.source).sources,
+            )
+        )
+
+
+class ProductRecordDefaultsKeywordHandler(ProductRecordSchemaKeywordHandler):
+    keyword_name = "defaults"
+
+    def apply(
+        self,
+        builder: ProductRecordSchemaOptionsBuilder,
+        value: ast.expr,
+    ) -> ProductRecordSchemaOptionsBuilder:
+        return builder.with_default_sources(
+            ProductRecordDefaultsKeyword(value, builder.source).sources
+        )
+
+
+class ProductRecordDocKeywordHandler(ProductRecordSchemaKeywordHandler):
+    keyword_name = "doc"
+
+    def apply(
+        self,
+        builder: ProductRecordSchemaOptionsBuilder,
+        value: ast.expr,
+    ) -> ProductRecordSchemaOptionsBuilder:
+        return builder.with_class_options(
+            replace(
+                builder.class_options,
+                doc_statement_source=ProductRecordDocKeyword(
+                    value,
+                    builder.source,
+                ).statement_source,
+            )
+        )
+
+
+class ProductRecordKwOnlyKeywordHandler(ProductRecordSchemaKeywordHandler):
+    keyword_name = "kw_only"
+
+    def apply(
+        self,
+        builder: ProductRecordSchemaOptionsBuilder,
+        value: ast.expr,
+    ) -> ProductRecordSchemaOptionsBuilder:
+        return builder.with_class_options(
+            replace(
+                builder.class_options,
+                kw_only=ProductRecordAstLiteral.required_bool(
+                    value,
+                    "product_record kw_only option",
+                ),
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ProductRecordBasesKeyword:
+    """Class-header base sources from a product_record bases keyword."""
+
+    value: ast.expr
+    source: str
+
+    @property
+    def sources(self) -> tuple[str, ...]:
+        if isinstance(self.value, ast.Constant) and self.value.value is None:
+            return ()
+        if not isinstance(self.value, (ast.Tuple, ast.List)):
+            raise ValueError("product_record bases option must be a tuple or list")
+        return tuple(
+            ProductRecordAstSource(self.source).expression_source(element)
+            for element in self.value.elts
+        )
+
+
+@dataclass(frozen=True)
+class ProductRecordDefaultsKeyword:
+    """Dataclass default value sources from a product_record defaults keyword."""
+
+    value: ast.expr
+    source: str
+
+    @property
+    def sources(self) -> Mapping[str, str]:
+        if isinstance(self.value, ast.Constant) and self.value.value is None:
+            return {}
+        if not isinstance(self.value, ast.Dict):
+            raise ValueError("product_record defaults option must be a dict literal")
+        defaults: dict[str, str] = {}
+        source_reader = ProductRecordAstSource(self.source)
+        for key, value in zip(self.value.keys, self.value.values, strict=True):
+            if key is None:
+                raise ValueError("product_record defaults cannot contain ** unpacking")
+            field_name = ProductRecordAstLiteral.required_string(
+                key,
+                "product_record default field name",
+            )
+            defaults[field_name] = source_reader.expression_source(value)
+        return defaults
+
+
+@dataclass(frozen=True)
+class ProductRecordDocKeyword:
+    """Class-body doc statement derived from a product_record doc keyword."""
+
+    value: ast.expr
+    source: str
+
+    @property
+    def statement_source(self) -> str | None:
+        if isinstance(self.value, ast.Constant) and self.value.value is None:
+            return None
+        if isinstance(self.value, ast.Constant) and isinstance(self.value.value, str):
+            return repr(self.value.value)
+        return f"__doc__ = {ProductRecordAstSource(self.source).expression_source(self.value)}"
+
+
+@dataclass(frozen=True)
+class ProductRecordAstLiteral:
+    """Literal readers for product_record codemod schema nodes."""
+
+    @staticmethod
+    def required_string(node: ast.AST, role: str) -> str:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        raise ValueError(f"{role} must be a string literal")
+
+    @staticmethod
+    def required_bool(node: ast.AST, role: str) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+            return node.value
+        raise ValueError(f"{role} must be a boolean literal")
+
+
+@dataclass(frozen=True)
+class ProductRecordAstSource:
+    """Source segment reader for AST expressions inside one module."""
+
+    source: str
+
+    def expression_source(self, node: ast.AST) -> str:
+        segment = ast.get_source_segment(self.source, node)
+        if segment is not None:
+            return segment
+        return ast.unparse(node)
+
+
+@dataclass(frozen=True)
+class ProductRecordDataclassFieldParser:
+    """Parse compact product_record field text into explicit dataclass fields."""
+
+    field_spec: str
+    default_sources: Mapping[str, str]
+
+    def fields(self) -> tuple[ProductRecordDataclassField, ...]:
+        return tuple(
+            self._field(field_text)
+            for field_text in (
+                part.strip() for part in self.field_spec.split(";") if part.strip()
+            )
+        )
+
+    def _field(self, field_text: str) -> ProductRecordDataclassField:
+        field_name, separator, annotation = field_text.partition(":")
+        if not separator:
+            raise ValueError(f"Product record field lacks annotation: {field_text!r}")
+        name = field_name.strip()
+        return ProductRecordDataclassField(
+            name=name,
+            annotation=annotation.strip(),
+            default_source=self.default_sources.get(name),
+        )
+
+
+@dataclass(frozen=True)
+class ProductRecordDataclassRewriteAuthority:
+    """Find and rewrite one product_record declaration by record name."""
+
+    source: str
+    file_path: str
+    record_name: str
+    rationale: str = ""
+
+    def line_replacements(
+        self, module: ast.Module
+    ) -> tuple[SourceLineReplacement, ...]:
+        for statement in module.body:
+            replacements = ProductRecordRewriteSearch(
+                statement=statement,
+                authority=self,
+            ).line_replacements()
+            if replacements is not None:
+                return replacements
+        raise ValueError(
+            f"No product_record schema declaration for {self.record_name!r} "
+            f"in {self.file_path!r}"
+        )
+
+
+ProductRecordRewriteResult: TypeAlias = tuple[SourceLineReplacement, ...] | None
+
+
+@dataclass(frozen=True)
+class ProductRecordRewriteSearch:
+    """Statement-local search context for a product_record schema rewrite."""
+
+    statement: ast.stmt
+    authority: ProductRecordDataclassRewriteAuthority
+
+    @property
+    def statement_value(self) -> "ProductRecordStatementValue":
+        return ProductRecordStatementValue(self.statement)
+
+    def line_replacements(self) -> ProductRecordRewriteResult:
+        return (
+            self.direct_assignment_replacements()
+            or self.single_materialization_replacements()
+            or self.batch_materialization_replacements()
+        )
+
+    def direct_assignment_replacements(self) -> ProductRecordRewriteResult:
+        value = self.statement_value.assignment_value
+        if (
+            value is None
+            or not ProductRecordCallName.from_call(value).is_product_record
+        ):
+            return None
+        declaration = ProductRecordSchemaCall(
+            value,
+            self.authority.source,
+            ProductRecordSchemaKind.PRODUCT_RECORD,
+        ).declaration
+        if declaration.record_name != self.authority.record_name:
+            return None
+        target_name = self.statement_value.assignment_target_name
+        if target_name != self.authority.record_name:
+            raise ValueError(
+                "product_record assignment codemod requires assignment target "
+                f"{target_name!r} to match record name {self.authority.record_name!r}"
+            )
+        return self.placed_replacements(
+            declaration,
+            ProductRecordReplacementPlacement(self.statement),
+        )
+
+    def single_materialization_replacements(self) -> ProductRecordRewriteResult:
+        call = self.statement_value.expr_call
+        if (
+            call is None
+            or not ProductRecordCallName.from_call(call).is_single_materializer
+        ):
+            return None
+        if len(call.args) != 1 or not isinstance(call.args[0], ast.Call):
+            raise ValueError("materialize_product_record requires one schema call")
+        schema_call = call.args[0]
+        if not ProductRecordCallName.from_call(schema_call).is_product_record_spec:
+            raise ValueError(
+                "materialize_product_record argument must be product_record_spec"
+            )
+        declaration = ProductRecordSchemaCall(
+            schema_call,
+            self.authority.source,
+            ProductRecordSchemaKind.PRODUCT_RECORD_SPEC,
+        ).declaration
+        if declaration.record_name != self.authority.record_name:
+            return None
+        return self.placed_replacements(
+            declaration=declaration,
+            placement=ProductRecordReplacementPlacement(self.statement),
+        )
+
+    def batch_materialization_replacements(self) -> ProductRecordRewriteResult:
+        call = self.statement_value.expr_call
+        if (
+            call is None
+            or not ProductRecordCallName.from_call(call).is_batch_materializer
+        ):
+            return None
+        tuple_node = ProductRecordTupleArgument(call).tuple_node
+        if tuple_node is None:
+            raise ValueError("materialize_product_records requires a tuple argument")
+        for item in tuple_node.elts:
+            if not isinstance(item, ast.Call):
+                continue
+            if not ProductRecordCallName.from_call(item).is_product_record_spec:
+                continue
+            declaration = ProductRecordSchemaCall(
+                item,
+                self.authority.source,
+                ProductRecordSchemaKind.PRODUCT_RECORD_SPEC,
+            ).declaration
+            if declaration.record_name != self.authority.record_name:
+                continue
+            if len(tuple_node.elts) == 1:
+                return self.placed_replacements(
+                    declaration=declaration,
+                    placement=ProductRecordReplacementPlacement(self.statement),
+                )
+            return self.placed_replacements(
+                declaration=declaration,
+                placement=ProductRecordBatchPlacement(self.statement, item),
+            )
+        return None
+
+    def placed_replacements(
+        self,
+        declaration: ProductRecordDataclassDeclaration,
+        placement: "ProductRecordRewritePlacement",
+    ) -> tuple[SourceLineReplacement, ...]:
+        return placement.line_replacements(self.authority, declaration)
+
+
+class ProductRecordRewritePlacement(ABC, metaclass=AutoRegisterMeta):
+    """Line placement for a product-record schema replacement."""
+
+    __registry__: ClassVar[dict[str, type["ProductRecordRewritePlacement"]]] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __skip_if_no_key__ = True
+
+    registry_key: ClassVar[str]
+
+    @abstractmethod
+    def line_replacements(
+        self,
+        authority: ProductRecordDataclassRewriteAuthority,
+        declaration: ProductRecordDataclassDeclaration,
+    ) -> tuple[SourceLineReplacement, ...]:
+        raise NotImplementedError
+
+    @staticmethod
+    def line_span(node: ast.stmt | ast.expr) -> tuple[int, int]:
+        return node.lineno, node.end_lineno or node.lineno
+
+
+@dataclass(frozen=True)
+class ProductRecordReplacementPlacement(ProductRecordRewritePlacement):
+    """Placement that replaces one whole schema statement with a dataclass."""
+
+    registry_key = "replacement"
+    node: ast.stmt | ast.expr
+
+    def line_replacements(
+        self,
+        authority: ProductRecordDataclassRewriteAuthority,
+        declaration: ProductRecordDataclassDeclaration,
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacement_line_span = self.line_span(self.node)
+        return (
+            SourceLineReplacement(
+                file_path=authority.file_path,
+                start_line=replacement_line_span[0],
+                end_line=replacement_line_span[1],
+                replacement_lines=SourceTargetEditor.source_lines(declaration.source),
+                rationale=authority.rationale
+                or f"Replace product_record schema for {declaration.record_name!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ProductRecordBatchPlacement(ProductRecordRewritePlacement):
+    """Placement that inserts a dataclass and deletes one batched schema item."""
+
+    registry_key = "batch"
+    insertion_line_anchor: ast.stmt
+    deletion_node: ast.expr
+
+    def line_replacements(
+        self,
+        authority: ProductRecordDataclassRewriteAuthority,
+        declaration: ProductRecordDataclassDeclaration,
+    ) -> tuple[SourceLineReplacement, ...]:
+        deletion_line_span = self.line_span(self.deletion_node)
+        return (
+            SourceLineReplacement(
+                file_path=authority.file_path,
+                start_line=self.insertion_line_anchor.lineno,
+                end_line=self.insertion_line_anchor.lineno - 1,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    f"{declaration.source}\n"
+                ),
+                rationale=authority.rationale
+                or f"Insert dataclass for {declaration.record_name!r}.",
+            ),
+            SourceLineReplacement(
+                file_path=authority.file_path,
+                start_line=deletion_line_span[0],
+                end_line=deletion_line_span[1],
+                rationale=authority.rationale
+                or f"Delete product_record_spec for {declaration.record_name!r}.",
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ProductRecordStatementValue:
+    """Typed access to product-record statement shapes."""
+
+    statement: ast.stmt
+
+    @property
+    def expr_call(self) -> ast.Call | None:
+        if isinstance(self.statement, ast.Expr) and isinstance(
+            self.statement.value,
+            ast.Call,
+        ):
+            return self.statement.value
+        return None
+
+    @property
+    def assignment_value(self) -> ast.Call | None:
+        value: ast.expr | None = None
+        if isinstance(self.statement, ast.Assign):
+            value = self.statement.value
+        elif isinstance(self.statement, ast.AnnAssign):
+            value = self.statement.value
+        if isinstance(value, ast.Call):
+            return value
+        return None
+
+    @property
+    def assignment_target_name(self) -> str | None:
+        if isinstance(self.statement, ast.Assign) and len(self.statement.targets) == 1:
+            return _name_id(self.statement.targets[0])
+        if isinstance(self.statement, ast.AnnAssign):
+            return _name_id(self.statement.target)
+        return None
+
+
+@dataclass(frozen=True)
+class ProductRecordTupleArgument:
+    """First tuple argument of a materialize_product_records call."""
+
+    call: ast.Call
+
+    @property
+    def tuple_node(self) -> ast.Tuple | None:
+        if not self.call.args:
+            return None
+        first_arg = self.call.args[0]
+        if isinstance(first_arg, ast.Tuple):
+            return first_arg
+        return None
+
+
+@dataclass(frozen=True)
+class ProductRecordCallName:
+    """Normalized call name for product_record schema functions."""
+
+    raw_name: str | None
+
+    @classmethod
+    def from_call(cls, call: ast.Call) -> "ProductRecordCallName":
+        return cls(_call_name(call.func))
+
+    @property
+    def normalized_name(self) -> str | None:
+        if self.raw_name is None:
+            return None
+        return self.raw_name.rsplit(".", maxsplit=1)[-1].lstrip("_")
+
+    @property
+    def is_product_record(self) -> bool:
+        return self.normalized_name == "product_record"
+
+    @property
+    def is_product_record_spec(self) -> bool:
+        return self.normalized_name == "product_record_spec"
+
+    @property
+    def is_single_materializer(self) -> bool:
+        return self.normalized_name == "materialize_product_record"
+
+    @property
+    def is_batch_materializer(self) -> bool:
+        return self.normalized_name == "materialize_product_records"
+
+
 def _class_base_source_names(node: ast.ClassDef) -> frozenset[str]:
     return frozenset(ast.unparse(base) for base in node.bases)
 
@@ -2392,6 +3158,20 @@ class RefactorRecipe:
                 source_path=source_path,
             ),
             payload_value=body_source,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def product_record_to_dataclass(
+        self,
+        source_path: str,
+        record_name: str,
+        *,
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ProductRecordToDataclassOperation(
+            target=SourceRewriteTarget(source_path=source_path),
+            payload_value=record_name,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))

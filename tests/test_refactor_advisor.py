@@ -717,6 +717,152 @@ def test_refactor_recipe_structural_dsl_operations_compile_to_rewrites(
     assert "class LegacyWorker(ParseContext):" in rewritten
 
 
+def test_refactor_recipe_converts_product_records_to_dataclasses(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n"
+        "from typing import ClassVar\n"
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_record,\n"
+        "    product_record,\n"
+        "    product_record_spec,\n"
+        ")\n\n\n"
+        "class SemanticRecord:\n"
+        "    pass\n\n\n"
+        "LocalRecord = product_record(\n"
+        '    "LocalRecord",\n'
+        '    "name: str; value: int",\n'
+        '    defaults={"value": 0},\n'
+        '    doc="Local docs.",\n'
+        ")\n"
+        "materialize_product_record(\n"
+        "    product_record_spec(\n"
+        '        "GeneratedRecord",\n'
+        '        "path: str; marker: ClassVar[str]",\n'
+        '        "SemanticRecord",\n'
+        '        defaults={"marker": "path"},\n'
+        "        kw_only=True,\n"
+        "    )\n"
+        ")\n",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = (
+        RefactorRecipe(recipe_id="runtime-records-to-dataclasses")
+        .product_record_to_dataclass(module_path.as_posix(), "LocalRecord")
+        .product_record_to_dataclass(module_path.as_posix(), "GeneratedRecord")
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+class LocalRecord:" in diff
+    assert "+    'Local docs.'" in diff
+    assert "+    value: int = 0" in diff
+    assert "+@dataclass(frozen=True, kw_only=True)" in diff
+    assert "+class GeneratedRecord(SemanticRecord):" in diff
+    assert '+    marker: ClassVar[str] = "path"' in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "LocalRecord = product_record" not in rewritten
+    assert "materialize_product_record(" not in rewritten
+    assert "class LocalRecord:" in rewritten
+    assert "class GeneratedRecord(SemanticRecord):" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
+def test_json_recipe_converts_batched_product_record_spec_to_dataclass(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    plan_path = tmp_path / "codemod-plan.json"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n"
+        "from typing import ClassVar\n"
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_records,\n"
+        "    product_record_spec,\n"
+        ")\n\n"
+        "materialize_product_records((\n"
+        '    product_record_spec("OtherRecord", "label: str"),\n'
+        "    product_record_spec(\n"
+        '        "ClusterRecord",\n'
+        '        "items: tuple[str, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]",\n'
+        '        "LineWitnessCandidate",\n'
+        "        defaults={\n"
+        '            "evidence_locations": ZippedSourceLocationEvidenceProperty(\n'
+        '                "line_numbers",\n'
+        '                "helper_names",\n'
+        "            )\n"
+        "        },\n"
+        '        doc="Cluster docs.",\n'
+        "    ),\n"
+        "))\n",
+    )
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "batch-record-to-dataclass",
+                        "operations": [
+                            {
+                                "operation": "product_record_to_dataclass",
+                                "file_path": module_path.as_posix(),
+                                "record_name": "ClusterRecord",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    document = load_codemod_plan_document(plan_path)
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+    diff = simulation.unified_diff(source_by_path)
+
+    assert document.recipes[0].operations[0].to_dict()["operation"] == (
+        "product_record_to_dataclass"
+    )
+    assert document.recipes[0].operations[0].to_dict()["record_name"] == (
+        "ClusterRecord"
+    )
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert "+class ClusterRecord(LineWitnessCandidate):" in diff
+    assert "+    'Cluster docs.'" in diff
+    assert (
+        "+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = "
+        "ZippedSourceLocationEvidenceProperty("
+    ) in diff
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert 'product_record_spec("OtherRecord", "label: str")' in rewritten
+    assert 'product_record_spec(\n        "ClusterRecord"' not in rewritten
+    assert "class ClusterRecord(LineWitnessCandidate):" in rewritten
+    build_source_index(parse_python_modules(tmp_path), ())
+
+
 def test_refactor_recipe_inserts_after_module_imports(
     tmp_path: Path,
 ) -> None:
