@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar, TypeAlias
+from typing import ClassVar, Generic, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -45,6 +45,9 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonArray: TypeAlias = tuple["JsonValue", ...] | list["JsonValue"]
 JsonValue: TypeAlias = JsonScalar | JsonArray | dict[str, "JsonValue"]
 JsonObject: TypeAlias = dict[str, JsonValue]
+PayloadOwnerT = TypeVar("PayloadOwnerT")
+PayloadSourceT = TypeVar("PayloadSourceT")
+PayloadValueT = TypeVar("PayloadValueT")
 
 
 class RewriteOperation(StrEnum):
@@ -120,6 +123,7 @@ class RefactorRecipeOperationKind(StrEnum):
     )
     DELETE_CLASS_ASSIGNMENT = "delete_class_assignment"
     DELETE_MODULE_ASSIGNMENTS = "delete_module_assignments"
+    DELETE_SELECTED_TARGETS = "delete_selected_targets"
     DELETE_TARGET = "delete_target"
     DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
     ENSURE_IMPORT = "ensure_import"
@@ -859,6 +863,132 @@ class CodemodTargetSelection:
         )
 
 
+def _required_source_plan_payload_string(
+    payload: "SourceRewritePlanPayload",
+    field_name: str,
+) -> str:
+    if not isinstance(payload, SourceRewritePlanPayload):
+        raise TypeError("string payload binding requires source rewrite plan payload")
+    return payload.required_string(field_name)
+
+
+@dataclass(frozen=True)
+class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
+    """Declarative JSON-to-constructor binding for one DSL payload field."""
+
+    field_name: str
+    constructor_argument_name: str
+    value_projector: Callable[[PayloadOwnerT], JsonValue]
+    constructor_value_reader: Callable[
+        [PayloadSourceT, str], PayloadValueT
+    ] = _required_source_plan_payload_string
+
+    def constructor_kwargs(
+        self,
+        payload: PayloadSourceT,
+    ) -> dict[str, PayloadValueT]:
+        return {
+            self.constructor_argument_name: self.constructor_value_reader(
+                payload,
+                self.field_name,
+            )
+        }
+
+    def payload_items(
+        self, owner: PayloadOwnerT
+    ) -> tuple[tuple[str, JsonValue], ...]:
+        return ((self.field_name, self.value_projector(owner)),)
+
+
+def selector_payload_bindings(
+    specs: Iterable[
+        tuple[
+            str,
+            str,
+            Callable[["CodemodTargetSelector"], JsonValue],
+            Callable[[Mapping[str, JsonValue], str], JsonValue],
+        ]
+    ],
+) -> tuple[PayloadBinding["CodemodTargetSelector", Mapping[str, JsonValue], JsonValue], ...]:
+    return tuple(
+        PayloadBinding(
+            field_name=field_name,
+            constructor_argument_name=constructor_argument_name,
+            value_projector=value_projector,
+            constructor_value_reader=constructor_value_reader,
+        )
+        for (
+            field_name,
+            constructor_argument_name,
+            value_projector,
+            constructor_value_reader,
+        ) in specs
+    )
+
+
+class SelectorPayloadReader:
+    """Constructor-value readers for selector payload bindings."""
+
+    @staticmethod
+    def required_string(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> str:
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"Expected non-empty string field {field_name!r}")
+        return value
+
+    @staticmethod
+    def string_tuple(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> JsonValue:
+        value = payload.get(field_name)
+        if value is None:
+            return ()
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return tuple(value)
+
+    @staticmethod
+    def node_kind_tuple(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> JsonValue:
+        values = SelectorPayloadReader.string_tuple(payload, field_name)
+        return tuple(AstTargetNodeKind(value) for value in values)
+
+    @staticmethod
+    def bool_with_default(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+        default: bool,
+    ) -> bool:
+        if field_name not in payload:
+            return default
+        value = payload[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"Expected boolean field {field_name!r}")
+        return value
+
+    @staticmethod
+    def true_bool(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> JsonValue:
+        return SelectorPayloadReader.bool_with_default(payload, field_name, True)
+
+    @staticmethod
+    def false_bool(
+        payload: Mapping[str, JsonValue],
+        field_name: str,
+    ) -> JsonValue:
+        return SelectorPayloadReader.bool_with_default(payload, field_name, False)
+
+
 class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     """Semantic selector that resolves to source-index target ids."""
 
@@ -867,9 +997,53 @@ class CodemodTargetSelector(ABC, metaclass=AutoRegisterMeta):
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = ()
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, JsonValue]) -> "CodemodTargetSelector":
+        selector_key = SelectorPayloadReader.required_string(payload, "selector")
+        selector_type = cls.__registry__.get(selector_key)
+        if selector_type is None:
+            raise ValueError(f"Unsupported target selector: {selector_key}")
+        return selector_type.from_selector_payload(payload)
+
+    @classmethod
+    def from_selector_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "CodemodTargetSelector":
+        constructor_kwargs: dict[str, JsonValue] = {}
+        for binding in cls.selector_payload_bindings:
+            constructor_kwargs.update(binding.constructor_kwargs(payload))
+        return cls(**constructor_kwargs)
 
     def select(self, context: CodemodSelectorContext) -> CodemodTargetSelection:
         return CodemodTargetSelection(self.target_ids(context))
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "selector": _suffix_trimmed_class_name_registry_key(
+                type(self).__name__,
+                type(self),
+            ),
+            **self.selector_payload(),
+        }
+
+    def selector_payload(self) -> JsonObject:
+        return {
+            key: value
+            for binding in type(self).selector_payload_bindings
+            for key, value in binding.payload_items(self)
+        }
 
     @abstractmethod
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
@@ -881,6 +1055,27 @@ class FindingEvidenceTargetSelector(CodemodTargetSelector):
     """Select source-index targets connected to advisor finding evidence."""
 
     finding_ids: tuple[str, ...]
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "finding_ids",
+                    "finding_ids",
+                    lambda selector: selector.finding_ids,
+                    SelectorPayloadReader.string_tuple,
+                ),
+            )
+        )
+    )
 
     @classmethod
     def from_findings(
@@ -900,6 +1095,41 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
     node_kinds: tuple[AstTargetNodeKind, ...] = ()
     file_paths: tuple[str, ...] = ()
     qualnames: tuple[str, ...] = ()
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "node_kinds",
+                    "node_kinds",
+                    lambda selector: tuple(
+                        node_kind.value for node_kind in selector.node_kinds
+                    ),
+                    SelectorPayloadReader.node_kind_tuple,
+                ),
+                (
+                    "file_paths",
+                    "file_paths",
+                    lambda selector: selector.file_paths,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "qualnames",
+                    "qualnames",
+                    lambda selector: selector.qualnames,
+                    SelectorPayloadReader.string_tuple,
+                ),
+            )
+        )
+    )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         node_kinds = frozenset(self.node_kinds)
@@ -922,6 +1152,45 @@ class ClassFamilyTargetSelector(CodemodTargetSelector):
     include_self: bool = True
     include_ancestors: bool = False
     include_descendants: bool = False
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "class_symbols",
+                    "class_symbols",
+                    lambda selector: selector.class_symbols,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "include_self",
+                    "include_self",
+                    lambda selector: selector.include_self,
+                    SelectorPayloadReader.true_bool,
+                ),
+                (
+                    "include_ancestors",
+                    "include_ancestors",
+                    lambda selector: selector.include_ancestors,
+                    SelectorPayloadReader.false_bool,
+                ),
+                (
+                    "include_descendants",
+                    "include_descendants",
+                    lambda selector: selector.include_descendants,
+                    SelectorPayloadReader.false_bool,
+                ),
+            )
+        )
+    )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         class_index = context.required_class_family_index
@@ -964,6 +1233,45 @@ class InheritanceEdgeTargetSelector(CodemodTargetSelector):
     child_symbols: tuple[str, ...] = ()
     include_parents: bool = True
     include_children: bool = True
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "parent_symbols",
+                    "parent_symbols",
+                    lambda selector: selector.parent_symbols,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "child_symbols",
+                    "child_symbols",
+                    lambda selector: selector.child_symbols,
+                    SelectorPayloadReader.string_tuple,
+                ),
+                (
+                    "include_parents",
+                    "include_parents",
+                    lambda selector: selector.include_parents,
+                    SelectorPayloadReader.true_bool,
+                ),
+                (
+                    "include_children",
+                    "include_children",
+                    lambda selector: selector.include_children,
+                    SelectorPayloadReader.true_bool,
+                ),
+            )
+        )
+    )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         class_index = context.required_class_family_index
@@ -1028,6 +1336,27 @@ class CallSiteTargetSelector(CodemodTargetSelector):
     """Select source-index targets that enclose matching call sites."""
 
     callee_names: tuple[str, ...]
+    selector_payload_bindings: ClassVar[
+        tuple[
+            PayloadBinding[
+                "CodemodTargetSelector",
+                Mapping[str, JsonValue],
+                JsonValue,
+            ],
+            ...,
+        ]
+    ] = (
+        selector_payload_bindings(
+            (
+                (
+                    "callee_names",
+                    "callee_names",
+                    lambda selector: selector.callee_names,
+                    SelectorPayloadReader.string_tuple,
+                ),
+            )
+        )
+    )
 
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         return sorted_tuple(
@@ -1196,7 +1525,10 @@ class RecipeCallReplacement:
 
 
 OperationConstructorValue: TypeAlias = (
-    JsonValue | tuple[RecipeCallReplacement, ...] | tuple[str, ...]
+    CodemodTargetSelector
+    | JsonValue
+    | tuple[RecipeCallReplacement, ...]
+    | tuple[str, ...]
 )
 
 
@@ -1220,32 +1552,12 @@ class OperationPayloadReader:
             raise ValueError(f"Expected string array field {field_name!r}")
         return tuple(values)
 
-
-@dataclass(frozen=True)
-class OperationPayloadBinding:
-    """Declarative JSON-to-constructor binding for one operation payload field."""
-
-    field_name: str
-    constructor_argument_name: str
-    value_projector: Callable[["RefactorRecipeOperation"], JsonValue]
-    constructor_value_reader: Callable[
-        [SourceRewritePlanPayload, str], OperationConstructorValue
-    ] = OperationPayloadReader.required_string
-
-    def constructor_kwargs(
-        self, payload: SourceRewritePlanPayload
-    ) -> dict[str, OperationConstructorValue]:
-        return {
-            self.constructor_argument_name: self.constructor_value_reader(
-                payload,
-                self.field_name,
-            )
-        }
-
-    def payload_items(
-        self, operation: "RefactorRecipeOperation"
-    ) -> tuple[tuple[str, JsonValue], ...]:
-        return ((self.field_name, self.value_projector(operation)),)
+    @staticmethod
+    def required_selector(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> OperationConstructorValue:
+        return CodemodTargetSelector.from_dict(payload.required_object(field_name))
 
 
 def operation_payload_bindings(
@@ -1257,11 +1569,18 @@ def operation_payload_bindings(
             Callable[[SourceRewritePlanPayload, str], OperationConstructorValue],
         ]
     ],
-) -> tuple[OperationPayloadBinding, ...]:
+) -> tuple[
+    PayloadBinding[
+        "RefactorRecipeOperation",
+        SourceRewritePlanPayload,
+        OperationConstructorValue,
+    ],
+    ...,
+]:
     """Materialize declarative recipe-operation payload binding specs."""
 
     return tuple(
-        OperationPayloadBinding(
+        PayloadBinding(
             field_name=field_name,
             constructor_argument_name=constructor_argument_name,
             value_projector=value_projector,
@@ -1684,7 +2003,16 @@ class RefactorRecipeOperation(
         )
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(
+        cls,
+    ) -> tuple[
+        PayloadBinding[
+            "RefactorRecipeOperation",
+            SourceRewritePlanPayload,
+            OperationConstructorValue,
+        ],
+        ...,
+    ]:
         return ()
 
     def operation_payload(self) -> JsonObject:
@@ -1727,9 +2055,9 @@ class StringPayloadOperation(RefactorRecipeOperation, ABC):
     payload_value: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=cls.payload_field_name,
                 constructor_argument_name="payload_value",
                 value_projector=StringPayloadOperation.payload_value_from_operation,
@@ -1766,15 +2094,15 @@ class ReplaceTextOperation(RefactorRecipeOperation):
     new_source: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=OLD_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="old_source",
                 value_projector=ReplaceTextOperation.old_source_from_operation,
             ),
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=NEW_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="new_source",
                 value_projector=ReplaceTextOperation.new_source_from_operation,
@@ -1871,10 +2199,10 @@ class DeleteModuleAssignmentsOperation(RefactorRecipeOperation):
     assignment_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=ASSIGNMENT_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="assignment_names",
                 value_projector=DeleteModuleAssignmentsOperation.assignment_names_from_operation,
@@ -1961,20 +2289,20 @@ class ClassMemberPromotionOperation(RefactorRecipeOperation, ABC):
     member_constructor_argument_name: ClassVar[str]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=BASE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name=BASE_NAME_PAYLOAD_FIELD,
                 value_projector=ClassMemberPromotionOperation.base_name_from_operation,
             ),
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=CLASS_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name=CLASS_NAMES_PAYLOAD_FIELD,
                 value_projector=ClassMemberPromotionOperation.class_names_from_operation,
                 constructor_value_reader=OperationPayloadReader.required_string_tuple,
             ),
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=cls.member_payload_field_name,
                 constructor_argument_name=cls.member_constructor_argument_name,
                 value_projector=ClassMemberPromotionOperation.member_names_from_operation,
@@ -2428,6 +2756,57 @@ class DeleteTargetOperation(RefactorRecipeOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class DeleteSelectedTargetsOperation(RefactorRecipeOperation):
+    """Delete every source-index target selected by a registered selector."""
+
+    selector: CodemodTargetSelector
+
+    @classmethod
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
+        return operation_payload_bindings(
+            (
+                (
+                    "selector",
+                    "selector",
+                    cls.selector_from_operation,
+                    OperationPayloadReader.required_selector,
+                ),
+            )
+        )
+
+    @staticmethod
+    def selector_from_operation(operation: RefactorRecipeOperation) -> JsonValue:
+        if not isinstance(operation, DeleteSelectedTargetsOperation):
+            raise TypeError("selector binding requires delete-selected-targets operation")
+        return operation.selector.to_dict()
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        context = CodemodSelectorContext(
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
+        )
+        return tuple(
+            self.line_replacement_for(source_index.target_by_id[target_id])
+            for target_id in self.selector.target_ids(context)
+        )
+
+    def line_replacement_for(
+        self,
+        target_digest: AstTargetDigest,
+    ) -> SourceLineReplacement:
+        return SourceLineReplacement(
+            file_path=target_digest.file_path,
+            start_line=target_digest.line,
+            end_line=target_digest.end_line,
+            rationale=self.rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
 class ExtractAuthorityOperation(RefactorRecipeOperation):
     """Replace a helper target with a nominal authority and route call sites."""
 
@@ -2435,15 +2814,15 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
     call_replacements: tuple[RecipeCallReplacement, ...] = ()
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=AUTHORITY_SOURCE_PAYLOAD_FIELD,
                 constructor_argument_name="authority_source",
                 value_projector=ExtractAuthorityOperation.authority_source_from_operation,
             ),
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=CALL_REPLACEMENTS_PAYLOAD_FIELD,
                 constructor_argument_name="call_replacements",
                 value_projector=ExtractAuthorityOperation.call_replacements_from_operation,
@@ -2634,15 +3013,15 @@ class RemoveImportNamesOperation(RefactorRecipeOperation):
     import_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=MODULE_NAME_PAYLOAD_FIELD,
                 constructor_argument_name="module_name",
                 value_projector=RemoveImportNamesOperation.module_name_from_operation,
             ),
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=IMPORT_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="import_names",
                 value_projector=RemoveImportNamesOperation.import_names_from_operation,
@@ -3133,7 +3512,7 @@ class ConvertManualRegistryToAutoregisterOperation(BaseNamePayloadOperation):
     class_key_pairs: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return operation_payload_bindings(
             (
@@ -3892,7 +4271,7 @@ class DispatchToPolymorphismOperation(BaseNamePayloadOperation):
     method_name: str
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return operation_payload_bindings(
             (
@@ -4196,10 +4575,10 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
     record_names: tuple[str, ...]
 
     @classmethod
-    def payload_bindings(cls) -> tuple[OperationPayloadBinding, ...]:
+    def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
         del cls
         return (
-            OperationPayloadBinding(
+            PayloadBinding(
                 field_name=RECORD_NAMES_PAYLOAD_FIELD,
                 constructor_argument_name="record_names",
                 value_projector=ProductRecordsToDataclassesOperation.record_names_from_operation,

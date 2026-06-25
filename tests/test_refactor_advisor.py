@@ -8725,6 +8725,15 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                 "file_path": "pkg/mod.py",
                             },
                             {
+                                "operation": "delete_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["function"],
+                                    "file_paths": ["pkg/mod.py"],
+                                    "qualnames": ["obsolete_function"],
+                                },
+                            },
+                            {
                                 "operation": "extract_authority",
                                 "target_qualname": "legacy_helper",
                                 "file_path": "pkg/mod.py",
@@ -8770,11 +8779,17 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.recipes[0].operations[3].to_dict()["operation"] == "replace_text"
     assert document.recipes[0].operations[4].to_dict()["operation"] == "delete_target"
     assert document.recipes[0].operations[5].to_dict()["operation"] == (
+        "delete_selected_targets"
+    )
+    assert document.recipes[0].operations[5].to_dict()["selector"]["selector"] == (
+        "source_index_target"
+    )
+    assert document.recipes[0].operations[6].to_dict()["operation"] == (
         "extract_authority"
     )
     assert (
         document.recipes[0]
-        .operations[5]
+        .operations[6]
         .to_dict()["call_replacements"][0]["new_source"]
         == "LegacyHelperAuthority().run(value)"
     )
@@ -8787,6 +8802,68 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     )
     assert document.to_dict()["recipes"]
     assert document.to_dict()["architecture_guards"]
+
+
+def test_selector_backed_recipe_operation_deletes_json_selected_targets(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def keep(self):\n"
+        "        return 1\n\n"
+        "    def obsolete_method(self):\n"
+        "        return 2\n\n\n"
+        "def obsolete_function():\n"
+        "    return 3\n",
+    )
+    plan_path = tmp_path / "codemod-plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "delete-selected",
+                        "operations": [
+                            {
+                                "operation": "delete_selected_targets",
+                                "selector": {
+                                    "selector": "source_index_target",
+                                    "node_kinds": ["method", "function"],
+                                    "file_paths": [module_path.as_posix()],
+                                    "qualnames": [
+                                        "Alpha.obsolete_method",
+                                        "obsolete_function",
+                                    ],
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    document = load_codemod_plan_document(plan_path)
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+
+    simulation = document.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    simulation.apply()
+    rewritten = module_path.read_text()
+    assert "def keep" in rewritten
+    assert "obsolete_method" not in rewritten
+    assert "obsolete_function" not in rewritten
 
 
 def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> None:
