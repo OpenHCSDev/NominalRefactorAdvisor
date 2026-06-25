@@ -1191,7 +1191,7 @@ class SelectionCountExpectation:
         return payload
 
 
-def _required_source_plan_payload_string(
+def required_source_plan_payload_string(
     payload: "SourceRewritePlanPayload",
     field_name: str,
 ) -> str:
@@ -1209,7 +1209,7 @@ class PayloadBinding(Generic[PayloadOwnerT, PayloadSourceT, PayloadValueT]):
     value_projector: Callable[[PayloadOwnerT], JsonValue]
     constructor_value_reader: Callable[
         [PayloadSourceT, str], PayloadValueT
-    ] = _required_source_plan_payload_string
+    ] = required_source_plan_payload_string
 
     def constructor_kwargs(
         self,
@@ -5358,6 +5358,377 @@ class ProductRecordsToDataclassesOperation(RefactorRecipeOperation):
         ).line_replacements(module)
 
 
+class CodemodDslFieldKind(StrEnum):
+    """Machine-readable JSON value kinds accepted by the codemod DSL."""
+
+    BOOLEAN = "boolean"
+    INTEGER = "integer"
+    NODE_KIND_ARRAY = "node_kind_array"
+    OPERATION_TEMPLATE_ARRAY = "operation_template_array"
+    SELECTOR_ARRAY = "selector_array"
+    SELECTOR_OBJECT = "selector_object"
+    STRING = "string"
+    STRING_ARRAY = "string_array"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class CodemodDslPayloadReaderProfile:
+    """Value-shape profile inferred from a registered payload reader."""
+
+    value_kind: CodemodDslFieldKind
+    required: bool = True
+    empty_string_allowed: bool = False
+    default_value: JsonValue = None
+
+    @classmethod
+    def string(cls) -> "CodemodDslPayloadReaderProfile":
+        return cls(CodemodDslFieldKind.STRING)
+
+    @classmethod
+    def optional_string(cls) -> "CodemodDslPayloadReaderProfile":
+        return cls(
+            CodemodDslFieldKind.STRING,
+            required=False,
+            empty_string_allowed=True,
+            default_value="",
+        )
+
+    @classmethod
+    def string_array(
+        cls,
+        *,
+        required: bool = True,
+    ) -> "CodemodDslPayloadReaderProfile":
+        return cls(CodemodDslFieldKind.STRING_ARRAY, required=required)
+
+    @classmethod
+    def optional_boolean(
+        cls,
+        default_value: bool,
+    ) -> "CodemodDslPayloadReaderProfile":
+        return cls(
+            CodemodDslFieldKind.BOOLEAN,
+            required=False,
+            default_value=default_value,
+        )
+
+    @classmethod
+    def from_reader(
+        cls,
+        reader: Callable[..., OperationConstructorValue],
+    ) -> "CodemodDslPayloadReaderProfile":
+        for rule in codemod_dsl_payload_reader_profile_rules():
+            if rule.matches(reader):
+                return rule.profile
+        return cls(CodemodDslFieldKind.UNKNOWN)
+
+
+@dataclass(frozen=True)
+class CodemodDslPayloadReaderProfileRule:
+    """Declared schema profile for one registered payload reader."""
+
+    reader: Callable[..., OperationConstructorValue]
+    profile: CodemodDslPayloadReaderProfile
+
+    def matches(self, candidate: Callable[..., OperationConstructorValue]) -> bool:
+        return candidate is self.reader
+
+
+def codemod_dsl_payload_reader_profile_rules() -> tuple[
+    CodemodDslPayloadReaderProfileRule,
+    ...,
+]:
+    """Return nominal reader-profile declarations used by the DSL manifest."""
+
+    return (
+        CodemodDslPayloadReaderProfileRule(
+            required_source_plan_payload_string,
+            CodemodDslPayloadReaderProfile.string(),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SourceRewritePlanPayload.string_or_empty,
+            CodemodDslPayloadReaderProfile.optional_string(),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            OperationPayloadReader.required_string,
+            CodemodDslPayloadReaderProfile.string(),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            OperationPayloadReader.required_string_tuple,
+            CodemodDslPayloadReaderProfile.string_array(),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            OperationPayloadReader.required_selector,
+            CodemodDslPayloadReaderProfile(CodemodDslFieldKind.SELECTOR_OBJECT),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            OperationPayloadReader.required_operation_templates,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.OPERATION_TEMPLATE_ARRAY
+            ),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.required_string,
+            CodemodDslPayloadReaderProfile.string(),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.string_tuple,
+            CodemodDslPayloadReaderProfile.string_array(required=False),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.node_kind_tuple,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.NODE_KIND_ARRAY,
+                required=False,
+            ),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.selector_tuple,
+            CodemodDslPayloadReaderProfile(
+                CodemodDslFieldKind.SELECTOR_ARRAY,
+                required=False,
+            ),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.true_bool,
+            CodemodDslPayloadReaderProfile.optional_boolean(True),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            SelectorPayloadReader.false_bool,
+            CodemodDslPayloadReaderProfile.optional_boolean(False),
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class CodemodDslFieldManifest:
+    """One JSON field accepted by a registered codemod DSL payload."""
+
+    field_name: str
+    constructor_argument_name: str
+    value_kind: CodemodDslFieldKind
+    required: bool = True
+    empty_string_allowed: bool = False
+    default_value: JsonValue = None
+
+    @classmethod
+    def from_binding(
+        cls,
+        binding: PayloadBinding,
+    ) -> "CodemodDslFieldManifest":
+        reader_profile = CodemodDslPayloadReaderProfile.from_reader(
+            binding.constructor_value_reader,
+        )
+        return cls(
+            field_name=binding.field_name,
+            constructor_argument_name=binding.constructor_argument_name,
+            value_kind=reader_profile.value_kind,
+            required=reader_profile.required,
+            empty_string_allowed=reader_profile.empty_string_allowed,
+            default_value=reader_profile.default_value,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "field_name": self.field_name,
+            "constructor_argument_name": self.constructor_argument_name,
+            "value_kind": self.value_kind.value,
+            "required": self.required,
+            "empty_string_allowed": self.empty_string_allowed,
+            "default_value": self.default_value,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodDslRegistryEntryManifest:
+    """Shared manifest surface for one registered DSL entry."""
+
+    class_name: str
+    payload_fields: tuple[CodemodDslFieldManifest, ...]
+
+    def payload_field_dicts(self) -> tuple[JsonObject, ...]:
+        return tuple(field.to_dict() for field in self.payload_fields)
+
+
+@dataclass(frozen=True)
+class CodemodDslOperationManifest(CodemodDslRegistryEntryManifest):
+    """Registered operation schema derived from the operation registry."""
+
+    operation: str
+    supports_selection_count: bool = False
+
+    @classmethod
+    def from_operation_type(
+        cls,
+        operation_key: str,
+        operation_type: type[RefactorRecipeOperation],
+    ) -> "CodemodDslOperationManifest":
+        return cls(
+            class_name=operation_type.__name__,
+            payload_fields=tuple(
+                CodemodDslFieldManifest.from_binding(binding)
+                for binding in operation_type.payload_bindings()
+            ),
+            operation=operation_key,
+            supports_selection_count=issubclass(
+                operation_type,
+                SelectedTargetsOperation,
+            ),
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "operation": self.operation,
+            "class_name": self.class_name,
+            "target_fields": tuple(field.to_dict() for field in codemod_target_fields()),
+            "payload_fields": self.payload_field_dicts(),
+            "common_fields": tuple(field.to_dict() for field in codemod_common_fields()),
+            "supports_selection_count": self.supports_selection_count,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodDslSelectorManifest(CodemodDslRegistryEntryManifest):
+    """Registered selector schema derived from the selector registry."""
+
+    selector: str
+
+    @classmethod
+    def from_selector_type(
+        cls,
+        selector_key: str,
+        selector_type: type[CodemodTargetSelector],
+    ) -> "CodemodDslSelectorManifest":
+        return cls(
+            class_name=selector_type.__name__,
+            payload_fields=tuple(
+                CodemodDslFieldManifest.from_binding(binding)
+                for binding in selector_type.selector_payload_bindings
+            ),
+            selector=selector_key,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "selector": self.selector,
+            "class_name": self.class_name,
+            "payload_fields": self.payload_field_dicts(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodDslManifest:
+    """Self-describing contract for agent-authored codemod plan JSON."""
+
+    operations: tuple[CodemodDslOperationManifest, ...]
+    selectors: tuple[CodemodDslSelectorManifest, ...]
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "plan_fields": ("authority_boundaries", "recipes", "architecture_guards"),
+            "recipe_fields": ("recipe_id", "rewrites", "operations", "reason"),
+            "operation_common_fields": tuple(
+                field.to_dict() for field in codemod_common_fields()
+            ),
+            "operation_target_fields": tuple(
+                field.to_dict() for field in codemod_target_fields()
+            ),
+            "selection_count_fields": tuple(
+                field.to_dict() for field in codemod_selection_count_fields()
+            ),
+            "operations": tuple(operation.to_dict() for operation in self.operations),
+            "selectors": tuple(selector.to_dict() for selector in self.selectors),
+        }
+
+
+def codemod_dsl_manifest() -> CodemodDslManifest:
+    """Return a registry-derived manifest for agent-authored codemod plans."""
+
+    return CodemodDslManifest(
+        operations=tuple(
+            CodemodDslOperationManifest.from_operation_type(key, operation_type)
+            for key, operation_type in sorted(
+                RefactorRecipeOperation.__registry__.items()
+            )
+        ),
+        selectors=tuple(
+            CodemodDslSelectorManifest.from_selector_type(key, selector_type)
+            for key, selector_type in sorted(CodemodTargetSelector.__registry__.items())
+        ),
+    )
+
+
+def codemod_common_fields() -> tuple[CodemodDslFieldManifest, ...]:
+    """Common JSON fields accepted by every operation object."""
+
+    return (
+        CodemodDslFieldManifest(
+            field_name="operation",
+            constructor_argument_name="operation",
+            value_kind=CodemodDslFieldKind.STRING,
+        ),
+        CodemodDslFieldManifest(
+            field_name="rationale",
+            constructor_argument_name="rationale",
+            value_kind=CodemodDslFieldKind.STRING,
+            required=False,
+            empty_string_allowed=True,
+            default_value="",
+        ),
+    )
+
+
+def codemod_target_fields() -> tuple[CodemodDslFieldManifest, ...]:
+    """Source-target JSON fields accepted by operation and rewrite objects."""
+
+    return (
+        CodemodDslFieldManifest(
+            field_name="target_id",
+            constructor_argument_name="target_identifier",
+            value_kind=CodemodDslFieldKind.STRING,
+            required=False,
+        ),
+        CodemodDslFieldManifest(
+            field_name="target_qualname",
+            constructor_argument_name="qualname",
+            value_kind=CodemodDslFieldKind.STRING,
+            required=False,
+        ),
+        CodemodDslFieldManifest(
+            field_name="file_path",
+            constructor_argument_name="source_path",
+            value_kind=CodemodDslFieldKind.STRING,
+            required=False,
+        ),
+    )
+
+
+def codemod_selection_count_fields() -> tuple[CodemodDslFieldManifest, ...]:
+    """Optional cardinality contract fields for selected-target operations."""
+
+    return (
+        CodemodDslFieldManifest(
+            "min",
+            "minimum",
+            CodemodDslFieldKind.INTEGER,
+            required=False,
+        ),
+        CodemodDslFieldManifest(
+            "max",
+            "maximum",
+            CodemodDslFieldKind.INTEGER,
+            required=False,
+        ),
+        CodemodDslFieldManifest(
+            "exact",
+            "exact",
+            CodemodDslFieldKind.INTEGER,
+            required=False,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ProductRecordDataclassField:
     """One explicit dataclass field derived from product_record field text."""
@@ -7615,17 +7986,77 @@ class FindingRecipeSynthesisReport:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class FindingRecipeSynthesisResult:
-    """Recipe, action-key claims, and report record for one synthesis attempt."""
+    """Outcome of evaluating one finding against executable DSL bridges."""
 
-    record: FindingRecipeSynthesisRecord
-    recipe: RefactorRecipe | None = None
     action_keys: tuple[FindingRecipeActionKey, ...] = ()
+    recipe: RefactorRecipe | None = None
+    reason: str = ""
+    status: ClassVar[FindingRecipeSynthesisStatus]
 
     @property
-    def planned(self) -> bool:
+    def planned_result(self) -> bool:
         return self.recipe is not None
+
+    def record_for(
+        self,
+        attempt: "FindingRecipeSynthesisAttempt",
+    ) -> FindingRecipeSynthesisRecord:
+        return FindingRecipeSynthesisRecord.for_finding(
+            attempt.finding,
+            type(self).status,
+            synthesizer=attempt.synthesizer,
+            action_keys=self.action_keys,
+            recipe=self.recipe,
+            reason=self.reason,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class NoSynthesizerFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
+    """No registered DSL bridge exists for this finding."""
+
+    status: ClassVar[FindingRecipeSynthesisStatus] = (
+        FindingRecipeSynthesisStatus.NO_SYNTHESIZER
+    )
+    reason: str = "no registered finding-to-recipe synthesizer"
+
+
+@dataclass(frozen=True, kw_only=True)
+class NoActionKeysFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
+    """The bridge could not map the finding to source action keys."""
+
+    status: ClassVar[FindingRecipeSynthesisStatus] = (
+        FindingRecipeSynthesisStatus.NO_ACTION_KEYS
+    )
+    reason: str = "synthesizer produced no source action keys"
+
+
+@dataclass(frozen=True, kw_only=True)
+class DuplicateActionKeysFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
+    """All action keys were already claimed by an earlier recipe."""
+
+    status: ClassVar[FindingRecipeSynthesisStatus] = (
+        FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS
+    )
+    reason: str = "all source action keys were claimed by earlier recipes"
+
+
+@dataclass(frozen=True, kw_only=True)
+class RejectedFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
+    """The bridge rejected execution after safety checks."""
+
+    status: ClassVar[FindingRecipeSynthesisStatus] = (
+        FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlannedFindingRecipeSynthesisResult(FindingRecipeSynthesisResult):
+    """The bridge produced an executable recipe."""
+
+    status: ClassVar[FindingRecipeSynthesisStatus] = FindingRecipeSynthesisStatus.PLANNED
 
 
 @dataclass(frozen=True)
@@ -7639,63 +8070,32 @@ class FindingRecipeSynthesisAttempt:
 
     def evaluate(self) -> FindingRecipeSynthesisResult:
         if self.synthesizer is None:
-            return self.result(
-                FindingRecipeSynthesisStatus.NO_SYNTHESIZER,
-                reason="no registered finding-to-recipe synthesizer",
-            )
+            return NoSynthesizerFindingRecipeSynthesisResult()
         raw_action_keys = self.synthesizer.action_keys_for_finding(self.finding)
         action_keys = tuple(
             key for key in raw_action_keys if key not in self.seen_action_keys
         )
         if not raw_action_keys:
-            return self.result(
-                FindingRecipeSynthesisStatus.NO_ACTION_KEYS,
-                reason="synthesizer produced no source action keys",
-            )
+            return NoActionKeysFindingRecipeSynthesisResult()
         if not action_keys:
-            return self.result(
-                FindingRecipeSynthesisStatus.DUPLICATE_ACTION_KEYS,
-                action_keys=raw_action_keys,
-                reason="all source action keys were claimed by earlier recipes",
+            return DuplicateActionKeysFindingRecipeSynthesisResult(
+                action_keys=raw_action_keys
             )
         recipe = self.synthesizer.recipe_for_finding(
             self.finding,
             self.selector_context,
         )
         if recipe is None:
-            return self.result(
-                FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK,
+            return RejectedFindingRecipeSynthesisResult(
                 action_keys=action_keys,
                 reason=self.synthesizer.rejection_reason_for_finding(
                     self.finding,
                     self.selector_context,
                 ),
             )
-        return self.result(
-            FindingRecipeSynthesisStatus.PLANNED,
+        return PlannedFindingRecipeSynthesisResult(
             action_keys=action_keys,
             recipe=recipe,
-        )
-
-    def result(
-        self,
-        status: FindingRecipeSynthesisStatus,
-        *,
-        action_keys: tuple[FindingRecipeActionKey, ...] = (),
-        recipe: RefactorRecipe | None = None,
-        reason: str = "",
-    ) -> FindingRecipeSynthesisResult:
-        return FindingRecipeSynthesisResult(
-            record=FindingRecipeSynthesisRecord.for_finding(
-                self.finding,
-                status,
-                synthesizer=self.synthesizer,
-                action_keys=action_keys,
-                recipe=recipe,
-                reason=reason,
-            ),
-            recipe=recipe,
-            action_keys=action_keys,
         )
 
 
@@ -8697,14 +9097,15 @@ class FindingRecipePlanBuilder:
         synthesis_records: list[FindingRecipeSynthesisRecord] = []
         seen_action_keys: set[FindingRecipeActionKey] = set()
         for finding in self.findings:
-            result = FindingRecipeSynthesisAttempt(
+            attempt = FindingRecipeSynthesisAttempt(
                 finding=finding,
                 synthesizer=self.synthesizer_for(finding),
                 selector_context=selector_context,
                 seen_action_keys=frozenset(seen_action_keys),
-            ).evaluate()
-            synthesis_records.append(result.record)
-            if not result.planned:
+            )
+            result = attempt.evaluate()
+            synthesis_records.append(result.record_for(attempt))
+            if not result.planned_result:
                 continue
             if result.recipe is None:
                 raise RuntimeError("planned synthesis result must include a recipe")

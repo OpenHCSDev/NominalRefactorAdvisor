@@ -53,6 +53,7 @@ from .codemod import (
     SourceRewriteTarget,
     apply_codemod_simulation,
     codemod_candidates_from_impact_ranking,
+    codemod_dsl_manifest,
     evaluate_architecture_guards,
 )
 from .codemod_workflow import (
@@ -319,6 +320,11 @@ _CLI_ARGUMENT_SPECS = (
                 "Plans enable simulatable rewrites for semantic agent-required "
                 "candidates."
             ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-dsl-manifest",),
+            action="store_true",
+            help="Emit the registry-derived codemod DSL JSON manifest and exit.",
         ),
         CliArgumentSpec(
             flags=("--codemod-diff",),
@@ -1332,6 +1338,10 @@ def main() -> int:
     for spec in _CLI_ARGUMENT_SPECS:
         spec.add_to_parser(parser)
     args = parser.parse_args()
+
+    if args.codemod_dsl_manifest:
+        print(json.dumps(codemod_dsl_manifest().to_dict(), indent=2))
+        return 0
 
     config = DetectorConfig.from_namespace(args)
     codemod_requested = (

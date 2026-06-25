@@ -93,6 +93,7 @@ from nominal_refactor_advisor.codemod import (
     codemod_candidates_from_impact_ranking,
     codemod_candidates_with_automated_rewrites,
     codemod_candidates_with_supplied_authority_boundaries,
+    codemod_dsl_manifest,
     codemod_plan_from_findings,
     detect_cancelable_composition_signals,
     evaluate_architecture_guards,
@@ -8947,6 +8948,58 @@ def test_codemod_plan_document_decodes_json_without_cli_loader() -> None:
     assert document.recipes[0].rewrites[0].target.source_path == "pkg/mod.py"
 
 
+def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
+    manifest = codemod_dsl_manifest().to_dict()
+    operations = {
+        operation["operation"]: operation for operation in manifest["operations"]
+    }
+    selectors = {selector["selector"]: selector for selector in manifest["selectors"]}
+
+    replace_text_fields = {
+        field["field_name"]: field
+        for field in operations["replace_text"]["payload_fields"]
+    }
+    source_index_fields = {
+        field["field_name"]: field
+        for field in selectors["source_index_target"]["payload_fields"]
+    }
+
+    assert len(operations) >= 23
+    assert len(selectors) >= 6
+    assert replace_text_fields["old_source"]["value_kind"] == "string"
+    assert replace_text_fields["old_source"]["required"] is True
+    assert replace_text_fields["new_source"]["empty_string_allowed"] is True
+    assert operations["apply_selected_targets"]["supports_selection_count"] is True
+    assert source_index_fields["node_kinds"]["value_kind"] == "node_kind_array"
+    assert source_index_fields["node_kinds"]["required"] is False
+
+
+def test_module_cli_emits_codemod_dsl_manifest() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-dsl-manifest",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert any(
+        operation["operation"] == "replace_text"
+        for operation in payload["operations"]
+    )
+    assert any(
+        selector["selector"] == "source_index_target"
+        for selector in payload["selectors"]
+    )
+
+
 def test_load_codemod_plan_document_includes_architecture_guards(
     tmp_path: Path,
 ) -> None:
@@ -9849,12 +9902,15 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
 def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointRunner
+    from nominal_refactor_advisor import CodemodDslManifest
     from nominal_refactor_advisor import CodemodPlanJsonParser
     from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
+    from nominal_refactor_advisor import codemod_dsl_manifest
 
     assert CodemodPlanJsonParser().recipes({}) == ()
+    assert isinstance(codemod_dsl_manifest(), CodemodDslManifest)
 
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),
