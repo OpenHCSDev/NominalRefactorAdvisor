@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -222,6 +223,12 @@ class CodemodFixpointIteration:
         return self.simulation.applied_rewrite_count
 
     @property
+    def simulated_rewrite_count(self) -> int:
+        if self.simulation is None:
+            return 0
+        return self.simulation.applied_rewrite_count
+
+    @property
     def changed_file_paths(self) -> tuple[str, ...]:
         if self.simulation is None:
             return ()
@@ -248,6 +255,7 @@ class CodemodFixpointIteration:
             "expected_removed_finding_count": self.expected_removed_finding_count,
             "applied": self.applied,
             "applied_rewrite_count": self.applied_rewrite_count,
+            "simulated_rewrite_count": self.simulated_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
             "is_clean": self.is_clean,
             "stop_reason": (
@@ -297,6 +305,10 @@ class CodemodFixpointReport:
         return sum(iteration.applied_rewrite_count for iteration in self.iterations)
 
     @property
+    def total_simulated_rewrite_count(self) -> int:
+        return sum(iteration.simulated_rewrite_count for iteration in self.iterations)
+
+    @property
     def changed_file_paths(self) -> tuple[str, ...]:
         return tuple(
             sorted(
@@ -309,6 +321,18 @@ class CodemodFixpointReport:
             )
         )
 
+    @property
+    def simulated_changed_file_paths(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    file_path
+                    for iteration in self.iterations
+                    for file_path in iteration.changed_file_paths
+                }
+            )
+        )
+
     def to_dict(self) -> JsonObject:
         return {
             "completed": self.completed,
@@ -316,7 +340,9 @@ class CodemodFixpointReport:
             "stop_reason": self.terminal_reason.value,
             "iteration_count": self.iteration_count,
             "total_applied_rewrite_count": self.total_applied_rewrite_count,
+            "total_simulated_rewrite_count": self.total_simulated_rewrite_count,
             "changed_file_paths": self.changed_file_paths,
+            "simulated_changed_file_paths": self.simulated_changed_file_paths,
             "final_finding_count": self.final_finding_count,
             "iterations": tuple(iteration.to_dict() for iteration in self.iterations),
         }
@@ -341,8 +367,6 @@ class CodemodFixpointStop:
     def from_simulation(
         cls,
         simulation: CodemodPlanDocumentSimulation,
-        *,
-        dry_run: bool,
     ) -> "CodemodFixpointStop | None":
         if simulation.simulation.applied_rewrite_count == 0:
             return cls(
@@ -354,12 +378,6 @@ class CodemodFixpointStop:
             return cls(
                 completed=False,
                 reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
-                simulation=simulation,
-            )
-        if dry_run:
-            return cls(
-                completed=True,
-                reason=CodemodFixpointStopReason.DRY_RUN,
                 simulation=simulation,
             )
         return None
@@ -410,6 +428,8 @@ class CodemodFixpointIterationBuilder:
         self,
         simulation: CodemodPlanDocumentSimulation,
         post_scan: CodemodFixpointScan,
+        *,
+        applied: bool,
     ) -> CodemodFixpointIteration:
         return self.iteration(
             simulation=simulation,
@@ -417,7 +437,7 @@ class CodemodFixpointIterationBuilder:
                 tuple(self.scan.findings),
                 tuple(post_scan.findings),
             ),
-            applied=True,
+            applied=applied,
         )
 
     def iteration(
@@ -484,18 +504,24 @@ class CodemodFixpointRunner(ParseCacheRequest):
             simulation = guarded_document.simulate_snapshot(snapshot)
             stop = CodemodFixpointStop.from_simulation(
                 simulation,
-                dry_run=self.dry_run,
             )
             if stop is not None:
                 return iteration_builder.stopped_report(
                     stop
                 )
-            simulation.apply()
-            next_scan = self.scan(iteration_index + 1)
+            if self.dry_run:
+                next_scan = self.projected_scan(
+                    scan,
+                    simulation.simulation,
+                )
+            else:
+                simulation.apply()
+                next_scan = self.scan(iteration_index + 1)
             iterations.append(
                 iteration_builder.applied_iteration(
                     simulation,
                     next_scan,
+                    applied=not self.dry_run,
                 )
             )
         final_scan = next_scan or self.scan(self.max_iterations)
@@ -519,3 +545,51 @@ class CodemodFixpointRunner(ParseCacheRequest):
             modules=modules,
             findings=analyze_modules(modules, self.config),
         )
+
+    def projected_scan(
+        self,
+        scan: CodemodFixpointScan,
+        simulation: CodemodSimulationReport,
+    ) -> CodemodFixpointScan:
+        """Analyze the post-simulation source state without writing files."""
+
+        modules = [
+            self.projected_module(module, simulation)
+            for module in scan.modules
+        ]
+        return CodemodFixpointScan(
+            modules=modules,
+            findings=analyze_modules(modules, self.config),
+        )
+
+    @staticmethod
+    def projected_module(
+        module: ParsedModule,
+        simulation: CodemodSimulationReport,
+    ) -> ParsedModule:
+        source = ProjectedModuleSource(
+            module=module,
+            simulation=simulation,
+        ).source
+        return ParsedModule(
+            path=module.path,
+            module_name=module.module_name,
+            is_package_init=module.is_package_init,
+            module=ast.parse(source, filename=str(module.path)),
+            source=source,
+        )
+
+
+@dataclass(frozen=True)
+class ProjectedModuleSource:
+    """Resolve one module's source in a simulated post-rewrite snapshot."""
+
+    module: ParsedModule
+    simulation: CodemodSimulationReport
+
+    @property
+    def source(self) -> str:
+        module_path = self.module.path.as_posix()
+        if module_path in self.simulation.rewritten_sources:
+            return self.simulation.rewritten_sources[module_path]
+        return self.module.source

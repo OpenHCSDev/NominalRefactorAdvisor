@@ -10604,11 +10604,16 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     assert result.returncode == 0, result.stderr
     assert payload["completed"] is True
     assert payload["applied"] is False
-    assert payload["stop_reason"] == "dry_run"
-    assert payload["iteration_count"] == 1
+    assert payload["stop_reason"] == "no_executable_recipes"
+    assert payload["iteration_count"] == 2
     assert payload["total_applied_rewrite_count"] == 0
-    iteration = payload["iterations"][0]
+    assert payload["total_simulated_rewrite_count"] == 1
+    assert payload["changed_file_paths"] == []
+    assert payload["simulated_changed_file_paths"] == [module_path.as_posix()]
+    iteration, terminal_iteration = payload["iterations"]
     assert iteration["applied"] is False
+    assert iteration["applied_rewrite_count"] == 0
+    assert iteration["simulated_rewrite_count"] == 1
     assert iteration["recipe_count"] == 1
     assert iteration["synthesis_report"]["planned_count"] == 1
     assert iteration["synthesis_report"]["records"][0]["status"] == "planned"
@@ -10625,6 +10630,23 @@ def test_module_cli_codemod_fixpoint_dry_run_does_not_apply(
     ]
     assert iteration["simulation"]["applied_rewrite_count"] == 1
     assert iteration["simulation"]["parse_valid"] is True
+    assert (
+        iteration["finding_delta"]["confirmed_expected_removed_finding_count"]
+        == 1
+    )
+    assert (
+        iteration["finding_delta"]["surviving_expected_removed_finding_count"]
+        == 0
+    )
+    assert iteration["finding_delta"]["fulfilled_expected_removals"] is True
+    assert terminal_iteration["applied"] is False
+    assert terminal_iteration["recipe_count"] == 0
+    assert terminal_iteration["finding_count"] == payload["final_finding_count"]
+    assert terminal_iteration["synthesis_report"]["planned_count"] == 0
+    assert {
+        record["detector_id"]
+        for record in terminal_iteration["synthesis_report"]["records"]
+    }.isdisjoint({"manual_class_registration"})
     assert module_path.read_text() == original_source
 
 

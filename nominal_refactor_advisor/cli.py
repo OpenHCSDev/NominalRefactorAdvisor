@@ -660,7 +660,9 @@ def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
         f"   - Stop reason: {report.stop_reason.value}",
         f"   - Iterations: {report.iteration_count}",
         f"   - Applied rewrites: {report.total_applied_rewrite_count}",
+        f"   - Simulated rewrites: {report.total_simulated_rewrite_count}",
         f"   - Changed files: {len(report.changed_file_paths)}",
+        f"   - Simulated changed files: {len(report.simulated_changed_file_paths)}",
         f"   - Final findings: {report.final_finding_count}",
     ]
     for iteration in report.iterations:
@@ -670,6 +672,7 @@ def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
             f"recipes={iteration.recipe_count}, "
             f"expected_removed={iteration.expected_removed_finding_count}, "
             f"rewrites={iteration.applied_rewrite_count}, "
+            f"simulated={iteration.simulated_rewrite_count}, "
             f"applied={iteration.applied}, "
             f"stop={iteration.stop_label}"
         )
