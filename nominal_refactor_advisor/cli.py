@@ -12,6 +12,7 @@ import ast
 import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, fields
+from enum import StrEnum
 from pathlib import Path
 from time import perf_counter
 from typing import TypeAlias, cast
@@ -30,6 +31,7 @@ from .calibration import (
     format_calibration_markdown,
     run_calibration_manifest,
 )
+from .class_index import build_class_family_index
 from .codemod import (
     ArchitectureGuardReport,
     ArchitectureGuardRule,
@@ -329,6 +331,20 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-apply",),
             action="store_true",
             help="Write all simulated codemod rewrites to disk after validation.",
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-fixpoint",),
+            action="store_true",
+            help=(
+                "Iteratively synthesize finding-backed DSL recipes, apply clean "
+                "batches, and rescan until no executable recipes remain."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-fixpoint-max-iterations",),
+            value_type=int,
+            default=8,
+            help="Maximum apply/rescan iterations for --codemod-fixpoint.",
         ),
     )
     + _config_argument_specs()
@@ -668,6 +684,320 @@ class CodemodSimulationPayload:
         if self.post_guard_report is not None:
             payload["architecture_guard_report"] = self.post_guard_report.to_dict()
         return payload
+
+
+class CodemodFixpointStopReason(StrEnum):
+    """Terminal state for the finding-backed codemod fixpoint runner."""
+
+    NO_EXECUTABLE_RECIPES = "no_executable_recipes"
+    EMPTY_REWRITE_BATCH = "empty_rewrite_batch"
+    ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
+    MAX_ITERATIONS = "max_iterations"
+
+
+@dataclass(frozen=True)
+class CodemodFixpointScan:
+    """Parsed source snapshot used by one fixpoint iteration."""
+
+    modules: list[ParsedModule]
+    findings: list[RefactorFinding]
+
+    @property
+    def source_index(self) -> SourceIndex:
+        return build_source_index(self.modules, self.findings)
+
+    @property
+    def source_by_path(self) -> dict[str, str]:
+        return {str(module.path): module.source for module in self.modules}
+
+    @property
+    def selector_context(self) -> CodemodSelectorContext:
+        return CodemodSelectorContext(
+            source_index=self.source_index,
+            sources_by_file_path=self.source_by_path,
+            class_family_index=build_class_family_index(self.modules),
+        )
+
+
+@dataclass(frozen=True)
+class CodemodFixpointIteration:
+    """One scan/simulate/apply step in the codemod fixpoint workflow."""
+
+    iteration_index: int
+    finding_count: int
+    recipe_count: int
+    expected_removed_finding_ids: tuple[str, ...]
+    simulation: CodemodSimulationReport | None = None
+    architecture_guard_report: ArchitectureGuardReport | None = None
+    applied: bool = False
+    stop_reason: CodemodFixpointStopReason | None = None
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
+
+    @property
+    def applied_rewrite_count(self) -> int:
+        if self.simulation is None or not self.applied:
+            return 0
+        return self.simulation.applied_rewrite_count
+
+    @property
+    def changed_file_paths(self) -> tuple[str, ...]:
+        if self.simulation is None:
+            return ()
+        return self.simulation.changed_file_paths
+
+    @property
+    def is_clean(self) -> bool:
+        if self.architecture_guard_report is None:
+            return True
+        return self.architecture_guard_report.is_clean
+
+    def to_dict(self) -> JsonObject:
+        payload: JsonObject = {
+            "iteration_index": self.iteration_index,
+            "finding_count": self.finding_count,
+            "recipe_count": self.recipe_count,
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "expected_removed_finding_count": self.expected_removed_finding_count,
+            "applied": self.applied,
+            "applied_rewrite_count": self.applied_rewrite_count,
+            "changed_file_paths": self.changed_file_paths,
+            "is_clean": self.is_clean,
+            "stop_reason": (
+                None if self.stop_reason is None else self.stop_reason.value
+            ),
+        }
+        if self.simulation is not None:
+            payload["simulation"] = self.simulation.to_dict()
+        if self.architecture_guard_report is not None:
+            payload["architecture_guard_report"] = (
+                self.architecture_guard_report.to_dict()
+            )
+        return payload
+
+
+@dataclass(frozen=True)
+class CodemodFixpointIterationVariant:
+    """Declared materialization rule for one fixpoint iteration state."""
+
+    applied: bool = False
+    stop_reason: CodemodFixpointStopReason | None = None
+
+    def materialize(
+        self,
+        iteration_index: int,
+        scan: CodemodFixpointScan,
+        recipe_count: int = 0,
+        expected_removed_finding_ids: tuple[str, ...] = (),
+        simulation: CodemodPlanDocumentSimulation | None = None,
+    ) -> CodemodFixpointIteration:
+        return CodemodFixpointIteration(
+            iteration_index=iteration_index,
+            finding_count=len(scan.findings),
+            recipe_count=recipe_count,
+            expected_removed_finding_ids=expected_removed_finding_ids,
+            simulation=None if simulation is None else simulation.simulation,
+            architecture_guard_report=(
+                None if simulation is None else simulation.architecture_guard_report
+            ),
+            applied=self.applied,
+            stop_reason=self.stop_reason,
+        )
+
+
+CODEMOD_FIXPOINT_CONTINUE = CodemodFixpointIterationVariant(applied=True)
+CODEMOD_FIXPOINT_NO_EXECUTABLE_RECIPES = CodemodFixpointIterationVariant(
+    stop_reason=CodemodFixpointStopReason.NO_EXECUTABLE_RECIPES,
+)
+CODEMOD_FIXPOINT_EMPTY_REWRITE_BATCH = CodemodFixpointIterationVariant(
+    stop_reason=CodemodFixpointStopReason.EMPTY_REWRITE_BATCH,
+)
+CODEMOD_FIXPOINT_ARCHITECTURE_GUARD_FAILED = CodemodFixpointIterationVariant(
+    stop_reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
+)
+
+
+@dataclass(frozen=True)
+class CodemodFixpointReport:
+    """Machine-readable result of an iterative DSL codemod workflow."""
+
+    iterations: tuple[CodemodFixpointIteration, ...]
+    completed: bool
+    stop_reason: CodemodFixpointStopReason
+    final_finding_count: int
+
+    @property
+    def iteration_count(self) -> int:
+        return len(self.iterations)
+
+    @property
+    def applied(self) -> bool:
+        return any(iteration.applied for iteration in self.iterations)
+
+    @property
+    def total_applied_rewrite_count(self) -> int:
+        return sum(iteration.applied_rewrite_count for iteration in self.iterations)
+
+    @property
+    def changed_file_paths(self) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    file_path
+                    for iteration in self.iterations
+                    for file_path in iteration.changed_file_paths
+                    if iteration.applied
+                }
+            )
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "completed": self.completed,
+            "applied": self.applied,
+            "stop_reason": self.stop_reason.value,
+            "iteration_count": self.iteration_count,
+            "total_applied_rewrite_count": self.total_applied_rewrite_count,
+            "changed_file_paths": self.changed_file_paths,
+            "final_finding_count": self.final_finding_count,
+            "iterations": tuple(iteration.to_dict() for iteration in self.iterations),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodFixpointRunner:
+    """Iteratively apply finding-backed DSL recipes until reaching a fixpoint."""
+
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    cache_dir: Path | None
+    use_parse_cache: bool
+    parse_workers: int
+    max_iterations: int
+    guard_suite: ArchitectureGuardSuite
+    initial_scan: CodemodFixpointScan | None = None
+
+    def run(self) -> CodemodFixpointReport:
+        if self.max_iterations < 1:
+            raise ValueError("--codemod-fixpoint-max-iterations must be at least 1")
+        iterations: list[CodemodFixpointIteration] = []
+        for iteration_index in range(self.max_iterations):
+            scan = self.scan(iteration_index)
+            plan = codemod_plan_from_findings(
+                scan.findings,
+                selector_context=scan.selector_context,
+            )
+            if not plan.document.has_recipes:
+                iterations.append(
+                    CODEMOD_FIXPOINT_NO_EXECUTABLE_RECIPES.materialize(
+                        iteration_index,
+                        scan,
+                    )
+                )
+                return CodemodFixpointReport(
+                    iterations=tuple(iterations),
+                    completed=True,
+                    stop_reason=CodemodFixpointStopReason.NO_EXECUTABLE_RECIPES,
+                    final_finding_count=len(scan.findings),
+                )
+            guarded_document = CodemodPlanDocument(
+                recipes=plan.document.recipes,
+                guard_suite=self.guard_suite,
+            )
+            simulation = guarded_document.simulate(
+                scan.source_index,
+                scan.source_by_path,
+            )
+            if simulation.simulation.applied_rewrite_count == 0:
+                iterations.append(
+                    CODEMOD_FIXPOINT_EMPTY_REWRITE_BATCH.materialize(
+                        iteration_index,
+                        scan,
+                        len(plan.document.recipes),
+                        plan.expected_removed_finding_ids,
+                        simulation,
+                    )
+                )
+                return CodemodFixpointReport(
+                    iterations=tuple(iterations),
+                    completed=False,
+                    stop_reason=CodemodFixpointStopReason.EMPTY_REWRITE_BATCH,
+                    final_finding_count=len(scan.findings),
+            )
+            if not simulation.is_clean:
+                iterations.append(
+                    CODEMOD_FIXPOINT_ARCHITECTURE_GUARD_FAILED.materialize(
+                        iteration_index,
+                        scan,
+                        len(plan.document.recipes),
+                        plan.expected_removed_finding_ids,
+                        simulation,
+                    )
+                )
+                return CodemodFixpointReport(
+                    iterations=tuple(iterations),
+                    completed=False,
+                    stop_reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
+                    final_finding_count=len(scan.findings),
+            )
+            simulation.apply()
+            iterations.append(
+                CODEMOD_FIXPOINT_CONTINUE.materialize(
+                    iteration_index,
+                    scan,
+                    len(plan.document.recipes),
+                    plan.expected_removed_finding_ids,
+                    simulation,
+                )
+            )
+        final_scan = self.scan(self.max_iterations)
+        return CodemodFixpointReport(
+            iterations=tuple(iterations),
+            completed=False,
+            stop_reason=CodemodFixpointStopReason.MAX_ITERATIONS,
+            final_finding_count=len(final_scan.findings),
+        )
+
+    def scan(self, iteration_index: int) -> CodemodFixpointScan:
+        if iteration_index == 0 and self.initial_scan is not None:
+            return self.initial_scan
+        modules = parse_python_module_roots(
+            self.roots,
+            cache_dir=self.cache_dir,
+            use_parse_cache=self.use_parse_cache,
+            parse_workers=self.parse_workers,
+        )
+        return CodemodFixpointScan(
+            modules=modules,
+            findings=analyze_modules(modules, self.config),
+        )
+
+
+def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
+    """Render a concise fixpoint workflow summary."""
+
+    lines = [
+        "Codemod fixpoint report:",
+        f"   - Completed: {report.completed}",
+        f"   - Stop reason: {report.stop_reason.value}",
+        f"   - Iterations: {report.iteration_count}",
+        f"   - Applied rewrites: {report.total_applied_rewrite_count}",
+        f"   - Changed files: {len(report.changed_file_paths)}",
+        f"   - Final findings: {report.final_finding_count}",
+    ]
+    for iteration in report.iterations:
+        lines.append(
+            "   - "
+            f"Iteration {iteration.iteration_index}: "
+            f"recipes={iteration.recipe_count}, "
+            f"expected_removed={iteration.expected_removed_finding_count}, "
+            f"rewrites={iteration.applied_rewrite_count}, "
+            f"applied={iteration.applied}, "
+            f"stop={iteration.stop_reason.value if iteration.stop_reason else 'continue'}"
+        )
+    return "\n".join(lines)
 
 
 def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
@@ -1499,15 +1829,25 @@ def main() -> int:
 
     config = DetectorConfig.from_namespace(args)
     codemod_requested = (
-        args.codemod_plan is not None or args.codemod_diff or args.codemod_apply
+        args.codemod_plan is not None
+        or args.codemod_diff
+        or args.codemod_apply
+        or args.codemod_fixpoint
     )
     codemod_plan_document = (
         load_codemod_plan_document(args.codemod_plan)
         if args.codemod_plan is not None
         else CodemodPlanDocument()
     )
+    if args.codemod_fixpoint and not args.codemod_apply:
+        parser.error("--codemod-fixpoint requires --codemod-apply")
+    if args.codemod_fixpoint and args.codemod_diff:
+        parser.error("--codemod-fixpoint cannot be combined with --codemod-diff")
+    if args.codemod_fixpoint and args.codemod_fixpoint_max_iterations < 1:
+        parser.error("--codemod-fixpoint-max-iterations must be at least 1")
     if (
         codemod_requested
+        and not args.codemod_fixpoint
         and not args.include_impact_ranking
         and not codemod_plan_document.has_recipes
     ):
@@ -1596,7 +1936,8 @@ def main() -> int:
 
     try:
         SemanticRefactorGateMode.from_flags(
-            include_impact_ranking=args.include_impact_ranking,
+            include_impact_ranking=args.include_impact_ranking
+            or args.codemod_fixpoint,
             raw_findings=args.raw_findings,
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
@@ -1647,6 +1988,25 @@ def main() -> int:
         modules,
         architecture_guard_rules,
     )
+    if args.codemod_fixpoint:
+        report = CodemodFixpointRunner(
+            roots=roots,
+            config=config,
+            cache_dir=parse_cache_dir,
+            use_parse_cache=args.use_parse_cache,
+            parse_workers=args.parse_workers,
+            max_iterations=args.codemod_fixpoint_max_iterations,
+            guard_suite=codemod_plan_document.guard_suite,
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=findings,
+            ),
+        ).run()
+        if args.json:
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(format_codemod_fixpoint_markdown(report))
+        return 0 if report.completed else 1
     impact_ranking = None
     architecture_guard_report = None
     if args.include_impact_ranking or codemod_plan_document.has_recipes:

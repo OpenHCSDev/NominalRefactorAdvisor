@@ -8578,6 +8578,9 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "codemod-plan.json",
             "--codemod-diff",
             "--codemod-apply",
+            "--codemod-fixpoint",
+            "--codemod-fixpoint-max-iterations",
+            "4",
             "--fail-on-calibration-regression",
             "--exclude-pattern",
             "14",
@@ -8597,6 +8600,8 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.codemod_plan == Path("codemod-plan.json")
     assert args.codemod_diff is True
     assert args.codemod_apply is True
+    assert args.codemod_fixpoint is True
+    assert args.codemod_fixpoint_max_iterations == 4
     assert args.fail_on_calibration_regression is True
     assert args.excluded_pattern_ids == [14]
     assert args.paths == ["nominal_refactor_advisor", "tests"]
@@ -8853,6 +8858,58 @@ def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     assert payload["parse_validation"]["parse_valid"] is True
     assert 'detector_id = "local_rule"' not in module_path.read_text()
     assert "finding_spec = HighConfidenceFindingSpec(" in module_path.read_text()
+
+
+def test_module_cli_codemod_fixpoint_applies_and_rescans(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--no-cache",
+            "--codemod-fixpoint",
+            "--codemod-apply",
+            "--codemod-fixpoint-max-iterations",
+            "4",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["completed"] is True
+    assert payload["applied"] is True
+    assert payload["stop_reason"] == "no_executable_recipes"
+    assert payload["iteration_count"] == 2
+    assert payload["total_applied_rewrite_count"] == 1
+    assert payload["changed_file_paths"] == [module_path.as_posix()]
+    first_iteration, terminal_iteration = payload["iterations"]
+    assert first_iteration["applied"] is True
+    assert first_iteration["expected_removed_finding_count"] == 1
+    assert first_iteration["simulation"]["parse_valid"] is True
+    assert terminal_iteration["applied"] is False
+    assert terminal_iteration["recipe_count"] == 0
+    assert "REGISTRY[" not in module_path.read_text()
+    remaining = tuple(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "manual_class_registration"
+    )
+    assert remaining == ()
 
 
 def test_module_cli_recipe_only_codemod_apply_without_impact_ranking(
