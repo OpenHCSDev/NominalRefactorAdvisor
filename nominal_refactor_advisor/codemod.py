@@ -170,7 +170,7 @@ LITERAL_CASES_PAYLOAD_FIELD = "literal_cases"
 MODULE_NAME_PAYLOAD_FIELD = "module_name"
 OLD_SOURCE_PAYLOAD_FIELD = "old_source"
 NEW_SOURCE_PAYLOAD_FIELD = "new_source"
-OPERATION_TEMPLATE_PAYLOAD_FIELD = "operation_template"
+OPERATION_TEMPLATES_PAYLOAD_FIELD = "operation_templates"
 REPLACEMENT_IMPORT_PAYLOAD_FIELD = "replacement_import"
 RECORD_NAME_PAYLOAD_FIELD = "record_name"
 RECORD_NAMES_PAYLOAD_FIELD = "record_names"
@@ -1542,6 +1542,15 @@ class RefactorRecipeOperationTemplate:
     fields: Mapping[str, JsonValue]
 
     @classmethod
+    def from_json_value(
+        cls,
+        value: JsonValue,
+    ) -> "RefactorRecipeOperationTemplate":
+        if not isinstance(value, Mapping):
+            raise ValueError("Operation template entries must be objects")
+        return cls.from_payload(value)
+
+    @classmethod
     def from_payload(
         cls,
         payload: Mapping[str, JsonValue],
@@ -1590,9 +1599,9 @@ class RefactorRecipeOperationTemplate:
 
 OperationConstructorValue: TypeAlias = (
     CodemodTargetSelector
-    | RefactorRecipeOperationTemplate
     | JsonValue
     | tuple[RecipeCallReplacement, ...]
+    | tuple[RefactorRecipeOperationTemplate, ...]
     | tuple[str, ...]
 )
 
@@ -1625,12 +1634,13 @@ class OperationPayloadReader:
         return CodemodTargetSelector.from_dict(payload.required_object(field_name))
 
     @staticmethod
-    def required_operation_template(
+    def required_operation_templates(
         payload: SourceRewritePlanPayload,
         field_name: str,
     ) -> OperationConstructorValue:
-        return RefactorRecipeOperationTemplate.from_payload(
-            payload.required_object(field_name)
+        return tuple(
+            RefactorRecipeOperationTemplate.from_json_value(value)
+            for value in payload.required_array(field_name)
         )
 
 
@@ -2899,7 +2909,7 @@ class SelectedTargetsOperation(RefactorRecipeOperation, ABC):
 class ApplySelectedTargetsOperation(SelectedTargetsOperation):
     """Apply one target-local operation template to every selected target."""
 
-    operation_template: RefactorRecipeOperationTemplate
+    operation_templates: tuple[RefactorRecipeOperationTemplate, ...]
 
     @classmethod
     def payload_bindings(cls) -> tuple[PayloadBinding, ...]:
@@ -2908,24 +2918,24 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
             *operation_payload_bindings(
                 (
                     (
-                        OPERATION_TEMPLATE_PAYLOAD_FIELD,
-                        "operation_template",
-                        cls.operation_template_from_operation,
-                        OperationPayloadReader.required_operation_template,
+                        OPERATION_TEMPLATES_PAYLOAD_FIELD,
+                        "operation_templates",
+                        cls.operation_templates_from_operation,
+                        OperationPayloadReader.required_operation_templates,
                     ),
                 )
             ),
         )
 
     @staticmethod
-    def operation_template_from_operation(
+    def operation_templates_from_operation(
         operation: RefactorRecipeOperation,
     ) -> JsonValue:
         if not isinstance(operation, ApplySelectedTargetsOperation):
             raise TypeError(
-                "operation_template binding requires apply-selected-targets operation"
+                "operation_templates binding requires apply-selected-targets operation"
             )
-        return operation.operation_template.to_dict()
+        return tuple(template.to_dict() for template in operation.operation_templates)
 
     def line_replacements_with_context(
         self,
@@ -2939,19 +2949,22 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
             for target_id in self.selector.target_ids(
                 self.selector_context(source_index, source_by_path, selector_context)
             )
-            for replacement in self.operation_for_target_id(
+            for template in self.operation_templates
+            for replacement in self.operation_for_template(
                 source_index,
                 target_id,
+                template,
             ).line_replacements(source_index, source_by_path)
         )
 
-    def operation_for_target_id(
+    def operation_for_template(
         self,
         source_index: SourceIndex,
         target_id: str,
+        template: RefactorRecipeOperationTemplate,
     ) -> RefactorRecipeOperation:
         target_digest = source_index.target_by_id[target_id]
-        return self.operation_template.operation_for_target(
+        return template.operation_for_target(
             SourceRewriteTarget(
                 target_identifier=target_digest.target_id,
                 qualname=target_digest.qualname,
@@ -5867,12 +5880,8 @@ class _RecipeReplacementGroup:
 
 
 @dataclass(frozen=True)
-class RefactorRecipeOperationCompiler:
+class RefactorRecipeOperationCompiler(CodemodSelectorContext):
     """Compile declarative recipe operations into simulator-ready rewrites."""
-
-    source_index: SourceIndex
-    sources: Mapping[str, str]
-    selector_context: CodemodSelectorContext | None = None
 
     def planned_rewrites(
         self,
@@ -5883,8 +5892,8 @@ class RefactorRecipeOperationCompiler:
             for operation in operations
             for replacement in operation.line_replacements_with_context(
                 self.source_index,
-                self.sources,
-                selector_context=self.selector_context,
+                self.sources_by_file_path,
+                selector_context=self,
             )
         )
         groups = self._merged_replacement_groups(replacements)
@@ -5924,7 +5933,7 @@ class RefactorRecipeOperationCompiler:
     ) -> PlannedSourceRewrite:
         target = self.source_index.target_by_id[group.target_id]
         replacement_source = SourceTargetEditor(
-            self.sources,
+            self.sources_by_file_path,
             target,
         ).replacement_source(group.replacements)
         return PlannedSourceRewrite(
@@ -6148,14 +6157,14 @@ class RefactorRecipe:
     def apply_selected_targets(
         self,
         selector: CodemodTargetSelector,
-        operation_template: RefactorRecipeOperationTemplate,
+        operation_templates: Iterable[RefactorRecipeOperationTemplate],
         *,
         rationale: str = "",
     ) -> "RefactorRecipe":
         operation = ApplySelectedTargetsOperation(
             target=SourceRewriteTarget(),
             selector=selector,
-            operation_template=operation_template,
+            operation_templates=tuple(operation_templates),
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))
@@ -6429,9 +6438,13 @@ class RefactorRecipe:
         if source_by_path is None:
             raise ValueError("Recipe operations require source text")
         operation_rewrites = RefactorRecipeOperationCompiler(
-            source_index,
-            source_by_path,
-            selector_context,
+            source_index=source_index,
+            sources_by_file_path=source_by_path,
+            class_family_index=(
+                selector_context.class_family_index
+                if selector_context is not None
+                else None
+            ),
         ).planned_rewrites(
             self.operations,
         )
@@ -7642,9 +7655,12 @@ class FindingRecipePlanBuilder:
 
     findings: tuple[RefactorFinding, ...]
     detector_ids: frozenset[str] = frozenset()
-    selector_context: CodemodSelectorContext | None = None
 
-    def plan(self) -> FindingRecipePlan:
+    def plan(
+        self,
+        *,
+        selector_context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipePlan:
         recipes = []
         expected_removed_finding_ids = []
         seen_action_keys: set[FindingRecipeActionKey] = set()
@@ -7659,7 +7675,7 @@ class FindingRecipePlanBuilder:
             )
             if not action_keys:
                 continue
-            recipe = synthesizer.recipe_for_finding(finding, self.selector_context)
+            recipe = synthesizer.recipe_for_finding(finding, selector_context)
             if recipe is None:
                 continue
             recipes.append(recipe)
@@ -7714,8 +7730,7 @@ def codemod_plan_from_findings(
     return FindingRecipePlanBuilder(
         findings=tuple(findings),
         detector_ids=frozenset(detector_ids),
-        selector_context=selector_context,
-    ).plan()
+    ).plan(selector_context=selector_context)
 
 
 @dataclass(frozen=True)

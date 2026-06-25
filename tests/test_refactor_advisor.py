@@ -81,6 +81,7 @@ from nominal_refactor_advisor.codemod import (
     FindingEvidenceTargetSelector,
     InheritanceEdgeTargetSelector,
     RefactorRecipe,
+    RefactorRecipeOperationTemplate,
     RecipeCallReplacement,
     SourceRewriteTarget,
     SourceIndexTargetSelector,
@@ -8741,11 +8742,13 @@ def test_load_codemod_plan_document_includes_architecture_guards(
                                     "file_paths": ["pkg/mod.py"],
                                     "qualnames": ["Alpha.run"],
                                 },
-                                "operation_template": {
-                                    "operation": "replace_text",
-                                    "old_source": "legacy(value)",
-                                    "new_source": "modern(value)",
-                                },
+                                "operation_templates": [
+                                    {
+                                        "operation": "replace_text",
+                                        "old_source": "legacy(value)",
+                                        "new_source": "modern(value)",
+                                    }
+                                ],
                             },
                             {
                                 "operation": "extract_authority",
@@ -8801,7 +8804,7 @@ def test_load_codemod_plan_document_includes_architecture_guards(
     assert document.recipes[0].operations[6].to_dict()["operation"] == (
         "apply_selected_targets"
     )
-    assert document.recipes[0].operations[6].to_dict()["operation_template"][
+    assert document.recipes[0].operations[6].to_dict()["operation_templates"][0][
         "operation"
     ] == "replace_text"
     assert document.recipes[0].operations[7].to_dict()["operation"] == (
@@ -8923,11 +8926,20 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
                                         "Beta.run",
                                     ],
                                 },
-                                "operation_template": {
-                                    "operation": "replace_text",
-                                    "old_source": "legacy(value)",
-                                    "new_source": "modern(value)",
-                                },
+                                "operation_templates": [
+                                    {
+                                        "operation": "replace_function_signature",
+                                        "signature_source": (
+                                            "def run(self, value, *, tagged=False):"
+                                        ),
+                                    },
+                                    {
+                                        "operation": "replace_function_body",
+                                        "body_source": (
+                                            "return annotate(value, tagged=tagged)\n"
+                                        ),
+                                    },
+                                ],
                             }
                         ],
                     }
@@ -8951,9 +8963,56 @@ def test_apply_selected_targets_operation_projects_template_over_selector(
     assert simulation.simulation.applied_rewrite_count == 2
     simulation.apply()
     rewritten = module_path.read_text()
-    assert rewritten.count("modern(value)") == 2
+    assert rewritten.count("def run(self, value, *, tagged=False):") == 2
+    assert rewritten.count("annotate(value, tagged=tagged)") == 2
     assert "legacy(value)" not in rewritten
     assert "stable(value)" in rewritten
+
+
+def test_apply_selected_targets_builder_accepts_template_sequence(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self, value):\n"
+        "        return legacy(value)\n\n\n"
+        "class Beta:\n"
+        "    def run(self, value):\n"
+        "        return legacy(value)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {module_path.as_posix(): module_path.read_text()}
+    recipe = RefactorRecipe(recipe_id="builder-selected").apply_selected_targets(
+        SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.METHOD,),
+            file_paths=(module_path.as_posix(),),
+            qualnames=("Alpha.run", "Beta.run"),
+        ),
+        (
+            RefactorRecipeOperationTemplate.from_payload(
+                {
+                    "operation": "replace_text",
+                    "old_source": "legacy(value)",
+                    "new_source": "modern(value)",
+                }
+            ),
+        ),
+    )
+
+    simulation = recipe.simulate(
+        source_index,
+        source_by_path,
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 2
+    simulation.apply()
+    assert module_path.read_text().count("modern(value)") == 2
 
 
 def test_apply_selected_targets_operation_uses_class_family_selector_context(
@@ -8988,10 +9047,12 @@ def test_apply_selected_targets_operation_uses_class_family_selector_context(
                                     "include_self": False,
                                     "include_descendants": True,
                                 },
-                                "operation_template": {
-                                    "operation": "add_class_base",
-                                    "base_name": "Marked",
-                                },
+                                "operation_templates": [
+                                    {
+                                        "operation": "add_class_base",
+                                        "base_name": "Marked",
+                                    }
+                                ],
                             }
                         ],
                     }
