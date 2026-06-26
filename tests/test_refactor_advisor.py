@@ -5581,6 +5581,168 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
     assert global_calls == 2
 
 
+def test_analyze_paths_partial_cache_parses_changed_file_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    root = tmp_path / "pkg"
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    local_calls: dict[str, int] = {}
+    global_module_batches: list[tuple[str, ...]] = []
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Fast partial cache",
+        "fast partial cache",
+        "fast partial cache",
+        "fast partial cache",
+    )
+
+    class CountingPerModuleDetector(base_detectors.PerModuleIssueDetector):
+        detector_id = "counting_per_module"
+
+        def _findings_for_module(
+            self,
+            module: ParsedModule,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_name = module.path.name
+            local_calls[module_name] = local_calls.get(module_name, 0) + 1
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"local {module_name}",
+                    (SourceLocation(str(module.path), 2, module_name),),
+                )
+            ]
+
+    class CountingGlobalDetector(base_detectors.IssueDetector):
+        detector_id = "counting_global"
+
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_names = tuple(module.path.name for module in modules)
+            global_module_batches.append(module_names)
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"global {module.path.name}",
+                    (SourceLocation(str(module.path), 1, "global"),),
+                )
+                for module in modules
+            ]
+
+    for registry_key, detector_type in tuple(
+        base_detectors.IssueDetector.__registry__.items()
+    ):
+        if detector_type in (CountingPerModuleDetector, CountingGlobalDetector):
+            del base_detectors.IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingPerModuleDetector, CountingGlobalDetector),
+    )
+
+    first_findings = analyze_paths(
+        (root,),
+        DetectorConfig(),
+        cache_dir=cache_dir,
+    )
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    second_findings = analyze_paths(
+        (root,),
+        DetectorConfig(),
+        cache_dir=cache_dir,
+    )
+
+    assert {finding.summary for finding in first_findings} == {
+        "global a.py",
+        "global b.py",
+        "local a.py",
+        "local b.py",
+    }
+    assert {finding.summary for finding in second_findings} == {
+        "global a.py",
+        "global b.py",
+        "local a.py",
+        "local b.py",
+    }
+    assert local_calls == {"a.py": 1, "b.py": 2}
+    assert global_module_batches == [("a.py", "b.py"), ("b.py",)]
+
+
+def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg_a/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg_b/b.py", "\nclass Beta:\n    pass\n")
+    root_a = tmp_path / "pkg_a"
+    root_b = tmp_path / "pkg_b"
+    cache_dir = tmp_path / ".nra-cache" / "ast"
+    global_module_batches: list[tuple[str, ...]] = []
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Fast partial multi-root cache",
+        "fast partial multi-root cache",
+        "fast partial multi-root cache",
+        "fast partial multi-root cache",
+    )
+
+    class CountingGlobalDetector(base_detectors.IssueDetector):
+        detector_id = "counting_multi_root_global"
+
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_names = tuple(module.path.name for module in modules)
+            global_module_batches.append(module_names)
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    f"global {module.path.name}",
+                    (SourceLocation(str(module.path), 1, "global"),),
+                )
+                for module in modules
+            ]
+
+    for registry_key, detector_type in tuple(
+        base_detectors.IssueDetector.__registry__.items()
+    ):
+        if detector_type is CountingGlobalDetector:
+            del base_detectors.IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingGlobalDetector,),
+    )
+
+    analyze_paths(
+        (root_a, root_b),
+        DetectorConfig(),
+        cache_dir=cache_dir,
+    )
+    (root_b / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    second_findings = analyze_paths(
+        (root_a, root_b),
+        DetectorConfig(),
+        cache_dir=cache_dir,
+    )
+
+    assert {finding.summary for finding in second_findings} == {
+        "global a.py",
+        "global b.py",
+    }
+    assert global_module_batches == [("a.py", "b.py"), ("b.py",)]
+
+
 def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> None:
     plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=0,

@@ -14,12 +14,14 @@ from metaclass_registry import AutoRegisterMeta
 
 from .analysis_cache import (
     AnalysisCacheIdentity,
+    AnalysisCacheFamilyIdentity,
     AnalysisCacheStatus,
     AnalysisFindingCache,
     PerModuleAnalysisCacheIdentity,
 )
 from .ast_tools import (
     ParsedModule,
+    PythonModuleRootParser,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     parse_python_modules,
@@ -298,6 +300,68 @@ class SortedFindingsAuthority:
         )
 
 
+class ChangedSourcePathAuthority:
+    """Resolve changed source paths between current and previous cache identities."""
+
+    @staticmethod
+    def paths(
+        current_identity: AnalysisCacheIdentity,
+        previous_identity: AnalysisCacheIdentity,
+    ) -> frozenset[str]:
+        previous_hashes = {
+            source_file.path: source_file.source_hash
+            for source_file in previous_identity.source_files
+        }
+        current_hashes = {
+            source_file.path: source_file.source_hash
+            for source_file in current_identity.source_files
+        }
+        all_paths = previous_hashes.keys() | current_hashes.keys()
+        return frozenset(
+            path
+            for path in all_paths
+            if previous_hashes.get(path) != current_hashes.get(path)
+        )
+
+
+class EvidenceLocalFindingReuseAuthority:
+    """Reuse cached findings whose evidence does not touch changed files."""
+
+    @staticmethod
+    def finding_touches_any_path(
+        finding: RefactorFinding,
+        paths: frozenset[str],
+    ) -> bool:
+        return any(
+            str(Path(evidence.file_path).resolve()) in paths
+            for evidence in finding.evidence
+        )
+
+    @classmethod
+    def unchanged_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+        changed_paths: frozenset[str],
+    ) -> list[RefactorFinding]:
+        return [
+            finding
+            for finding in findings
+            if not cls.finding_touches_any_path(finding, changed_paths)
+        ]
+
+    @classmethod
+    def changed_findings(
+        cls,
+        findings: Iterable[RefactorFinding],
+        changed_paths: frozenset[str],
+    ) -> list[RefactorFinding]:
+        return [
+            finding
+            for finding in findings
+            if cls.finding_touches_any_path(finding, changed_paths)
+        ]
+
+
 def analyze_modules(
     modules: list,
     config: DetectorConfig | None = None,
@@ -356,6 +420,9 @@ class CachedAnalysisResult:
 
     findings: list[RefactorFinding]
     cache_status: AnalysisCacheStatus
+    current_identity: AnalysisCacheIdentity | None = None
+    previous_identity: AnalysisCacheIdentity | None = None
+    previous_findings: tuple[RefactorFinding, ...] = ()
 
 
 class AnalysisCacheResolutionAuthority:
@@ -402,14 +469,21 @@ class AnalysisCacheResolutionAuthority:
         )
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
         incremental_result = IncrementalAnalysisCacheResolver(
+            cache_identity=cache_identity,
             modules=self._modules,
             config=self._config,
             analysis_cache=analysis_cache,
             analysis_workers=self._analysis_workers,
+            previous_identity=self._cache_result.previous_identity,
+            previous_findings=self._cache_result.previous_findings,
         ).result()
         findings = incremental_result.findings
         analysis_cache.store(cache_identity, findings)
-        return CachedAnalysisResult(findings, incremental_result.cache_status)
+        return CachedAnalysisResult(
+            findings,
+            incremental_result.cache_status,
+            current_identity=cache_identity,
+        )
 
 
 @dataclass(frozen=True)
@@ -426,15 +500,21 @@ class IncrementalAnalysisCacheResolver:
     def __init__(
         self,
         *,
+        cache_identity: AnalysisCacheIdentity,
         modules: list[ParsedModule],
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
+        previous_identity: AnalysisCacheIdentity | None = None,
+        previous_findings: tuple[RefactorFinding, ...] = (),
     ) -> None:
+        self._cache_identity = cache_identity
         self._modules = modules
         self._config = config
         self._analysis_cache = analysis_cache
         self._analysis_workers = analysis_workers
+        self._previous_identity = previous_identity
+        self._previous_findings = previous_findings
         self._detector_partition = DetectorTypePartition.from_detector_types(
             default_detector_types_for_analysis()
         )
@@ -528,11 +608,72 @@ class IncrementalAnalysisCacheResolver:
     def _global_findings(self) -> list[RefactorFinding]:
         if not self._detector_partition.has_global_detectors:
             return []
+        if self._previous_identity is not None and self._previous_findings:
+            return self._partially_reused_global_findings()
         return analyze_detector_types(
             self._modules,
             self._config,
             detector_types=self._detector_partition.global_detector_types,
             analysis_workers=self._analysis_workers,
+        )
+
+    def _partially_reused_global_findings(self) -> list[RefactorFinding]:
+        changed_paths = self._changed_source_file_paths()
+        if not changed_paths:
+            return [
+                finding
+                for finding in self._previous_findings
+                if finding.detector_id in self._global_detector_ids
+            ]
+        changed_modules = [
+            module
+            for module in self._modules
+            if str(module.path.resolve()) in changed_paths
+        ]
+        reused_findings = [
+            finding
+            for finding in self._previous_findings
+            if finding.detector_id in self._global_detector_ids
+            and not self._finding_touches_any_path(finding, changed_paths)
+        ]
+        changed_findings: list[RefactorFinding] = []
+        if changed_modules:
+            changed_findings = [
+                finding
+                for finding in analyze_detector_types(
+                    changed_modules,
+                    self._config,
+                    detector_types=self._detector_partition.global_detector_types,
+                    analysis_workers=self._analysis_workers,
+                )
+                if self._finding_touches_any_path(finding, changed_paths)
+            ]
+        return SortedFindingsAuthority.sort([*reused_findings, *changed_findings])
+
+    @property
+    def _global_detector_ids(self) -> frozenset[str]:
+        return frozenset(
+            detector_type().detector_id
+            for detector_type in self._detector_partition.global_detector_types
+            if detector_type().detector_id is not None
+        )
+
+    def _changed_source_file_paths(self) -> frozenset[str]:
+        if self._previous_identity is None:
+            return frozenset()
+        return ChangedSourcePathAuthority.paths(
+            self._cache_identity,
+            self._previous_identity,
+        )
+
+    @staticmethod
+    def _finding_touches_any_path(
+        finding: RefactorFinding,
+        paths: frozenset[str],
+    ) -> bool:
+        return EvidenceLocalFindingReuseAuthority.finding_touches_any_path(
+            finding,
+            paths,
         )
 
 
@@ -650,8 +791,31 @@ def load_analysis_cache_for_roots(
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status is AnalysisCacheStatus.HIT:
-        return CachedAnalysisResult(list(cache_lookup.findings), cache_lookup.status)
-    return CachedAnalysisResult([], cache_lookup.status)
+        return CachedAnalysisResult(
+            list(cache_lookup.findings),
+            cache_lookup.status,
+            current_identity=cache_identity,
+        )
+    family_identity = AnalysisCacheFamilyIdentity.from_roots(
+        roots,
+        config,
+        source_policy=source_policy,
+    )
+    latest_cache_entry = analysis_cache.load_latest(family_identity)
+    if latest_cache_entry is None:
+        return CachedAnalysisResult(
+            [],
+            cache_lookup.status,
+            current_identity=cache_identity,
+        )
+    previous_identity, previous_findings = latest_cache_entry
+    return CachedAnalysisResult(
+        [],
+        cache_lookup.status,
+        current_identity=cache_identity,
+        previous_identity=previous_identity,
+        previous_findings=previous_findings,
+    )
 
 
 def analysis_cache_dir_for_root(
@@ -662,6 +826,162 @@ def analysis_cache_dir_for_root(
     if parse_cache_dir is not None:
         return analysis_cache_sibling(parse_cache_dir)
     return default_analysis_cache_dir(root)
+
+
+@dataclass(frozen=True)
+class CachedPathAnalysisRequest:
+    """Nominal request for cache-first filesystem path analysis."""
+
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    cache_dir: Path | None
+    use_parse_cache: bool
+    parse_workers: int
+    analysis_workers: int
+    source_policy: PythonSourcePathPolicy | None
+
+    @property
+    def analysis_cache_dir(self) -> Path | None:
+        return analysis_cache_dir_for_root(
+            self.roots[0],
+            self.cache_dir,
+            self.use_parse_cache,
+        )
+
+
+class FastCachedPathAnalysisAuthority:
+    """Serve exact hits and evidence-local partial hits before full parsing."""
+
+    def __init__(self, request: CachedPathAnalysisRequest) -> None:
+        self._request = request
+
+    def result(self) -> CachedAnalysisResult | None:
+        if not self._request.use_parse_cache:
+            return None
+        cache_result = self._load_cache_result()
+        if cache_result.cache_status is AnalysisCacheStatus.HIT:
+            return cache_result
+        if not self._can_reuse_previous(cache_result):
+            return None
+        return self._partial_result(cache_result)
+
+    def _load_cache_result(self) -> CachedAnalysisResult:
+        return load_analysis_cache_for_roots(
+            self._request.roots,
+            self._request.config,
+            analysis_cache_dir=self._request.analysis_cache_dir,
+            source_policy=self._request.source_policy,
+        )
+
+    @staticmethod
+    def _can_reuse_previous(cache_result: CachedAnalysisResult) -> bool:
+        return bool(
+            cache_result.current_identity is not None
+            and cache_result.previous_identity is not None
+            and cache_result.previous_findings
+        )
+
+    def _partial_result(
+        self,
+        cache_result: CachedAnalysisResult,
+    ) -> CachedAnalysisResult:
+        if cache_result.current_identity is None:
+            raise ValueError("partial cache reuse requires current identity")
+        if cache_result.previous_identity is None:
+            raise ValueError("partial cache reuse requires previous identity")
+        changed_paths = ChangedSourcePathAuthority.paths(
+            cache_result.current_identity,
+            cache_result.previous_identity,
+        )
+        changed_findings = self._changed_findings(changed_paths)
+        findings = SortedFindingsAuthority.sort(
+            [
+                *EvidenceLocalFindingReuseAuthority.unchanged_findings(
+                    cache_result.previous_findings,
+                    changed_paths,
+                ),
+                *EvidenceLocalFindingReuseAuthority.changed_findings(
+                    changed_findings,
+                    changed_paths,
+                ),
+            ]
+        )
+        AnalysisFindingCache(self._request.analysis_cache_dir).store(
+            cache_result.current_identity,
+            findings,
+        )
+        return CachedAnalysisResult(
+            findings,
+            AnalysisCacheStatus.PARTIAL,
+            current_identity=cache_result.current_identity,
+            previous_identity=cache_result.previous_identity,
+            previous_findings=cache_result.previous_findings,
+        )
+
+    def _changed_findings(self, changed_paths: frozenset[str]) -> list[RefactorFinding]:
+        changed_modules = self._changed_modules(changed_paths)
+        if not changed_modules:
+            return []
+        return analyze_modules(
+            changed_modules,
+            self._request.config,
+            analysis_workers=self._request.analysis_workers,
+        )
+
+    def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
+        modules: list[ParsedModule] = []
+        seen_paths: set[Path] = set()
+        for root, paths in ChangedPathRootAssignment(
+            roots=self._request.roots,
+            changed_paths=changed_paths,
+        ).paths_by_root().items():
+            parser = PythonModuleRootParser.for_root(
+                root,
+                cache_dir=self._request.cache_dir,
+                use_parse_cache=self._request.use_parse_cache,
+                parse_workers=self._request.parse_workers,
+                source_policy=self._request.source_policy,
+            )
+            for module in parser.parsed_source_paths(paths):
+                normalized_path = module.path.resolve()
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
+                modules.append(module)
+        return modules
+
+
+@dataclass(frozen=True)
+class ChangedPathRootAssignment:
+    """Assign changed source paths to the analysis roots that own them."""
+
+    roots: tuple[Path, ...]
+    changed_paths: frozenset[str]
+
+    def paths_by_root(self) -> dict[Path, tuple[Path, ...]]:
+        buckets: dict[Path, list[Path]] = {root: [] for root in self.roots}
+        for path_text in sorted(self.changed_paths):
+            path = Path(path_text)
+            owner = self._owning_root(path)
+            buckets[owner].append(path)
+        return {
+            root: tuple(paths)
+            for root, paths in buckets.items()
+            if paths
+        }
+
+    def _owning_root(self, path: Path) -> Path:
+        candidate = path.resolve()
+        for root in self.roots:
+            resolved_root = root.resolve()
+            if resolved_root.is_file():
+                if candidate == resolved_root:
+                    return root
+            elif candidate == resolved_root or candidate.is_relative_to(
+                resolved_root
+            ):
+                return root
+        raise ValueError(f"changed source path is outside analysis roots: {path}")
 
 
 def analyze_path(
@@ -675,6 +995,20 @@ def analyze_path(
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
+    config = config or DetectorConfig()
+    fast_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=(root,),
+            config=config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+            analysis_workers=analysis_workers,
+            source_policy=source_policy,
+        )
+    ).result()
+    if fast_result is not None:
+        return fast_result.findings
     modules = parse_python_modules(
         root,
         cache_dir=cache_dir,
@@ -707,6 +1041,20 @@ def analyze_paths(
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
+    config = config or DetectorConfig()
+    fast_result = FastCachedPathAnalysisAuthority(
+        CachedPathAnalysisRequest(
+            roots=roots,
+            config=config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            parse_workers=parse_workers,
+            analysis_workers=analysis_workers,
+            source_policy=source_policy,
+        )
+    ).result()
+    if fast_result is not None:
+        return fast_result.findings
     modules = parse_python_module_roots(
         roots,
         cache_dir=cache_dir,

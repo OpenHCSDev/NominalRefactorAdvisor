@@ -108,6 +108,7 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
     }
 )
 _DEFAULT_PARSE_WORKERS = 1
+_MAX_AUTO_PARSE_WORKERS = 16
 
 
 @dataclass(frozen=True)
@@ -274,7 +275,10 @@ def _parse_source_module(
 
 def _effective_parse_workers(parse_workers: int) -> int:
     if parse_workers <= 0:
-        return _DEFAULT_PARSE_WORKERS
+        cpu_count = os.cpu_count()
+        if cpu_count is None:
+            cpu_count = 1
+        return min(_MAX_AUTO_PARSE_WORKERS, cpu_count)
     return max(1, parse_workers)
 
 
@@ -876,9 +880,20 @@ class PythonModuleRootParser(PythonModuleParseContext):
 
     def parsed_modules(self) -> list[ParsedModule]:
         paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
-        if self.parse_workers <= 1 or len(paths) <= 1:
-            return _parse_module_roots(self, paths)
-        return _parse_module_roots_concurrently(self, paths)
+        return self.parsed_source_paths(paths)
+
+    def parsed_source_paths(self, paths: tuple[Path, ...]) -> list[ParsedModule]:
+        allowed_paths = tuple(
+            path
+            for path in paths
+            if path.is_file() and self.source_policy.allows_file_path(path)
+        )
+        if (
+            _effective_parse_workers(self.parse_workers) <= 1
+            or len(allowed_paths) <= 1
+        ):
+            return _parse_module_roots(self, allowed_paths)
+        return _parse_module_roots_concurrently(self, allowed_paths)
 
 
 def parse_python_modules(

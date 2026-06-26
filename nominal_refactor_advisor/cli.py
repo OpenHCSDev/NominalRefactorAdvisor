@@ -23,16 +23,16 @@ from metaclass_registry import AutoRegisterMeta
 
 from .analysis import (
     AnalysisPathScope,
+    CachedPathAnalysisRequest,
+    FastCachedPathAnalysisAuthority,
     analysis_cache_dir_for_root,
     analyze_lean_export,
-    load_analysis_cache_for_roots,
     analyze_modules_with_cache,
     analyze_path,
     analyze_paths,
     plan_path,
     plan_paths,
 )
-from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import default_parse_cache_dir
 from .calibration import (
@@ -240,8 +240,11 @@ _CLI_ARGUMENT_SPECS = (
         CliArgumentSpec(
             flags=("--parse-workers",),
             value_type=int,
-            default=1,
-            help="Number of concurrent parser workers for Python source loading.",
+            default=0,
+            help=(
+                "Number of concurrent parser workers for Python source loading. "
+                "Use 0 to choose automatically."
+            ),
         ),
         CliArgumentSpec(
             flags=("--analysis-workers",),
@@ -4421,24 +4424,27 @@ def main() -> int:
             codemod_requested=codemod_requested,
             analysis_cache_dir=analysis_cache_dir,
         )
-        preparse_cache_result = None
+        fast_cache_result = None
         if codemod_scan_query_mode.needs_analysis and preparse_cache_policy.enabled:
             started = perf_counter()
-            preparse_cache_result = load_analysis_cache_for_roots(
-                roots,
-                config,
-                analysis_cache_dir=analysis_cache_dir,
-                source_policy=source_policy,
-            )
-            analysis_seconds = round(perf_counter() - started, 3)
-        if (
-            preparse_cache_result is not None
-            and preparse_cache_result.cache_status is AnalysisCacheStatus.HIT
-        ):
+            fast_cache_result = FastCachedPathAnalysisAuthority(
+                CachedPathAnalysisRequest(
+                    roots=roots,
+                    config=config,
+                    cache_dir=parse_cache_dir,
+                    use_parse_cache=args.use_parse_cache,
+                    parse_workers=args.parse_workers,
+                    analysis_workers=args.analysis_workers,
+                    source_policy=source_policy,
+                )
+            ).result()
+            fast_cache_seconds = round(perf_counter() - started, 3)
+        if fast_cache_result is not None:
             modules = []
             parse_seconds = 0.0
-            analysis_cache_status = preparse_cache_result.cache_status
-            findings = path_scope.filter_findings(preparse_cache_result.findings)
+            analysis_cache_status = fast_cache_result.cache_status
+            findings = path_scope.filter_findings(fast_cache_result.findings)
+            analysis_seconds = fast_cache_seconds
         else:
             started = perf_counter()
             modules = parse_python_module_roots(

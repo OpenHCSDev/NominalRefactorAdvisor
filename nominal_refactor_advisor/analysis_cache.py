@@ -28,7 +28,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 3
+    version: int = 4
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -219,6 +219,56 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
 
 
 @dataclass(frozen=True, kw_only=True)
+class AnalysisCacheFamilyIdentity(AnalysisCacheEntryContext):
+    """Stable cache family for source-set comparisons across partial misses."""
+
+    roots: tuple[str, ...]
+    source_file_paths: tuple[str, ...]
+
+    @classmethod
+    def from_roots(
+        cls,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        *,
+        source_policy: PythonSourcePathPolicy | None = None,
+    ) -> "AnalysisCacheFamilyIdentity":
+        source_file_paths = tuple(
+            str(path.resolve())
+            for path in python_source_paths_for_roots(
+                roots,
+                source_policy=source_policy,
+            )
+        )
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.current(),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            roots=tuple(str(root.resolve()) for root in roots),
+            source_file_paths=source_file_paths,
+        )
+
+    @classmethod
+    def from_analysis_identity(
+        cls, identity: AnalysisCacheIdentity
+    ) -> "AnalysisCacheFamilyIdentity":
+        return cls(
+            config=identity.config,
+            detector_registry=identity.detector_registry,
+            python_version=identity.python_version,
+            roots=identity.roots,
+            source_file_paths=tuple(
+                source_file.path for source_file in identity.source_files
+            ),
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
 class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
     """Invalidation identity for one module's per-module detector findings."""
 
@@ -300,8 +350,60 @@ class AnalysisFindingCache:
             self.storage_root.mkdir(parents=True, exist_ok=True)
             with self._entry_path(identity).open("wb") as handle:
                 pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            if isinstance(identity, AnalysisCacheIdentity):
+                self._store_latest(identity, findings)
         except OSError:
             return
+
+    def load_latest(
+        self,
+        family_identity: AnalysisCacheFamilyIdentity,
+    ) -> tuple[AnalysisCacheIdentity, tuple[RefactorFinding, ...]] | None:
+        if self.storage_root is None:
+            return None
+        try:
+            with self._latest_path(family_identity).open("rb") as handle:
+                payload = pickle.load(handle)
+        except (
+            FileNotFoundError,
+            OSError,
+            pickle.PickleError,
+            EOFError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            ImportError,
+        ):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("family_identity") != family_identity:
+            return None
+        identity = payload.get("identity")
+        if not isinstance(identity, AnalysisCacheIdentity):
+            return None
+        findings = payload.get("findings")
+        if not isinstance(findings, list):
+            return None
+        if not all(isinstance(finding, RefactorFinding) for finding in findings):
+            return None
+        return identity, tuple(findings)
+
+    def _store_latest(
+        self,
+        identity: AnalysisCacheIdentity,
+        findings: list[RefactorFinding],
+    ) -> None:
+        if self.storage_root is None:
+            return
+        family_identity = AnalysisCacheFamilyIdentity.from_analysis_identity(identity)
+        payload = {
+            "family_identity": family_identity,
+            "identity": identity,
+            "findings": findings,
+        }
+        with self._latest_path(family_identity).open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
     def _entry_path(
         self,
@@ -310,6 +412,11 @@ class AnalysisFindingCache:
         if self.storage_root is None:
             raise ValueError("analysis cache directory is disabled")
         return self.storage_root / f"{identity.cache_token}.pickle"
+
+    def _latest_path(self, family_identity: AnalysisCacheFamilyIdentity) -> Path:
+        if self.storage_root is None:
+            raise ValueError("analysis cache directory is disabled")
+        return self.storage_root / f"latest-{family_identity.cache_token}.pickle"
 
 
 def detector_config_signature(
