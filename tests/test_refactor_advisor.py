@@ -10817,6 +10817,10 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         command["action_id"]: command
         for command in bundle_record["commands"]
     }
+    workflows = {
+        workflow["workflow_id"]: workflow
+        for workflow in bundle_record["workflows"]
+    }
 
     assert result.returncode == 0, result.stderr
     assert payload["authoring_bundle"] == bundle_index
@@ -10854,6 +10858,26 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         "simulate_selected_operation_plan",
         "apply_selected_operation_plan",
     }
+    assert set(workflows) == {"replacement_plan", "selected_operation_template"}
+    assert set(workflows["replacement_plan"]["command_action_ids"]) <= set(commands)
+    assert set(workflows["selected_operation_template"]["command_action_ids"]) <= set(
+        commands
+    )
+    assert workflows["replacement_plan"]["editable_paths"] == [
+        bundle_record["replacement_plan_path"]
+    ]
+    assert workflows["replacement_plan"]["default_next_action_id"] == (
+        "simulate_replacement_plan"
+    )
+    assert workflows["selected_operation_template"]["editable_paths"] == [
+        bundle_record["selected_operation_template_path"]
+    ]
+    assert workflows["selected_operation_template"]["generated_paths"] == [
+        bundle_record["selected_operation_plan_path"]
+    ]
+    assert workflows["selected_operation_template"]["default_next_action_id"] == (
+        "simulate_selected_operation_plan"
+    )
     assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
     assert commands["simulate_replacement_plan"]["args"][-2:] == [
         replacement_plan_path.as_posix(),

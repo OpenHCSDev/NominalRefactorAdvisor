@@ -14,6 +14,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, fields
+from enum import Enum
 from pathlib import Path
 from time import perf_counter
 from typing import ClassVar, TypeAlias, cast
@@ -869,11 +870,37 @@ def cli_artifact_slug(value: str) -> str:
     return cleaned
 
 
+class CodemodAuthoringCommandActionId(str, Enum):
+    """Stable action ids for replayable codemod authoring commands."""
+
+    RESOLVE_SELECTOR = "resolve_selector"
+    SCAFFOLD_REPLACEMENT_PLAN = "scaffold_replacement_plan"
+    VALIDATE_REPLACEMENT_PLAN = "validate_replacement_plan"
+    SIMULATE_REPLACEMENT_PLAN = "simulate_replacement_plan"
+    APPLY_REPLACEMENT_PLAN = "apply_replacement_plan"
+    SCAFFOLD_SELECTED_OPERATION_PLAN = "scaffold_selected_operation_plan"
+    PREFLIGHT_SELECTED_OPERATION_PLAN = "preflight_selected_operation_plan"
+    SIMULATE_SELECTED_OPERATION_PLAN = "simulate_selected_operation_plan"
+    APPLY_SELECTED_OPERATION_PLAN = "apply_selected_operation_plan"
+
+
+class CodemodAuthoringWorkflowId(str, Enum):
+    """Stable workflow ids for codemod authoring bundles."""
+
+    REPLACEMENT_PLAN = "replacement_plan"
+    SELECTED_OPERATION_TEMPLATE = "selected_operation_template"
+
+
+AuthoringTemplateRegistryKey: TypeAlias = (
+    CodemodAuthoringCommandActionId | CodemodAuthoringWorkflowId
+)
+
+
 @dataclass(frozen=True)
 class CodemodCliCommandSpec:
     """Directly runnable CLI action emitted by codemod workflow artifacts."""
 
-    action_id: str
+    action_id: CodemodAuthoringCommandActionId
     args: tuple[str, ...]
     cwd: Path
     module: str = "nominal_refactor_advisor"
@@ -890,7 +917,7 @@ class CodemodCliCommandSpec:
 
     def to_dict(self) -> JsonObject:
         return {
-            "action_id": self.action_id,
+            "action_id": self.action_id.value,
             "cwd": self.cwd.as_posix(),
             "python_executable": self.python_executable,
             "module": self.module,
@@ -905,9 +932,12 @@ class CodemodAuthoringBundleCommandContext:
 
     roots: tuple[Path, ...]
     evidence_selector_file: Path
+    replacement_scaffold_file: Path
     replacement_plan_file: Path
     operation_template_file: Path
+    selected_operation_scaffold_file: Path
     selected_operation_plan_file: Path
+    output_dir: Path
     cwd: Path
 
     @property
@@ -930,27 +960,222 @@ class CodemodAuthoringBundleCommandContext:
     def selected_operation_plan_arg(self) -> str:
         return self.selected_operation_plan_file.as_posix()
 
+    def bundle_relative_path(self, path: Path) -> str:
+        try:
+            relative_path = path.relative_to(self.output_dir)
+        except ValueError as error:
+            raise ValueError(
+                f"Authoring artifact {path} is outside bundle root {self.output_dir}"
+            ) from error
+        return relative_path.as_posix()
 
-class CodemodAuthoringBundleCommandTemplate(ABC, metaclass=AutoRegisterMeta):
-    """Registered command template emitted into an authoring bundle."""
 
-    __registry__: ClassVar[dict[str, type["CodemodAuthoringBundleCommandTemplate"]]] = {}
-    __registry_key__ = "action_id"
-    __skip_if_no_key__ = True
+@dataclass(frozen=True)
+class CodemodAuthoringWorkflowSpec:
+    """Ordered commands and artifacts for one bundle authoring workflow."""
 
-    action_id: ClassVar[str | None] = None
+    workflow_id: CodemodAuthoringWorkflowId
+    description: str
+    editable_paths: tuple[str, ...]
+    review_paths: tuple[str, ...]
+    generated_paths: tuple[str, ...]
+    command_action_ids: tuple[CodemodAuthoringCommandActionId, ...]
+    default_next_action_id: CodemodAuthoringCommandActionId
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "workflow_id": self.workflow_id.value,
+            "description": self.description,
+            "editable_paths": self.editable_paths,
+            "review_paths": self.review_paths,
+            "generated_paths": self.generated_paths,
+            "command_action_ids": tuple(
+                action_id.value for action_id in self.command_action_ids
+            ),
+            "default_next_action_id": self.default_next_action_id.value,
+        }
+
+
+class OrderedAuthoringTemplate(ABC):
+    """Shared ordering contract for registry-backed authoring templates."""
+
+    __registry__: ClassVar[
+        dict[AuthoringTemplateRegistryKey, type["OrderedAuthoringTemplate"]]
+    ]
     registry_order: ClassVar[int]
 
     @classmethod
-    def ordered_template_types(
-        cls,
-    ) -> tuple[type["CodemodAuthoringBundleCommandTemplate"], ...]:
+    def ordered_template_types(cls) -> tuple[type, ...]:
         return tuple(
             sorted(
                 cls.__registry__.values(),
                 key=lambda template_type: template_type.registry_order,
             )
         )
+
+
+class CodemodAuthoringBundleWorkflowTemplate(
+    OrderedAuthoringTemplate,
+    metaclass=AutoRegisterMeta,
+):
+    """Registered workflow emitted into an authoring bundle record."""
+
+    __registry__: ClassVar[
+        dict[
+            CodemodAuthoringWorkflowId,
+            type["CodemodAuthoringBundleWorkflowTemplate"],
+        ]
+    ] = {}
+    __registry_key__ = "workflow_id"
+    __skip_if_no_key__ = True
+
+    workflow_id: ClassVar[CodemodAuthoringWorkflowId | None] = None
+    registry_order: ClassVar[int]
+    description: ClassVar[str]
+    command_action_ids: ClassVar[tuple[CodemodAuthoringCommandActionId, ...]]
+    default_next_action_id: ClassVar[CodemodAuthoringCommandActionId]
+
+    @property
+    def required_workflow_id(self) -> CodemodAuthoringWorkflowId:
+        if self.workflow_id is None:
+            raise RuntimeError(
+                "registered authoring workflow template has no workflow_id"
+            )
+        return self.workflow_id
+
+    def workflow_spec(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> CodemodAuthoringWorkflowSpec:
+        return CodemodAuthoringWorkflowSpec(
+            workflow_id=self.required_workflow_id,
+            description=self.description,
+            editable_paths=self.editable_paths(context),
+            review_paths=self.review_paths(context),
+            generated_paths=self.generated_paths(context),
+            command_action_ids=self.command_action_ids,
+            default_next_action_id=self.default_next_action_id,
+        )
+
+    @abstractmethod
+    def editable_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def review_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    def generated_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        del context
+        return ()
+
+
+class ReplacementPlanAuthoringWorkflowTemplate(
+    CodemodAuthoringBundleWorkflowTemplate
+):
+    workflow_id = CodemodAuthoringWorkflowId.REPLACEMENT_PLAN
+    registry_order = 10
+    description = (
+        "Edit the target replacement plan, then validate, simulate, and apply it."
+    )
+    command_action_ids = (
+        CodemodAuthoringCommandActionId.RESOLVE_SELECTOR,
+        CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN,
+        CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN,
+        CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN,
+        CodemodAuthoringCommandActionId.APPLY_REPLACEMENT_PLAN,
+    )
+    default_next_action_id = CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN
+
+    def editable_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            context.bundle_relative_path(context.replacement_plan_file),
+        )
+
+    def review_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            context.bundle_relative_path(context.evidence_selector_file),
+            context.bundle_relative_path(context.replacement_scaffold_file),
+        )
+
+
+class SelectedOperationAuthoringWorkflowTemplate(
+    CodemodAuthoringBundleWorkflowTemplate
+):
+    workflow_id = CodemodAuthoringWorkflowId.SELECTED_OPERATION_TEMPLATE
+    registry_order = 20
+    description = (
+        "Edit the selected-operation template, scaffold a plan, then preflight, "
+        "simulate, and apply it."
+    )
+    command_action_ids = (
+        CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN,
+        CodemodAuthoringCommandActionId.PREFLIGHT_SELECTED_OPERATION_PLAN,
+        CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN,
+        CodemodAuthoringCommandActionId.APPLY_SELECTED_OPERATION_PLAN,
+    )
+    default_next_action_id = (
+        CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN
+    )
+
+    def editable_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            context.bundle_relative_path(context.operation_template_file),
+        )
+
+    def review_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            context.bundle_relative_path(context.evidence_selector_file),
+            context.bundle_relative_path(context.selected_operation_scaffold_file),
+        )
+
+    def generated_paths(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            context.bundle_relative_path(context.selected_operation_plan_file),
+        )
+
+
+class CodemodAuthoringBundleCommandTemplate(
+    OrderedAuthoringTemplate,
+    metaclass=AutoRegisterMeta,
+):
+    """Registered command template emitted into an authoring bundle."""
+
+    __registry__: ClassVar[
+        dict[
+            CodemodAuthoringCommandActionId,
+            type["CodemodAuthoringBundleCommandTemplate"],
+        ]
+    ] = {}
+    __registry_key__ = "action_id"
+    __skip_if_no_key__ = True
+
+    action_id: ClassVar[CodemodAuthoringCommandActionId | None] = None
+    registry_order: ClassVar[int]
 
     def command_spec(
         self,
@@ -973,7 +1198,7 @@ class CodemodAuthoringBundleCommandTemplate(ABC, metaclass=AutoRegisterMeta):
 
 
 class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = "resolve_selector"
+    action_id = CodemodAuthoringCommandActionId.RESOLVE_SELECTOR
     registry_order = 10
 
     def command_args(
@@ -988,7 +1213,7 @@ class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
 
 
 class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = "scaffold_replacement_plan"
+    action_id = CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN
     registry_order = 20
 
     def command_args(
@@ -1005,7 +1230,7 @@ class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTempla
 
 
 class ValidateReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = "validate_replacement_plan"
+    action_id = CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN
     registry_order = 30
 
     def command_args(
@@ -1038,19 +1263,19 @@ class ReplacementPlanExecutionCommandTemplate(
 
 
 class SimulateReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
-    action_id = "simulate_replacement_plan"
+    action_id = CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN
     registry_order = 40
     execution_flag = "--codemod-simulate"
 
 
 class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
-    action_id = "apply_replacement_plan"
+    action_id = CodemodAuthoringCommandActionId.APPLY_REPLACEMENT_PLAN
     registry_order = 50
     execution_flag = "--codemod-apply"
 
 
 class ScaffoldSelectedOperationPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
-    action_id = "scaffold_selected_operation_plan"
+    action_id = CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN
     registry_order = 60
 
     def command_args(
@@ -1091,7 +1316,7 @@ class SelectedOperationPlanExecutionCommandTemplate(
 class PreflightSelectedOperationPlanCommandTemplate(
     SelectedOperationPlanExecutionCommandTemplate
 ):
-    action_id = "preflight_selected_operation_plan"
+    action_id = CodemodAuthoringCommandActionId.PREFLIGHT_SELECTED_OPERATION_PLAN
     registry_order = 70
     execution_flag = "--codemod-preflight"
 
@@ -1099,7 +1324,7 @@ class PreflightSelectedOperationPlanCommandTemplate(
 class SimulateSelectedOperationPlanCommandTemplate(
     SelectedOperationPlanExecutionCommandTemplate
 ):
-    action_id = "simulate_selected_operation_plan"
+    action_id = CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN
     registry_order = 80
     execution_flag = "--codemod-simulate"
 
@@ -1107,7 +1332,7 @@ class SimulateSelectedOperationPlanCommandTemplate(
 class ApplySelectedOperationPlanCommandTemplate(
     SelectedOperationPlanExecutionCommandTemplate
 ):
-    action_id = "apply_selected_operation_plan"
+    action_id = CodemodAuthoringCommandActionId.APPLY_SELECTED_OPERATION_PLAN
     registry_order = 90
     execution_flag = "--codemod-apply"
 
@@ -1162,6 +1387,14 @@ class CodemodAuthoringBundleWriter:
         write_cli_json_artifact(operation_template_path, operation_template.to_dict())
         write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
         write_cli_json_artifact(selected_plan_path, selected_scaffold.document.to_dict())
+        context = self.authoring_context(
+            selector_path,
+            scaffold_path,
+            plan_path,
+            operation_template_path,
+            selected_scaffold_path,
+            selected_plan_path,
+        )
         return {
             "record_index": record_index,
             "finding_id": authoring_record.finding_id,
@@ -1183,12 +1416,11 @@ class CodemodAuthoringBundleWriter:
             ).as_posix(),
             "commands": tuple(
                 command.to_dict()
-                for command in self.command_specs(
-                    selector_path,
-                    plan_path,
-                    operation_template_path,
-                    selected_plan_path,
-                )
+                for command in self.command_specs(context)
+            ),
+            "workflows": tuple(
+                workflow.to_dict()
+                for workflow in self.workflow_specs(context)
             ),
             "authoring_record": authoring_record.to_dict(),
         }
@@ -1196,25 +1428,46 @@ class CodemodAuthoringBundleWriter:
     def record_dir(self, record_index: int, detector_id: str) -> Path:
         return self.output_dir / f"{record_index:04d}-{cli_artifact_slug(detector_id)}"
 
-    def command_specs(
+    def authoring_context(
         self,
         evidence_selector_file: Path,
+        replacement_scaffold_file: Path,
         replacement_plan_file: Path,
         operation_template_file: Path,
+        selected_operation_scaffold_file: Path,
         selected_operation_plan_file: Path,
-    ) -> tuple[CodemodCliCommandSpec, ...]:
-        context = CodemodAuthoringBundleCommandContext(
+    ) -> CodemodAuthoringBundleCommandContext:
+        return CodemodAuthoringBundleCommandContext(
             roots=self.roots,
             evidence_selector_file=evidence_selector_file,
+            replacement_scaffold_file=replacement_scaffold_file,
             replacement_plan_file=replacement_plan_file,
             operation_template_file=operation_template_file,
+            selected_operation_scaffold_file=selected_operation_scaffold_file,
             selected_operation_plan_file=selected_operation_plan_file,
+            output_dir=self.output_dir,
             cwd=self.cwd,
         )
+
+    def command_specs(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[CodemodCliCommandSpec, ...]:
         return tuple(
             template_type().command_spec(context)
             for template_type in (
                 CodemodAuthoringBundleCommandTemplate.ordered_template_types()
+            )
+        )
+
+    def workflow_specs(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[CodemodAuthoringWorkflowSpec, ...]:
+        return tuple(
+            template_type().workflow_spec(context)
+            for template_type in (
+                CodemodAuthoringBundleWorkflowTemplate.ordered_template_types()
             )
         )
 
