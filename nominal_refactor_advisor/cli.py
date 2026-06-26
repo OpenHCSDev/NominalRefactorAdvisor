@@ -97,7 +97,10 @@ from .codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
 )
-from .codemod_authoring import CodemodAuthoringWorkflowPlanner
+from .codemod_authoring import (
+    CodemodAuthoringBundleStatusReporter,
+    CodemodAuthoringWorkflowPlanner,
+)
 from .detectors import DetectorConfig
 from .economics import (
     EconomicsProofReport,
@@ -504,6 +507,15 @@ _CLI_ARGUMENT_SPECS = (
                 "With --codemod-synthesize-plan --codemod-synthesis-authoring, "
                 "write per-finding selector and replacement-plan artifacts under "
                 "this directory."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-status",),
+            value_type=Path,
+            help=(
+                "Load an authoring bundle index.json, recompute workflow readiness "
+                "from the current artifact files, emit JSON, and exit without "
+                "scanning."
             ),
         ),
         CliArgumentSpec(
@@ -3430,6 +3442,26 @@ class CodemodDslExamplePlanCliCommand(CliEarlyExitCommand):
     def run(self) -> int:
         payload = codemod_dsl_example_plan_payload()
         write_cli_json_artifact(self.args.codemod_plan_out, payload)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+
+class CodemodAuthoringStatusCliCommand(CliEarlyExitCommand):
+    """Recompute authoring bundle workflow readiness."""
+
+    command_id = "codemod_authoring_status"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_authoring_status is not None
+
+    def run(self) -> int:
+        try:
+            payload = CodemodAuthoringBundleStatusReporter.from_index_path(
+                self.args.codemod_authoring_status
+            ).status().to_dict()
+        except (OSError, json.JSONDecodeError, TypeError) as error:
+            self.parser.error(str(error))
         print(json.dumps(payload, indent=2))
         return 0
 

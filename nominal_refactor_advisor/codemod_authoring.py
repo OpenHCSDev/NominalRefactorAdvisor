@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from typing import TypeVar
 
 from .codemod import JsonObject, JsonValue
+
+PayloadItem = TypeVar("PayloadItem")
 
 
 @dataclass(frozen=True)
@@ -21,17 +26,41 @@ class CodemodAuthoringPayloadReader:
         return value
 
     def string_tuple(self, key: str) -> tuple[str, ...]:
-        if key not in self.payload:
-            return ()
-        value = self.payload[key]
-        if not isinstance(value, list | tuple):
-            raise TypeError(f"{key} must be a sequence of strings")
-        values: list[str] = []
-        for item in value:
-            if not isinstance(item, str):
-                raise TypeError(f"{key} must contain only strings")
+        return self.typed_tuple(key, str, "strings")
+
+    def object_tuple(self, key: str) -> tuple[JsonObject, ...]:
+        return self.typed_tuple(key, dict, "objects")
+
+    def typed_tuple(
+        self,
+        key: str,
+        item_type: type[PayloadItem],
+        item_label: str,
+    ) -> tuple[PayloadItem, ...]:
+        values: list[PayloadItem] = []
+        for item in self.sequence(key):
+            if not isinstance(item, item_type):
+                raise TypeError(f"{key} must contain only {item_label}")
             values.append(item)
         return tuple(values)
+
+    def optional_string(self, key: str) -> str | None:
+        value = self.payload.get(key)
+        if value is None or isinstance(value, str):
+            return value
+        raise TypeError(f"{key} must be a string")
+
+    def optional_int(self, key: str) -> int | None:
+        value = self.payload.get(key)
+        if value is None or isinstance(value, int):
+            return value
+        raise TypeError(f"{key} must be an integer")
+
+    def sequence(self, key: str) -> tuple[JsonValue, ...]:
+        value = self.payload[key]
+        if not isinstance(value, list | tuple):
+            raise TypeError(f"{key} must be a sequence")
+        return tuple(value)
 
 
 @dataclass(frozen=True)
@@ -175,6 +204,140 @@ class CodemodAuthoringBundleReadiness:
             "available_artifacts": self.available_artifacts,
             "workflows": tuple(workflow.to_dict() for workflow in self.workflows),
         }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringArtifactInventory:
+    """Filesystem-backed artifact inventory for one bundle record."""
+
+    bundle_root: Path
+    commands: tuple[CodemodAuthoringCommandModel, ...]
+
+    @property
+    def artifact_paths(self) -> tuple[str, ...]:
+        artifacts: list[str] = []
+        for command in self.commands:
+            artifacts.extend(command.required_artifacts)
+            artifacts.extend(command.generated_artifacts)
+        return tuple(dict.fromkeys(artifacts))
+
+    @property
+    def available_artifacts(self) -> tuple[str, ...]:
+        return tuple(
+            artifact_path
+            for artifact_path in self.artifact_paths
+            if (self.bundle_root / artifact_path).exists()
+        )
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleRecordStatus:
+    """Current workflow status for one authoring bundle record."""
+
+    record_index: int | None
+    finding_id: str | None
+    detector_id: str | None
+    readiness: CodemodAuthoringBundleReadiness
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "record_index": self.record_index,
+            "finding_id": self.finding_id,
+            "detector_id": self.detector_id,
+            "workflow_readiness": self.readiness.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleStatus:
+    """Current workflow status for an authoring bundle index."""
+
+    bundle_index_path: Path
+    records: tuple[CodemodAuthoringBundleRecordStatus, ...]
+
+    @property
+    def bundle_root(self) -> Path:
+        return self.bundle_index_path.parent
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "bundle_index_path": self.bundle_index_path.as_posix(),
+            "bundle_root": self.bundle_root.as_posix(),
+            "records": tuple(record.to_dict() for record in self.records),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleStatusReporter:
+    """Recompute authoring bundle readiness from the current filesystem."""
+
+    bundle_index_path: Path
+    bundle_index: Mapping[str, JsonValue]
+
+    @classmethod
+    def from_index_path(
+        cls,
+        bundle_index_path: Path,
+    ) -> "CodemodAuthoringBundleStatusReporter":
+        payload = json.loads(bundle_index_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise TypeError("authoring bundle index JSON must be an object")
+        return cls(bundle_index_path, payload)
+
+    @property
+    def bundle_root(self) -> Path:
+        return self.bundle_index_path.parent
+
+    def status(self) -> CodemodAuthoringBundleStatus:
+        reader = CodemodAuthoringPayloadReader(self.bundle_index)
+        return CodemodAuthoringBundleStatus(
+            bundle_index_path=self.bundle_index_path,
+            records=tuple(
+                self.record_status(record_payload)
+                for record_payload in reader.object_tuple("records")
+            ),
+        )
+
+    def record_status(
+        self,
+        record_payload: Mapping[str, JsonValue],
+    ) -> CodemodAuthoringBundleRecordStatus:
+        reader = CodemodAuthoringPayloadReader(record_payload)
+        commands = self.commands(record_payload)
+        workflows = self.workflows(record_payload)
+        available_artifacts = CodemodAuthoringArtifactInventory(
+            self.bundle_root,
+            commands,
+        ).available_artifacts
+        return CodemodAuthoringBundleRecordStatus(
+            record_index=reader.optional_int("record_index"),
+            finding_id=reader.optional_string("finding_id"),
+            detector_id=reader.optional_string("detector_id"),
+            readiness=CodemodAuthoringWorkflowPlanner(
+                commands=commands,
+                workflows=workflows,
+            ).bundle_readiness(available_artifacts),
+        )
+
+    def commands(
+        self,
+        record_payload: Mapping[str, JsonValue],
+    ) -> tuple[CodemodAuthoringCommandModel, ...]:
+        reader = CodemodAuthoringPayloadReader(record_payload)
+        return tuple(
+            CodemodAuthoringCommandModel.from_payload(command_payload)
+            for command_payload in reader.object_tuple("commands")
+        )
+
+    def workflows(
+        self,
+        record_payload: Mapping[str, JsonValue],
+    ) -> tuple[CodemodAuthoringWorkflowModel, ...]:
+        reader = CodemodAuthoringPayloadReader(record_payload)
+        return tuple(
+            CodemodAuthoringWorkflowModel.from_payload(workflow_payload)
+            for workflow_payload in reader.object_tuple("workflows")
+        )
 
 
 @dataclass(frozen=True)
