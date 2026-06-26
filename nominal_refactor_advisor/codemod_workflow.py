@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cached_property
 from pathlib import Path
 
 from .analysis import analyze_modules
@@ -249,7 +250,7 @@ class CodemodFixpointScan:
     def sources_by_file_path(self) -> dict[str, str]:
         return dict(self.source_snapshot.sources_by_file_path)
 
-    @property
+    @cached_property
     def source_snapshot(self) -> CodemodSourceSnapshot:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 

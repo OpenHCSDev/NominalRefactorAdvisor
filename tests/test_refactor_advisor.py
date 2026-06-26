@@ -6,6 +6,7 @@ import inspect
 import json
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -10236,6 +10237,154 @@ def test_codemod_plan_sequence_resolves_later_stage_against_projected_source(
         target.qualname == "Generated.run"
         for target in projected_snapshot.source_index.ast_targets
     )
+
+
+def test_codemod_document_empty_guard_avoids_after_snapshot_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("rewrite-alpha").replace_text(
+                "Alpha.run",
+                "return 1",
+                "return 2",
+                source_path=module_path.as_posix(),
+            ),
+        )
+    )
+    rebuild_count = 0
+    real_from_source_mapping = CodemodSourceSnapshot.from_source_mapping.__func__
+
+    def counted_from_source_mapping(
+        cls: type[CodemodSourceSnapshot], source_by_path: Mapping[str, str]
+    ) -> CodemodSourceSnapshot:
+        nonlocal rebuild_count
+        rebuild_count += 1
+        return real_from_source_mapping(cls, source_by_path)
+
+    monkeypatch.setattr(
+        CodemodSourceSnapshot,
+        "from_source_mapping",
+        classmethod(counted_from_source_mapping),
+    )
+
+    simulation = document.simulate_snapshot(snapshot)
+
+    assert simulation.simulation.applied_rewrite_count == 1
+    assert rebuild_count == 0
+
+
+def test_codemod_plan_sequence_reuses_stage_after_snapshots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+    )
+    sequence = CodemodPlanSequence(
+        documents=(
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("rewrite-alpha-once").replace_text(
+                        "Alpha.run",
+                        "return 1",
+                        "return 2",
+                        source_path=module_path.as_posix(),
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("rewrite-alpha-twice").replace_text(
+                        "Alpha.run",
+                        "return 2",
+                        "return 3",
+                        source_path=module_path.as_posix(),
+                    ),
+                )
+            ),
+            CodemodPlanDocument(
+                recipes=(
+                    RefactorRecipe("rewrite-alpha-third").replace_text(
+                        "Alpha.run",
+                        "return 3",
+                        "return 4",
+                        source_path=module_path.as_posix(),
+                    ),
+                )
+            ),
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    rebuild_count = 0
+    real_from_source_mapping = CodemodSourceSnapshot.from_source_mapping.__func__
+
+    def counted_from_source_mapping(
+        cls: type[CodemodSourceSnapshot], source_by_path: Mapping[str, str]
+    ) -> CodemodSourceSnapshot:
+        nonlocal rebuild_count
+        rebuild_count += 1
+        return real_from_source_mapping(cls, source_by_path)
+
+    monkeypatch.setattr(
+        CodemodSourceSnapshot,
+        "from_source_mapping",
+        classmethod(counted_from_source_mapping),
+    )
+
+    simulation = sequence.simulate_snapshot(snapshot)
+
+    assert simulation.simulation.applied_rewrite_count == 3
+    assert len(simulation.stage_reports) == 3
+    assert "return 4" in simulation.required_final_snapshot.sources_by_file_path[
+        module_path.as_posix()
+    ]
+    assert rebuild_count == 3
+
+
+def test_codemod_fixpoint_scan_reuses_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    rebuild_count = 0
+    real_from_modules = CodemodSourceSnapshot.from_modules.__func__
+
+    def counted_from_modules(
+        cls: type[CodemodSourceSnapshot],
+        modules: list[object],
+        findings: tuple[RefactorFinding, ...] = (),
+    ) -> CodemodSourceSnapshot:
+        nonlocal rebuild_count
+        rebuild_count += 1
+        return real_from_modules(cls, modules, findings)
+
+    monkeypatch.setattr(
+        CodemodSourceSnapshot,
+        "from_modules",
+        classmethod(counted_from_modules),
+    )
+    scan = CodemodFixpointScan(modules=modules, findings=[])
+
+    first_snapshot = scan.source_snapshot
+    second_snapshot = scan.source_snapshot
+
+    assert first_snapshot is second_snapshot
+    assert rebuild_count == 1
 
 
 def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(

@@ -426,6 +426,11 @@ class ArchitectureGuardSuite:
     ) -> ArchitectureGuardReport:
         return evaluate_architecture_guards(source_index, source_by_path, self.rules)
 
+    def clean_report(self) -> ArchitectureGuardReport:
+        """Return the canonical clean report for this suite without source work."""
+
+        return ArchitectureGuardReport(self.rules, ())
+
     def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
         return self.rules
 
@@ -1332,14 +1337,17 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self.source_rewrite_batch_for_recipe(recipe),
             backend=backend,
         )
+        architecture_guard_report = (
+            active_guard_suite.clean_report()
+            if active_guard_suite.is_empty
+            else self.with_simulation(simulation).evaluate_guard_suite(
+                active_guard_suite
+            )
+        )
         return RefactorRecipeSimulation(
             recipe=recipe,
             simulation=simulation,
-            architecture_guard_report=(
-                self.with_simulation(simulation).evaluate_guard_suite(
-                    active_guard_suite
-                )
-            ),
+            architecture_guard_report=architecture_guard_report,
         )
 
     def simulate_document(
@@ -1353,14 +1361,22 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             rewrite_snapshot.source_rewrite_batch_for_document(document),
             backend=backend,
         )
+        after_snapshot_projection = CodemodAfterSnapshotProjection(
+            base_sources_by_file_path=rewrite_snapshot.sources_by_file_path,
+            source_overlay_by_file_path=simulation.rewritten_sources,
+        )
+        architecture_guard_report = (
+            document.guard_suite.clean_report()
+            if document.guard_suite.is_empty
+            else after_snapshot_projection.snapshot.evaluate_guard_suite(
+                document.guard_suite
+            )
+        )
         return CodemodPlanDocumentSimulation(
             document=document,
             simulation=simulation,
-            architecture_guard_report=(
-                rewrite_snapshot.with_simulation(simulation).evaluate_guard_suite(
-                    document.guard_suite
-                )
-            ),
+            architecture_guard_report=architecture_guard_report,
+            after_snapshot_projection=after_snapshot_projection,
         )
 
     def simulate_finding_plan(
@@ -9990,9 +10006,9 @@ class CodemodPlanSequence:
                 if report.preflight_failed:
                     break
                 continue
-            active_snapshot = active_snapshot.with_simulation(
-                document.simulate_snapshot(active_snapshot).simulation
-            )
+            active_snapshot = document.simulate_snapshot(
+                active_snapshot
+            ).required_after_snapshot
         return CodemodPlanPreflightReport(tuple(reports))
 
     def simulate_snapshot(
@@ -10005,8 +10021,11 @@ class CodemodPlanSequence:
         stage_reports: list[CodemodPlanSequenceStageReport] = []
         for stage_index, document in enumerate(self.documents):
             before_snapshot = active_snapshot
-            stage = document.simulate_snapshot(before_snapshot, backend=backend)
-            active_snapshot = before_snapshot.with_simulation(stage.simulation)
+            stage = document.simulate_snapshot(
+                before_snapshot,
+                backend=backend,
+            )
+            active_snapshot = stage.required_after_snapshot
             stage_reports.append(
                 CodemodPlanSequenceStageReport(
                     stage_index=stage_index,
@@ -10328,6 +10347,20 @@ class CodemodSimulationReport:
 
 
 @dataclass(frozen=True)
+class CodemodAfterSnapshotProjection:
+    """Lazy source snapshot produced by one simulated codemod document."""
+
+    base_sources_by_file_path: Mapping[str, str]
+    source_overlay_by_file_path: Mapping[str, str]
+
+    @cached_property
+    def snapshot(self) -> CodemodSourceSnapshot:
+        sources_by_file_path = dict(self.base_sources_by_file_path)
+        sources_by_file_path.update(self.source_overlay_by_file_path)
+        return CodemodSourceSnapshot.from_source_mapping(sources_by_file_path)
+
+
+@dataclass(frozen=True)
 class SourceRewriteSimulationResult(ABC, metaclass=AutoRegisterMeta):
     """Shared result envelope for executable source rewrite simulations."""
 
@@ -10414,6 +10447,11 @@ class CodemodPlanDocumentSimulation(SourceRewriteSimulationResult):
 
     registry_key = "plan_document"
     document: CodemodPlanDocument
+    after_snapshot_projection: CodemodAfterSnapshotProjection
+
+    @property
+    def required_after_snapshot(self) -> CodemodSourceSnapshot:
+        return self.after_snapshot_projection.snapshot
 
     def to_dict(self) -> JsonObject:
         return {
