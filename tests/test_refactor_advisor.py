@@ -12976,6 +12976,50 @@ def test_module_cli_json_summary_skips_default_impact_ranking(
     assert "finding_recipe_plan" not in payload
 
 
+def test_module_cli_json_summary_uses_analysis_cache_before_parse(
+    tmp_path: Path,
+) -> None:
+    cache_dir = tmp_path / ".nra-cache/ast"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        str(tmp_path),
+        "--json",
+        "--json-payload",
+        "summary",
+        "--cache-dir",
+        cache_dir.as_posix(),
+    ]
+
+    first_result = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second_result = subprocess.run(
+        command,
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert first_result.returncode == 0, first_result.stderr
+    assert second_result.returncode == 0, second_result.stderr
+    payload = json.loads(second_result.stdout)
+    timing = cast(dict[str, object], payload["timing"])
+    assert timing["analysis_cache_status"] == "hit"
+    assert timing["parse_seconds"] == 0.0
+
+
 def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(

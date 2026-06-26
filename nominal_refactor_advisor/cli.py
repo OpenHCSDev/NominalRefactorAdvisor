@@ -25,12 +25,14 @@ from .analysis import (
     AnalysisPathScope,
     analysis_cache_dir_for_root,
     analyze_lean_export,
+    load_analysis_cache_for_roots,
     analyze_modules_with_cache,
     analyze_path,
     analyze_paths,
     plan_path,
     plan_paths,
 )
+from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .cache_paths import default_parse_cache_dir
 from .calibration import (
@@ -780,6 +782,27 @@ class JsonPayloadImpactRankingPolicy:
             self.json_enabled
             and self.payload_profile is JsonPayloadProfile.summary
             and not self.include_impact_ranking
+        )
+
+
+@dataclass(frozen=True)
+class JsonSummaryPreparseCachePolicy:
+    """Decide whether summary JSON can consult analysis cache before parsing."""
+
+    json_enabled: bool
+    payload_profile: JsonPayloadProfile
+    load_bearing_ranking_enabled: bool
+    codemod_requested: bool
+    analysis_cache_dir: Path | None
+
+    @property
+    def enabled(self) -> bool:
+        return (
+            self.json_enabled
+            and self.payload_profile is JsonPayloadProfile.summary
+            and not self.load_bearing_ranking_enabled
+            and not self.codemod_requested
+            and self.analysis_cache_dir is not None
         )
 
 
@@ -4372,30 +4395,55 @@ def main() -> int:
         parser.error(str(error))
 
     if args.import_lean_export is None:
-        started = perf_counter()
-        modules = parse_python_module_roots(
-            roots,
-            cache_dir=parse_cache_dir,
-            use_parse_cache=args.use_parse_cache,
-            parse_workers=args.parse_workers,
+        preparse_cache_policy = JsonSummaryPreparseCachePolicy(
+            json_enabled=args.json,
+            payload_profile=json_payload_profile,
+            load_bearing_ranking_enabled=args.include_impact_ranking,
+            codemod_requested=codemod_requested,
+            analysis_cache_dir=analysis_cache_dir,
         )
-        parse_seconds = round(perf_counter() - started, 3)
-        if not codemod_scan_query_mode.needs_analysis:
-            findings = []
-            analysis_seconds = 0.0
-            analysis_cache_status = None
-        else:
+        preparse_cache_result = None
+        if codemod_scan_query_mode.needs_analysis and preparse_cache_policy.enabled:
             started = perf_counter()
-            analysis_result = analyze_modules_with_cache(
+            preparse_cache_result = load_analysis_cache_for_roots(
                 roots,
-                modules,
                 config,
                 analysis_cache_dir=analysis_cache_dir,
             )
-            unfiltered_findings = analysis_result.findings
-            analysis_cache_status = analysis_result.cache_status
-            findings = path_scope.filter_findings(unfiltered_findings)
             analysis_seconds = round(perf_counter() - started, 3)
+        if (
+            preparse_cache_result is not None
+            and preparse_cache_result.cache_status is AnalysisCacheStatus.HIT
+        ):
+            modules = []
+            parse_seconds = 0.0
+            analysis_cache_status = preparse_cache_result.cache_status
+            findings = path_scope.filter_findings(preparse_cache_result.findings)
+        else:
+            started = perf_counter()
+            modules = parse_python_module_roots(
+                roots,
+                cache_dir=parse_cache_dir,
+                use_parse_cache=args.use_parse_cache,
+                parse_workers=args.parse_workers,
+            )
+            parse_seconds = round(perf_counter() - started, 3)
+            if not codemod_scan_query_mode.needs_analysis:
+                findings = []
+                analysis_seconds = 0.0
+                analysis_cache_status = None
+            else:
+                started = perf_counter()
+                analysis_result = analyze_modules_with_cache(
+                    roots,
+                    modules,
+                    config,
+                    analysis_cache_dir=analysis_cache_dir,
+                )
+                unfiltered_findings = analysis_result.findings
+                analysis_cache_status = analysis_result.cache_status
+                findings = path_scope.filter_findings(unfiltered_findings)
+                analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
         findings = analyze_lean_export(args.import_lean_export)

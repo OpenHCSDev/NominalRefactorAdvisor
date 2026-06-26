@@ -160,19 +160,42 @@ def analyze_modules_with_cache(
     """Run detector analysis with a persistent finding cache when configured."""
 
     config = config or DetectorConfig()
-    if analysis_cache_dir is None:
+    cache_result = load_analysis_cache_for_roots(
+        roots,
+        config,
+        analysis_cache_dir=analysis_cache_dir,
+    )
+    if cache_result.cache_status is AnalysisCacheStatus.HIT:
+        return cache_result
+    if cache_result.cache_status is AnalysisCacheStatus.DISABLED:
         return CachedAnalysisResult(
             analyze_modules(modules, config),
             AnalysisCacheStatus.DISABLED,
         )
     cache_identity = AnalysisCacheIdentity.from_roots(roots, config)
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
-    cache_lookup = analysis_cache.load(cache_identity)
-    if cache_lookup.status is AnalysisCacheStatus.HIT:
-        return CachedAnalysisResult(list(cache_lookup.findings), cache_lookup.status)
     findings = analyze_modules(modules, config)
     analysis_cache.store(cache_identity, findings)
     return CachedAnalysisResult(findings, AnalysisCacheStatus.MISS)
+
+
+def load_analysis_cache_for_roots(
+    roots: tuple[Path, ...],
+    config: DetectorConfig | None = None,
+    *,
+    analysis_cache_dir: Path | None = None,
+) -> CachedAnalysisResult:
+    """Load detector findings from persistent cache without parsed modules."""
+
+    config = config or DetectorConfig()
+    if analysis_cache_dir is None:
+        return CachedAnalysisResult([], AnalysisCacheStatus.DISABLED)
+    cache_identity = AnalysisCacheIdentity.from_roots(roots, config)
+    analysis_cache = AnalysisFindingCache(analysis_cache_dir)
+    cache_lookup = analysis_cache.load(cache_identity)
+    if cache_lookup.status is AnalysisCacheStatus.HIT:
+        return CachedAnalysisResult(list(cache_lookup.findings), cache_lookup.status)
+    return CachedAnalysisResult([], cache_lookup.status)
 
 
 def analysis_cache_dir_for_root(
