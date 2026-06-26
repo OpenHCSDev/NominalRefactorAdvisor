@@ -114,6 +114,7 @@ from nominal_refactor_advisor.codemod import (
     simulate_codemod_candidates,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
@@ -7535,6 +7536,45 @@ def test_flags_abstraction_detector_without_backend_loc_payoff_guard(
     assert "net_reduction_action" in findings[0].summary
     assert "amortization_or_fanout_gate" in findings[0].summary
     assert "compression_certificate_or_explicit_fanout" in findings[0].summary
+
+
+def test_source_segment_projection_reuses_cached_geometry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\ndeclare_candidate_rule_detector(\n    LocalCandidate,\n    summary=lambda item: "move this collector into a shared helper",\n)\n',
+    )
+    module = parse_python_modules(tmp_path)[0]
+    summary_value = next(
+        node
+        for node in ast.walk(module.module)
+        if isinstance(node, ast.Constant)
+        and node.value == "move this collector into a shared helper"
+    )
+    source_segment_calls = 0
+    real_get_source_segment = helper_detectors.ast.get_source_segment
+
+    def counted_get_source_segment(
+        source: str, node: ast.AST, *args: object, **kwargs: object
+    ) -> str | None:
+        nonlocal source_segment_calls
+        source_segment_calls += 1
+        return real_get_source_segment(source, node, *args, **kwargs)
+
+    monkeypatch.setattr(
+        helper_detectors.ast,
+        "get_source_segment",
+        counted_get_source_segment,
+    )
+
+    first_segment = helper_detectors._source_segment(module, summary_value)
+    second_segment = helper_detectors._source_segment(module, summary_value)
+
+    assert first_segment == second_segment
+    assert source_segment_calls == 1
 
 
 def test_detects_candidate_collector_boilerplate(tmp_path: Path) -> None:
