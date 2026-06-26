@@ -12,7 +12,11 @@ from typing import cast
 
 import pytest
 
-from nominal_refactor_advisor.analysis import analyze_modules, analyze_paths
+from nominal_refactor_advisor.analysis import (
+    DetectorAnalysisWorkerPlan,
+    analyze_modules,
+    analyze_paths,
+)
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
     AttributeProbeObservationFamily,
@@ -5392,10 +5396,13 @@ def test_analyze_paths_reuses_detector_findings(
     analyze_calls = 0
 
     def counted_analyze_modules(
-        modules: list[object], config: DetectorConfig | None = None
+        modules: list[object],
+        config: DetectorConfig | None = None,
+        *,
+        analysis_workers: int = 1,
     ) -> list[RefactorFinding]:
         nonlocal analyze_calls
-        del modules, config
+        del modules, config, analysis_workers
         analyze_calls += 1
         return [finding]
 
@@ -5418,6 +5425,87 @@ def test_analyze_paths_reuses_detector_findings(
     assert first_findings == [finding]
     assert second_findings == [finding]
     assert analyze_calls == 1
+
+
+def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> None:
+    plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=0,
+        available_detector_type_count=8,
+        module_count=4,
+        max_auto_worker_count=4,
+    )
+    single_file_plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=0,
+        available_detector_type_count=8,
+        module_count=1,
+        max_auto_worker_count=4,
+    )
+
+    assert plan.effective_worker_count > 1
+    assert plan.uses_process_pool is True
+    assert single_file_plan.effective_worker_count == 1
+    assert single_file_plan.uses_process_pool is False
+
+
+def test_parallel_analyze_modules_matches_sequential_stable_ids(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        """
+class AlphaRunner:
+    def run(self, value):
+        if value == "one":
+            return "alpha-one"
+        if value == "two":
+            return "alpha-two"
+        return "alpha-default"
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        """
+class BetaRunner:
+    def run(self, value):
+        if value == "one":
+            return "beta-one"
+        if value == "two":
+            return "beta-two"
+        return "beta-default"
+""",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/gamma.py",
+        """
+class GammaRunner:
+    def run(self, value):
+        if value == "one":
+            return "gamma-one"
+        if value == "two":
+            return "gamma-two"
+        return "gamma-default"
+""",
+    )
+
+    modules = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)
+    sequential_findings = analyze_modules(
+        modules,
+        DetectorConfig(),
+        analysis_workers=1,
+    )
+    parallel_findings = analyze_modules(
+        modules,
+        DetectorConfig(),
+        analysis_workers=2,
+    )
+
+    assert sequential_findings
+    assert {(finding.stable_id, finding.summary) for finding in parallel_findings} == {
+        (finding.stable_id, finding.summary) for finding in sequential_findings
+    }
 
 
 def test_parse_python_modules_treats_incompatible_ast_cache_as_miss(
@@ -9402,6 +9490,8 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "calibration.json",
             "--parse-workers",
             "4",
+            "--analysis-workers",
+            "3",
             "--cache-dir",
             ".nra-cache/ast",
             "--context-root",
@@ -9430,6 +9520,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.fail_on_proof_regression is True
     assert args.calibrate == Path("calibration.json")
     assert args.parse_workers == 4
+    assert args.analysis_workers == 3
     assert args.cache_dir == Path(".nra-cache/ast")
     assert args.context_roots == [Path("nominal_refactor_advisor")]
     assert args.auto_context_root is False

@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+import os
 from pathlib import Path
+from typing import ClassVar
+
+from metaclass_registry import AutoRegisterMeta
 
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisFindingCache,
 )
-from .ast_tools import parse_python_module_roots, parse_python_modules
+from .ast_tools import ParsedModule, parse_python_module_roots, parse_python_modules
 from .cache_paths import analysis_cache_sibling, default_analysis_cache_dir
-from .detectors import DetectorConfig, default_detectors
+from .detectors import DetectorConfig, IssueDetector, default_detectors
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
@@ -128,18 +134,113 @@ class AnalysisContextRootResolver:
         return tuple(deduped)
 
 
+@dataclass(frozen=True)
+class DetectorAnalysisWorkerPlan:
+    """Resolve detector-analysis process parallelism for one scan."""
+
+    requested_worker_count: int
+    available_detector_type_count: int
+    module_count: int
+    max_auto_worker_count: int = 8
+
+    @property
+    def effective_worker_count(self) -> int:
+        if self.requested_worker_count == 0:
+            if self.module_count < 2 or self.available_detector_type_count < 4:
+                return 1
+            cpu_count = os.cpu_count()
+            if cpu_count is None:
+                cpu_count = 1
+            return min(
+                self.max_auto_worker_count,
+                cpu_count,
+                self.available_detector_type_count,
+            )
+        return max(1, self.requested_worker_count)
+
+    @property
+    def uses_process_pool(self) -> bool:
+        return self.effective_worker_count > 1
+
+
+@dataclass(frozen=True)
+class DetectorAnalysisWorkerState:
+    """Process-local parsed source and config for detector worker tasks."""
+
+    modules: tuple[ParsedModule, ...]
+    config: DetectorConfig
+
+    def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
+        return detector_type().detect(list(self.modules), self.config)
+
+
+detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
+
+
+def initialize_detector_analysis_worker(
+    state: DetectorAnalysisWorkerState,
+) -> None:
+    """Install parsed source once per process-pool worker."""
+
+    global detector_analysis_worker_state
+    detector_analysis_worker_state = state
+
+
+def detect_with_active_worker_state(
+    detector_type: type[IssueDetector],
+) -> list[RefactorFinding]:
+    """Run one detector inside a process-pool worker."""
+
+    state = detector_analysis_worker_state
+    if state is None:
+        raise RuntimeError("detector analysis worker state has not been initialized")
+    return state.detect_with(detector_type)
+
+
+class SortedFindingsAuthority:
+    """Centralize the stable presentation order for detector findings."""
+
+    @staticmethod
+    def sort(findings: Iterable[RefactorFinding]) -> list[RefactorFinding]:
+        return sorted(
+            findings,
+            key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
+        )
+
+
 def analyze_modules(
-    modules: list, config: DetectorConfig | None = None
+    modules: list,
+    config: DetectorConfig | None = None,
+    *,
+    analysis_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Run all registered detectors against parsed modules."""
+
     config = config or DetectorConfig()
-    findings: list[RefactorFinding] = []
-    for detector in default_detectors():
-        findings.extend(detector.detect(modules, config))
-    return sorted(
-        findings,
-        key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
+    detector_types = tuple(type(detector) for detector in default_detectors())
+    worker_plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=analysis_workers,
+        available_detector_type_count=len(detector_types),
+        module_count=len(modules),
     )
+    if worker_plan.uses_process_pool:
+        state = DetectorAnalysisWorkerState(tuple(modules), config)
+        with ProcessPoolExecutor(
+            max_workers=worker_plan.effective_worker_count,
+            initializer=initialize_detector_analysis_worker,
+            initargs=(state,),
+        ) as executor:
+            detector_findings = executor.map(
+                detect_with_active_worker_state,
+                detector_types,
+            )
+        return SortedFindingsAuthority.sort(
+            finding for findings in detector_findings for finding in findings
+        )
+    findings: list[RefactorFinding] = []
+    for detector_type in detector_types:
+        findings.extend(detector_type().detect(modules, config))
+    return SortedFindingsAuthority.sort(findings)
 
 
 @dataclass(frozen=True)
@@ -150,12 +251,121 @@ class CachedAnalysisResult:
     cache_status: AnalysisCacheStatus
 
 
+class AnalysisCacheResolutionAuthority:
+    """Own cache-status resolution without exposing raw scan state."""
+
+    def __init__(
+        self,
+        *,
+        roots: tuple[Path, ...],
+        modules: list,
+        config: DetectorConfig,
+        cache_result: CachedAnalysisResult,
+        analysis_cache_dir: Path | None,
+        analysis_workers: int,
+    ) -> None:
+        self._roots = roots
+        self._modules = modules
+        self._config = config
+        self._cache_result = cache_result
+        self._analysis_cache_dir = analysis_cache_dir
+        self._analysis_workers = analysis_workers
+
+    @property
+    def cache_result(self) -> CachedAnalysisResult:
+        return self._cache_result
+
+    def analyze_uncached(self, cache_status: AnalysisCacheStatus) -> CachedAnalysisResult:
+        return CachedAnalysisResult(
+            analyze_modules(
+                self._modules,
+                self._config,
+                analysis_workers=self._analysis_workers,
+            ),
+            cache_status,
+        )
+
+    def analyze_and_store_miss(self) -> CachedAnalysisResult:
+        cache_identity = AnalysisCacheIdentity.from_roots(self._roots, self._config)
+        analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
+        findings = analyze_modules(
+            self._modules,
+            self._config,
+            analysis_workers=self._analysis_workers,
+        )
+        analysis_cache.store(cache_identity, findings)
+        return CachedAnalysisResult(findings, AnalysisCacheStatus.MISS)
+
+
+class AnalysisCacheStatusStrategy(ABC, metaclass=AutoRegisterMeta):
+    """Registered behavior for each persistent-analysis cache status."""
+
+    __registry__: ClassVar[
+        dict[AnalysisCacheStatus, type["AnalysisCacheStatusStrategy"]]
+    ] = {}
+    __registry_key__ = "cache_status"
+    __skip_if_no_key__ = True
+
+    cache_status: ClassVar[AnalysisCacheStatus | None] = None
+
+    @classmethod
+    def for_status(
+        cls,
+        cache_status: AnalysisCacheStatus,
+    ) -> "AnalysisCacheStatusStrategy":
+        return cls.__registry__[cache_status]()
+
+    @abstractmethod
+    def result(
+        self,
+        authority: AnalysisCacheResolutionAuthority,
+    ) -> CachedAnalysisResult:
+        raise NotImplementedError
+
+
+class AnalysisCacheHitStrategy(AnalysisCacheStatusStrategy):
+    """Reuse detector findings loaded from the persistent analysis cache."""
+
+    cache_status = AnalysisCacheStatus.HIT
+
+    def result(
+        self,
+        authority: AnalysisCacheResolutionAuthority,
+    ) -> CachedAnalysisResult:
+        return authority.cache_result
+
+
+class AnalysisCacheDisabledStrategy(AnalysisCacheStatusStrategy):
+    """Run detector analysis without storing findings."""
+
+    cache_status = AnalysisCacheStatus.DISABLED
+
+    def result(
+        self,
+        authority: AnalysisCacheResolutionAuthority,
+    ) -> CachedAnalysisResult:
+        return authority.analyze_uncached(AnalysisCacheStatus.DISABLED)
+
+
+class AnalysisCacheMissStrategy(AnalysisCacheStatusStrategy):
+    """Run detector analysis and store the result for the cache identity."""
+
+    cache_status = AnalysisCacheStatus.MISS
+
+    def result(
+        self,
+        authority: AnalysisCacheResolutionAuthority,
+    ) -> CachedAnalysisResult:
+        return authority.analyze_and_store_miss()
+
+
 def analyze_modules_with_cache(
     roots: tuple[Path, ...],
     modules: list,
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
+    analysis_workers: int = 1,
 ) -> CachedAnalysisResult:
     """Run detector analysis with a persistent finding cache when configured."""
 
@@ -165,18 +375,17 @@ def analyze_modules_with_cache(
         config,
         analysis_cache_dir=analysis_cache_dir,
     )
-    if cache_result.cache_status is AnalysisCacheStatus.HIT:
-        return cache_result
-    if cache_result.cache_status is AnalysisCacheStatus.DISABLED:
-        return CachedAnalysisResult(
-            analyze_modules(modules, config),
-            AnalysisCacheStatus.DISABLED,
-        )
-    cache_identity = AnalysisCacheIdentity.from_roots(roots, config)
-    analysis_cache = AnalysisFindingCache(analysis_cache_dir)
-    findings = analyze_modules(modules, config)
-    analysis_cache.store(cache_identity, findings)
-    return CachedAnalysisResult(findings, AnalysisCacheStatus.MISS)
+    authority = AnalysisCacheResolutionAuthority(
+        roots=roots,
+        modules=modules,
+        config=config,
+        cache_result=cache_result,
+        analysis_cache_dir=analysis_cache_dir,
+        analysis_workers=analysis_workers,
+    )
+    return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
+        authority
+    )
 
 
 def load_analysis_cache_for_roots(
@@ -215,6 +424,7 @@ def analyze_path(
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = 1,
+    analysis_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
     modules = parse_python_modules(
@@ -232,6 +442,7 @@ def analyze_path(
             cache_dir,
             use_parse_cache,
         ),
+        analysis_workers=analysis_workers,
     ).findings
 
 
@@ -242,6 +453,7 @@ def analyze_paths(
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = 1,
+    analysis_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
     modules = parse_python_module_roots(
@@ -260,6 +472,7 @@ def analyze_paths(
             cache_dir,
             use_parse_cache,
         ),
+        analysis_workers=analysis_workers,
     ).findings
 
 

@@ -244,6 +244,15 @@ _CLI_ARGUMENT_SPECS = (
             help="Number of concurrent parser workers for Python source loading.",
         ),
         CliArgumentSpec(
+            flags=("--analysis-workers",),
+            value_type=int,
+            default=0,
+            help=(
+                "Number of detector-analysis worker processes. Use 0 to choose "
+                "automatically for package scans, or 1 for sequential analysis."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--cache-dir",),
             value_type=Path,
             help=(
@@ -4439,6 +4448,7 @@ def main() -> int:
                     modules,
                     config,
                     analysis_cache_dir=analysis_cache_dir,
+                    analysis_workers=args.analysis_workers,
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status
