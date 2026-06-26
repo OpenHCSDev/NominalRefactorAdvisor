@@ -9806,6 +9806,35 @@ def test_module_cli_rejects_plan_out_for_non_plan_query(tmp_path: Path) -> None:
     )
 
 
+def test_module_cli_rejects_authoring_bundle_without_authoring_mode(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-synthesize-plan",
+            "--codemod-authoring-bundle-out",
+            (tmp_path / "authoring-bundle").as_posix(),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert (
+        "--codemod-authoring-bundle-out requires "
+        "--codemod-synthesize-plan --codemod-synthesis-authoring"
+    ) in result.stderr
+
+
 def test_module_cli_simulates_codemod_plan_from_stdin(
     tmp_path: Path,
 ) -> None:
@@ -10594,6 +10623,7 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
 
 def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
+    bundle_dir = tmp_path / "authoring-bundle"
     _write_module(
         tmp_path,
         "pkg/mod.py",
@@ -10615,6 +10645,8 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
             "--no-impact-ranking",
             "--codemod-synthesize-plan",
             "--codemod-synthesis-authoring",
+            "--codemod-authoring-bundle-out",
+            bundle_dir.as_posix(),
         ],
         cwd=repo_root,
         capture_output=True,
@@ -10624,14 +10656,26 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     records = payload["synthesis_authoring"]["records"]
     selector_payload = records[0]["evidence_selector"]
+    bundle_index = json.loads((bundle_dir / "index.json").read_text(encoding="utf-8"))
+    bundle_record = bundle_index["records"][0]
+    bundle_selector = json.loads(
+        (bundle_dir / bundle_record["selector_path"]).read_text(encoding="utf-8")
+    )
+    replacement_plan_path = bundle_dir / bundle_record["replacement_plan_path"]
+    replacement_plan = load_codemod_plan_document(replacement_plan_path)
 
     assert result.returncode == 0, result.stderr
+    assert payload["authoring_bundle"] == bundle_index
     assert (
         records[0]["finding_id"]
         == payload["synthesis_report"]["records"][0]["finding_id"]
     )
     assert selector_payload["selector"] == "finding_evidence_target"
     assert selector_payload["finding_ids"] == [records[0]["finding_id"]]
+    assert bundle_selector == selector_payload
+    assert bundle_record["authoring_record"] == records[0]
+    assert bundle_record["replacement_plan_path"].endswith("replacement-plan.json")
+    assert replacement_plan.has_recipes
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(

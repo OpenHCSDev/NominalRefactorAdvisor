@@ -57,6 +57,8 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSimulationStatus,
     CodemodSourceSnapshot,
+    FindingRecipePlan,
+    FindingRecipeSynthesisRecord,
     JsonArray,
     JsonObject,
     JsonValue,
@@ -437,6 +439,15 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "With --codemod-synthesize-plan, include opt-in authoring "
                 "selectors for each synthesis record."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-bundle-out",),
+            value_type=Path,
+            help=(
+                "With --codemod-synthesize-plan --codemod-synthesis-authoring, "
+                "write per-finding selector and replacement-plan artifacts under "
+                "this directory."
             ),
         ),
         CliArgumentSpec(
@@ -825,6 +836,77 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_fixpoint,
         )
     )
+
+
+def cli_artifact_slug(value: str) -> str:
+    """Convert a report identifier into a stable filesystem-friendly stem."""
+
+    if not value:
+        raise ValueError("CLI artifact slug source cannot be empty")
+    characters: list[str] = []
+    for character in value:
+        if character.isalnum() or character in ("-", "_"):
+            characters.append(character)
+            continue
+        characters.append("_")
+    cleaned = "".join(characters).strip("_")
+    if not cleaned:
+        raise ValueError("CLI artifact slug source has no filesystem-safe characters")
+    return cleaned
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleWriter:
+    """Materialize per-finding synthesis authoring artifacts for agents."""
+
+    output_dir: Path
+    snapshot: CodemodSourceSnapshot
+    plan: FindingRecipePlan
+
+    def write(self) -> JsonObject:
+        records = tuple(
+            self.write_record(record_index, record)
+            for record_index, record in enumerate(self.plan.synthesis_report.records)
+        )
+        payload: JsonObject = {
+            "synthesis_report": self.plan.synthesis_report.to_dict(),
+            "records": records,
+        }
+        write_cli_json_artifact(self.output_dir / "index.json", payload)
+        return payload
+
+    def write_record(
+        self,
+        record_index: int,
+        record: FindingRecipeSynthesisRecord,
+    ) -> JsonObject:
+        authoring_record = record.authoring_record()
+        record_dir = self.record_dir(record_index, authoring_record.detector_id)
+        selector_payload = authoring_record.evidence_selector.to_dict()
+        scaffold = self.snapshot.replacement_plan_scaffold_report(
+            authoring_record.evidence_selector
+        )
+        selector_path = record_dir / "selector.json"
+        scaffold_path = record_dir / "replacement-scaffold.json"
+        plan_path = record_dir / "replacement-plan.json"
+        write_cli_json_artifact(selector_path, selector_payload)
+        write_cli_json_artifact(scaffold_path, scaffold.to_dict())
+        write_cli_json_artifact(plan_path, scaffold.document.to_dict())
+        return {
+            "record_index": record_index,
+            "finding_id": authoring_record.finding_id,
+            "detector_id": authoring_record.detector_id,
+            "status": authoring_record.status.value,
+            "selector_path": selector_path.relative_to(self.output_dir).as_posix(),
+            "replacement_scaffold_path": scaffold_path.relative_to(
+                self.output_dir
+            ).as_posix(),
+            "replacement_plan_path": plan_path.relative_to(self.output_dir).as_posix(),
+            "authoring_record": authoring_record.to_dict(),
+        }
+
+    def record_dir(self, record_index: int, detector_id: str) -> Path:
+        return self.output_dir / f"{record_index:04d}-{cli_artifact_slug(detector_id)}"
 
 
 @dataclass(frozen=True)
@@ -2205,6 +2287,10 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
         self.require_valid_document_only_mode()
         snapshot = self.required_source_snapshot()
         finding_recipe_plan = snapshot.plan_from_findings(self.findings)
+        authoring_bundle = self.write_authoring_bundle_if_requested(
+            snapshot,
+            finding_recipe_plan,
+        )
         write_cli_json_artifact(
             self.args.codemod_plan_out,
             finding_recipe_plan.document.to_dict(),
@@ -2215,6 +2301,8 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 payload["synthesis_authoring"] = (
                     finding_recipe_plan.synthesis_report.authoring_report().to_dict()
                 )
+            if authoring_bundle is not None:
+                payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(payload["is_clean"]).exit_code()
         if self.synthesis_execution_requested:
@@ -2242,6 +2330,8 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 payload["synthesis_authoring"] = (
                     finding_recipe_plan.synthesis_report.authoring_report().to_dict()
                 )
+            if authoring_bundle is not None:
+                payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
             return CodemodSynthesisExitCodeAuthority(simulation.is_clean).exit_code()
         if self.args.codemod_synthesize_document_only:
@@ -2252,6 +2342,8 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 payload["synthesis_authoring"] = (
                     finding_recipe_plan.synthesis_report.authoring_report().to_dict()
                 )
+        if authoring_bundle is not None:
+            payload["authoring_bundle"] = authoring_bundle
         print(json.dumps(payload, indent=2))
         return 0
 
@@ -2278,6 +2370,20 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
                 "--codemod-synthesis-authoring cannot be combined with "
                 "--codemod-synthesize-document-only"
             )
+
+    def write_authoring_bundle_if_requested(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        plan: FindingRecipePlan,
+    ) -> JsonObject | None:
+        output_dir = self.args.codemod_authoring_bundle_out
+        if output_dir is None:
+            return None
+        return CodemodAuthoringBundleWriter(
+            output_dir=output_dir,
+            snapshot=snapshot,
+            plan=plan,
+        ).write()
 
     def apply_synthesized_plan(
         self,
@@ -2710,6 +2816,13 @@ def main() -> int:
     if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
         parser.error(
             "--codemod-plan-out requires a plan-producing codemod command"
+        )
+    if args.codemod_authoring_bundle_out is not None and not (
+        args.codemod_synthesize_plan and args.codemod_synthesis_authoring
+    ):
+        parser.error(
+            "--codemod-authoring-bundle-out requires "
+            "--codemod-synthesize-plan --codemod-synthesis-authoring"
         )
 
     early_exit_code = CliEarlyExitCommand.run_first(parser, args)
