@@ -411,6 +411,16 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-compose-sequence",),
+            value_type=Path,
+            nargs="+",
+            help=(
+                "Load one or more codemod plan document or sequence JSON files; "
+                "use '-' for one stdin document. Compose them in argument order "
+                "as an ordered CodemodPlanSequence, and exit without scanning."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-synthesize-plan",),
             action="store_true",
             help=(
@@ -833,6 +843,7 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_dsl_example_plan,
             args.codemod_validate_plan,
             args.codemod_compose_plans is not None,
+            args.codemod_compose_sequence is not None,
             args.codemod_synthesize_plan,
             args.codemod_replacement_plan is not None,
             args.codemod_selected_operation_plan is not None,
@@ -2042,6 +2053,11 @@ class CodemodComposePlansCliCommand(CliEarlyExitCommand):
         return self.args.codemod_compose_plans is not None
 
     def run(self) -> int:
+        if self.args.codemod_compose_sequence is not None:
+            self.parser.error(
+                "--codemod-compose-plans cannot be combined with "
+                "--codemod-compose-sequence"
+            )
         paths = tuple(self.args.codemod_compose_plans)
         JsonDocumentInputSet.from_option_paths(
             (("--codemod-compose-plans", paths),)
@@ -2053,6 +2069,32 @@ class CodemodComposePlansCliCommand(CliEarlyExitCommand):
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
         payload = document.to_dict()
+        write_cli_json_artifact(self.args.codemod_plan_out, payload)
+        print(json.dumps(payload, indent=2))
+        return 0
+
+
+class CodemodComposeSequenceCliCommand(CliEarlyExitCommand):
+    """Compose normalized codemod DSL plans as ordered replay stages."""
+
+    command_id = "codemod_compose_sequence"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_compose_sequence is not None
+
+    def run(self) -> int:
+        paths = tuple(self.args.codemod_compose_sequence)
+        JsonDocumentInputSet.from_option_paths(
+            (("--codemod-compose-sequence", paths),)
+        ).require_at_most_one_stdin(self.parser)
+        try:
+            sequence = CodemodPlanSequence.compose(
+                load_codemod_plan_sequence(path) for path in paths
+            )
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            self.parser.error(str(error))
+        payload = sequence.to_dict()
         write_cli_json_artifact(self.args.codemod_plan_out, payload)
         print(json.dumps(payload, indent=2))
         return 0

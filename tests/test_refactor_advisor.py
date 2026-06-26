@@ -9403,6 +9403,7 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
     assert len(operations) >= 25
     assert len(selectors) >= 6
     assert unknown_fields == []
+    assert manifest["plan_sequence_fields"] == ("stages",)
     assert manifest["operation_plan_template_fields"] == (
         "recipe_id",
         "reason",
@@ -9722,6 +9723,144 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
         "ensure-modern-import",
     ]
     assert validation_payload["architecture_guards"][0]["rule_id"] == ("alpha-boundary")
+
+
+def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(tmp_path, "pkg/existing.py", "\nclass Existing:\n    pass\n")
+    generated_path = tmp_path / "pkg/generated.py"
+    consumer_path = tmp_path / "pkg/consumer.py"
+    first_plan_path = tmp_path / "first-plan.json"
+    second_sequence_path = tmp_path / "second-sequence.json"
+    composed_sequence_path = tmp_path / "composed-sequence.json"
+    first_plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "create-generated",
+                        "operations": [
+                            {
+                                "operation": "create_file",
+                                "file_path": generated_path.as_posix(),
+                                "source": (
+                                    "class Generated:\n"
+                                    "    def run(self):\n"
+                                    "        return 1\n"
+                                ),
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    second_sequence_path.write_text(
+        json.dumps(
+            {
+                "stages": [
+                    {
+                        "recipes": [
+                            {
+                                "recipe_id": "rewrite-generated",
+                                "operations": [
+                                    {
+                                        "operation": "replace_text",
+                                        "file_path": generated_path.as_posix(),
+                                        "target_qualname": "Generated.run",
+                                        "old_source": "return 1",
+                                        "new_source": "return 2",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                    {
+                        "recipes": [
+                            {
+                                "recipe_id": "create-consumer",
+                                "operations": [
+                                    {
+                                        "operation": "create_file",
+                                        "file_path": consumer_path.as_posix(),
+                                        "source": (
+                                            "from pkg.generated import Generated\n\n"
+                                            "VALUE = Generated().run()\n"
+                                        ),
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    compose_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-compose-sequence",
+            first_plan_path.as_posix(),
+            second_sequence_path.as_posix(),
+            "--codemod-plan-out",
+            composed_sequence_path.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    composed_payload = json.loads(compose_result.stdout)
+    simulation_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-plan",
+            composed_sequence_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    simulation_payload = json.loads(simulation_result.stdout)
+
+    assert compose_result.returncode == 0, compose_result.stderr
+    assert simulation_result.returncode == 0, simulation_result.stderr
+    assert composed_payload == json.loads(
+        composed_sequence_path.read_text(encoding="utf-8")
+    )
+    assert [stage["recipes"][0]["recipe_id"] for stage in composed_payload["stages"]] == [
+        "create-generated",
+        "rewrite-generated",
+        "create-consumer",
+    ]
+    assert simulation_payload["applied"] is False
+    assert simulation_payload["applied_rewrite_count"] == 3
+    assert generated_path.as_posix() in simulation_payload["changed_file_paths"]
+    assert consumer_path.as_posix() in simulation_payload["changed_file_paths"]
+    sequence_payload = simulation_payload["plan_sequence_simulation"]
+    assert sequence_payload["stage_count"] == 3
+    assert any(
+        target["qualname"] == "Generated.run"
+        for target in sequence_payload["stages"][1]["before_source_index"][
+            "ast_targets"
+        ]
+    )
+    assert "+        return 2" in simulation_payload["unified_diff"]
+    assert generated_path.exists() is False
+    assert consumer_path.exists() is False
 
 
 def test_module_cli_validates_codemod_plan_from_stdin() -> None:

@@ -7828,6 +7828,7 @@ class CodemodDslManifest:
     def to_dict(self) -> JsonObject:
         return {
             "plan_fields": ("authority_boundaries", "recipes", "architecture_guards"),
+            "plan_sequence_fields": ("stages",),
             "recipe_fields": ("recipe_id", "rewrites", "operations", "reason"),
             "operation_plan_template_fields": (
                 "recipe_id",
@@ -9913,6 +9914,22 @@ class CodemodPlanSequence:
     """Ordered codemod documents resolved against each prior simulated stage."""
 
     documents: tuple[CodemodPlanDocument, ...] = ()
+
+    @classmethod
+    def compose(
+        cls,
+        sequences: Iterable["CodemodPlanSequence"],
+    ) -> "CodemodPlanSequence":
+        """Compose plan documents or existing sequences as ordered replay stages."""
+
+        sequence_tuple = tuple(sequences)
+        return cls(
+            documents=tuple(
+                document
+                for sequence in sequence_tuple
+                for document in sequence.documents
+            )
+        )
 
     @classmethod
     def from_document(cls, document: CodemodPlanDocument) -> "CodemodPlanSequence":
