@@ -101,6 +101,7 @@ class ProductRecordMaterializer:
         for class_name, field_spec, base_names, options in specs:
             options = dict(options)
             bases = options.pop("bases", None)
+            options.setdefault("module_name", caller_globals.get("__name__", __name__))
             if bases is None:
                 bases = tuple((caller_globals[name] for name in base_names))
             caller_globals[class_name] = product_record(
