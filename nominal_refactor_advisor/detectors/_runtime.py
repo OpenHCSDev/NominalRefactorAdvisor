@@ -8771,10 +8771,16 @@ _IDENTIFIER_STOP_TOKENS = frozenset(
 
 
 @dataclass(frozen=True)
-class _NominalAuthorityBypassCandidate:
+class _NominalAuthorityBypassSeed:
+    module: ParsedModule
     scatter: IsinstanceFamilyScatterCandidate
-    checked_classes: tuple[IndexedClass, ...]
+    indexed_classes: tuple[IndexedClass, ...]
     shared_base: IndexedClass
+
+
+@dataclass(frozen=True)
+class _NominalAuthorityBypassCandidate:
+    seed: _NominalAuthorityBypassSeed
     repeated_templates: tuple[CrossClassSmallMethodTemplateCandidate, ...]
     wrapper_chains: tuple[WrapperChainCandidate, ...]
     composition_signals: tuple[CancelableCompositionSignal, ...]
@@ -8839,26 +8845,31 @@ class _VariantMethodFamilyCandidate:
         return tuple(evidence[:8])
 
 
-def _identifier_tokens(value: str) -> tuple[str, ...]:
-    tokens: list[str] = []
-    for chunk in re.split(r"[^0-9A-Za-z]+", value):
-        if not chunk:
-            continue
-        matches = re.findall(
-            r"[A-Z]+(?=[A-Z][a-z]|[0-9]|\b)|[A-Z]?[a-z]+|[0-9]+", chunk
-        )
-        tokens.extend(match.lower() for match in matches if match)
-    return tuple(tokens)
+class SemanticTokenAuthority:
+    """Normalize candidate relation strings into comparable semantic tokens."""
 
+    @staticmethod
+    def identifier_tokens(value: str) -> tuple[str, ...]:
+        tokens: list[str] = []
+        for chunk in re.split(r"[^0-9A-Za-z]+", value):
+            if not chunk:
+                continue
+            matches = re.findall(
+                r"[A-Z]+(?=[A-Z][a-z]|[0-9]|\b)|[A-Z]?[a-z]+|[0-9]+",
+                chunk,
+            )
+            tokens.extend(match.lower() for match in matches if match)
+        return tuple(tokens)
 
-def _semantic_tokens(*values: object) -> frozenset[str]:
-    tokens = {
-        token
-        for value in values
-        for token in _identifier_tokens(str(value))
-        if len(token) >= 3 and token not in _IDENTIFIER_STOP_TOKENS
-    }
-    return frozenset(tokens)
+    @staticmethod
+    def tokens(*values: str) -> frozenset[str]:
+        tokens = {
+            token
+            for value in values
+            for token in SemanticTokenAuthority.identifier_tokens(value)
+            if len(token) >= 3 and token not in _IDENTIFIER_STOP_TOKENS
+        }
+        return frozenset(tokens)
 
 
 def _indexed_classes_for_type_names(
@@ -8925,66 +8936,78 @@ class CancelableCompositionSignalQuery:
         )
 
 
-def _related_composition_signals(
-    signals: tuple[CancelableCompositionSignal, ...],
-    *,
-    file_path: str,
-    token_sources: tuple[object, ...],
-    field_names: tuple[str, ...] = (),
-) -> tuple[CancelableCompositionSignal, ...]:
-    source_tokens = _semantic_tokens(*token_sources)
-    field_name_set = set(field_names)
-    related = []
-    for signal in signals:
-        if signal.file_path != file_path:
-            continue
-        signal_tokens = _semantic_tokens(
-            signal.qualname,
-            signal.carrier_name,
-            signal.source_name,
-            *signal.field_names,
-        )
-        if (source_tokens & signal_tokens) or len(
-            field_name_set & set(signal.field_names)
-        ) >= 2:
-            related.append(signal)
-    return sorted_tuple(
-        related,
-        key=lambda item: (
-            -item.load_bearing_score,
-            item.file_path,
-            item.line,
-            item.qualname,
-        ),
-    )
+class RelatedCompositionSignalsAuthority:
+    """Select composition signals relevant to one candidate token surface."""
 
-
-def _related_wrapper_chains(
-    chains: tuple[WrapperChainCandidate, ...],
-    *,
-    file_path: str,
-    token_sources: tuple[object, ...],
-) -> tuple[WrapperChainCandidate, ...]:
-    source_tokens = _semantic_tokens(*token_sources)
-    related = []
-    for chain in chains:
-        if chain.file_path != file_path:
-            continue
-        chain_tokens = _semantic_tokens(
-            chain.leaf_delegate_symbol,
-            *(wrapper.qualname for wrapper in chain.wrappers),
-            *(
-                attr
-                for wrapper in chain.wrappers
-                for attr in wrapper.projected_attributes
+    @staticmethod
+    def related(
+        signals: tuple[CancelableCompositionSignal, ...],
+        *,
+        file_path: str,
+        token_sources: tuple[str, ...],
+        field_names: tuple[str, ...] = (),
+    ) -> tuple[CancelableCompositionSignal, ...]:
+        source_tokens = SemanticTokenAuthority.tokens(*token_sources)
+        field_name_set = set(field_names)
+        related = []
+        for signal in signals:
+            if signal.file_path != file_path:
+                continue
+            signal_tokens = SemanticTokenAuthority.tokens(
+                signal.qualname,
+                signal.carrier_name,
+                signal.source_name,
+                *signal.field_names,
+            )
+            if (source_tokens & signal_tokens) or len(
+                field_name_set & set(signal.field_names)
+            ) >= 2:
+                related.append(signal)
+        return sorted_tuple(
+            related,
+            key=lambda item: (
+                -item.load_bearing_score,
+                item.file_path,
+                item.line,
+                item.qualname,
             ),
         )
-        if source_tokens & chain_tokens:
-            related.append(chain)
-    return sorted_tuple(
-        related,
-        key=lambda item: (-len(item.wrappers), item.file_path, item.wrappers[0].lineno),
-    )
+
+
+class RelatedWrapperChainsAuthority:
+    """Select wrapper chains relevant to one candidate token surface."""
+
+    @staticmethod
+    def related(
+        chains: tuple[WrapperChainCandidate, ...],
+        *,
+        file_path: str,
+        token_sources: tuple[str, ...],
+    ) -> tuple[WrapperChainCandidate, ...]:
+        source_tokens = SemanticTokenAuthority.tokens(*token_sources)
+        related = []
+        for chain in chains:
+            if chain.file_path != file_path:
+                continue
+            chain_tokens = SemanticTokenAuthority.tokens(
+                chain.leaf_delegate_symbol,
+                *(wrapper.qualname for wrapper in chain.wrappers),
+                *(
+                    attr
+                    for wrapper in chain.wrappers
+                    for attr in wrapper.projected_attributes
+                ),
+            )
+            if source_tokens & chain_tokens:
+                related.append(chain)
+        return sorted_tuple(
+            related,
+            key=lambda item: (
+                -len(item.wrappers),
+                item.file_path,
+                item.wrappers[0].lineno,
+            ),
+        )
 
 
 def _templates_related_to_checked_classes(
@@ -9007,6 +9030,26 @@ def _nominal_authority_bypass_candidates(
     modules: list[ParsedModule],
 ) -> tuple[_NominalAuthorityBypassCandidate, ...]:
     class_index = build_class_family_index(modules)
+    seeds: list[_NominalAuthorityBypassSeed] = []
+    for module in modules:
+        for scatter in _isinstance_family_scatter_candidates(module):
+            checked_classes = _indexed_classes_for_type_names(
+                module, class_index, scatter.type_names
+            )
+            shared_bases = _shared_nominal_base_classes(class_index, checked_classes)
+            if not shared_bases:
+                continue
+            seeds.append(
+                _NominalAuthorityBypassSeed(
+                    module=module,
+                    scatter=scatter,
+                    indexed_classes=checked_classes,
+                    shared_base=shared_bases[0],
+                )
+            )
+    if not seeds:
+        return ()
+
     templates = tuple(
         template
         for module in modules
@@ -9018,53 +9061,43 @@ def _nominal_authority_bypass_candidates(
     composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
 
     candidates: list[_NominalAuthorityBypassCandidate] = []
-    for module in modules:
-        for scatter in _isinstance_family_scatter_candidates(module):
-            checked_classes = _indexed_classes_for_type_names(
-                module, class_index, scatter.type_names
+    for seed in seeds:
+        base_display_name = CLASS_INDEX_PROJECTION.display_name(
+            seed.shared_base, class_index
+        )
+        related_templates = _templates_related_to_checked_classes(
+            templates, seed.indexed_classes
+        )
+        token_sources = (
+            seed.scatter.qualname,
+            seed.scatter.subject_expression,
+            base_display_name,
+            *(indexed_class.simple_name for indexed_class in seed.indexed_classes),
+            *(template.method_name for template in related_templates),
+        )
+        candidates.append(
+            _NominalAuthorityBypassCandidate(
+                seed=seed,
+                repeated_templates=related_templates,
+                wrapper_chains=RelatedWrapperChainsAuthority.related(
+                    wrapper_chains,
+                    file_path=seed.scatter.file_path,
+                    token_sources=token_sources,
+                ),
+                composition_signals=RelatedCompositionSignalsAuthority.related(
+                    composition_signals,
+                    file_path=seed.scatter.file_path,
+                    token_sources=token_sources,
+                ),
             )
-            shared_bases = _shared_nominal_base_classes(class_index, checked_classes)
-            if not shared_bases:
-                continue
-            shared_base = shared_bases[0]
-            base_display_name = CLASS_INDEX_PROJECTION.display_name(
-                shared_base, class_index
-            )
-            related_templates = _templates_related_to_checked_classes(
-                templates, checked_classes
-            )
-            token_sources = (
-                scatter.qualname,
-                scatter.subject_expression,
-                base_display_name,
-                *(indexed_class.simple_name for indexed_class in checked_classes),
-                *(template.method_name for template in related_templates),
-            )
-            candidates.append(
-                _NominalAuthorityBypassCandidate(
-                    scatter=scatter,
-                    checked_classes=checked_classes,
-                    shared_base=shared_base,
-                    repeated_templates=related_templates,
-                    wrapper_chains=_related_wrapper_chains(
-                        wrapper_chains,
-                        file_path=scatter.file_path,
-                        token_sources=token_sources,
-                    ),
-                    composition_signals=_related_composition_signals(
-                        composition_signals,
-                        file_path=scatter.file_path,
-                        token_sources=token_sources,
-                    ),
-                )
-            )
+        )
     return sorted_tuple(
         candidates,
         key=lambda item: (
-            item.scatter.file_path,
-            item.scatter.line,
-            item.scatter.qualname,
-            item.shared_base.symbol,
+            item.seed.scatter.file_path,
+            item.seed.scatter.line,
+            item.seed.scatter.qualname,
+            item.seed.shared_base.symbol,
         ),
     )
 
@@ -9095,10 +9128,10 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
     def _finding_for_candidate(
         self, candidate: _NominalAuthorityBypassCandidate
     ) -> RefactorFinding:
-        scatter = candidate.scatter
-        base_name = candidate.shared_base.simple_name
+        scatter = candidate.seed.scatter
+        base_name = candidate.seed.shared_base.simple_name
         checked_type_names = tuple(
-            indexed_class.simple_name for indexed_class in candidate.checked_classes
+            indexed_class.simple_name for indexed_class in candidate.seed.indexed_classes
         )
         branch_summary = ", ".join(scatter.test_expressions[:4])
         template_summary = ", ".join(
@@ -9136,8 +9169,8 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
                     for line in scatter.line_numbers[:4]
                 ),
                 SourceLocation(
-                    candidate.shared_base.file_path,
-                    candidate.shared_base.line,
+                    candidate.seed.shared_base.file_path,
+                    candidate.seed.shared_base.line,
                     base_name,
                 ),
                 *(
@@ -9215,7 +9248,7 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
                         for template in candidate.repeated_templates
                     ),
                 ),
-                class_count=max(2, len(candidate.checked_classes)),
+                class_count=max(2, len(candidate.seed.indexed_classes)),
                 method_symbols=method_symbols,
             ),
         )
@@ -9291,7 +9324,7 @@ def _variant_method_surface(
     construction_shape = _construction_shape(method)
     if construction_shape is None:
         return None
-    method_tokens = _identifier_tokens(method.name)
+    method_tokens = SemanticTokenAuthority.identifier_tokens(method.name)
     if len(method_tokens) < 2:
         return None
     forwarded_field_names = sorted_tuple(
@@ -9367,13 +9400,13 @@ def _variant_method_family_candidate(
         *shared_field_names,
         *(method.method_name for method in methods),
     )
-    related_compositions = _related_composition_signals(
+    related_compositions = RelatedCompositionSignalsAuthority.related(
         composition_signals,
         file_path=exemplar.file_path,
         token_sources=token_sources,
         field_names=shared_field_names,
     )
-    related_wrappers = _related_wrapper_chains(
+    related_wrappers = RelatedWrapperChainsAuthority.related(
         wrapper_chains,
         file_path=exemplar.file_path,
         token_sources=token_sources,

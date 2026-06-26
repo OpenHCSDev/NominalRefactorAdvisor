@@ -120,6 +120,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors import DetectorConfig
 from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
+from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
     EconomicsProofReport,
@@ -6152,6 +6153,35 @@ def test_detects_two_case_isinstance_family_dispatch(tmp_path: Path) -> None:
     assert "ObjectLabelPayload" in scatter_finding.summary
     assert "ObjectLabelSet" in scatter_finding.summary
     assert "polymorphic ABC/base method" in (scatter_finding.codemod_patch or "")
+
+
+def test_abc_polymorphism_detector_skips_composition_index_without_shared_base(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass AlphaPayload:\n    pass\n\n\nclass BetaPayload:\n    pass\n\n\ndef render_payload(value):\n    if isinstance(value, AlphaPayload):\n        return value.alpha()\n    if isinstance(value, BetaPayload):\n        return value.beta()\n    return None\n",
+    )
+    modules = parse_python_modules(tmp_path)
+
+    def fail_build_source_index(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("composition source index should not be built")
+
+    monkeypatch.setattr(
+        runtime_detectors,
+        "build_source_index",
+        fail_build_source_index,
+    )
+
+    findings = runtime_detectors.ABCPolymorphismBypassedByConcreteDispatchDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+
+    assert findings == []
 
 
 def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
