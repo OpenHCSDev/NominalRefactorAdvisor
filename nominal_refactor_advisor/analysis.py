@@ -15,6 +15,7 @@ from metaclass_registry import AutoRegisterMeta
 from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheFamilyIdentity,
+    AnalysisFindingSummary,
     AnalysisCacheStatus,
     AnalysisFindingCache,
     PerModuleAnalysisCacheIdentity,
@@ -420,9 +421,31 @@ class CachedAnalysisResult:
 
     findings: list[RefactorFinding]
     cache_status: AnalysisCacheStatus
-    current_identity: AnalysisCacheIdentity | None = None
-    previous_identity: AnalysisCacheIdentity | None = None
+    cache_identity: AnalysisCacheIdentity | None = None
+    previous_cache_identity: AnalysisCacheIdentity | None = None
     previous_findings: tuple[RefactorFinding, ...] = ()
+
+
+@dataclass(frozen=True)
+class AnalysisCacheIdentityAuthority:
+    """Build cache identities for one root/config/source-policy request."""
+
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    source_policy: PythonSourcePathPolicy | None = None
+
+    def cache_identity(self) -> AnalysisCacheIdentity:
+        return AnalysisCacheIdentity.from_roots(
+            self.roots,
+            self.config,
+            source_policy=self.source_policy,
+        )
+
+    def family_identity(
+        self,
+        cache_identity: AnalysisCacheIdentity,
+    ) -> AnalysisCacheFamilyIdentity:
+        return AnalysisCacheFamilyIdentity.from_analysis_identity(cache_identity)
 
 
 class AnalysisCacheResolutionAuthority:
@@ -462,11 +485,11 @@ class AnalysisCacheResolutionAuthority:
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
-        cache_identity = AnalysisCacheIdentity.from_roots(
+        cache_identity = AnalysisCacheIdentityAuthority(
             self._roots,
             self._config,
-            source_policy=self._source_policy,
-        )
+            self._source_policy,
+        ).cache_identity()
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
         incremental_result = IncrementalAnalysisCacheResolver(
             cache_identity=cache_identity,
@@ -474,7 +497,7 @@ class AnalysisCacheResolutionAuthority:
             config=self._config,
             analysis_cache=analysis_cache,
             analysis_workers=self._analysis_workers,
-            previous_identity=self._cache_result.previous_identity,
+            previous_cache_identity=self._cache_result.previous_cache_identity,
             previous_findings=self._cache_result.previous_findings,
         ).result()
         findings = incremental_result.findings
@@ -482,7 +505,7 @@ class AnalysisCacheResolutionAuthority:
         return CachedAnalysisResult(
             findings,
             incremental_result.cache_status,
-            current_identity=cache_identity,
+            cache_identity=cache_identity,
         )
 
 
@@ -505,7 +528,7 @@ class IncrementalAnalysisCacheResolver:
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
-        previous_identity: AnalysisCacheIdentity | None = None,
+        previous_cache_identity: AnalysisCacheIdentity | None = None,
         previous_findings: tuple[RefactorFinding, ...] = (),
     ) -> None:
         self._cache_identity = cache_identity
@@ -513,7 +536,7 @@ class IncrementalAnalysisCacheResolver:
         self._config = config
         self._analysis_cache = analysis_cache
         self._analysis_workers = analysis_workers
-        self._previous_identity = previous_identity
+        self._previous_cache_identity = previous_cache_identity
         self._previous_findings = previous_findings
         self._detector_partition = DetectorTypePartition.from_detector_types(
             default_detector_types_for_analysis()
@@ -608,7 +631,7 @@ class IncrementalAnalysisCacheResolver:
     def _global_findings(self) -> list[RefactorFinding]:
         if not self._detector_partition.has_global_detectors:
             return []
-        if self._previous_identity is not None and self._previous_findings:
+        if self._previous_cache_identity is not None and self._previous_findings:
             return self._partially_reused_global_findings()
         return analyze_detector_types(
             self._modules,
@@ -659,11 +682,11 @@ class IncrementalAnalysisCacheResolver:
         )
 
     def _changed_source_file_paths(self) -> frozenset[str]:
-        if self._previous_identity is None:
+        if self._previous_cache_identity is None:
             return frozenset()
         return ChangedSourcePathAuthority.paths(
             self._cache_identity,
-            self._previous_identity,
+            self._previous_cache_identity,
         )
 
     @staticmethod
@@ -783,39 +806,65 @@ def load_analysis_cache_for_roots(
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
         return CachedAnalysisResult([], AnalysisCacheStatus.DISABLED)
-    cache_identity = AnalysisCacheIdentity.from_roots(
+    identity_authority = AnalysisCacheIdentityAuthority(
         roots,
         config,
-        source_policy=source_policy,
+        source_policy,
     )
+    cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status is AnalysisCacheStatus.HIT:
         return CachedAnalysisResult(
             list(cache_lookup.findings),
             cache_lookup.status,
-            current_identity=cache_identity,
+            cache_identity=cache_identity,
         )
-    family_identity = AnalysisCacheFamilyIdentity.from_roots(
-        roots,
-        config,
-        source_policy=source_policy,
-    )
+    family_identity = identity_authority.family_identity(cache_identity)
     latest_cache_entry = analysis_cache.load_latest(family_identity)
     if latest_cache_entry is None:
         return CachedAnalysisResult(
             [],
             cache_lookup.status,
-            current_identity=cache_identity,
+            cache_identity=cache_identity,
         )
-    previous_identity, previous_findings = latest_cache_entry
+    previous_cache_identity, previous_findings = latest_cache_entry
     return CachedAnalysisResult(
         [],
         cache_lookup.status,
-        current_identity=cache_identity,
-        previous_identity=previous_identity,
+        cache_identity=cache_identity,
+        previous_cache_identity=previous_cache_identity,
         previous_findings=previous_findings,
     )
+
+
+def load_analysis_summary_for_roots(
+    roots: tuple[Path, ...],
+    config: DetectorConfig | None = None,
+    *,
+    analysis_cache_dir: Path | None = None,
+    source_policy: PythonSourcePathPolicy | None = None,
+) -> AnalysisFindingSummary | None:
+    """Load count-only detector findings from persistent cache."""
+
+    config = config or DetectorConfig()
+    if analysis_cache_dir is None:
+        return None
+    identity_authority = AnalysisCacheIdentityAuthority(
+        roots,
+        config,
+        source_policy,
+    )
+    cache_identity = identity_authority.cache_identity()
+    summary_lookup = AnalysisFindingCache(analysis_cache_dir).load_summary(
+        cache_identity
+    )
+    if (
+        summary_lookup.status is not AnalysisCacheStatus.HIT
+        or summary_lookup.summary is None
+    ):
+        return None
+    return summary_lookup.summary
 
 
 def analysis_cache_dir_for_root(
@@ -865,6 +914,16 @@ class FastCachedPathAnalysisAuthority:
             return None
         return self._partial_result(cache_result)
 
+    def summary_result(self) -> AnalysisFindingSummary | None:
+        if not self._request.use_parse_cache:
+            return None
+        return load_analysis_summary_for_roots(
+            self._request.roots,
+            self._request.config,
+            analysis_cache_dir=self._request.analysis_cache_dir,
+            source_policy=self._request.source_policy,
+        )
+
     def _load_cache_result(self) -> CachedAnalysisResult:
         return load_analysis_cache_for_roots(
             self._request.roots,
@@ -876,8 +935,8 @@ class FastCachedPathAnalysisAuthority:
     @staticmethod
     def _can_reuse_previous(cache_result: CachedAnalysisResult) -> bool:
         return bool(
-            cache_result.current_identity is not None
-            and cache_result.previous_identity is not None
+            cache_result.cache_identity is not None
+            and cache_result.previous_cache_identity is not None
             and cache_result.previous_findings
         )
 
@@ -885,13 +944,13 @@ class FastCachedPathAnalysisAuthority:
         self,
         cache_result: CachedAnalysisResult,
     ) -> CachedAnalysisResult:
-        if cache_result.current_identity is None:
-            raise ValueError("partial cache reuse requires current identity")
-        if cache_result.previous_identity is None:
-            raise ValueError("partial cache reuse requires previous identity")
+        if cache_result.cache_identity is None:
+            raise ValueError("partial cache reuse requires cache identity")
+        if cache_result.previous_cache_identity is None:
+            raise ValueError("partial cache reuse requires previous cache identity")
         changed_paths = ChangedSourcePathAuthority.paths(
-            cache_result.current_identity,
-            cache_result.previous_identity,
+            cache_result.cache_identity,
+            cache_result.previous_cache_identity,
         )
         changed_findings = self._changed_findings(changed_paths)
         findings = SortedFindingsAuthority.sort(
@@ -907,14 +966,14 @@ class FastCachedPathAnalysisAuthority:
             ]
         )
         AnalysisFindingCache(self._request.analysis_cache_dir).store(
-            cache_result.current_identity,
+            cache_result.cache_identity,
             findings,
         )
         return CachedAnalysisResult(
             findings,
             AnalysisCacheStatus.PARTIAL,
-            current_identity=cache_result.current_identity,
-            previous_identity=cache_result.previous_identity,
+            cache_identity=cache_result.cache_identity,
+            previous_cache_identity=cache_result.previous_cache_identity,
             previous_findings=cache_result.previous_findings,
         )
 

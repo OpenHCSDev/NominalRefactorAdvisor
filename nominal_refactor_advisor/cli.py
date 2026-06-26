@@ -33,6 +33,7 @@ from .analysis import (
     plan_path,
     plan_paths,
 )
+from .analysis_cache import AnalysisCacheStatus, AnalysisFindingSummary
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import default_parse_cache_dir
 from .calibration import (
@@ -107,9 +108,9 @@ from .impact_ranking import (
     RefactorImpactSearchBudget,
     build_refactor_impact_ranking,
 )
-from .models import AnalysisReport, RefactorFinding, RefactorPlan
+from .models import RefactorFinding, RefactorPlan
 from .observation_graph import build_observation_graph
-from .patterns import PATTERN_SPECS
+from .patterns import PATTERN_SPECS, PatternId
 from .planner import (
     RefactorExecutionPlanReport,
     build_refactor_execution_plan,
@@ -224,8 +225,9 @@ _CLI_ARGUMENT_SPECS = (
             default="agent",
             value_type=str,
             help=(
-                "JSON payload profile: agent, full, or summary. The agent "
-                "profile is the default and skips observation graph payloads."
+                "JSON payload profile: agent, full, summary, or loop. The agent "
+                "profile is the default and skips observation graph payloads; "
+                "loop emits compact findings for fast edit cycles."
             ),
         ),
         CliArgumentSpec(
@@ -699,9 +701,60 @@ _CLI_ARGUMENT_SPECS = (
 
 
 @dataclass(frozen=True)
+class JsonFindingCounts:
+    """Compact finding-count projection for tight-loop JSON payloads."""
+
+    summary: AnalysisFindingSummary
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "by_pattern": tuple(
+                {
+                    "pattern_id": pattern_id,
+                    "pattern_name": PATTERN_SPECS[PatternId(pattern_id)].name,
+                    "count": count,
+                }
+                for pattern_id, count in (
+                    (item.pattern_id, item.count)
+                    for item in self.summary.pattern_counts
+                )
+            ),
+            "by_detector": tuple(
+                {"detector_id": detector_id, "count": count}
+                for detector_id, count in (
+                    (item.detector_id, item.count)
+                    for item in self.summary.detector_counts
+                )
+            ),
+        }
+
+
+class JsonFindingPayloadMode(Enum):
+    """Finding-detail level emitted by one JSON payload profile."""
+
+    full = "full"
+    counts_only = "counts_only"
+
+
+class JsonFindingPayloadProjection:
+    """Build the JSON finding list for one payload mode."""
+
+    @classmethod
+    def payload(
+        cls,
+        findings: list[RefactorFinding],
+        mode: JsonFindingPayloadMode,
+    ) -> list[JsonObject]:
+        if mode is JsonFindingPayloadMode.full:
+            return [finding.to_dict() for finding in findings]
+        return []
+
+
+@dataclass(frozen=True)
 class JsonPayloadSections:
     """Declared section policy for one JSON payload profile."""
 
+    finding_payload_mode: JsonFindingPayloadMode = JsonFindingPayloadMode.full
     source_index: bool = True
     observation_graph: bool = True
     observation_fibers: bool = True
@@ -718,6 +771,17 @@ class JsonPayloadSections:
     @property
     def needs_candidate_projection(self) -> bool:
         return self.semantic_refactor_gate or self.candidate_payload
+
+    @property
+    def lightweight_status_payload(self) -> bool:
+        return (
+            not self.source_index
+            and not self.needs_observation_graph
+            and not self.semantic_refactor_gate
+            and not self.candidate_payload
+            and not self.finding_recipe_plan
+            and not self.default_impact_ranking
+        )
 
 
 @dataclass(frozen=True)
@@ -765,6 +829,17 @@ class JsonPayloadProfile(Enum):
         payload_timing=True,
         default_impact_ranking=False,
     )
+    loop = JsonPayloadSections(
+        finding_payload_mode=JsonFindingPayloadMode.counts_only,
+        source_index=False,
+        observation_graph=False,
+        observation_fibers=False,
+        semantic_refactor_gate=False,
+        candidate_payload=False,
+        finding_recipe_plan=False,
+        payload_timing=True,
+        default_impact_ranking=False,
+    )
 
     @classmethod
     def from_cli_value(cls, raw_value: str) -> "JsonPayloadProfile":
@@ -798,17 +873,17 @@ class JsonPayloadImpactRankingPolicy:
         return True
 
     @property
-    def treats_summary_as_raw_findings(self) -> bool:
+    def lightweight_profile_acknowledges_raw_findings(self) -> bool:
         return (
             self.json_enabled
-            and self.payload_profile is JsonPayloadProfile.summary
+            and self.payload_profile.sections.lightweight_status_payload
             and not self.include_impact_ranking
         )
 
 
 @dataclass(frozen=True)
 class JsonSummaryPreparseCachePolicy:
-    """Decide whether summary JSON can consult analysis cache before parsing."""
+    """Decide whether lightweight JSON can consult cache before parsing."""
 
     json_enabled: bool
     payload_profile: JsonPayloadProfile
@@ -820,7 +895,7 @@ class JsonSummaryPreparseCachePolicy:
     def enabled(self) -> bool:
         return (
             self.json_enabled
-            and self.payload_profile is JsonPayloadProfile.summary
+            and self.payload_profile.sections.lightweight_status_payload
             and not self.load_bearing_ranking_enabled
             and not self.codemod_requested
             and self.analysis_cache_dir is not None
@@ -850,6 +925,48 @@ class JsonPayloadBuildTiming:
 
 
 @dataclass(frozen=True)
+class JsonFindingPayloadEnvelope:
+    """Shared finding/planning envelope for JSON scan payloads."""
+
+    summary: AnalysisFindingSummary
+    section_policy: JsonPayloadSections
+    finding_payload: list[JsonObject]
+    plan_payload: tuple[JsonObject, ...] = ()
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "findings": self.finding_payload,
+            "plans": self.plan_payload,
+            "finding_payload_mode": (
+                self.section_policy.finding_payload_mode.value
+            ),
+            "finding_count": self.summary.finding_count,
+            "finding_counts": JsonFindingCounts(self.summary).to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class JsonLoopCachePayloadBuilder:
+    """Build loop JSON directly from an exact cache-summary hit."""
+
+    summary: AnalysisFindingSummary
+    timing: ScanTiming
+
+    def to_dict(self) -> JsonObject:
+        payload_started = perf_counter()
+        payload = JsonFindingPayloadEnvelope(
+            summary=self.summary,
+            section_policy=JsonPayloadProfile.loop.sections,
+            finding_payload=[],
+        ).to_dict()
+        payload["timing"] = self.timing.to_dict()
+        payload["payload_timing"] = JsonPayloadBuildTiming(
+            total_seconds=round(perf_counter() - payload_started, 3),
+        ).to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
 class JsonPayloadBuilder:
     """Build the JSON report payload for one advisor scan."""
 
@@ -869,9 +986,16 @@ class JsonPayloadBuilder:
     def to_dict(self) -> JsonObject:
         payload_started = perf_counter()
         sections = self.payload_sections
-        report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
-        payload = report.to_dict()
-        payload["findings"] = [finding.to_dict() for finding in self.findings]
+        finding_tuple = tuple(self.findings)
+        payload = JsonFindingPayloadEnvelope(
+            summary=AnalysisFindingSummary.from_findings(finding_tuple),
+            section_policy=sections,
+            finding_payload=JsonFindingPayloadProjection.payload(
+                self.findings,
+                sections.finding_payload_mode,
+            ),
+            plan_payload=tuple(plan.to_dict() for plan in self.plans),
+        ).to_dict()
         snapshot_demand = JsonPayloadSourceSnapshotDemand(
             sections=sections,
             impact_ranking_report=self.impact_ranking,
@@ -4410,7 +4534,7 @@ def main() -> int:
             or codemod_scan_query_mode.requested,
             raw_findings=(
                 args.raw_findings
-                or impact_ranking_policy.treats_summary_as_raw_findings
+                or impact_ranking_policy.lightweight_profile_acknowledges_raw_findings
             ),
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
@@ -4427,17 +4551,41 @@ def main() -> int:
         fast_cache_result = None
         if codemod_scan_query_mode.needs_analysis and preparse_cache_policy.enabled:
             started = perf_counter()
-            fast_cache_result = FastCachedPathAnalysisAuthority(
-                CachedPathAnalysisRequest(
-                    roots=roots,
-                    config=config,
-                    cache_dir=parse_cache_dir,
-                    use_parse_cache=args.use_parse_cache,
-                    parse_workers=args.parse_workers,
-                    analysis_workers=args.analysis_workers,
-                    source_policy=source_policy,
-                )
-            ).result()
+            fast_cache_request = CachedPathAnalysisRequest(
+                roots=roots,
+                config=config,
+                cache_dir=parse_cache_dir,
+                use_parse_cache=args.use_parse_cache,
+                parse_workers=args.parse_workers,
+                analysis_workers=args.analysis_workers,
+                source_policy=source_policy,
+            )
+            fast_cache_authority = FastCachedPathAnalysisAuthority(
+                fast_cache_request
+            )
+            if (
+                json_payload_profile is JsonPayloadProfile.loop
+                and not path_scope.has_report_filter
+            ):
+                summary_cache_result = fast_cache_authority.summary_result()
+                if summary_cache_result is not None:
+                    analysis_seconds = round(perf_counter() - started, 3)
+                    timing = ScanTiming(
+                        parse_seconds=0.0,
+                        analysis_seconds=analysis_seconds,
+                        analysis_cache_status=AnalysisCacheStatus.HIT,
+                    )
+                    print(
+                        json.dumps(
+                            JsonLoopCachePayloadBuilder(
+                                summary_cache_result,
+                                timing,
+                            ).to_dict(),
+                            indent=2,
+                        )
+                    )
+                    return 0
+            fast_cache_result = fast_cache_authority.result()
             fast_cache_seconds = round(perf_counter() - started, 3)
         if fast_cache_result is not None:
             modules = []

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 import hashlib
@@ -28,7 +29,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 4
+    version: int = 5
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -58,6 +59,60 @@ def analysis_cache_lookup(
     """Build the canonical cache lookup record for one status."""
 
     return AnalysisCacheLookup(status, findings)
+
+
+@dataclass(frozen=True)
+class AnalysisFindingPatternCount:
+    """Cached finding count for one canonical pattern id."""
+
+    pattern_id: int
+    count: int
+
+
+@dataclass(frozen=True)
+class AnalysisFindingDetectorCount:
+    """Cached finding count for one detector id."""
+
+    detector_id: str
+    count: int
+
+
+@dataclass(frozen=True)
+class AnalysisFindingSummary:
+    """Small cache payload for count-only advisor loops."""
+
+    finding_count: int
+    pattern_counts: tuple[AnalysisFindingPatternCount, ...]
+    detector_counts: tuple[AnalysisFindingDetectorCount, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        findings: list[RefactorFinding] | tuple[RefactorFinding, ...],
+    ) -> "AnalysisFindingSummary":
+        return cls(
+            finding_count=len(findings),
+            pattern_counts=tuple(
+                AnalysisFindingPatternCount(pattern_id, count)
+                for pattern_id, count in sorted(
+                    Counter(int(finding.pattern_id) for finding in findings).items()
+                )
+            ),
+            detector_counts=tuple(
+                AnalysisFindingDetectorCount(detector_id, count)
+                for detector_id, count in sorted(
+                    Counter(finding.detector_id for finding in findings).items()
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class AnalysisFindingSummaryLookup:
+    """Result of consulting the count-only analysis summary cache."""
+
+    status: AnalysisCacheStatus
+    summary: AnalysisFindingSummary | None = None
 
 
 @dataclass(frozen=True)
@@ -351,9 +406,33 @@ class AnalysisFindingCache:
             with self._entry_path(identity).open("wb") as handle:
                 pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
             if isinstance(identity, AnalysisCacheIdentity):
+                self._store_summary(
+                    identity,
+                    AnalysisFindingSummary.from_findings(findings),
+                )
                 self._store_latest(identity, findings)
         except OSError:
             return
+
+    def load_summary(
+        self,
+        identity: AnalysisCacheIdentity,
+    ) -> AnalysisFindingSummaryLookup:
+        if self.storage_root is None:
+            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.DISABLED)
+        summary_path = self._summary_path(identity)
+        if not summary_path.is_file():
+            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
+        with summary_path.open("rb") as handle:
+            payload = pickle.load(handle)
+        if not isinstance(payload, dict):
+            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
+        if payload.get("identity") != identity:
+            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
+        summary = payload.get("summary")
+        if not isinstance(summary, AnalysisFindingSummary):
+            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
+        return AnalysisFindingSummaryLookup(AnalysisCacheStatus.HIT, summary)
 
     def load_latest(
         self,
@@ -405,6 +484,15 @@ class AnalysisFindingCache:
         with self._latest_path(family_identity).open("wb") as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
+    def _store_summary(
+        self,
+        identity: AnalysisCacheIdentity,
+        summary: AnalysisFindingSummary,
+    ) -> None:
+        payload = {"identity": identity, "summary": summary}
+        with self._summary_path(identity).open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
     def _entry_path(
         self,
         identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
@@ -417,6 +505,11 @@ class AnalysisFindingCache:
         if self.storage_root is None:
             raise ValueError("analysis cache directory is disabled")
         return self.storage_root / f"latest-{family_identity.cache_token}.pickle"
+
+    def _summary_path(self, identity: AnalysisCacheIdentity) -> Path:
+        if self.storage_root is None:
+            raise ValueError("analysis cache directory is disabled")
+        return self.storage_root / f"{identity.cache_token}.summary.pickle"
 
 
 def detector_config_signature(

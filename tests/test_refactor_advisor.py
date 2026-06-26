@@ -5436,6 +5436,38 @@ def test_analysis_cache_identity_survives_content_preserving_touch(
     assert second_identity == first_identity
 
 
+def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module_path = tmp_path / "pkg" / "mod.py"
+    config = DetectorConfig()
+    identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Cached summary",
+        "cached summary",
+        "cached summary",
+        "cached summary",
+    ).build(
+        "summary_detector",
+        "cached summary finding",
+        (SourceLocation(str(module_path), 2, "Cached"),),
+    )
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+
+    cache.store(identity, [finding])
+    summary_lookup = cache.load_summary(identity)
+
+    assert summary_lookup.status is AnalysisCacheStatus.HIT
+    assert summary_lookup.summary is not None
+    assert summary_lookup.summary.finding_count == 1
+    assert summary_lookup.summary.pattern_counts[0].pattern_id == (
+        PatternId.NOMINAL_BOUNDARY.value
+    )
+    assert summary_lookup.summary.detector_counts[0].detector_id == (
+        "summary_detector"
+    )
+
+
 def test_analyze_paths_reuses_detector_findings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -15810,6 +15842,92 @@ def test_json_payload_summary_skips_source_backed_sections(
     assert "semantic_refactor_gate" not in payload
     assert "finding_recipe_plan" not in payload
     assert "payload_timing" in payload
+
+
+def test_json_payload_loop_uses_counts_only_finding_projection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Compact loop finding",
+        "compact loop finding",
+        "compact loop finding",
+        "compact loop finding",
+    ).build(
+        "compact_loop_detector",
+        "compact loop summary",
+        (SourceLocation(str(module_path), 2, "Alpha"),),
+    )
+
+    def fail_full_finding_serialization(self: RefactorFinding) -> dict[str, object]:
+        raise AssertionError("loop payload should not serialize full findings")
+
+    monkeypatch.setattr(
+        RefactorFinding,
+        "to_dict",
+        fail_full_finding_serialization,
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=[finding],
+        plans=[],
+        modules=modules,
+        payload_sections=JsonPayloadProfile.loop.sections,
+    ).to_dict()
+    finding_counts = cast(dict[str, object], payload["finding_counts"])
+
+    assert payload["finding_payload_mode"] == "counts_only"
+    assert payload["finding_count"] == 1
+    assert payload["findings"] == []
+    assert "source_index" not in payload
+    assert "semantic_refactor_gate" not in payload
+    assert "finding_recipe_plan" not in payload
+    assert cast(tuple[dict[str, object], ...], finding_counts["by_pattern"])[0][
+        "count"
+    ] == 1
+
+
+def test_module_cli_loop_payload_allows_no_impact_ranking_without_raw_bulk(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "class Alpha:\n"
+        "    KIND = 'shared'\n\n"
+        "class Beta:\n"
+        "    KIND = 'shared'\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--json",
+            "--json-payload",
+            "loop",
+            "--no-impact-ranking",
+            (tmp_path / "pkg").as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["finding_payload_mode"] == "counts_only"
+    assert payload["findings"] == []
+    assert "source_index" not in payload
+    assert "semantic_refactor_gate" not in payload
+    assert "finding_recipe_plan" not in payload
 
 
 def test_json_payload_agent_skips_observation_graph_only(
