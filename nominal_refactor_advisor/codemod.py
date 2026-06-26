@@ -2701,9 +2701,41 @@ class OperationTemplateTargetContext:
     """Whitelisted target metadata available to operation-template strings."""
 
     target: AstTargetDigest
+    target_source: str
+
+    @classmethod
+    def template_field_names(cls) -> tuple[str, ...]:
+        return (
+            "target_id",
+            "file_path",
+            "node_kind",
+            "name",
+            "qualname",
+            "line",
+            "end_line",
+            "source",
+            "leading_indent",
+        )
+
+    @classmethod
+    def from_selector_context(
+        cls,
+        target: AstTargetDigest,
+        selector_context: CodemodSelectorContext,
+    ) -> "OperationTemplateTargetContext":
+        return cls(
+            target=target,
+            target_source="".join(
+                SourceTargetEditor(
+                    selector_context.sources_by_file_path,
+                    target,
+                ).target_lines
+            ),
+        )
 
     @property
     def target_bindings(self) -> Mapping[str, str]:
+        source = self.target_source
         return {
             "target_id": self.target.target_id,
             "file_path": self.target.file_path,
@@ -2712,7 +2744,16 @@ class OperationTemplateTargetContext:
             "qualname": self.target.qualname,
             "line": str(self.target.line),
             "end_line": str(self.target.end_line),
+            "source": source,
+            "leading_indent": self.leading_indent_for_source(source),
         }
+
+    @staticmethod
+    def leading_indent_for_source(source: str) -> str:
+        if not source:
+            return ""
+        first_line = source.splitlines()[0]
+        return first_line[: len(first_line) - len(first_line.lstrip())]
 
     def expanded_json_value(self, value: JsonValue) -> JsonValue:
         if isinstance(value, str):
@@ -2787,11 +2828,16 @@ class RefactorRecipeOperationTemplate:
     def operation_for_target(
         self,
         target: AstTargetDigest,
+        selector_context: CodemodSelectorContext,
         *,
         default_rationale: str = "",
     ) -> "RefactorRecipeOperation":
+        template_context = OperationTemplateTargetContext.from_selector_context(
+            target,
+            selector_context,
+        )
         payload = {
-            key: OperationTemplateTargetContext(target).expanded_json_value(value)
+            key: template_context.expanded_json_value(value)
             for key, value in self.fields.items()
         }
         payload.update(
@@ -4614,14 +4660,13 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> tuple[SourceLineReplacement, ...]:
+        context = self.selector_context(source_index, source_by_path, selector_context)
         return tuple(
             replacement
-            for target_id in self.selected_target_ids(
-                self.selector_context(source_index, source_by_path, selector_context)
-            )
+            for target_id in self.selected_target_ids(context)
             for template in self.operation_templates
             for replacement in self.operation_for_template(
-                source_index,
+                context,
                 target_id,
                 template,
             ).line_replacements(source_index, source_by_path)
@@ -4629,13 +4674,14 @@ class ApplySelectedTargetsOperation(SelectedTargetsOperation):
 
     def operation_for_template(
         self,
-        source_index: SourceIndex,
+        selector_context: CodemodSelectorContext,
         target_id: str,
         template: RefactorRecipeOperationTemplate,
     ) -> RefactorRecipeOperation:
-        target_digest = source_index.target_by_id[target_id]
+        target_digest = selector_context.source_index.target_by_id[target_id]
         return template.operation_for_target(
             target_digest,
+            selector_context,
             default_rationale=self.rationale,
         )
 
@@ -7797,6 +7843,9 @@ class CodemodDslManifest:
             ),
             "operation_target_fields": tuple(
                 field.to_dict() for field in codemod_target_fields()
+            ),
+            "operation_template_target_fields": (
+                OperationTemplateTargetContext.template_field_names()
             ),
             "selection_count_fields": tuple(
                 field.to_dict() for field in codemod_selection_count_fields()

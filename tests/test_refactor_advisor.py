@@ -9409,6 +9409,11 @@ def test_codemod_dsl_manifest_describes_operations_and_selectors() -> None:
         "setup_operations",
         "operation_templates",
     )
+    assert set(manifest["operation_template_target_fields"]) >= {
+        "qualname",
+        "source",
+        "leading_indent",
+    }
     assert (
         manifest["operation_plan_template_example"]["setup_operations"][0]["operation"]
         == "create_file"
@@ -11253,6 +11258,82 @@ def test_module_cli_scaffolds_selected_operation_plan_from_stdin_template(
     assert payload["document"]["recipes"][0]["operations"][0]["operation"] == (
         "apply_selected_targets"
     )
+
+
+def test_module_cli_selected_operation_plan_expands_target_source(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n\n\n"
+            "class Beta:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n"
+        ),
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "file_paths": [module_path.as_posix()],
+                "qualname_patterns": ["^(Alpha|Beta)\\.run$"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    template_path = tmp_path / "operation-template.json"
+    template_path.write_text(
+        json.dumps(
+            [
+                {
+                    "operation": "replace_text",
+                    "old_source": "${target.source}",
+                    "new_source": (
+                        "${target.leading_indent}def run(self, value):\n"
+                        "${target.leading_indent}    return modern("
+                        "'${target.qualname}', value)\n"
+                    ),
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            selector_path.as_posix(),
+            "--codemod-operation-template",
+            template_path.as_posix(),
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied"] is False
+    assert payload["applied_rewrite_count"] == 2
+    assert payload["parse_valid"] is True
+    assert "modern('Alpha.run', value)" in payload["unified_diff"]
+    assert "modern('Beta.run', value)" in payload["unified_diff"]
+    assert "modern(" not in module_path.read_text()
 
 
 def test_module_cli_executes_multifile_selected_operation_plan_template(
