@@ -62,8 +62,11 @@ from .codemod import (
     JsonArray,
     JsonObject,
     JsonValue,
+    NEW_SOURCE_PAYLOAD_FIELD,
+    OLD_SOURCE_PAYLOAD_FIELD,
     PlannedSourceRewrite,
     RefactorRecipe,
+    RefactorRecipeOperationKind,
     RefactorRecipeOperation,
     RefactorRecipeOperationPlanTemplate,
     RefactorRecipeOperationTemplate,
@@ -892,6 +895,8 @@ class CodemodAuthoringBundleCommandContext:
     roots: tuple[Path, ...]
     evidence_selector_file: Path
     replacement_plan_file: Path
+    operation_template_file: Path
+    selected_operation_plan_file: Path
     cwd: Path
 
     @property
@@ -905,6 +910,14 @@ class CodemodAuthoringBundleCommandContext:
     @property
     def plan_arg(self) -> str:
         return self.replacement_plan_file.as_posix()
+
+    @property
+    def operation_template_arg(self) -> str:
+        return self.operation_template_file.as_posix()
+
+    @property
+    def selected_operation_plan_arg(self) -> str:
+        return self.selected_operation_plan_file.as_posix()
 
 
 class CodemodAuthoringBundleCommandTemplate(ABC, metaclass=AutoRegisterMeta):
@@ -1025,6 +1038,69 @@ class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplat
     execution_flag = "--codemod-apply"
 
 
+class ScaffoldSelectedOperationPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+    action_id = "scaffold_selected_operation_plan"
+    registry_order = 60
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-selected-operation-plan",
+            context.selector_arg,
+            "--codemod-operation-template",
+            context.operation_template_arg,
+            "--codemod-plan-out",
+            context.selected_operation_plan_arg,
+        )
+
+
+class SelectedOperationPlanExecutionCommandTemplate(
+    CodemodAuthoringBundleCommandTemplate,
+    ABC,
+):
+    execution_flag: ClassVar[str]
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-selected-operation-plan",
+            context.selector_arg,
+            "--codemod-operation-template",
+            context.operation_template_arg,
+            self.execution_flag,
+        )
+
+
+class PreflightSelectedOperationPlanCommandTemplate(
+    SelectedOperationPlanExecutionCommandTemplate
+):
+    action_id = "preflight_selected_operation_plan"
+    registry_order = 70
+    execution_flag = "--codemod-preflight"
+
+
+class SimulateSelectedOperationPlanCommandTemplate(
+    SelectedOperationPlanExecutionCommandTemplate
+):
+    action_id = "simulate_selected_operation_plan"
+    registry_order = 80
+    execution_flag = "--codemod-simulate"
+
+
+class ApplySelectedOperationPlanCommandTemplate(
+    SelectedOperationPlanExecutionCommandTemplate
+):
+    action_id = "apply_selected_operation_plan"
+    registry_order = 90
+    execution_flag = "--codemod-apply"
+
+
 @dataclass(frozen=True)
 class CodemodAuthoringBundleWriter:
     """Materialize per-finding synthesis authoring artifacts for agents."""
@@ -1061,9 +1137,20 @@ class CodemodAuthoringBundleWriter:
         selector_path = record_dir / "selector.json"
         scaffold_path = record_dir / "replacement-scaffold.json"
         plan_path = record_dir / "replacement-plan.json"
+        operation_template_path = record_dir / "selected-operation-template.json"
+        selected_scaffold_path = record_dir / "selected-operation-scaffold.json"
+        selected_plan_path = record_dir / "selected-operation-plan.json"
+        operation_template = self.selected_operation_plan_template()
+        selected_scaffold = self.snapshot.selected_operation_plan_scaffold_report(
+            authoring_record.evidence_selector,
+            operation_template,
+        )
         write_cli_json_artifact(selector_path, selector_payload)
         write_cli_json_artifact(scaffold_path, scaffold.to_dict())
         write_cli_json_artifact(plan_path, scaffold.document.to_dict())
+        write_cli_json_artifact(operation_template_path, operation_template.to_dict())
+        write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
+        write_cli_json_artifact(selected_plan_path, selected_scaffold.document.to_dict())
         return {
             "record_index": record_index,
             "finding_id": authoring_record.finding_id,
@@ -1074,9 +1161,23 @@ class CodemodAuthoringBundleWriter:
                 self.output_dir
             ).as_posix(),
             "replacement_plan_path": plan_path.relative_to(self.output_dir).as_posix(),
+            "selected_operation_template_path": operation_template_path.relative_to(
+                self.output_dir
+            ).as_posix(),
+            "selected_operation_scaffold_path": selected_scaffold_path.relative_to(
+                self.output_dir
+            ).as_posix(),
+            "selected_operation_plan_path": selected_plan_path.relative_to(
+                self.output_dir
+            ).as_posix(),
             "commands": tuple(
                 command.to_dict()
-                for command in self.command_specs(selector_path, plan_path)
+                for command in self.command_specs(
+                    selector_path,
+                    plan_path,
+                    operation_template_path,
+                    selected_plan_path,
+                )
             ),
             "authoring_record": authoring_record.to_dict(),
         }
@@ -1088,17 +1189,35 @@ class CodemodAuthoringBundleWriter:
         self,
         evidence_selector_file: Path,
         replacement_plan_file: Path,
+        operation_template_file: Path,
+        selected_operation_plan_file: Path,
     ) -> tuple[CodemodCliCommandSpec, ...]:
         context = CodemodAuthoringBundleCommandContext(
             roots=self.roots,
             evidence_selector_file=evidence_selector_file,
             replacement_plan_file=replacement_plan_file,
+            operation_template_file=operation_template_file,
+            selected_operation_plan_file=selected_operation_plan_file,
             cwd=self.cwd,
         )
         return tuple(
             template_type().command_spec(context)
             for template_type in (
                 CodemodAuthoringBundleCommandTemplate.ordered_template_types()
+            )
+        )
+
+    @staticmethod
+    def selected_operation_plan_template() -> RefactorRecipeOperationPlanTemplate:
+        return RefactorRecipeOperationPlanTemplate.from_operation_templates(
+            (
+                RefactorRecipeOperationTemplate.from_payload(
+                    {
+                        "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
+                        OLD_SOURCE_PAYLOAD_FIELD: "${target.source}",
+                        NEW_SOURCE_PAYLOAD_FIELD: "${target.source}",
+                    }
+                ),
             )
         )
 

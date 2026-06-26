@@ -10668,6 +10668,12 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     )
     replacement_plan_path = bundle_dir / bundle_record["replacement_plan_path"]
     replacement_plan = load_codemod_plan_document(replacement_plan_path)
+    selected_template_path = (
+        bundle_dir / bundle_record["selected_operation_template_path"]
+    )
+    selected_template = json.loads(selected_template_path.read_text(encoding="utf-8"))
+    selected_plan_path = bundle_dir / bundle_record["selected_operation_plan_path"]
+    selected_plan = load_codemod_plan_document(selected_plan_path)
     commands = {
         command["action_id"]: command
         for command in bundle_record["commands"]
@@ -10684,18 +10690,39 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert bundle_selector == selector_payload
     assert bundle_record["authoring_record"] == records[0]
     assert bundle_record["replacement_plan_path"].endswith("replacement-plan.json")
+    assert bundle_record["selected_operation_template_path"].endswith(
+        "selected-operation-template.json"
+    )
+    assert bundle_record["selected_operation_plan_path"].endswith(
+        "selected-operation-plan.json"
+    )
     assert replacement_plan.has_recipes
+    assert selected_plan.has_recipes
+    assert selected_template["operation_templates"][0]["old_source"] == (
+        "${target.source}"
+    )
+    assert selected_template["operation_templates"][0]["new_source"] == (
+        "${target.source}"
+    )
     assert set(commands) == {
         "resolve_selector",
         "scaffold_replacement_plan",
         "validate_replacement_plan",
         "simulate_replacement_plan",
         "apply_replacement_plan",
+        "scaffold_selected_operation_plan",
+        "preflight_selected_operation_plan",
+        "simulate_selected_operation_plan",
+        "apply_selected_operation_plan",
     }
     assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
     assert commands["simulate_replacement_plan"]["args"][-2:] == [
         replacement_plan_path.as_posix(),
         "--codemod-simulate",
+    ]
+    assert commands["scaffold_selected_operation_plan"]["args"][-2:] == [
+        "--codemod-plan-out",
+        selected_plan_path.as_posix(),
     ]
 
     validate_command = commands["validate_replacement_plan"]
@@ -10708,6 +10735,19 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     )
 
     assert validate_result.returncode == 0, validate_result.stderr
+
+    preflight_command = commands["preflight_selected_operation_plan"]
+    preflight_result = subprocess.run(
+        preflight_command["argv"],
+        cwd=preflight_command["cwd"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    preflight_payload = json.loads(preflight_result.stdout)
+
+    assert preflight_result.returncode == 0, preflight_result.stderr
+    assert preflight_payload["preflight_failed"] is False
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
