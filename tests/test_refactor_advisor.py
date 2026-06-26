@@ -10285,9 +10285,13 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
         for workflow in payload["authoring_workflows"]
     }
     assert "replacement_plan" in payload["authoring_artifact_roles"]
+    assert "goal_replay_plan" in payload["authoring_artifact_roles"]
     assert "simulate_replacement_plan" in command_actions
     assert command_actions["simulate_replacement_plan"]["class_name"] == (
         "SimulateReplacementPlanCommandTemplate"
+    )
+    assert command_actions["run_goal_refactor"]["class_name"] == (
+        "RunGoalRefactorCommandTemplate"
     )
     assert workflows["replacement_plan"]["editable_artifact_roles"] == [
         "replacement_plan",
@@ -10298,6 +10302,10 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
         "selected_operation_plan",
     ]
+    assert workflows["goal_refactor"]["generated_artifact_roles"] == [
+        "goal_replay_plan",
+    ]
+    assert workflows["goal_refactor"]["default_next_action_id"] == "run_goal_refactor"
     target_sources = {
         source["source_id"]: source
         for source in payload["selected_operation_target_selector_sources"]
@@ -11748,6 +11756,7 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert bundle_record["selected_operation_plan_path"].endswith(
         "selected-operation-plan.json"
     )
+    assert bundle_record["goal_replay_plan_path"].endswith("goal-replay-plan.json")
     assert replacement_plan.has_recipes
     assert selected_plan.has_recipes
     assert selected_template["operation_templates"][0]["old_source"] == (
@@ -11766,12 +11775,20 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         "preflight_selected_operation_plan",
         "simulate_selected_operation_plan",
         "apply_selected_operation_plan",
+        "run_goal_refactor",
+        "simulate_goal_replay_plan",
+        "apply_goal_replay_plan",
     }
-    assert set(workflows) == {"replacement_plan", "selected_operation_template"}
+    assert set(workflows) == {
+        "replacement_plan",
+        "selected_operation_template",
+        "goal_refactor",
+    }
     assert set(workflows["replacement_plan"]["command_action_ids"]) <= set(commands)
     assert set(workflows["selected_operation_template"]["command_action_ids"]) <= set(
         commands
     )
+    assert set(workflows["goal_refactor"]["command_action_ids"]) <= set(commands)
     assert workflows["replacement_plan"]["editable_artifacts"] == [
         bundle_record["replacement_plan_path"]
     ]
@@ -11796,6 +11813,13 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert workflows["selected_operation_template"]["default_next_action_id"] == (
         "simulate_selected_operation_plan"
     )
+    assert workflows["goal_refactor"]["generated_artifacts"] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
+    assert workflows["goal_refactor"]["generated_artifact_roles"] == [
+        "goal_replay_plan"
+    ]
+    assert workflows["goal_refactor"]["default_next_action_id"] == "run_goal_refactor"
     assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
     assert commands["simulate_replacement_plan"]["args"][-2:] == [
         replacement_plan_path.as_posix(),
@@ -11805,6 +11829,18 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         "--codemod-plan-out",
         selected_plan_path.as_posix(),
     ]
+    assert commands["run_goal_refactor"]["args"][:3] == [
+        tmp_path.as_posix(),
+        "--codemod-refactor-goal",
+        "nominal_boundary_extraction",
+    ]
+    assert commands["run_goal_refactor"]["args"][
+        commands["run_goal_refactor"]["args"].index("--codemod-goal-finding-id") + 1
+    ] == records[0]["finding_id"]
+    assert commands["run_goal_refactor"]["args"][
+        commands["run_goal_refactor"]["args"].index("--codemod-goal-plan-out") + 1
+    ] == (bundle_dir / bundle_record["goal_replay_plan_path"]).as_posix()
+    assert commands["run_goal_refactor"]["args"][-1] == "--json"
 
     validate_command = commands["validate_replacement_plan"]
     validate_result = subprocess.run(
@@ -11829,6 +11865,89 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
 
     assert preflight_result.returncode == 0, preflight_result.stderr
     assert preflight_payload["preflight_failed"] is False
+
+
+def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    bundle_dir = tmp_path / "authoring-bundle"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_record,\n"
+        "    product_record_spec,\n"
+        ")\n\n\n"
+        "class SemanticRecord:\n"
+        "    pass\n\n\n"
+        "materialize_product_record(\n"
+        "    product_record_spec(\n"
+        '        "GeneratedRecord",\n'
+        '        "path: str",\n'
+        '        "SemanticRecord",\n'
+        "    )\n"
+        ")\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-impact-ranking",
+            "--codemod-synthesize-plan",
+            "--codemod-synthesis-authoring",
+            "--codemod-authoring-bundle-out",
+            bundle_dir.as_posix(),
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    bundle_record = payload["authoring_bundle"]["records"][0]
+    commands = {
+        command["action_id"]: command
+        for command in bundle_record["commands"]
+    }
+    goal_replay_plan_path = bundle_dir / bundle_record["goal_replay_plan_path"]
+
+    assert result.returncode == 0, result.stderr
+    assert goal_replay_plan_path.exists() is False
+
+    run_goal_result = subprocess.run(
+        commands["run_goal_refactor"]["argv"],
+        cwd=commands["run_goal_refactor"]["cwd"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    run_goal_payload = json.loads(run_goal_result.stdout)
+    replay_payload = json.loads(goal_replay_plan_path.read_text(encoding="utf-8"))
+    replay_sequence = load_codemod_plan_sequence(goal_replay_plan_path)
+
+    assert run_goal_result.returncode == 0, run_goal_result.stderr
+    assert run_goal_payload["completed"] is True
+    assert run_goal_payload["achieved"] is True
+    assert run_goal_payload["replay_sequence"] == replay_payload
+    assert replay_sequence.has_recipes
+
+    simulate_result = subprocess.run(
+        commands["simulate_goal_replay_plan"]["argv"],
+        cwd=commands["simulate_goal_replay_plan"]["cwd"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    simulate_payload = json.loads(simulate_result.stdout)
+
+    assert simulate_result.returncode == 0, simulate_result.stderr
+    assert simulate_payload["applied"] is False
+    assert simulate_payload["parse_valid"] is True
+    assert "+class GeneratedRecord(SemanticRecord):" in simulate_payload["unified_diff"]
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(

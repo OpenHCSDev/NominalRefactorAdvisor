@@ -1670,6 +1670,9 @@ class CodemodAuthoringCommandActionId(str, Enum):
     PREFLIGHT_SELECTED_OPERATION_PLAN = "preflight_selected_operation_plan"
     SIMULATE_SELECTED_OPERATION_PLAN = "simulate_selected_operation_plan"
     APPLY_SELECTED_OPERATION_PLAN = "apply_selected_operation_plan"
+    RUN_GOAL_REFACTOR = "run_goal_refactor"
+    SIMULATE_GOAL_REPLAY_PLAN = "simulate_goal_replay_plan"
+    APPLY_GOAL_REPLAY_PLAN = "apply_goal_replay_plan"
 
 
 class CodemodAuthoringWorkflowId(str, Enum):
@@ -1677,6 +1680,7 @@ class CodemodAuthoringWorkflowId(str, Enum):
 
     REPLACEMENT_PLAN = "replacement_plan"
     SELECTED_OPERATION_TEMPLATE = "selected_operation_template"
+    GOAL_REFACTOR = "goal_refactor"
 
 
 class CodemodAuthoringArtifactRole(str, Enum):
@@ -1688,6 +1692,7 @@ class CodemodAuthoringArtifactRole(str, Enum):
     SELECTED_OPERATION_TEMPLATE_FILE = "selected_operation_template"
     SELECTED_OPERATION_SCAFFOLD_FILE = "selected_operation_scaffold"
     SELECTED_OPERATION_PLAN_FILE = "selected_operation_plan"
+    GOAL_REPLAY_PLAN_FILE = "goal_replay_plan"
 
 
 AuthoringTemplateRegistryKey: TypeAlias = (
@@ -1736,8 +1741,10 @@ class CodemodAuthoringBundleCommandContext:
     operation_template_file: Path
     selected_operation_scaffold_file: Path
     selected_operation_plan_file: Path
+    goal_replay_plan_file: Path
     output_dir: Path
     cwd: Path
+    finding_id: str
 
     @property
     def root_args(self) -> tuple[str, ...]:
@@ -1758,6 +1765,10 @@ class CodemodAuthoringBundleCommandContext:
     @property
     def selected_operation_plan_arg(self) -> str:
         return self.selected_operation_plan_file.as_posix()
+
+    @property
+    def goal_replay_plan_arg(self) -> str:
+        return self.goal_replay_plan_file.as_posix()
 
     def bundle_relative_path(self, path: Path) -> str:
         try:
@@ -1787,6 +1798,9 @@ class CodemodAuthoringBundleCommandContext:
             ),
             CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE: (
                 self.selected_operation_plan_file
+            ),
+            CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE: (
+                self.goal_replay_plan_file
             ),
         }[role]
 
@@ -1891,26 +1905,23 @@ class CodemodAuthoringWorkflowManifest(CodemodAuthoringWorkflowDefinition):
         return payload
 
 
-class OrderedAuthoringTemplate(ABC):
-    """Shared ordering contract for registry-backed authoring templates."""
+@dataclass(frozen=True)
+class OrderedAuthoringTemplateRegistry:
+    """Ordered view over one authoring template registry."""
 
-    __registry__: ClassVar[
-        dict[AuthoringTemplateRegistryKey, type["OrderedAuthoringTemplate"]]
-    ]
-    registry_order: ClassVar[int]
+    registry: Mapping[AuthoringTemplateRegistryKey, type]
 
-    @classmethod
-    def ordered_template_types(cls) -> tuple[type, ...]:
+    def template_types(self) -> tuple[type, ...]:
         return tuple(
             sorted(
-                cls.__registry__.values(),
+                self.registry.values(),
                 key=lambda template_type: template_type.registry_order,
             )
         )
 
 
 class CodemodAuthoringBundleWorkflowTemplate(
-    OrderedAuthoringTemplate,
+    ABC,
     metaclass=AutoRegisterMeta,
 ):
     """Registered workflow emitted into an authoring bundle record."""
@@ -2029,8 +2040,25 @@ class SelectedOperationAuthoringWorkflowTemplate(
     )
 
 
+class GoalRefactorAuthoringWorkflowTemplate(CodemodAuthoringBundleWorkflowTemplate):
+    workflow_id = CodemodAuthoringWorkflowId.GOAL_REFACTOR
+    registry_order = 30
+    description = (
+        "Run a goal-directed finding refactor, then simulate or apply the generated "
+        "staged replay plan."
+    )
+    command_action_ids = (
+        CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR,
+        CodemodAuthoringCommandActionId.SIMULATE_GOAL_REPLAY_PLAN,
+        CodemodAuthoringCommandActionId.APPLY_GOAL_REPLAY_PLAN,
+    )
+    default_next_action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
+    review_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
+    generated_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
+
+
 class CodemodAuthoringBundleCommandTemplate(
-    OrderedAuthoringTemplate,
+    ABC,
     metaclass=AutoRegisterMeta,
 ):
     """Registered command template emitted into an authoring bundle."""
@@ -2217,6 +2245,56 @@ class ApplySelectedOperationPlanCommandTemplate(
     execution_flag = "--codemod-apply"
 
 
+class RunGoalRefactorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+    action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
+    registry_order = 100
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-refactor-goal",
+            CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value,
+            "--codemod-goal-finding-id",
+            context.finding_id,
+            "--codemod-goal-plan-out",
+            context.goal_replay_plan_arg,
+            "--json",
+        )
+
+
+class GoalReplayPlanExecutionCommandTemplate(
+    CodemodAuthoringBundleCommandTemplate,
+    ABC,
+):
+    execution_flag: ClassVar[str]
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-plan",
+            context.goal_replay_plan_arg,
+            self.execution_flag,
+        )
+
+
+class SimulateGoalReplayPlanCommandTemplate(GoalReplayPlanExecutionCommandTemplate):
+    action_id = CodemodAuthoringCommandActionId.SIMULATE_GOAL_REPLAY_PLAN
+    registry_order = 110
+    execution_flag = "--codemod-simulate"
+
+
+class ApplyGoalReplayPlanCommandTemplate(GoalReplayPlanExecutionCommandTemplate):
+    action_id = CodemodAuthoringCommandActionId.APPLY_GOAL_REPLAY_PLAN
+    registry_order = 120
+    execution_flag = "--codemod-apply"
+
+
 @dataclass(frozen=True)
 class CodemodAuthoringBundleWriter:
     """Materialize per-finding synthesis authoring artifacts for agents."""
@@ -2256,6 +2334,7 @@ class CodemodAuthoringBundleWriter:
         operation_template_path = record_dir / "selected-operation-template.json"
         selected_scaffold_path = record_dir / "selected-operation-scaffold.json"
         selected_plan_path = record_dir / "selected-operation-plan.json"
+        goal_replay_plan_path = record_dir / "goal-replay-plan.json"
         operation_template = self.selected_operation_plan_template()
         selected_scaffold = self.snapshot.selected_operation_plan_scaffold_report(
             authoring_record.evidence_selector,
@@ -2268,12 +2347,14 @@ class CodemodAuthoringBundleWriter:
         write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
         write_cli_json_artifact(selected_plan_path, selected_scaffold.document.to_dict())
         context = self.authoring_context(
+            authoring_record.finding_id,
             selector_path,
             scaffold_path,
             plan_path,
             operation_template_path,
             selected_scaffold_path,
             selected_plan_path,
+            goal_replay_plan_path,
         )
         return {
             "record_index": record_index,
@@ -2294,6 +2375,9 @@ class CodemodAuthoringBundleWriter:
             "selected_operation_plan_path": selected_plan_path.relative_to(
                 self.output_dir
             ).as_posix(),
+            "goal_replay_plan_path": goal_replay_plan_path.relative_to(
+                self.output_dir
+            ).as_posix(),
             "commands": tuple(
                 command.to_dict()
                 for command in self.command_specs(context)
@@ -2310,12 +2394,14 @@ class CodemodAuthoringBundleWriter:
 
     def authoring_context(
         self,
+        finding_id: str,
         evidence_selector_file: Path,
         replacement_scaffold_file: Path,
         replacement_plan_file: Path,
         operation_template_file: Path,
         selected_operation_scaffold_file: Path,
         selected_operation_plan_file: Path,
+        goal_replay_plan_file: Path,
     ) -> CodemodAuthoringBundleCommandContext:
         return CodemodAuthoringBundleCommandContext(
             roots=self.roots,
@@ -2325,8 +2411,10 @@ class CodemodAuthoringBundleWriter:
             operation_template_file=operation_template_file,
             selected_operation_scaffold_file=selected_operation_scaffold_file,
             selected_operation_plan_file=selected_operation_plan_file,
+            goal_replay_plan_file=goal_replay_plan_file,
             output_dir=self.output_dir,
             cwd=self.cwd,
+            finding_id=finding_id,
         )
 
     def command_specs(
@@ -2335,9 +2423,9 @@ class CodemodAuthoringBundleWriter:
     ) -> tuple[CodemodCliCommandSpec, ...]:
         return tuple(
             template_type().command_spec(context)
-            for template_type in (
-                CodemodAuthoringBundleCommandTemplate.ordered_template_types()
-            )
+            for template_type in OrderedAuthoringTemplateRegistry(
+                CodemodAuthoringBundleCommandTemplate.__registry__
+            ).template_types()
         )
 
     def workflow_specs(
@@ -2346,9 +2434,9 @@ class CodemodAuthoringBundleWriter:
     ) -> tuple[CodemodAuthoringWorkflowSpec, ...]:
         return tuple(
             template_type().workflow_spec(context)
-            for template_type in (
-                CodemodAuthoringBundleWorkflowTemplate.ordered_template_types()
-            )
+            for template_type in OrderedAuthoringTemplateRegistry(
+                CodemodAuthoringBundleWorkflowTemplate.__registry__
+            ).template_types()
         )
 
     @staticmethod
@@ -2371,7 +2459,9 @@ def codemod_authoring_command_manifest_payloads() -> tuple[JsonObject, ...]:
 
     return tuple(
         template_type().command_manifest().to_dict()
-        for template_type in CodemodAuthoringBundleCommandTemplate.ordered_template_types()
+        for template_type in OrderedAuthoringTemplateRegistry(
+            CodemodAuthoringBundleCommandTemplate.__registry__
+        ).template_types()
     )
 
 
@@ -2380,9 +2470,9 @@ def codemod_authoring_workflow_manifest_payloads() -> tuple[JsonObject, ...]:
 
     return tuple(
         template_type().workflow_manifest().to_dict()
-        for template_type in (
-            CodemodAuthoringBundleWorkflowTemplate.ordered_template_types()
-        )
+        for template_type in OrderedAuthoringTemplateRegistry(
+            CodemodAuthoringBundleWorkflowTemplate.__registry__
+        ).template_types()
     )
 
 
