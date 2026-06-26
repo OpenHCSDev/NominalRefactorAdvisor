@@ -10293,6 +10293,27 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert command_actions["run_goal_refactor"]["class_name"] == (
         "RunGoalRefactorCommandTemplate"
     )
+    assert command_actions["run_goal_refactor"]["required_artifact_roles"] == []
+    assert command_actions["run_goal_refactor"]["generated_artifact_roles"] == [
+        "goal_replay_plan"
+    ]
+    assert command_actions["simulate_goal_replay_plan"][
+        "required_artifact_roles"
+    ] == ["goal_replay_plan"]
+    assert command_actions["simulate_goal_replay_plan"][
+        "generated_artifact_roles"
+    ] == []
+    assert command_actions["scaffold_selected_operation_plan"][
+        "required_artifact_roles"
+    ] == [
+        "evidence_selector",
+        "selected_operation_template",
+    ]
+    assert command_actions["scaffold_selected_operation_plan"][
+        "generated_artifact_roles"
+    ] == [
+        "selected_operation_plan",
+    ]
     assert workflows["replacement_plan"]["editable_artifact_roles"] == [
         "replacement_plan",
     ]
@@ -11841,6 +11862,38 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         commands["run_goal_refactor"]["args"].index("--codemod-goal-plan-out") + 1
     ] == (bundle_dir / bundle_record["goal_replay_plan_path"]).as_posix()
     assert commands["run_goal_refactor"]["args"][-1] == "--json"
+    assert commands["run_goal_refactor"]["required_artifact_roles"] == []
+    assert commands["run_goal_refactor"]["required_artifacts"] == []
+    assert commands["run_goal_refactor"]["generated_artifact_roles"] == [
+        "goal_replay_plan"
+    ]
+    assert commands["run_goal_refactor"]["generated_artifacts"] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
+    assert commands["simulate_goal_replay_plan"]["required_artifact_roles"] == [
+        "goal_replay_plan"
+    ]
+    assert commands["simulate_goal_replay_plan"]["required_artifacts"] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
+    assert commands["scaffold_selected_operation_plan"][
+        "required_artifact_roles"
+    ] == [
+        "evidence_selector",
+        "selected_operation_template",
+    ]
+    assert commands["scaffold_selected_operation_plan"]["required_artifacts"] == [
+        bundle_record["selector_path"],
+        bundle_record["selected_operation_template_path"],
+    ]
+    assert commands["scaffold_selected_operation_plan"][
+        "generated_artifact_roles"
+    ] == [
+        "selected_operation_plan",
+    ]
+    assert commands["scaffold_selected_operation_plan"]["generated_artifacts"] == [
+        bundle_record["selected_operation_plan_path"]
+    ]
 
     validate_command = commands["validate_replacement_plan"]
     validate_result = subprocess.run(
@@ -11917,6 +11970,12 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
 
     assert result.returncode == 0, result.stderr
     assert goal_replay_plan_path.exists() is False
+    assert commands["run_goal_refactor"]["generated_artifacts"] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
+    assert commands["simulate_goal_replay_plan"]["required_artifacts"] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
 
     run_goal_result = subprocess.run(
         commands["run_goal_refactor"]["argv"],

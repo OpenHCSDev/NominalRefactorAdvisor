@@ -1709,6 +1709,10 @@ class CodemodCliCommandSpec:
     cwd: Path
     module: str = "nominal_refactor_advisor"
     python_executable: str = sys.executable
+    required_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
+    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
+    required_artifacts: tuple[str, ...] = ()
+    generated_artifacts: tuple[str, ...] = ()
 
     @property
     def argv(self) -> tuple[str, ...]:
@@ -1727,6 +1731,14 @@ class CodemodCliCommandSpec:
             "module": self.module,
             "args": self.args,
             "argv": self.argv,
+            "required_artifact_roles": tuple(
+                role.value for role in self.required_artifact_roles
+            ),
+            "generated_artifact_roles": tuple(
+                role.value for role in self.generated_artifact_roles
+            ),
+            "required_artifacts": self.required_artifacts,
+            "generated_artifacts": self.generated_artifacts,
         }
 
 
@@ -1877,6 +1889,8 @@ class CodemodAuthoringCommandManifest:
     class_name: str
     description: str
     registry_order: int
+    required_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
+    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...] = ()
 
     def to_dict(self) -> JsonObject:
         return {
@@ -1884,6 +1898,12 @@ class CodemodAuthoringCommandManifest:
             "class_name": self.class_name,
             "description": self.description,
             "registry_order": self.registry_order,
+            "required_artifact_roles": tuple(
+                role.value for role in self.required_artifact_roles
+            ),
+            "generated_artifact_roles": tuple(
+                role.value for role in self.generated_artifact_roles
+            ),
         }
 
 
@@ -2074,6 +2094,9 @@ class CodemodAuthoringBundleCommandTemplate(
 
     action_id: ClassVar[CodemodAuthoringCommandActionId | None] = None
     registry_order: ClassVar[int]
+    description: ClassVar[str] = ""
+    required_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
+    generated_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
 
     def command_spec(
         self,
@@ -2085,6 +2108,14 @@ class CodemodAuthoringBundleCommandTemplate(
             action_id=self.action_id,
             args=self.command_args(context),
             cwd=context.cwd,
+            required_artifact_roles=self.required_artifact_roles,
+            generated_artifact_roles=self.generated_artifact_roles,
+            required_artifacts=context.bundle_relative_paths(
+                self.required_artifact_roles
+            ),
+            generated_artifacts=context.bundle_relative_paths(
+                self.generated_artifact_roles
+            ),
         )
 
     def command_manifest(self) -> CodemodAuthoringCommandManifest:
@@ -2093,8 +2124,10 @@ class CodemodAuthoringBundleCommandTemplate(
         return CodemodAuthoringCommandManifest(
             action_id=self.action_id,
             class_name=type(self).__name__,
-            description=(type(self).__doc__ or "").strip(),
+            description=self.description,
             registry_order=self.registry_order,
+            required_artifact_roles=self.required_artifact_roles,
+            generated_artifact_roles=self.generated_artifact_roles,
         )
 
     @abstractmethod
@@ -2108,6 +2141,9 @@ class CodemodAuthoringBundleCommandTemplate(
 class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.RESOLVE_SELECTOR
     registry_order = 10
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+    )
 
     def command_args(
         self,
@@ -2123,6 +2159,12 @@ class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
 class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN
     registry_order = 20
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+    )
+    generated_artifact_roles = (
+        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
+    )
 
     def command_args(
         self,
@@ -2140,6 +2182,9 @@ class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTempla
 class ValidateReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN
     registry_order = 30
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
+    )
 
     def command_args(
         self,
@@ -2157,6 +2202,9 @@ class ReplacementPlanExecutionCommandTemplate(
     ABC,
 ):
     execution_flag: ClassVar[str]
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
+    )
 
     def command_args(
         self,
@@ -2185,6 +2233,13 @@ class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplat
 class ScaffoldSelectedOperationPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN
     registry_order = 60
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
+    )
+    generated_artifact_roles = (
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE,
+    )
 
     def command_args(
         self,
@@ -2206,6 +2261,10 @@ class SelectedOperationPlanExecutionCommandTemplate(
     ABC,
 ):
     execution_flag: ClassVar[str]
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
+    )
 
     def command_args(
         self,
@@ -2248,6 +2307,9 @@ class ApplySelectedOperationPlanCommandTemplate(
 class RunGoalRefactorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
     registry_order = 100
+    generated_artifact_roles = (
+        CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,
+    )
 
     def command_args(
         self,
@@ -2270,6 +2332,9 @@ class GoalReplayPlanExecutionCommandTemplate(
     ABC,
 ):
     execution_flag: ClassVar[str]
+    required_artifact_roles = (
+        CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,
+    )
 
     def command_args(
         self,
