@@ -6184,6 +6184,35 @@ def test_abc_polymorphism_detector_skips_composition_index_without_shared_base(
     assert findings == []
 
 
+def test_variant_method_detector_skips_composition_index_without_seed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass VariantSurface:\n    def alpha_value(self, request):\n        return request.alpha\n\n    def beta_value(self, request):\n        return request.beta\n",
+    )
+    modules = parse_python_modules(tmp_path)
+
+    def fail_build_source_index(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        raise AssertionError("composition source index should not be built")
+
+    monkeypatch.setattr(
+        runtime_detectors,
+        "build_source_index",
+        fail_build_source_index,
+    )
+
+    findings = runtime_detectors.AlgebraicVariantMethodFamilyDetector().detect(
+        modules,
+        DetectorConfig(),
+    )
+
+    assert findings == []
+
+
 def test_detects_repeated_enum_strategy_dispatch_across_owners(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

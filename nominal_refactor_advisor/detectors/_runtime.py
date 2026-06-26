@@ -8808,20 +8808,12 @@ class _VariantMethodSurface:
 
 
 @dataclass(frozen=True)
-class _VariantMethodFamilyCandidate:
-    file_path: str
-    owner_class_name: str
-    owner_line: int
-    owner_is_abstract: bool
-    owner_base_names: tuple[str, ...]
+class _VariantMethodFamilySeed:
     methods: tuple[_VariantMethodSurface, ...]
     shared_product_parameter_names: tuple[str, ...]
     shared_field_names: tuple[str, ...]
-    construction_shape: str
     anchor_tokens: tuple[str, ...]
     variant_tokens: tuple[str, ...]
-    wrapper_chains: tuple[WrapperChainCandidate, ...]
-    composition_signals: tuple[CancelableCompositionSignal, ...]
 
     @property
     def method_names(self) -> tuple[str, ...]:
@@ -8829,9 +8821,28 @@ class _VariantMethodFamilyCandidate:
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
+        exemplar = self.methods[0]
         evidence: list[SourceLocation] = [
-            SourceLocation(self.file_path, self.owner_line, self.owner_class_name),
+            SourceLocation(
+                exemplar.file_path,
+                exemplar.owner_line,
+                exemplar.owner_class_name,
+            ),
             *(method.evidence for method in self.methods[:5]),
+        ]
+        return tuple(evidence[:8])
+
+
+@dataclass(frozen=True)
+class _VariantMethodFamilyCandidate:
+    seed: _VariantMethodFamilySeed
+    wrapper_chains: tuple[WrapperChainCandidate, ...]
+    composition_signals: tuple[CancelableCompositionSignal, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = [
+            *self.seed.evidence,
             *(
                 SourceLocation(signal.file_path, signal.line, signal.qualname)
                 for signal in self.composition_signals[:2]
@@ -9367,12 +9378,9 @@ def _variant_method_surfaces(module: ParsedModule) -> tuple[_VariantMethodSurfac
     )
 
 
-def _variant_method_family_candidate(
+def _variant_method_family_seed(
     methods: tuple[_VariantMethodSurface, ...],
-    *,
-    wrapper_chains: tuple[WrapperChainCandidate, ...],
-    composition_signals: tuple[CancelableCompositionSignal, ...],
-) -> _VariantMethodFamilyCandidate | None:
+) -> _VariantMethodFamilySeed | None:
     if len(methods) < 2:
         return None
     token_sets = [set(method.method_tokens) for method in methods]
@@ -9390,21 +9398,36 @@ def _variant_method_family_candidate(
     )
     if not shared_product_parameter_names or len(shared_field_names) < 2:
         return None
-    exemplar = methods[0]
+    return _VariantMethodFamilySeed(
+        methods=methods,
+        shared_product_parameter_names=shared_product_parameter_names,
+        shared_field_names=shared_field_names,
+        anchor_tokens=anchor_tokens,
+        variant_tokens=variant_tokens,
+    )
+
+
+def _variant_method_family_candidate(
+    seed: _VariantMethodFamilySeed,
+    *,
+    wrapper_chains: tuple[WrapperChainCandidate, ...],
+    composition_signals: tuple[CancelableCompositionSignal, ...],
+) -> _VariantMethodFamilyCandidate:
+    exemplar = seed.methods[0]
     token_sources = (
         exemplar.owner_class_name,
         *exemplar.owner_base_names,
-        *anchor_tokens,
-        *variant_tokens,
-        *shared_product_parameter_names,
-        *shared_field_names,
-        *(method.method_name for method in methods),
+        *seed.anchor_tokens,
+        *seed.variant_tokens,
+        *seed.shared_product_parameter_names,
+        *seed.shared_field_names,
+        *(method.method_name for method in seed.methods),
     )
     related_compositions = RelatedCompositionSignalsAuthority.related(
         composition_signals,
         file_path=exemplar.file_path,
         token_sources=token_sources,
-        field_names=shared_field_names,
+        field_names=seed.shared_field_names,
     )
     related_wrappers = RelatedWrapperChainsAuthority.related(
         wrapper_chains,
@@ -9412,17 +9435,7 @@ def _variant_method_family_candidate(
         token_sources=token_sources,
     )
     return _VariantMethodFamilyCandidate(
-        file_path=exemplar.file_path,
-        owner_class_name=exemplar.owner_class_name,
-        owner_line=exemplar.owner_line,
-        owner_is_abstract=exemplar.owner_is_abstract,
-        owner_base_names=exemplar.owner_base_names,
-        methods=methods,
-        shared_product_parameter_names=shared_product_parameter_names,
-        shared_field_names=shared_field_names,
-        construction_shape=exemplar.construction_shape,
-        anchor_tokens=anchor_tokens,
-        variant_tokens=variant_tokens,
+        seed=seed,
         wrapper_chains=related_wrappers,
         composition_signals=related_compositions,
     )
@@ -9431,10 +9444,6 @@ def _variant_method_family_candidate(
 def _variant_method_family_candidates(
     modules: list[ParsedModule],
 ) -> tuple[_VariantMethodFamilyCandidate, ...]:
-    wrapper_chains = tuple(
-        chain for module in modules for chain in _wrapper_chain_candidates(module)
-    )
-    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
     grouped: dict[
         tuple[str, str, str, tuple[str, ...], str],
         list[_VariantMethodSurface],
@@ -9450,23 +9459,34 @@ def _variant_method_family_candidates(
                     surface.method_tokens[-1],
                 )
             ].append(surface)
-    candidates = []
+    seeds = []
     for surfaces in grouped.values():
         ordered = sorted_tuple(surfaces, key=lambda item: (item.line, item.method_name))
-        candidate = _variant_method_family_candidate(
-            ordered,
+        seed = _variant_method_family_seed(ordered)
+        if seed is not None:
+            seeds.append(seed)
+    if not seeds:
+        return ()
+
+    wrapper_chains = tuple(
+        chain for module in modules for chain in _wrapper_chain_candidates(module)
+    )
+    composition_signals = CancelableCompositionSignalQuery(tuple(modules)).signals()
+    candidates = [
+        _variant_method_family_candidate(
+            seed,
             wrapper_chains=wrapper_chains,
             composition_signals=composition_signals,
         )
-        if candidate is not None:
-            candidates.append(candidate)
+        for seed in seeds
+    ]
     return sorted_tuple(
         candidates,
         key=lambda item: (
-            item.file_path,
-            item.owner_line,
-            item.owner_class_name,
-            item.construction_shape,
+            item.seed.methods[0].file_path,
+            item.seed.methods[0].owner_line,
+            item.seed.methods[0].owner_class_name,
+            item.seed.methods[0].construction_shape,
         ),
     )
 
@@ -9497,13 +9517,15 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
     def _finding_for_candidate(
         self, candidate: _VariantMethodFamilyCandidate
     ) -> RefactorFinding:
-        method_summary = ", ".join(method.method_name for method in candidate.methods)
-        variant_summary = ", ".join(candidate.variant_tokens[:8])
-        field_summary = ", ".join(candidate.shared_field_names[:8])
-        parameter_summary = ", ".join(candidate.shared_product_parameter_names)
+        seed = candidate.seed
+        exemplar = seed.methods[0]
+        method_summary = ", ".join(method.method_name for method in seed.methods)
+        variant_summary = ", ".join(seed.variant_tokens[:8])
+        field_summary = ", ".join(seed.shared_field_names[:8])
+        parameter_summary = ", ".join(seed.shared_product_parameter_names)
         authority_kind = (
             "ABC/public authority"
-            if candidate.owner_is_abstract
+            if exemplar.owner_is_abstract
             else "public authority"
         )
         composition_summary = ", ".join(
@@ -9525,16 +9547,16 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
         )
         return self.build_finding(
             (
-                f"`{candidate.owner_class_name}` inflates its {authority_kind} surface "
+                f"`{exemplar.owner_class_name}` inflates its {authority_kind} surface "
                 f"with variant-named methods {method_summary}. They share product "
                 f"parameter(s) {parameter_summary}, forward fields {field_summary}, "
-                f"and return the same construction shape `{candidate.construction_shape}`; "
+                f"and return the same construction shape `{exemplar.construction_shape}`; "
                 f"operation variants {variant_summary} should be encoded in the domain "
                 f"algebra, not method names.{context_suffix}"
             ),
             candidate.evidence,
             scaffold=(
-                f"class {candidate.owner_class_name}(...):\n"
+                f"class {exemplar.owner_class_name}(...):\n"
                 "    def with_variants(self, request):\n"
                 "        match request.operation:\n"
                 "            case ...:\n"
@@ -9544,23 +9566,23 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
                 "the product variant itself carry the operation semantics."
             ),
             codemod_patch=(
-                f"# Replace variant method family {candidate.method_names} on "
-                f"`{candidate.owner_class_name}` with one nominal request/context operation.\n"
+                f"# Replace variant method family {seed.method_names} on "
+                f"`{exemplar.owner_class_name}` with one nominal request/context operation.\n"
                 "# Use source-index anchored rewrites to migrate callers after the request/product "
                 "type represents the operation variant explicitly."
             ),
             metrics=RepeatedMethodMetrics.from_duplicate_family(
                 duplicate_site_count=max(
                     2,
-                    len(candidate.methods)
+                    len(seed.methods)
                     + len(candidate.composition_signals)
                     + len(candidate.wrapper_chains),
                 ),
                 statement_count=max(
-                    method.statement_count for method in candidate.methods
+                    method.statement_count for method in seed.methods
                 ),
                 class_count=1,
-                method_symbols=candidate.method_names,
+                method_symbols=seed.method_names,
             ),
         )
 
