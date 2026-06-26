@@ -13970,6 +13970,7 @@ def test_codemod_fixpoint_projected_scan_reuses_unchanged_modules(
         roots=(tmp_path,),
         config=DetectorConfig(),
         parse_workers=1,
+        dry_run=True,
         max_iterations=1,
         guard_suite=ArchitectureGuardSuite(),
     )
@@ -14014,6 +14015,7 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
         roots=(tmp_path,),
         config=DetectorConfig(),
         parse_workers=1,
+        dry_run=True,
         max_iterations=1,
         guard_suite=ArchitectureGuardSuite(),
     )
@@ -14033,6 +14035,166 @@ def test_codemod_fixpoint_projected_scan_analyzes_created_modules(
             )
             for finding in projected_scan.findings
         )
+    )
+
+
+def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoal
+    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_id = "goal_test_detector"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n"
+        "    def run(self):\n"
+        "        return 'old'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact repeats outside nominal boundary",
+        "Duplicated encoding should move behind the named owner.",
+        "one nominal authority for the semantic fact",
+        "same source fact encoded in parallel branches",
+    ).build(
+        detector_id,
+        "Alpha.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+    )
+
+    class GoalTestSynthesizer(FindingRecipeSynthesizer):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "Alpha.run"),),
+            )
+
+        def recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ) -> RefactorRecipe | None:
+            del finding, context
+            return RefactorRecipe("extract-alpha-semantic-fact").replace_text(
+                "Alpha.run",
+                "return 'old'",
+                "return 'new'",
+                source_path=module_path.as_posix(),
+            )
+
+    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
+    FindingRecipeSynthesizer.__registry__[detector_id] = GoalTestSynthesizer
+    try:
+        report = CodemodRefactorGoalRunner(
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            goal=CodemodRefactorGoal(
+                goal_id="extract-semantic-fact",
+                detector_ids=(detector_id,),
+                max_stages=2,
+            ),
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=[finding],
+            ),
+        ).run()
+    finally:
+        if previous_synthesizer is None:
+            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        else:
+            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+
+    assert report.completed is True
+    assert report.achieved is True
+    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert report.stage_count == 1
+    assert report.total_rewrite_count == 1
+    assert report.final_target_finding_ids == ()
+    stage = report.stages[0]
+    assert stage.applied is False
+    assert stage.progress.removed_target_finding_ids == (finding.stable_id,)
+    assert stage.progress.surviving_target_finding_ids == ()
+    assert stage.finding_delta is not None
+    assert stage.finding_delta.confirmed_expected_removed_finding_ids(
+        stage.expected_removed_finding_ids
+    ) == (finding.stable_id,)
+    replay_payload = report.replay_sequence.to_dict()
+    assert len(replay_payload["stages"]) == 1
+    assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
+        "finding-backed-codemod-plan"
+    )
+
+
+def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    plan_path = tmp_path / "goal-replay-plan.json"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from nominal_refactor_advisor.record_algebra import (\n"
+        "    materialize_product_record,\n"
+        "    product_record_spec,\n"
+        ")\n\n\n"
+        "class SemanticRecord:\n"
+        "    pass\n\n\n"
+        "materialize_product_record(\n"
+        "    product_record_spec(\n"
+        '        "GeneratedRecord",\n'
+        '        "path: str",\n'
+        '        "SemanticRecord",\n'
+        "    )\n"
+        ")\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-refactor-goal",
+            "nominal_boundary_extraction",
+            "--codemod-goal-detector",
+            "runtime_product_record_schema",
+            "--codemod-goal-plan-out",
+            plan_path.as_posix(),
+            "--json",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    replay_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+
+    assert result.returncode == 0, result.stderr
+    assert payload["completed"] is True
+    assert payload["achieved"] is True
+    assert payload["terminal_reason"] == "achieved"
+    assert payload["stage_count"] == 1
+    assert payload["total_rewrite_count"] == 1
+    assert payload["stages"][0]["applied"] is False
+    assert replay_payload == payload["replay_sequence"]
+    assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
+        "finding-backed-codemod-plan"
     )
 
 
@@ -14221,18 +14383,30 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 
 
 def test_codemod_workflow_types_are_public_package_exports() -> None:
+    from nominal_refactor_advisor import CodemodFindingChangeCarrier
+    from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingDelta
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodDslManifest
+    from nominal_refactor_advisor import CodemodGuardedWorkflowRequest
     from nominal_refactor_advisor import CodemodPlanJsonParser
     from nominal_refactor_advisor import CodemodPlanSequence
     from nominal_refactor_advisor import CodemodPlanSequenceContinuationReport
     from nominal_refactor_advisor import CodemodPlanSequenceStageReport
     from nominal_refactor_advisor import CodemodPlanSequenceSimulation
     from nominal_refactor_advisor import CodemodProjectedFindingReport
+    from nominal_refactor_advisor import CodemodRefactorGoal
+    from nominal_refactor_advisor import CodemodRefactorGoalKind
+    from nominal_refactor_advisor import CodemodRefactorGoalProgress
+    from nominal_refactor_advisor import CodemodRefactorGoalReport
+    from nominal_refactor_advisor import CodemodRefactorGoalRunner
+    from nominal_refactor_advisor import CodemodRefactorGoalStage
+    from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
+    from nominal_refactor_advisor import CodemodWorkflowReport
+    from nominal_refactor_advisor import CodemodWorkflowScanRequest
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
@@ -14245,8 +14419,16 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         before_finding_ids=("a", "b"),
         after_finding_ids=("b", "c"),
     )
+    finding_change = CodemodFindingChangeProjection(
+        expected_removed_finding_ids=("a",),
+        finding_delta=delta,
+    )
 
+    assert CodemodFindingChangeCarrier.__name__ == "CodemodFindingChangeCarrier"
+    assert finding_change.expected_removed_finding_count == 1
+    assert finding_change.to_dict()["finding_delta"]["removed_finding_ids"] == ("a",)
     assert CodemodFixpointRunner.__name__ == "CodemodFixpointRunner"
+    assert CodemodGuardedWorkflowRequest.__name__ == "CodemodGuardedWorkflowRequest"
     assert CodemodFixpointReplayPlan.__name__ == "CodemodFixpointReplayPlan"
     assert CodemodPlanSequence.__name__ == "CodemodPlanSequence"
     assert (
@@ -14261,6 +14443,18 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         == "CodemodSimulationFindingProjection"
     )
     assert CodemodSourceSnapshot.__name__ == "CodemodSourceSnapshot"
+    assert CodemodRefactorGoal.__name__ == "CodemodRefactorGoal"
+    assert (
+        CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION.value
+        == "nominal_boundary_extraction"
+    )
+    assert CodemodRefactorGoalProgress.__name__ == "CodemodRefactorGoalProgress"
+    assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
+    assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
+    assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
+    assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
+    assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
+    assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True
     assert SourceRewriteSimulationPayload.__name__ == "SourceRewriteSimulationPayload"

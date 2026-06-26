@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
@@ -29,14 +30,24 @@ from .models import RefactorFinding
 from .source_index import SourceIndex
 
 
-class CodemodFixpointStopReason(StrEnum):
-    """Terminal state for the finding-backed codemod fixpoint runner."""
+class CodemodWorkflowStopReason(StrEnum):
+    """Terminal state for staged codemod workflows."""
 
+    ACHIEVED = "achieved"
     DRY_RUN = "dry_run"
+    NO_TARGET_FINDINGS = "no_target_findings"
     NO_EXECUTABLE_RECIPES = "no_executable_recipes"
     EMPTY_REWRITE_BATCH = "empty_rewrite_batch"
     ARCHITECTURE_GUARD_FAILED = "architecture_guard_failed"
+    NO_PROGRESS = "no_progress"
     MAX_ITERATIONS = "max_iterations"
+    MAX_STAGES = "max_stages"
+
+
+class CodemodRefactorGoalKind(StrEnum):
+    """Supported high-level DSL refactor goals."""
+
+    NOMINAL_BOUNDARY_EXTRACTION = "nominal_boundary_extraction"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -177,6 +188,252 @@ class CodemodFindingDelta:
 
 
 @dataclass(frozen=True)
+class CodemodFindingChangeProjection:
+    """Expected and observed finding changes for one codemod workflow stage."""
+
+    expected_removed_finding_ids: tuple[str, ...] = ()
+    finding_delta: CodemodFindingDelta | None = None
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return len(self.expected_removed_finding_ids)
+
+    def to_dict(self) -> JsonObject:
+        payload: JsonObject = {
+            "expected_removed_finding_ids": self.expected_removed_finding_ids,
+            "expected_removed_finding_count": self.expected_removed_finding_count,
+        }
+        if self.finding_delta is not None:
+            payload["finding_delta"] = self.finding_delta.to_dict(
+                self.expected_removed_finding_ids
+            )
+        return payload
+
+
+@dataclass(frozen=True)
+class CodemodFindingChangeCarrier:
+    """Mixin for workflow payloads that expose expected and observed changes."""
+
+    finding_change: CodemodFindingChangeProjection
+
+    @property
+    def expected_removed_finding_ids(self) -> tuple[str, ...]:
+        return self.finding_change.expected_removed_finding_ids
+
+    @property
+    def expected_removed_finding_count(self) -> int:
+        return self.finding_change.expected_removed_finding_count
+
+    @property
+    def finding_delta(self) -> CodemodFindingDelta | None:
+        return self.finding_change.finding_delta
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoal:
+    """Declarative target for staged semantic-fact extraction refactors."""
+
+    goal_id: str
+    kind: CodemodRefactorGoalKind = (
+        CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
+    )
+    target_finding_ids: tuple[str, ...] = ()
+    detector_ids: tuple[str, ...] = ()
+    pattern_ids: tuple[int, ...] = ()
+    max_stages: int = 8
+
+    @property
+    def has_explicit_targets(self) -> bool:
+        return bool(self.target_finding_ids or self.detector_ids or self.pattern_ids)
+
+    def target_findings(
+        self,
+        findings: Iterable[RefactorFinding],
+    ) -> tuple[RefactorFinding, ...]:
+        return tuple(
+            finding for finding in findings if self.matches_finding(finding)
+        )
+
+    def matches_finding(self, finding: RefactorFinding) -> bool:
+        if not self.has_explicit_targets:
+            return True
+        if finding.stable_id in self.target_finding_ids:
+            return True
+        if finding.detector_id in self.detector_ids:
+            return True
+        return int(finding.pattern_id) in self.pattern_ids
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "goal_id": self.goal_id,
+            "kind": self.kind.value,
+            "target_finding_ids": self.target_finding_ids,
+            "detector_ids": self.detector_ids,
+            "pattern_ids": self.pattern_ids,
+            "max_stages": self.max_stages,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalProgress:
+    """Before/after target-finding progress for one goal stage."""
+
+    before_target_finding_ids: tuple[str, ...]
+    after_target_finding_ids: tuple[str, ...]
+
+    @classmethod
+    def from_findings(
+        cls,
+        goal: CodemodRefactorGoal,
+        before_findings: Iterable[RefactorFinding],
+        after_findings: Iterable[RefactorFinding],
+    ) -> "CodemodRefactorGoalProgress":
+        return cls(
+            before_target_finding_ids=tuple(
+                finding.stable_id for finding in goal.target_findings(before_findings)
+            ),
+            after_target_finding_ids=tuple(
+                finding.stable_id for finding in goal.target_findings(after_findings)
+            ),
+        )
+
+    @property
+    def removed_target_finding_ids(self) -> tuple[str, ...]:
+        after_ids = frozenset(self.after_target_finding_ids)
+        return tuple(
+            finding_id
+            for finding_id in self.before_target_finding_ids
+            if finding_id not in after_ids
+        )
+
+    @property
+    def surviving_target_finding_ids(self) -> tuple[str, ...]:
+        after_ids = frozenset(self.after_target_finding_ids)
+        return tuple(
+            finding_id
+            for finding_id in self.before_target_finding_ids
+            if finding_id in after_ids
+        )
+
+    @property
+    def removed_target_finding_count(self) -> int:
+        return len(self.removed_target_finding_ids)
+
+    @property
+    def surviving_target_finding_count(self) -> int:
+        return len(self.surviving_target_finding_ids)
+
+    @property
+    def achieved(self) -> bool:
+        return not self.after_target_finding_ids
+
+    @property
+    def made_progress(self) -> bool:
+        return self.removed_target_finding_count > 0
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "before_target_finding_ids": self.before_target_finding_ids,
+            "after_target_finding_ids": self.after_target_finding_ids,
+            "removed_target_finding_ids": self.removed_target_finding_ids,
+            "surviving_target_finding_ids": self.surviving_target_finding_ids,
+            "removed_target_finding_count": self.removed_target_finding_count,
+            "surviving_target_finding_count": self.surviving_target_finding_count,
+            "achieved": self.achieved,
+            "made_progress": self.made_progress,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalStage(
+    CodemodFindingChangeCarrier,
+    FindingRecipeSynthesisBoundary,
+):
+    """One simulated or applied staged plan toward a refactor goal."""
+
+    stage_index: int
+    document: CodemodPlanDocument
+    simulation: CodemodPlanDocumentSimulation
+    progress: CodemodRefactorGoalProgress
+    applied: bool = False
+
+    @property
+    def rewrite_count(self) -> int:
+        return self.simulation.simulation.applied_rewrite_count
+
+    @property
+    def changed_file_paths(self) -> tuple[str, ...]:
+        return self.simulation.simulation.changed_file_paths
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "stage_index": self.stage_index,
+            "applied": self.applied,
+            "rewrite_count": self.rewrite_count,
+            "changed_file_paths": self.changed_file_paths,
+            "document": self.document.to_dict(),
+            "simulation": self.simulation.to_dict(),
+            "progress": self.progress.to_dict(),
+            **self.finding_change.to_dict(),
+            **self.synthesis_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodWorkflowReport:
+    """Shared terminal summary for staged codemod workflow reports."""
+
+    completed: bool
+    terminal_reason: CodemodWorkflowStopReason
+    final_finding_count: int
+
+    @property
+    def stop_reason(self) -> CodemodWorkflowStopReason:
+        return self.terminal_reason
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalReport(CodemodWorkflowReport):
+    """Machine-readable result of a goal-directed staged codemod run."""
+
+    goal: CodemodRefactorGoal
+    stages: tuple[CodemodRefactorGoalStage, ...]
+    final_target_finding_ids: tuple[str, ...]
+
+    @property
+    def stage_count(self) -> int:
+        return len(self.stages)
+
+    @property
+    def total_rewrite_count(self) -> int:
+        return sum(stage.rewrite_count for stage in self.stages)
+
+    @property
+    def replay_sequence(self) -> CodemodPlanSequence:
+        return CodemodPlanSequence(
+            documents=tuple(stage.document for stage in self.stages)
+        )
+
+    @property
+    def achieved(self) -> bool:
+        return self.completed and not self.final_target_finding_ids
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "goal": self.goal.to_dict(),
+            "completed": self.completed,
+            "achieved": self.achieved,
+            "terminal_reason": self.terminal_reason.value,
+            "stage_count": self.stage_count,
+            "total_rewrite_count": self.total_rewrite_count,
+            "final_finding_count": self.final_finding_count,
+            "final_target_finding_ids": self.final_target_finding_ids,
+            "replay_sequence": self.replay_sequence.to_dict(),
+            "stages": tuple(stage.to_dict() for stage in self.stages),
+        }
+
+
+@dataclass(frozen=True)
 class CodemodProjectedFindingReport:
     """Before/after advisor findings for one simulated codemod source state."""
 
@@ -255,6 +512,53 @@ class CodemodFixpointScan:
         return CodemodSourceSnapshot.from_modules(self.modules, self.findings)
 
 
+@dataclass(frozen=True, kw_only=True)
+class CodemodWorkflowScanRequest(ParseCacheRequest):
+    """Shared scan/projection substrate for staged codemod workflows."""
+
+    roots: tuple[Path, ...]
+    config: DetectorConfig
+    parse_workers: int
+    dry_run: bool
+    initial_scan: CodemodFixpointScan | None = None
+
+    def scan(self, stage_index: int) -> CodemodFixpointScan:
+        if stage_index == 0 and self.initial_scan is not None:
+            return self.initial_scan
+        modules = parse_python_module_roots(
+            self.roots,
+            cache_dir=self.resolved_dir,
+            use_parse_cache=self.enabled,
+            parse_workers=self.parse_workers,
+        )
+        return CodemodFixpointScan(
+            modules=modules,
+            findings=analyze_modules(modules, self.config),
+        )
+
+    def projected_scan(
+        self,
+        scan: CodemodFixpointScan,
+        simulation: CodemodSimulationReport,
+    ) -> CodemodFixpointScan:
+        modules = ProjectedScanModuleSet(
+            modules=tuple(scan.modules),
+            simulation=simulation,
+            roots=self.roots,
+        ).modules_after_projection()
+        return CodemodFixpointScan(
+            modules=list(modules),
+            findings=analyze_modules(modules, self.config),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CodemodGuardedWorkflowRequest(CodemodWorkflowScanRequest):
+    """Workflow request with architecture guards for synthesized codemod plans."""
+
+    guard_suite: ArchitectureGuardSuite
+
+
 @dataclass(frozen=True)
 class CodemodSimulationFindingProjection:
     """Analyze advisor findings after applying a simulation in memory."""
@@ -287,23 +591,20 @@ class CodemodSimulationFindingProjection:
 
 
 @dataclass(frozen=True)
-class CodemodFixpointIteration(FindingRecipeSynthesisBoundary):
+class CodemodFixpointIteration(
+    CodemodFindingChangeCarrier,
+    FindingRecipeSynthesisBoundary,
+):
     """One scan/simulate/apply/rescan step in the codemod fixpoint workflow."""
 
     iteration_index: int
     finding_count: int
     recipe_count: int
-    expected_removed_finding_ids: tuple[str, ...]
     document: CodemodPlanDocument | None = None
     simulation: CodemodSimulationReport | None = None
     architecture_guard_report: ArchitectureGuardReport | None = None
-    finding_delta: CodemodFindingDelta | None = None
     applied: bool = False
-    stop_reason: CodemodFixpointStopReason | None = None
-
-    @property
-    def expected_removed_finding_count(self) -> int:
-        return len(self.expected_removed_finding_ids)
+    stop_reason: CodemodWorkflowStopReason | None = None
 
     @property
     def applied_rewrite_count(self) -> int:
@@ -404,17 +705,10 @@ class CodemodFixpointReplayPlan:
 
 
 @dataclass(frozen=True)
-class CodemodFixpointReport:
+class CodemodFixpointReport(CodemodWorkflowReport):
     """Machine-readable result of an iterative DSL codemod workflow."""
 
     iterations: tuple[CodemodFixpointIteration, ...]
-    completed: bool
-    terminal_reason: CodemodFixpointStopReason
-    final_finding_count: int
-
-    @property
-    def stop_reason(self) -> CodemodFixpointStopReason:
-        return self.terminal_reason
 
     @property
     def iteration_count(self) -> int:
@@ -482,14 +776,14 @@ class CodemodFixpointStop:
     """Terminal decision for one fixpoint iteration."""
 
     completed: bool
-    reason: CodemodFixpointStopReason
+    reason: CodemodWorkflowStopReason
     simulation: CodemodPlanDocumentSimulation | None = None
 
     @classmethod
     def no_executable_recipes(cls) -> "CodemodFixpointStop":
         return cls(
             completed=True,
-            reason=CodemodFixpointStopReason.NO_EXECUTABLE_RECIPES,
+            reason=CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
         )
 
     @classmethod
@@ -500,13 +794,13 @@ class CodemodFixpointStop:
         if simulation.simulation.applied_rewrite_count == 0:
             return cls(
                 completed=False,
-                reason=CodemodFixpointStopReason.EMPTY_REWRITE_BATCH,
+                reason=CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
                 simulation=simulation,
             )
         if not simulation.is_clean:
             return cls(
                 completed=False,
-                reason=CodemodFixpointStopReason.ARCHITECTURE_GUARD_FAILED,
+                reason=CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
                 simulation=simulation,
             )
         return None
@@ -575,36 +869,32 @@ class CodemodFixpointIterationBuilder:
         simulation: CodemodPlanDocumentSimulation | None = None,
         finding_delta: CodemodFindingDelta | None = None,
         applied: bool = False,
-        stop_reason: CodemodFixpointStopReason | None = None,
+        stop_reason: CodemodWorkflowStopReason | None = None,
     ) -> CodemodFixpointIteration:
         return CodemodFixpointIteration(
             iteration_index=self.identity.index,
             finding_count=len(self.scan.findings),
             recipe_count=self.recipe_count,
-            expected_removed_finding_ids=self.expected_removed_finding_ids,
+            finding_change=CodemodFindingChangeProjection(
+                expected_removed_finding_ids=self.expected_removed_finding_ids,
+                finding_delta=finding_delta,
+            ),
             document=self.plan.document,
             report=self.plan.report,
             simulation=None if simulation is None else simulation.simulation,
             architecture_guard_report=(
                 None if simulation is None else simulation.architecture_guard_report
             ),
-            finding_delta=finding_delta,
             applied=applied,
             stop_reason=stop_reason,
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodemodFixpointRunner(ParseCacheRequest):
+class CodemodFixpointRunner(CodemodGuardedWorkflowRequest):
     """Iteratively apply finding-backed DSL recipes until reaching a fixpoint."""
 
-    roots: tuple[Path, ...]
-    config: DetectorConfig
-    parse_workers: int
     max_iterations: int
-    guard_suite: ArchitectureGuardSuite
-    dry_run: bool = False
-    initial_scan: CodemodFixpointScan | None = None
 
     def run(self) -> CodemodFixpointReport:
         if self.max_iterations < 1:
@@ -655,59 +945,147 @@ class CodemodFixpointRunner(ParseCacheRequest):
         return CodemodFixpointReport(
             iterations=tuple(iterations),
             completed=False,
-            terminal_reason=CodemodFixpointStopReason.MAX_ITERATIONS,
+            terminal_reason=CodemodWorkflowStopReason.MAX_ITERATIONS,
             final_finding_count=len(final_scan.findings),
         )
 
-    def scan(self, iteration_index: int) -> CodemodFixpointScan:
-        if iteration_index == 0 and self.initial_scan is not None:
-            return self.initial_scan
-        modules = parse_python_module_roots(
-            self.roots,
-            cache_dir=self.resolved_dir,
-            use_parse_cache=self.enabled,
-            parse_workers=self.parse_workers,
-        )
-        return CodemodFixpointScan(
-            modules=modules,
-            findings=analyze_modules(modules, self.config),
+
+@dataclass(frozen=True, kw_only=True)
+class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
+    """Simulate or apply staged DSL recipes until a declared goal resolves."""
+
+    goal: CodemodRefactorGoal
+
+    def run(self) -> CodemodRefactorGoalReport:
+        if self.goal.max_stages < 1:
+            raise ValueError("goal max_stages must be at least 1")
+        stages: list[CodemodRefactorGoalStage] = []
+        active_scan = self.scan(0)
+        if not self.goal.target_findings(active_scan.findings):
+            return self.report(
+                stages=(),
+                scan=active_scan,
+                reason=CodemodWorkflowStopReason.NO_TARGET_FINDINGS,
+                completed=True,
+            )
+        for stage_index in range(self.goal.max_stages):
+            stage = self.stage(stage_index, active_scan)
+            if stage is None:
+                return self.report(
+                    stages=tuple(stages),
+                    scan=active_scan,
+                    reason=CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
+                    completed=False,
+                )
+            if stage.rewrite_count == 0:
+                return self.report(
+                    stages=(*stages, stage),
+                    scan=active_scan,
+                    reason=CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
+                    completed=False,
+                )
+            if not stage.simulation.is_clean:
+                return self.report(
+                    stages=(*stages, stage),
+                    scan=active_scan,
+                    reason=CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
+                    completed=False,
+                )
+            next_scan = self.next_scan(active_scan, stage)
+            recorded_stage = stage if self.dry_run else replace(stage, applied=True)
+            stages.append(recorded_stage)
+            if stage.progress.achieved:
+                return self.report(
+                    stages=tuple(stages),
+                    scan=next_scan,
+                    reason=CodemodWorkflowStopReason.ACHIEVED,
+                    completed=True,
+                )
+            if not stage.progress.made_progress:
+                return self.report(
+                    stages=tuple(stages),
+                    scan=next_scan,
+                    reason=CodemodWorkflowStopReason.NO_PROGRESS,
+                    completed=False,
+                )
+            active_scan = next_scan
+        return self.report(
+            stages=tuple(stages),
+            scan=active_scan,
+            reason=CodemodWorkflowStopReason.MAX_STAGES,
+            completed=False,
         )
 
-    def projected_scan(
+    def stage(
+        self,
+        stage_index: int,
+        scan: CodemodFixpointScan,
+    ) -> CodemodRefactorGoalStage | None:
+        target_findings = self.goal.target_findings(scan.findings)
+        if not target_findings:
+            return None
+        snapshot = scan.source_snapshot
+        plan = snapshot.plan_from_findings(
+            target_findings,
+            detector_ids=self.goal.detector_ids,
+        )
+        if not plan.document.has_recipes:
+            return None
+        document = CodemodPlanDocument(
+            recipes=plan.document.recipes,
+            guard_suite=self.guard_suite.merge(plan.document.guard_suite),
+        )
+        simulation = document.simulate_snapshot(snapshot)
+        projected_scan = self.projected_scan(scan, simulation.simulation)
+        progress = CodemodRefactorGoalProgress.from_findings(
+            self.goal,
+            scan.findings,
+            projected_scan.findings,
+        )
+        return CodemodRefactorGoalStage(
+            stage_index=stage_index,
+            document=document,
+            report=plan.report,
+            simulation=simulation,
+            progress=progress,
+            finding_change=CodemodFindingChangeProjection(
+                expected_removed_finding_ids=plan.expected_removed_finding_ids,
+                finding_delta=CodemodFindingDelta.from_findings(
+                    tuple(scan.findings),
+                    tuple(projected_scan.findings),
+                ),
+            ),
+            applied=False,
+        )
+
+    def next_scan(
         self,
         scan: CodemodFixpointScan,
-        simulation: CodemodSimulationReport,
+        stage: CodemodRefactorGoalStage,
     ) -> CodemodFixpointScan:
-        """Analyze the post-simulation source state without writing files."""
+        if self.dry_run:
+            return self.projected_scan(scan, stage.simulation.simulation)
+        stage.simulation.apply()
+        return self.scan(stage.stage_index + 1)
 
-        modules = ProjectedScanModuleSet(
-            modules=tuple(scan.modules),
-            simulation=simulation,
-            roots=self.roots,
-        ).modules_after_projection()
-        return CodemodFixpointScan(
-            modules=list(modules),
-            findings=analyze_modules(modules, self.config),
-        )
-
-    @staticmethod
-    def projected_module(
-        module: ParsedModule,
-        simulation: CodemodSimulationReport,
-    ) -> ParsedModule:
-        projection = ProjectedModuleSource(
-            module=module,
-            simulation=simulation,
-        )
-        if not projection.has_rewrite:
-            return module
-        source = projection.source
-        return ParsedModule(
-            path=module.path,
-            module_name=module.module_name,
-            is_package_init=module.is_package_init,
-            module=ast.parse(source, filename=str(module.path)),
-            source=source,
+    def report(
+        self,
+        *,
+        stages: tuple[CodemodRefactorGoalStage, ...],
+        scan: CodemodFixpointScan,
+        reason: CodemodWorkflowStopReason,
+        completed: bool,
+    ) -> CodemodRefactorGoalReport:
+        return CodemodRefactorGoalReport(
+            goal=self.goal,
+            stages=stages,
+            completed=completed,
+            terminal_reason=reason,
+            final_finding_count=len(scan.findings),
+            final_target_finding_ids=tuple(
+                finding.stable_id
+                for finding in self.goal.target_findings(scan.findings)
+            ),
         )
 
 
@@ -727,8 +1105,24 @@ class ProjectedScanModuleSet:
 
     def projected_existing_modules(self) -> tuple[ParsedModule, ...]:
         return tuple(
-            CodemodFixpointRunner.projected_module(module, self.simulation)
+            self.projected_module(module)
             for module in self.modules
+        )
+
+    def projected_module(self, module: ParsedModule) -> ParsedModule:
+        projection = ProjectedModuleSource(
+            module=module,
+            simulation=self.simulation,
+        )
+        if not projection.has_rewrite:
+            return module
+        source = projection.source
+        return ParsedModule(
+            path=module.path,
+            module_name=module.module_name,
+            is_package_init=module.is_package_init,
+            module=ast.parse(source, filename=str(module.path)),
+            source=source,
         )
 
     def created_modules(self) -> tuple[ParsedModule, ...]:

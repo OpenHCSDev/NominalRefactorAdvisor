@@ -90,8 +90,11 @@ from .codemod_workflow import (
     CodemodFixpointReport,
     CodemodFixpointRunner,
     CodemodFixpointScan,
-    CodemodFixpointStopReason,
     CodemodProjectedFindingReport,
+    CodemodRefactorGoal,
+    CodemodRefactorGoalKind,
+    CodemodRefactorGoalReport,
+    CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
 )
 from .detectors import DetectorConfig
@@ -683,6 +686,59 @@ _CLI_ARGUMENT_SPECS = (
             help=(
                 "With --codemod-fixpoint, write the replayable staged "
                 "CodemodPlanSequence JSON synthesized by the fixpoint run."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-refactor-goal",),
+            value_type=str,
+            help=(
+                "Run a goal-directed staged DSL refactor. Currently supported: "
+                "nominal_boundary_extraction."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-detector",),
+            action="append",
+            dest="codemod_goal_detectors",
+            default=[],
+            help=(
+                "Restrict --codemod-refactor-goal to findings from this detector "
+                "(can be repeated)."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-finding-id",),
+            action="append",
+            dest="codemod_goal_finding_ids",
+            default=[],
+            help=(
+                "Restrict --codemod-refactor-goal to one stable finding id "
+                "(can be repeated)."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-pattern",),
+            action="append",
+            dest="codemod_goal_patterns",
+            value_type=int,
+            default=[],
+            help=(
+                "Restrict --codemod-refactor-goal to a canonical pattern id "
+                "(can be repeated)."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-max-stages",),
+            value_type=int,
+            default=8,
+            help="Maximum staged recipe simulations for --codemod-refactor-goal.",
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-goal-plan-out",),
+            value_type=Path,
+            help=(
+                "With --codemod-refactor-goal, write the replayable staged "
+                "CodemodPlanSequence JSON synthesized by the goal runner."
             ),
         ),
     )
@@ -1580,6 +1636,7 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             args.codemod_replacement_plan is not None,
             bool(SelectedOperationTargetSelectorSource.selected_sources(args)),
             args.codemod_fixpoint,
+            args.codemod_refactor_goal is not None,
         )
     )
 
@@ -2486,6 +2543,57 @@ def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
             f"stop={iteration.stop_label}"
         )
     return "\n".join(lines)
+
+
+def format_codemod_refactor_goal_markdown(
+    report: CodemodRefactorGoalReport,
+) -> str:
+    """Render a concise goal-directed codemod workflow summary."""
+
+    lines = [
+        "Codemod refactor goal report:",
+        f"   - Goal: {report.goal.goal_id} ({report.goal.kind.value})",
+        f"   - Completed: {report.completed}",
+        f"   - Achieved: {report.achieved}",
+        f"   - Stop reason: {report.terminal_reason.value}",
+        f"   - Stages: {report.stage_count}",
+        f"   - Rewrites: {report.total_rewrite_count}",
+        f"   - Final findings: {report.final_finding_count}",
+        f"   - Remaining target findings: {len(report.final_target_finding_ids)}",
+    ]
+    for stage in report.stages:
+        lines.append(
+            "   - "
+            f"Stage {stage.stage_index}: "
+            f"rewrites={stage.rewrite_count}, "
+            f"removed_targets={stage.progress.removed_target_finding_count}, "
+            f"surviving_targets={stage.progress.surviving_target_finding_count}, "
+            f"applied={stage.applied}"
+        )
+    return "\n".join(lines)
+
+
+def codemod_refactor_goal_from_args(
+    args: argparse.Namespace,
+) -> CodemodRefactorGoal:
+    """Build the high-level codemod goal requested by CLI flags."""
+
+    try:
+        goal_kind = CodemodRefactorGoalKind(args.codemod_refactor_goal)
+    except ValueError as error:
+        choices = ", ".join(item.value for item in CodemodRefactorGoalKind)
+        raise ValueError(
+            f"unknown codemod refactor goal {args.codemod_refactor_goal!r}; "
+            f"choose one of {choices}"
+        ) from error
+    return CodemodRefactorGoal(
+        goal_id=goal_kind.value,
+        kind=goal_kind,
+        target_finding_ids=tuple(args.codemod_goal_finding_ids),
+        detector_ids=tuple(args.codemod_goal_detectors),
+        pattern_ids=tuple(args.codemod_goal_patterns),
+        max_stages=args.codemod_goal_max_stages,
+    )
 
 
 def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
@@ -4405,6 +4513,7 @@ def main() -> int:
         args.codemod_plan is not None
         or codemod_execution_mode.requested
         or args.codemod_fixpoint
+        or args.codemod_refactor_goal is not None
         or codemod_scan_query_mode.requested
     )
     if args.codemod_synthesis_authoring and not args.codemod_synthesize_plan:
@@ -4418,6 +4527,11 @@ def main() -> int:
         )
     if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
         parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
+    if (
+        args.codemod_goal_plan_out is not None
+        and args.codemod_refactor_goal is None
+    ):
+        parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
@@ -4428,6 +4542,7 @@ def main() -> int:
     if (
         codemod_requested
         and not args.codemod_fixpoint
+        and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not args.include_impact_ranking
         and not codemod_plan_sequence.has_recipes
@@ -4677,6 +4792,33 @@ def main() -> int:
             print(json.dumps(report.to_dict(), indent=2))
         else:
             print(format_codemod_fixpoint_markdown(report))
+        return 0 if report.completed else 1
+    if args.codemod_refactor_goal is not None:
+        try:
+            refactor_goal = codemod_refactor_goal_from_args(args)
+        except ValueError as error:
+            parser.error(str(error))
+        report = CodemodRefactorGoalRunner(
+            resolved_dir=parse_cache_dir,
+            enabled=args.use_parse_cache,
+            roots=roots,
+            config=config,
+            parse_workers=args.parse_workers,
+            goal=refactor_goal,
+            guard_suite=codemod_plan_sequence.guard_suite,
+            dry_run=not args.codemod_apply,
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=findings,
+            ),
+        ).run()
+        replay_plan_payload = report.replay_sequence.to_dict()
+        write_cli_json_artifact(args.codemod_goal_plan_out, replay_plan_payload)
+        write_cli_json_artifact(args.codemod_plan_out, replay_plan_payload)
+        if args.json:
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(format_codemod_refactor_goal_markdown(report))
         return 0 if report.completed else 1
     impact_ranking = None
     architecture_guard_report = None
