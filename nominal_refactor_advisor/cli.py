@@ -138,7 +138,6 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
 )
 CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
-CliArgumentKwargValue: TypeAlias = CliArgumentDefault | CliArgumentValueType
 CodemodCandidateSelection: TypeAlias = tuple[CodemodCandidate, ...] | None
 CodemodSelectorReportFactory: TypeAlias = Callable[
     [CodemodSourceSnapshot, CodemodTargetSelector],
@@ -166,15 +165,16 @@ class CliArgumentSpec:
     help: str
     action: str | None = None
     default: CliArgumentDefault | None = None
+    default_supplied: bool = False
     dest: str | None = None
     nargs: str | int | None = None
     value_type: CliArgumentValueType | None = None
 
     def add_to_parser(self, parser: argparse.ArgumentParser) -> None:
-        kwargs: dict[str, CliArgumentKwargValue] = {"help": self.help}
+        kwargs: dict[str, object] = {"help": self.help}
         if self.action is not None:
             kwargs["action"] = self.action
-        if self.default is not None:
+        if self.default is not None or self.default_supplied:
             kwargs["default"] = self.default
         if self.dest is not None:
             kwargs["dest"] = self.dest
@@ -306,13 +306,16 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--include-impact-ranking",),
             action="store_true",
             dest="include_impact_ranking",
-            default=True,
+            default=None,
+            default_supplied=True,
             help="Rank load-bearing refactor opportunities and dynamic trajectories.",
         ),
         CliArgumentSpec(
             flags=("--no-impact-ranking",),
             action="store_false",
             dest="include_impact_ranking",
+            default=None,
+            default_supplied=True,
             help=(
                 "Skip load-bearing refactor opportunity ranking. Requires "
                 "--raw-findings on normal scans because this disables the "
@@ -683,6 +686,7 @@ class JsonPayloadSections:
     candidate_payload: bool = True
     finding_recipe_plan: bool = True
     payload_timing: bool = False
+    default_impact_ranking: bool = True
 
     @property
     def needs_observation_graph(self) -> bool:
@@ -736,6 +740,7 @@ class JsonPayloadProfile(Enum):
         candidate_payload=False,
         finding_recipe_plan=False,
         payload_timing=True,
+        default_impact_ranking=False,
     )
 
     @classmethod
@@ -751,6 +756,31 @@ class JsonPayloadProfile(Enum):
     @property
     def sections(self) -> JsonPayloadSections:
         return self.value
+
+
+@dataclass(frozen=True)
+class JsonPayloadImpactRankingPolicy:
+    """Resolved impact-ranking policy for one CLI JSON payload profile."""
+
+    explicit_request: bool | None
+    json_enabled: bool
+    payload_profile: JsonPayloadProfile
+
+    @property
+    def include_impact_ranking(self) -> bool:
+        if self.explicit_request is not None:
+            return self.explicit_request
+        if self.json_enabled:
+            return self.payload_profile.sections.default_impact_ranking
+        return True
+
+    @property
+    def treats_summary_as_raw_findings(self) -> bool:
+        return (
+            self.json_enabled
+            and self.payload_profile is JsonPayloadProfile.summary
+            and not self.include_impact_ranking
+        )
 
 
 @dataclass(frozen=True)
@@ -4178,6 +4208,16 @@ def main() -> int:
     config = DetectorConfig.from_namespace(args)
     codemod_scan_query_mode = CodemodScanQueryMode.from_namespace(args)
     codemod_scan_query_mode.require_valid(parser)
+    try:
+        json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
+    except ValueError as error:
+        parser.error(str(error))
+    impact_ranking_policy = JsonPayloadImpactRankingPolicy(
+        explicit_request=args.include_impact_ranking,
+        json_enabled=args.json,
+        payload_profile=json_payload_profile,
+    )
+    args.include_impact_ranking = impact_ranking_policy.include_impact_ranking
     JsonDocumentInputSet.from_option_paths(
         (
             ("--codemod-plan", (args.codemod_plan,)),
@@ -4323,14 +4363,12 @@ def main() -> int:
             include_impact_ranking=args.include_impact_ranking
             or args.codemod_fixpoint
             or codemod_scan_query_mode.requested,
-            raw_findings=args.raw_findings,
+            raw_findings=(
+                args.raw_findings
+                or impact_ranking_policy.treats_summary_as_raw_findings
+            ),
         ).require_authority_boundary_mode()
     except SemanticRefactorGateModeError as error:
-        parser.error(str(error))
-
-    try:
-        json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
-    except ValueError as error:
         parser.error(str(error))
 
     if args.import_lean_export is None:

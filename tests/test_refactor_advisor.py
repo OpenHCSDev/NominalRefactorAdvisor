@@ -12940,6 +12940,42 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
     assert "fibers" not in payload
 
 
+def test_module_cli_json_summary_skips_default_impact_ranking(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return value\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--json",
+            "--json-payload",
+            "summary",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert "findings" in payload
+    assert "timing" in payload
+    assert "payload_timing" in payload
+    assert "impact_ranking" not in payload
+    assert "source_index" not in payload
+    assert "semantic_refactor_gate" not in payload
+    assert "finding_recipe_plan" not in payload
+
+
 def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
