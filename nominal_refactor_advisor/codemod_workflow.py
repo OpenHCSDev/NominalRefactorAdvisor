@@ -19,7 +19,7 @@ from .codemod import (
     CodemodSimulationReport,
     CodemodSourceSnapshot,
     FindingRecipePlan,
-    FindingRecipeSynthesisReport,
+    FindingRecipeSynthesisBoundary,
     JsonObject,
     module_name_from_source_path,
 )
@@ -286,7 +286,7 @@ class CodemodSimulationFindingProjection:
 
 
 @dataclass(frozen=True)
-class CodemodFixpointIteration:
+class CodemodFixpointIteration(FindingRecipeSynthesisBoundary):
     """One scan/simulate/apply/rescan step in the codemod fixpoint workflow."""
 
     iteration_index: int
@@ -294,7 +294,6 @@ class CodemodFixpointIteration:
     recipe_count: int
     expected_removed_finding_ids: tuple[str, ...]
     document: CodemodPlanDocument | None = None
-    synthesis_report: FindingRecipeSynthesisReport | None = None
     simulation: CodemodSimulationReport | None = None
     architecture_guard_report: ArchitectureGuardReport | None = None
     finding_delta: CodemodFindingDelta | None = None
@@ -353,8 +352,7 @@ class CodemodFixpointIteration:
         }
         if self.document is not None:
             payload["document"] = self.document.to_dict()
-        if self.synthesis_report is not None:
-            payload["synthesis_report"] = self.synthesis_report.to_dict()
+        payload.update(self.synthesis_payload())
         if self.simulation is not None:
             payload["simulation"] = self.simulation.to_dict()
         if self.architecture_guard_report is not None:
@@ -584,7 +582,7 @@ class CodemodFixpointIterationBuilder:
             recipe_count=self.recipe_count,
             expected_removed_finding_ids=self.expected_removed_finding_ids,
             document=self.plan.document,
-            synthesis_report=self.plan.synthesis_report,
+            report=self.plan.report,
             simulation=None if simulation is None else simulation.simulation,
             architecture_guard_report=(
                 None if simulation is None else simulation.architecture_guard_report

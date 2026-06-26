@@ -1038,10 +1038,10 @@ class CodemodAuthoringBundleWriter:
     def write(self) -> JsonObject:
         records = tuple(
             self.write_record(record_index, record)
-            for record_index, record in enumerate(self.plan.synthesis_report.records)
+            for record_index, record in enumerate(self.plan.records)
         )
         payload: JsonObject = {
-            "synthesis_report": self.plan.synthesis_report.to_dict(),
+            **self.plan.synthesis_payload(),
             "records": records,
         }
         write_cli_json_artifact(self.output_dir / "index.json", payload)
@@ -2491,10 +2491,10 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
         )
         if self.args.codemod_preflight:
             payload = finding_recipe_plan.preflight_snapshot(snapshot).to_dict()
-            if self.args.codemod_synthesis_authoring:
-                payload["synthesis_authoring"] = (
-                    finding_recipe_plan.synthesis_report.authoring_report().to_dict()
-                )
+            payload = self.with_optional_synthesis_authoring(
+                payload,
+                finding_recipe_plan,
+            )
             if authoring_bundle is not None:
                 payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
@@ -2520,10 +2520,10 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             if projected_findings is not None:
                 payload["projected_findings"] = projected_findings.to_dict()
                 self.write_continuation_plan_if_requested(projected_findings)
-            if self.args.codemod_synthesis_authoring:
-                payload["synthesis_authoring"] = (
-                    finding_recipe_plan.synthesis_report.authoring_report().to_dict()
-                )
+            payload = self.with_optional_synthesis_authoring(
+                payload,
+                finding_recipe_plan,
+            )
             if authoring_bundle is not None:
                 payload["authoring_bundle"] = authoring_bundle
             print(json.dumps(payload, indent=2))
@@ -2532,14 +2532,23 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             payload = finding_recipe_plan.document.to_dict()
         else:
             payload = finding_recipe_plan.to_dict()
-            if self.args.codemod_synthesis_authoring:
-                payload["synthesis_authoring"] = (
-                    finding_recipe_plan.synthesis_report.authoring_report().to_dict()
-                )
+            payload = self.with_optional_synthesis_authoring(
+                payload,
+                finding_recipe_plan,
+            )
         if authoring_bundle is not None:
             payload["authoring_bundle"] = authoring_bundle
         print(json.dumps(payload, indent=2))
         return 0
+
+    def with_optional_synthesis_authoring(
+        self,
+        payload: JsonObject,
+        plan: FindingRecipePlan,
+    ) -> JsonObject:
+        if not self.args.codemod_synthesis_authoring:
+            return payload
+        return plan.with_authoring_payload(payload)
 
     @property
     def synthesis_execution_requested(self) -> bool:

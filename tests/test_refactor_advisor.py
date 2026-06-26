@@ -1263,7 +1263,7 @@ def test_synthesis_records_expose_evidence_selectors(tmp_path: Path) -> None:
         findings,
         detector_ids=("class_level_inheritance_optimization",),
     )
-    record = plan.synthesis_report.records[0]
+    record = plan.records[0]
     selector_payload = record.authoring_record().to_dict()["evidence_selector"]
 
     assert isinstance(selector_payload, dict)
@@ -1466,10 +1466,10 @@ def test_class_level_inheritance_bridge_rejects_multiline_class_headers(
         findings,
         detector_ids=("class_level_inheritance_optimization",),
     )
-    record = plan.synthesis_report.records[0]
+    record = plan.records[0]
 
     assert plan.document.recipes == ()
-    assert plan.synthesis_report.rejected_count == 1
+    assert plan.rejected_count == 1
     assert record.status.value == "rejected_by_safety_check"
     assert record.reason == (
         "class-declaration promotion rejected because at least one target "
@@ -1636,10 +1636,10 @@ def test_method_promotion_synthesis_reports_direct_base_rejection(
         (finding,),
         detector_ids=("cross_class_small_method_template",),
     )
-    record = plan.synthesis_report.records[0]
+    record = plan.records[0]
 
     assert plan.document.recipes == ()
-    assert plan.synthesis_report.rejected_count == 1
+    assert plan.rejected_count == 1
     assert record.status.value == "rejected_by_safety_check"
     assert record.summary == "Alpha and Beta repeat emit."
     assert record.capability_gap == "one inherited authority algorithm"
@@ -1688,10 +1688,10 @@ def test_method_promotion_synthesis_rejects_unresolved_class_targets(
         (finding,),
         detector_ids=("cross_class_small_method_template",),
     )
-    record = plan.synthesis_report.records[0]
+    record = plan.records[0]
 
     assert plan.document.recipes == ()
-    assert plan.synthesis_report.rejected_count == 1
+    assert plan.rejected_count == 1
     assert record.status.value == "rejected_by_safety_check"
     assert record.reason == "Expected one class target for 'MissingAlpha'"
 
@@ -1740,10 +1740,10 @@ def test_method_promotion_synthesis_rejects_multiline_class_headers(
         (finding,),
         detector_ids=("cross_class_small_method_template",),
     )
-    record = plan.synthesis_report.records[0]
+    record = plan.records[0]
 
     assert plan.document.recipes == ()
-    assert plan.synthesis_report.rejected_count == 1
+    assert plan.rejected_count == 1
     assert record.status.value == "rejected_by_safety_check"
     assert record.reason == "method-promotion target has unsupported class header"
 

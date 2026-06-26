@@ -10701,6 +10701,46 @@ class FindingRecipeSynthesisReport(FindingRecipeSynthesisReportView):
 
 
 @dataclass(frozen=True, kw_only=True)
+class FindingRecipeSynthesisBoundary(CodemodJsonReport):
+    """Single payload boundary for finding-backed synthesis projections."""
+
+    payload_key: ClassVar[str] = "synthesis_report"
+    authoring_payload_key: ClassVar[str] = "synthesis_authoring"
+
+    report: FindingRecipeSynthesisReport = field(
+        default_factory=FindingRecipeSynthesisReport
+    )
+
+    @property
+    def records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
+        return self.report.records
+
+    @property
+    def planned_count(self) -> int:
+        return self.report.planned_count
+
+    @property
+    def rejected_count(self) -> int:
+        return self.report.rejected_count
+
+    @property
+    def unsupported_count(self) -> int:
+        return self.report.unsupported_count
+
+    def synthesis_payload(self) -> JsonObject:
+        return {self.payload_key: self.report.to_dict()}
+
+    def to_dict(self) -> JsonObject:
+        return self.synthesis_payload()
+
+    def with_authoring_payload(self, payload: JsonObject) -> JsonObject:
+        return {
+            **payload,
+            self.authoring_payload_key: self.report.authoring_report().to_dict(),
+        }
+
+
+@dataclass(frozen=True, kw_only=True)
 class FindingRecipeSynthesisResult:
     """Outcome of evaluating one finding against executable DSL bridges."""
 
@@ -10816,14 +10856,11 @@ class FindingRecipeSynthesisAttempt:
 
 
 @dataclass(frozen=True)
-class FindingRecipePlan:
+class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     """Codemod plan synthesized from executable advisor findings."""
 
     document: CodemodPlanDocument
     expected_removed_finding_ids: tuple[str, ...] = ()
-    synthesis_report: FindingRecipeSynthesisReport = field(
-        default_factory=FindingRecipeSynthesisReport
-    )
 
     @property
     def expected_removed_finding_count(self) -> int:
@@ -10869,7 +10906,7 @@ class FindingRecipePlan:
             "document": self.document.to_dict(),
             "expected_removed_finding_ids": self.expected_removed_finding_ids,
             "expected_removed_finding_count": self.expected_removed_finding_count,
-            "synthesis_report": self.synthesis_report.to_dict(),
+            **self.synthesis_payload(),
         }
 
 
@@ -11956,7 +11993,7 @@ class FindingRecipePlanBuilder:
         return FindingRecipePlan(
             document=CodemodPlanDocument(recipes=self.merged_recipes(recipes)),
             expected_removed_finding_ids=tuple(expected_removed_finding_ids),
-            synthesis_report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
+            report=FindingRecipeSynthesisReport(tuple(synthesis_records)),
         )
 
     def merged_recipes(
