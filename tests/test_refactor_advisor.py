@@ -9579,16 +9579,26 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
         "selected_operation_plan",
     ]
+    target_sources = {
+        source["source_id"]: source
+        for source in payload["selected_operation_target_selector_sources"]
+    }
+    assert target_sources["json_target_selector"]["option_names"] == [
+        "--codemod-selected-operation-plan"
+    ]
+    assert "--codemod-selected-qualname-pattern" in target_sources[
+        "inline_source_index_target"
+    ]["option_names"]
     template_sources = {
         source["source_id"]: source
         for source in payload["selected_operation_template_sources"]
     }
-    assert template_sources["json_operation_template"]["option_name"] == (
+    assert template_sources["json_operation_template"]["option_names"] == [
         "--codemod-operation-template"
-    )
-    assert template_sources["replace_text_operands"]["option_name"] == (
+    ]
+    assert template_sources["replace_text_operands"]["option_names"] == [
         "--codemod-selected-replace-text"
-    )
+    ]
 
 
 def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
@@ -11567,6 +11577,110 @@ def test_module_cli_simulates_selected_replace_text_without_template_json(
     assert "+        return modern('Alpha.run', value)" in payload["unified_diff"]
     assert "+        return modern('Beta.run', value)" in payload["unified_diff"]
     assert "modern('Alpha.run', value)" not in module_path.read_text()
+
+
+def test_module_cli_simulates_selected_replace_text_without_selector_or_template_json(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "\nclass Alpha:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n\n\n"
+            "class Beta:\n"
+            "    def run(self, value):\n"
+            "        return legacy(value)\n"
+        ),
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-node-kind",
+            "method",
+            "--codemod-selected-file",
+            module_path.as_posix(),
+            "--codemod-selected-qualname-pattern",
+            "^(Alpha|Beta)\\.run$",
+            "--codemod-selected-replace-text",
+            "legacy(value)",
+            "modern('${target.qualname}', value)",
+            "--codemod-simulate",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    payload = json.loads(result.stdout)
+    operation = payload["scaffold"]["document"]["recipes"][0]["operations"][0]
+
+    assert result.returncode == 0, result.stderr
+    assert payload["applied_rewrite_count"] == 2
+    assert payload["parse_valid"] is True
+    assert operation["selector"]["selector"] == "source_index_target"
+    assert operation["selector"]["node_kinds"] == ["method"]
+    assert operation["selector"]["file_paths"] == [module_path.as_posix()]
+    assert operation["selector"]["qualname_patterns"] == ["^(Alpha|Beta)\\.run$"]
+    assert "+        return modern('Alpha.run', value)" in payload["unified_diff"]
+    assert "+        return modern('Beta.run', value)" in payload["unified_diff"]
+    assert "modern('Alpha.run', value)" not in module_path.read_text()
+
+
+def test_module_cli_rejects_multiple_selected_operation_target_selector_sources(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n    def run(self, value):\n        return legacy(value)\n",
+    )
+    selector_path = tmp_path / "selector.json"
+    selector_path.write_text(
+        json.dumps(
+            {
+                "selector": "source_index_target",
+                "node_kinds": ["method"],
+                "file_paths": [module_path.as_posix()],
+                "qualnames": ["Alpha.run"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--codemod-selected-operation-plan",
+            selector_path.as_posix(),
+            "--codemod-selected-qualname",
+            "Alpha.run",
+            "--codemod-selected-replace-text",
+            "legacy(value)",
+            "modern(value)",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "target selector sources are mutually exclusive" in result.stderr
 
 
 def test_module_cli_rejects_multiple_selected_operation_template_sources(
