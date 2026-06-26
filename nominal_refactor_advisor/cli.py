@@ -218,6 +218,15 @@ _CLI_ARGUMENT_SPECS = (
             help="Emit JSON instead of Markdown.",
         ),
         CliArgumentSpec(
+            flags=("--json-payload",),
+            default="agent",
+            value_type=str,
+            help=(
+                "JSON payload profile: agent, full, or summary. The agent "
+                "profile is the default and skips observation graph payloads."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--raw-findings",),
             action="store_true",
             help=(
@@ -664,6 +673,109 @@ _CLI_ARGUMENT_SPECS = (
 
 
 @dataclass(frozen=True)
+class JsonPayloadSections:
+    """Declared section policy for one JSON payload profile."""
+
+    source_index: bool = True
+    observation_graph: bool = True
+    observation_fibers: bool = True
+    semantic_refactor_gate: bool = True
+    candidate_payload: bool = True
+    finding_recipe_plan: bool = True
+    payload_timing: bool = False
+
+    @property
+    def needs_observation_graph(self) -> bool:
+        return self.observation_graph or self.observation_fibers
+
+    @property
+    def needs_candidate_projection(self) -> bool:
+        return self.semantic_refactor_gate or self.candidate_payload
+
+
+@dataclass(frozen=True)
+class JsonPayloadSourceSnapshotDemand:
+    """Source-snapshot demand induced by one payload section policy."""
+
+    sections: JsonPayloadSections
+    impact_ranking_report: RefactorImpactRankingReport | None
+    candidate_selection: CodemodCandidateSelection
+
+    @property
+    def needs_generated_candidate_selection(self) -> bool:
+        needs_generated_candidates = (
+            self.impact_ranking_report is not None
+            and self.candidate_selection is None
+            and self.sections.needs_candidate_projection
+        )
+        return needs_generated_candidates
+
+    @property
+    def needs_source_snapshot(self) -> bool:
+        return (
+            self.sections.source_index
+            or self.sections.finding_recipe_plan
+            or self.needs_generated_candidate_selection
+        )
+
+
+class JsonPayloadProfile(Enum):
+    """Named JSON payload profiles for CLI and programmatic callers."""
+
+    full = JsonPayloadSections()
+    agent = JsonPayloadSections(
+        observation_graph=False,
+        observation_fibers=False,
+        payload_timing=True,
+    )
+    summary = JsonPayloadSections(
+        source_index=False,
+        observation_graph=False,
+        observation_fibers=False,
+        semantic_refactor_gate=False,
+        candidate_payload=False,
+        finding_recipe_plan=False,
+        payload_timing=True,
+    )
+
+    @classmethod
+    def from_cli_value(cls, raw_value: str) -> "JsonPayloadProfile":
+        try:
+            return cls[raw_value]
+        except KeyError as error:
+            choices = ", ".join(profile.name for profile in cls)
+            raise ValueError(
+                f"unknown JSON payload profile {raw_value!r}; choose one of {choices}"
+            ) from error
+
+    @property
+    def sections(self) -> JsonPayloadSections:
+        return self.value
+
+
+@dataclass(frozen=True)
+class JsonPayloadBuildTiming:
+    """Wall-clock time spent in optional JSON payload sections."""
+
+    observation_graph_seconds: float = 0.0
+    source_snapshot_seconds: float = 0.0
+    source_index_payload_seconds: float = 0.0
+    semantic_refactor_gate_seconds: float = 0.0
+    finding_recipe_plan_seconds: float = 0.0
+    total_seconds: float = 0.0
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "observation_graph_seconds": self.observation_graph_seconds,
+            "source_snapshot_seconds": self.source_snapshot_seconds,
+            "source_index_payload_seconds": self.source_index_payload_seconds,
+            "semantic_refactor_gate_seconds": self.semantic_refactor_gate_seconds,
+            "finding_recipe_plan_seconds": self.finding_recipe_plan_seconds,
+            "total_seconds": self.total_seconds,
+        }
+
+
+@dataclass(frozen=True)
 class JsonPayloadBuilder:
     """Build the JSON report payload for one advisor scan."""
 
@@ -678,25 +790,44 @@ class JsonPayloadBuilder:
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
+    payload_sections: JsonPayloadSections = JsonPayloadProfile.full.sections
 
     def to_dict(self) -> JsonObject:
+        payload_started = perf_counter()
+        sections = self.payload_sections
         report = AnalysisReport(findings=tuple(self.findings), plans=tuple(self.plans))
-        graph = build_observation_graph(self.modules)
         payload = report.to_dict()
         payload["findings"] = [finding.to_dict() for finding in self.findings]
-        started = perf_counter()
+        snapshot_demand = JsonPayloadSourceSnapshotDemand(
+            sections=sections,
+            impact_ranking_report=self.impact_ranking,
+            candidate_selection=self.codemod_candidates,
+        )
+        observation_graph_seconds = 0.0
+        if sections.needs_observation_graph:
+            started = perf_counter()
+            graph = build_observation_graph(self.modules)
+            observation_graph_seconds = round(perf_counter() - started, 3)
+            if sections.observation_graph:
+                payload["observations"] = [asdict(item) for item in graph.observations]
+            if sections.observation_fibers:
+                payload["fibers"] = [asdict(item) for item in graph.fibers]
         source_snapshot = self.source_snapshot
         built_source_index_seconds = 0.0
-        if source_snapshot is None:
+        if source_snapshot is None and snapshot_demand.needs_source_snapshot:
+            started = perf_counter()
             source_snapshot = CodemodSourceSnapshot.from_modules(
                 self.modules,
                 self.findings,
             )
             built_source_index_seconds = round(perf_counter() - started, 3)
-        source_index = source_snapshot.source_index
-        payload["source_index"] = source_index.to_dict()
+        source_index_payload_seconds = 0.0
+        if sections.source_index and source_snapshot is not None:
+            started = perf_counter()
+            payload["source_index"] = source_snapshot.source_index.to_dict()
+            source_index_payload_seconds = round(perf_counter() - started, 3)
         timing = self.timing
-        if timing is not None and self.source_snapshot is None:
+        if timing is not None and built_source_index_seconds:
             timing = ScanTiming(
                 parse_seconds=timing.parse_seconds,
                 analysis_seconds=timing.analysis_seconds,
@@ -704,8 +835,6 @@ class JsonPayloadBuilder:
                 source_index_seconds=built_source_index_seconds,
                 analysis_cache_status=timing.analysis_cache_status,
             )
-        payload["observations"] = [asdict(item) for item in graph.observations]
-        payload["fibers"] = [asdict(item) for item in graph.fibers]
         if timing is not None:
             payload["timing"] = timing.to_dict()
         if self.economics is not None:
@@ -717,7 +846,12 @@ class JsonPayloadBuilder:
         codemod_candidates = self.codemod_candidates
         if self.impact_ranking is not None:
             payload["impact_ranking"] = self.impact_ranking.to_dict()
-            if codemod_candidates is None:
+            if (
+                codemod_candidates is None
+                and source_snapshot is not None
+                and sections.needs_candidate_projection
+            ):
+                source_index = source_snapshot.source_index
                 codemod_candidates = codemod_candidates_from_impact_ranking(
                     self.impact_ranking,
                     source_index,
@@ -725,24 +859,40 @@ class JsonPayloadBuilder:
                 codemod_candidates = source_snapshot.candidates_with_automated_rewrites(
                     codemod_candidates,
                 )
-        payload["semantic_refactor_gate"] = (
-            SemanticRefactorGateReport.from_optional_scan(
-                codemod_candidates,
-                impact_ranking=self.impact_ranking,
-                findings=tuple(self.findings),
-            ).to_dict()
-        )
-        if codemod_candidates is not None:
+        semantic_refactor_gate_seconds = 0.0
+        if sections.semantic_refactor_gate:
+            started = perf_counter()
+            payload["semantic_refactor_gate"] = (
+                SemanticRefactorGateReport.from_optional_scan(
+                    codemod_candidates,
+                    impact_ranking=self.impact_ranking,
+                    findings=tuple(self.findings),
+                ).to_dict()
+            )
+            semantic_refactor_gate_seconds = round(perf_counter() - started, 3)
+        if sections.candidate_payload and codemod_candidates is not None:
             payload["codemod_candidates"] = tuple(
                 candidate.to_dict() for candidate in codemod_candidates
             )
-        payload["finding_recipe_plan"] = source_snapshot.plan_from_findings(
-            self.findings,
-        ).to_dict()
+        finding_recipe_plan_seconds = 0.0
+        if sections.finding_recipe_plan and source_snapshot is not None:
+            started = perf_counter()
+            payload["finding_recipe_plan"] = source_snapshot.plan_from_findings(
+                self.findings,
+            ).to_dict()
+            finding_recipe_plan_seconds = round(perf_counter() - started, 3)
         if self.scan_guard_report is not None:
             payload["architecture_guard_report"] = self.scan_guard_report.to_dict()
+        if sections.payload_timing:
+            payload["payload_timing"] = JsonPayloadBuildTiming(
+                observation_graph_seconds=observation_graph_seconds,
+                source_snapshot_seconds=built_source_index_seconds,
+                source_index_payload_seconds=source_index_payload_seconds,
+                semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
+                finding_recipe_plan_seconds=finding_recipe_plan_seconds,
+                total_seconds=round(perf_counter() - payload_started, 3),
+            ).to_dict()
         return payload
-
 
 STDIN_JSON_DOCUMENT_TOKEN = "-"
 
@@ -4178,6 +4328,11 @@ def main() -> int:
     except SemanticRefactorGateModeError as error:
         parser.error(str(error))
 
+    try:
+        json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
+    except ValueError as error:
+        parser.error(str(error))
+
     if args.import_lean_export is None:
         started = perf_counter()
         modules = parse_python_module_roots(
@@ -4357,6 +4512,7 @@ def main() -> int:
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
                     source_snapshot=source_snapshot,
+                    payload_sections=json_payload_profile.sections,
                 ).to_dict(),
                 indent=2,
             )

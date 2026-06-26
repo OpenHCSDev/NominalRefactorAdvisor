@@ -56,6 +56,7 @@ from nominal_refactor_advisor.class_index import build_class_family_index
 from nominal_refactor_advisor.cli import CalibrationExitCodeAuthority
 from nominal_refactor_advisor.cli import _CLI_ARGUMENT_SPECS
 from nominal_refactor_advisor.cli import JsonPayloadBuilder
+from nominal_refactor_advisor.cli import JsonPayloadProfile
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.cli import ProofExitCodeAuthority
 from nominal_refactor_advisor.cli import SingleRootModeAuthority
@@ -12933,6 +12934,10 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
     payload = json.loads(result.stdout)
     assert "findings" in payload
     assert "source_index" in payload
+    assert "finding_recipe_plan" in payload
+    assert "payload_timing" in payload
+    assert "observations" not in payload
+    assert "fibers" not in payload
 
 
 def test_module_cli_codemod_diff_and_apply(tmp_path: Path) -> None:
@@ -15109,6 +15114,75 @@ def test_json_payload_reuses_supplied_source_index(
 
     assert payload["source_index"] == source_index.to_dict()
     assert timing["source_index_seconds"] == 0.123
+
+
+def test_json_payload_summary_skips_source_backed_sections(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+
+    def fail_observation_graph(*args: object, **kwargs: object) -> object:
+        raise AssertionError("summary payload should not build observation graph")
+
+    def fail_source_snapshot(*args: object, **kwargs: object) -> CodemodSourceSnapshot:
+        raise AssertionError("summary payload should not build source snapshot")
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.cli.build_observation_graph",
+        fail_observation_graph,
+    )
+    monkeypatch.setattr(
+        CodemodSourceSnapshot,
+        "from_modules",
+        classmethod(fail_source_snapshot),
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=[],
+        plans=[],
+        modules=modules,
+        payload_sections=JsonPayloadProfile.summary.sections,
+    ).to_dict()
+
+    assert "findings" in payload
+    assert "observations" not in payload
+    assert "fibers" not in payload
+    assert "source_index" not in payload
+    assert "semantic_refactor_gate" not in payload
+    assert "finding_recipe_plan" not in payload
+    assert "payload_timing" in payload
+
+
+def test_json_payload_agent_skips_observation_graph_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    modules = parse_python_modules(tmp_path)
+
+    def fail_observation_graph(*args: object, **kwargs: object) -> object:
+        raise AssertionError("agent payload should not build observation graph")
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.cli.build_observation_graph",
+        fail_observation_graph,
+    )
+
+    payload = JsonPayloadBuilder(
+        findings=[],
+        plans=[],
+        modules=modules,
+        payload_sections=JsonPayloadProfile.agent.sections,
+    ).to_dict()
+
+    assert "observations" not in payload
+    assert "fibers" not in payload
+    assert "source_index" in payload
+    assert "semantic_refactor_gate" in payload
+    assert "finding_recipe_plan" in payload
+    assert "payload_timing" in payload
 
 
 def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
