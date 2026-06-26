@@ -5601,6 +5601,33 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     assert single_file_plan.uses_process_pool is False
 
 
+def test_reference_count_index_caches_requested_symbol_only(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        """
+def _helper():
+    _helper
+    unrelated
+
+
+def caller():
+    _helper()
+""",
+    )
+    module = parse_python_module_roots((tmp_path / "pkg",), use_parse_cache=False)[0]
+    function = module.module.body[0]
+    assert isinstance(function, ast.FunctionDef)
+    reference_index = runtime_detectors.ReferenceCountIndex.from_modules([module])
+
+    outside_count = reference_index.reference_count_outside_function(
+        function, "_helper"
+    )
+
+    assert outside_count == 1
+    assert dict(reference_index.function_counts_by_id[id(function)]) == {"_helper": 1}
+
+
 def test_parallel_analyze_modules_matches_sequential_stable_ids(
     tmp_path: Path,
 ) -> None:

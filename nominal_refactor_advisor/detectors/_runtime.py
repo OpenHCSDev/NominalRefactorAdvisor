@@ -12,7 +12,7 @@ import os
 import re
 import tempfile
 from dataclasses import dataclass
-from functools import lru_cache
+from functools import cached_property, lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
 from ..factorization import (
@@ -6597,6 +6597,20 @@ class ReferenceCountIndex:
                 counts[node.value] += 1
         return counts
 
+    @staticmethod
+    def symbol_count(root: ast.AST, symbol_name: str) -> int:
+        count = 0
+        for node in _walk_nodes(root):
+            if isinstance(node, ast.Name):
+                if node.id == symbol_name:
+                    count += 1
+            elif isinstance(node, ast.Attribute):
+                if node.attr == symbol_name:
+                    count += 1
+            elif isinstance(node, ast.Constant) and node.value == symbol_name:
+                count += 1
+        return count
+
     @classmethod
     def from_modules(cls, modules: Sequence[ParsedModule]) -> "ReferenceCountIndex":
         total_counts: Counter[str] = Counter()
@@ -6612,8 +6626,10 @@ class ReferenceCountIndex:
     ) -> int:
         function_key = id(function)
         if function_key not in self.function_counts_by_id:
-            self.function_counts_by_id[function_key] = self.symbol_counts(function)
+            self.function_counts_by_id[function_key] = Counter()
         function_counts = self.function_counts_by_id[function_key]
+        if symbol_name not in function_counts:
+            function_counts[symbol_name] = self.symbol_count(function, symbol_name)
         return self.total_counts[symbol_name] - function_counts[symbol_name]
 
 
@@ -6688,12 +6704,14 @@ class DeadEmbeddedStaticPayloadDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        reference_index = ReferenceCountIndex.from_modules(modules)
+        private_reference_context = _private_reference_detector_context(tuple(modules))
         return [
             self._finding_for_candidate(candidate)
             for module in modules
             for candidate in _embedded_static_payload_candidates(
-                module, config, reference_index=reference_index
+                module,
+                config,
+                reference_index=private_reference_context.reference_index,
             )
         ]
 
@@ -7168,6 +7186,36 @@ class PrivateHelperCallGraph:
                 is not None
             )
         )
+
+
+@dataclass(frozen=True)
+class PrivateReferenceDetectorContext:
+    """Shared repo-wide indexes for private-reference detector families."""
+
+    modules: tuple[ParsedModule, ...]
+
+    @cached_property
+    def reference_index(self) -> ReferenceCountIndex:
+        return ReferenceCountIndex.from_modules(self.modules)
+
+    @cached_property
+    def derived_candidate_collector_contract_names(self) -> frozenset[str]:
+        return DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(self.modules)
+
+    @cached_property
+    def private_helper_call_graph(self) -> PrivateHelperCallGraph:
+        return PrivateHelperCallGraph.from_modules(self.modules)
+
+    @cached_property
+    def class_index(self) -> ClassFamilyIndex:
+        return build_class_family_index(list(self.modules))
+
+
+@lru_cache(maxsize=4)
+def _private_reference_detector_context(
+    modules: tuple[ParsedModule, ...],
+) -> PrivateReferenceDetectorContext:
+    return PrivateReferenceDetectorContext(modules)
 
 
 def _private_helper_caller_owner_names(
@@ -8105,10 +8153,7 @@ class UnreferencedPrivateFunctionDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        reference_index = ReferenceCountIndex.from_modules(modules)
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-        )
+        private_reference_context = _private_reference_detector_context(tuple(modules))
         return [
             self._finding_for_candidate(candidate)
             for module in modules
@@ -8116,9 +8161,9 @@ class UnreferencedPrivateFunctionDetector(
                 module,
                 config,
                 reference_modules=modules,
-                reference_index=reference_index,
+                reference_index=private_reference_context.reference_index,
                 derived_candidate_collector_contract_names=(
-                    derived_candidate_collector_contract_names
+                    private_reference_context.derived_candidate_collector_contract_names
                 ),
             )
         ]
@@ -8155,11 +8200,7 @@ class NonNominalPrivateHelperDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-        )
-        private_helper_call_graph = PrivateHelperCallGraph.from_modules(modules)
-        class_index = build_class_family_index(modules)
+        private_reference_context = _private_reference_detector_context(tuple(modules))
         return [
             self._finding_for_candidate(candidate)
             for module in modules
@@ -8168,10 +8209,12 @@ class NonNominalPrivateHelperDetector(
                 config,
                 reference_modules=modules,
                 derived_candidate_collector_contract_names=(
-                    derived_candidate_collector_contract_names
+                    private_reference_context.derived_candidate_collector_contract_names
                 ),
-                private_helper_call_graph=private_helper_call_graph,
-                class_index=class_index,
+                private_helper_call_graph=(
+                    private_reference_context.private_helper_call_graph
+                ),
+                class_index=private_reference_context.class_index,
             )
         ]
 
@@ -8232,10 +8275,7 @@ class PrivateHelperSemanticClusterDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        derived_candidate_collector_contract_names = (
-            DERIVED_CANDIDATE_COLLECTOR_CONTRACTS.names(modules)
-        )
-        private_helper_call_graph = PrivateHelperCallGraph.from_modules(modules)
+        private_reference_context = _private_reference_detector_context(tuple(modules))
         return [
             self._finding_for_candidate(candidate)
             for module in modules
@@ -8244,9 +8284,11 @@ class PrivateHelperSemanticClusterDetector(
                 config,
                 reference_modules=modules,
                 derived_candidate_collector_contract_names=(
-                    derived_candidate_collector_contract_names
+                    private_reference_context.derived_candidate_collector_contract_names
                 ),
-                private_helper_call_graph=private_helper_call_graph,
+                private_helper_call_graph=(
+                    private_reference_context.private_helper_call_graph
+                ),
             )
         ]
 
@@ -8309,7 +8351,7 @@ class DanglingPrivateMethodDetector(
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        reference_index = ReferenceCountIndex.from_modules(modules)
+        private_reference_context = _private_reference_detector_context(tuple(modules))
         return [
             self._finding_for_candidate(candidate)
             for module in modules
@@ -8317,7 +8359,7 @@ class DanglingPrivateMethodDetector(
                 module,
                 config,
                 reference_modules=modules,
-                reference_index=reference_index,
+                reference_index=private_reference_context.reference_index,
             )
         ]
 

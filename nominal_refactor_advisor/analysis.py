@@ -152,7 +152,7 @@ class DetectorAnalysisWorkerPlan:
     requested_worker_count: int
     available_detector_type_count: int
     module_count: int
-    max_auto_worker_count: int = 8
+    max_auto_worker_count: int = 16
 
     @property
     def effective_worker_count(self) -> int:
