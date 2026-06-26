@@ -29,6 +29,7 @@ from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from .cache_paths import default_parse_cache_dir
 from .collection_algebra import sorted_tuple
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import (
@@ -105,9 +106,22 @@ _IGNORED_PYTHON_TREE_DIRS = frozenset(
         "venv",
     }
 )
-_AST_PARSE_CACHE_VERSION = 1
 _DEFAULT_PARSE_WORKERS = 1
-_CACHE_PAYLOAD_UNAVAILABLE = object()
+
+
+@dataclass(frozen=True)
+class AstParseCacheSchema:
+    """Nominal schema identity for persisted Python AST cache entries."""
+
+    version: int = 1
+
+
+class AstCachePayloadUnavailable:
+    """Sentinel for unreadable or incompatible persisted AST cache payloads."""
+
+
+ast_parse_cache_schema = AstParseCacheSchema()
+ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -167,10 +181,10 @@ def _load_cached_ast(
         AttributeError,
         ImportError,
     ):
-        payload = _CACHE_PAYLOAD_UNAVAILABLE
+        payload = ast_cache_payload_unavailable
     if not isinstance(payload, dict):
         return None
-    if payload.get("version") != _AST_PARSE_CACHE_VERSION:
+    if payload.get("version") != ast_parse_cache_schema.version:
         return None
     if payload.get("path") != str(path.resolve()):
         return None
@@ -207,7 +221,7 @@ def _write_cached_ast(
         return
     cache_entry = _cache_entry_path(cache_dir, path)
     payload = {
-        "version": _AST_PARSE_CACHE_VERSION,
+        "version": ast_parse_cache_schema.version,
         "path": str(path.resolve()),
         "mtime_ns": path_stat.st_mtime_ns,
         "size": path_stat.st_size,
@@ -718,24 +732,47 @@ def _parse_module_roots_concurrently(
     return modules
 
 
-def _python_source_paths(root: Path) -> tuple[Path, ...]:
-    if root.is_file():
-        return (root,) if root.suffix == ".py" else ()
+@dataclass(frozen=True)
+class PythonSourcePathDiscovery:
+    """Discover deterministic Python source paths for one advisor scan root."""
+
+    root: Path
+
+    def paths(self) -> tuple[Path, ...]:
+        if self.root.is_file():
+            if self.root.suffix == ".py":
+                return (self.root,)
+            return ()
+
+        paths: list[Path] = []
+        for directory, dirnames, filenames in os.walk(self.root):
+            dirnames[:] = sorted(
+                (
+                    dirname
+                    for dirname in dirnames
+                    if dirname not in _IGNORED_PYTHON_TREE_DIRS
+                    and (not dirname.endswith((".egg-info", ".dist-info")))
+                )
+            )
+            directory_path = Path(directory)
+            for filename in sorted(filenames):
+                if filename.endswith(".py"):
+                    paths.append(directory_path / filename)
+        return tuple(paths)
+
+
+def python_source_paths_for_roots(roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Return de-duplicated Python source paths for multiple scan roots."""
 
     paths: list[Path] = []
-    for directory, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            (
-                dirname
-                for dirname in dirnames
-                if dirname not in _IGNORED_PYTHON_TREE_DIRS
-                and (not dirname.endswith((".egg-info", ".dist-info")))
-            )
-        )
-        directory_path = Path(directory)
-        for filename in sorted(filenames):
-            if filename.endswith(".py"):
-                paths.append(directory_path / filename)
+    seen_paths: set[Path] = set()
+    for root in roots:
+        for path in PythonSourcePathDiscovery(root).paths():
+            normalized_path = path.resolve()
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            paths.append(path)
     return tuple(paths)
 
 
@@ -753,10 +790,15 @@ class PythonModuleRootParser(PythonModuleParseContext):
         use_parse_cache: bool = True,
         parse_workers: int = _DEFAULT_PARSE_WORKERS,
     ) -> PythonModuleRootParser:
+        resolved_cache_dir = (
+            cache_dir
+            if cache_dir is not None or not use_parse_cache
+            else default_parse_cache_dir(root)
+        )
         return cls(
             root=root,
             analysis_root=root.parent if root.is_file() else root,
-            cache_dir=cache_dir,
+            cache_dir=resolved_cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
         )
@@ -779,7 +821,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         return parser.parsed_modules()
 
     def parsed_modules(self) -> list[ParsedModule]:
-        paths = _python_source_paths(self.root)
+        paths = PythonSourcePathDiscovery(self.root).paths()
         if self.parse_workers <= 1 or len(paths) <= 1:
             return _parse_module_roots(self, paths)
         return _parse_module_roots_concurrently(self, paths)

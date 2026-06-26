@@ -23,14 +23,16 @@ from metaclass_registry import AutoRegisterMeta
 
 from .analysis import (
     AnalysisPathScope,
+    analysis_cache_dir_for_root,
     analyze_lean_export,
-    analyze_modules,
+    analyze_modules_with_cache,
     analyze_path,
     analyze_paths,
     plan_path,
     plan_paths,
 )
 from .ast_tools import ParsedModule, parse_python_module_roots
+from .cache_paths import default_parse_cache_dir
 from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
@@ -134,8 +136,6 @@ _VALUELESS_ARGUMENT_ACTIONS = frozenset(
         "version",
     }
 )
-_DEFAULT_PARSE_CACHE_RELATIVE_PATH = Path(".nra-cache") / "ast"
-
 CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
 CliArgumentKwargValue: TypeAlias = CliArgumentDefault | CliArgumentValueType
@@ -702,6 +702,7 @@ class JsonPayloadBuilder:
                 analysis_seconds=timing.analysis_seconds,
                 planning_seconds=timing.planning_seconds,
                 source_index_seconds=built_source_index_seconds,
+                analysis_cache_status=timing.analysis_cache_status,
             )
         payload["observations"] = [asdict(item) for item in graph.observations]
         payload["fibers"] = [asdict(item) for item in graph.fibers]
@@ -2885,12 +2886,6 @@ class CodemodComposeSequenceCliCommand(CliEarlyExitCommand):
         return 0
 
 
-def _default_parse_cache_base(root: Path) -> Path:
-    if root.is_file():
-        return root.parent
-    return root
-
-
 @dataclass(frozen=True)
 class ParseCacheDirAuthority:
     """Resolve the effective parse cache directory for one CLI root."""
@@ -2904,7 +2899,7 @@ class ParseCacheDirAuthority:
             return None
         if self.requested_cache_dir is not None:
             return self.requested_cache_dir
-        return _default_parse_cache_base(self.root) / _DEFAULT_PARSE_CACHE_RELATIVE_PATH
+        return default_parse_cache_dir(self.root)
 
 
 @dataclass(frozen=True)
@@ -4124,6 +4119,11 @@ def main() -> int:
         requested_cache_dir=args.cache_dir,
         use_parse_cache=args.use_parse_cache,
     ).cache_dir()
+    analysis_cache_dir = analysis_cache_dir_for_root(
+        root,
+        parse_cache_dir,
+        args.use_parse_cache,
+    )
     if args.predict_scan:
         SingleRootModeAuthority(
             parser=parser,
@@ -4190,15 +4190,25 @@ def main() -> int:
         if not codemod_scan_query_mode.needs_analysis:
             findings = []
             analysis_seconds = 0.0
+            analysis_cache_status = None
         else:
             started = perf_counter()
-            findings = path_scope.filter_findings(analyze_modules(modules, config))
+            analysis_result = analyze_modules_with_cache(
+                roots,
+                modules,
+                config,
+                analysis_cache_dir=analysis_cache_dir,
+            )
+            unfiltered_findings = analysis_result.findings
+            analysis_cache_status = analysis_result.cache_status
+            findings = path_scope.filter_findings(unfiltered_findings)
             analysis_seconds = round(perf_counter() - started, 3)
     else:
         modules = []
         findings = analyze_lean_export(args.import_lean_export)
         parse_seconds = 0.0
         analysis_seconds = 0.0
+        analysis_cache_status = None
     plans = None
     execution_plan = None
     planning_seconds = 0.0
@@ -4312,6 +4322,7 @@ def main() -> int:
         analysis_seconds=analysis_seconds,
         planning_seconds=planning_seconds,
         source_index_seconds=source_index_seconds,
+        analysis_cache_status=analysis_cache_status,
     )
 
     codemod_execution_result = CodemodCliExecution(

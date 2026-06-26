@@ -11,7 +11,7 @@ from typing import cast
 
 import pytest
 
-from nominal_refactor_advisor.analysis import analyze_modules
+from nominal_refactor_advisor.analysis import analyze_modules, analyze_paths
 from nominal_refactor_advisor.ast_tools import (
     AccessorWrapperObservationFamily,
     AttributeProbeObservationFamily,
@@ -41,6 +41,11 @@ from nominal_refactor_advisor.ast_tools import (
     collect_scoped_observations,
     parse_python_module_roots,
     parse_python_modules,
+)
+from nominal_refactor_advisor.analysis_cache import (
+    AnalysisCacheIdentity,
+    AnalysisCacheStatus,
+    AnalysisFindingCache,
 )
 from nominal_refactor_advisor.calibration import (
     format_calibration_markdown,
@@ -5306,6 +5311,109 @@ def test_parse_python_modules_reuses_ast_cache(
     assert [module.module_name for module in first_modules] == ["mod"]
     assert [module.module_name for module in second_modules] == ["mod"]
     assert parse_calls == 1
+
+
+def test_parse_python_modules_uses_default_ast_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    parse_calls = 0
+    real_parse = ast.parse
+
+    def counted_parse(*args: object, **kwargs: object) -> ast.Module:
+        nonlocal parse_calls
+        parse_calls += 1
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr("nominal_refactor_advisor.ast_tools.ast.parse", counted_parse)
+
+    first_modules = parse_python_modules(tmp_path / "pkg")
+    second_modules = parse_python_modules(tmp_path / "pkg")
+
+    assert [module.module_name for module in first_modules] == ["mod"]
+    assert [module.module_name for module in second_modules] == ["mod"]
+    assert parse_calls == 1
+    assert (tmp_path / "pkg" / ".nra-cache" / "ast").is_dir()
+
+
+def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module_path = tmp_path / "pkg" / "mod.py"
+    config = DetectorConfig()
+    first_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Cached finding",
+        "cached detector output should be reused",
+        "persistent finding cache",
+        "cache identity",
+    ).build(
+        "cache_detector",
+        "cached summary",
+        (SourceLocation(str(module_path), 2, "Cached"),),
+    )
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+
+    cache.store(first_identity, [finding])
+
+    first_lookup = cache.load(first_identity)
+    assert first_lookup.status is AnalysisCacheStatus.HIT
+    assert first_lookup.findings == (finding,)
+
+    module_path.write_text("\nclass Cached:\n    pass\n\nclass Changed:\n    pass\n")
+    changed_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+
+    assert changed_identity != first_identity
+    changed_lookup = cache.load(changed_identity)
+    assert changed_lookup.status is AnalysisCacheStatus.MISS
+    assert changed_lookup.findings == ()
+
+
+def test_analyze_paths_reuses_detector_findings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module_path = tmp_path / "pkg" / "mod.py"
+    finding = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Cached finding",
+        "cached detector output should be reused",
+        "persistent finding cache",
+        "cache identity",
+    ).build(
+        "cache_detector",
+        "cached summary",
+        (SourceLocation(str(module_path), 2, "Cached"),),
+    )
+    analyze_calls = 0
+
+    def counted_analyze_modules(
+        modules: list[object], config: DetectorConfig | None = None
+    ) -> list[RefactorFinding]:
+        nonlocal analyze_calls
+        del modules, config
+        analyze_calls += 1
+        return [finding]
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.analyze_modules",
+        counted_analyze_modules,
+    )
+
+    first_findings = analyze_paths(
+        (tmp_path / "pkg",),
+        DetectorConfig(),
+        cache_dir=tmp_path / ".nra-cache" / "ast",
+    )
+    second_findings = analyze_paths(
+        (tmp_path / "pkg",),
+        DetectorConfig(),
+        cache_dir=tmp_path / ".nra-cache" / "ast",
+    )
+
+    assert first_findings == [finding]
+    assert second_findings == [finding]
+    assert analyze_calls == 1
 
 
 def test_parse_python_modules_treats_incompatible_ast_cache_as_miss(
@@ -15330,11 +15438,16 @@ def test_json_payload_exposes_timing_when_supplied(tmp_path: Path) -> None:
         findings=[],
         plans=[],
         modules=modules,
-        timing=ScanTiming(parse_seconds=0.1, analysis_seconds=0.2),
+        timing=ScanTiming(
+            parse_seconds=0.1,
+            analysis_seconds=0.2,
+            analysis_cache_status=AnalysisCacheStatus.HIT,
+        ),
     ).to_dict()
     timing = cast(dict[str, object], payload["timing"])
     assert timing["parse_seconds"] == 0.1
     assert timing["analysis_seconds"] == 0.2
+    assert timing["analysis_cache_status"] == "hit"
     assert timing["source_index_seconds"] >= 0.0
     assert timing["total_seconds"] >= 0.3
 

@@ -6,7 +6,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from .analysis_cache import (
+    AnalysisCacheIdentity,
+    AnalysisCacheStatus,
+    AnalysisFindingCache,
+)
 from .ast_tools import parse_python_module_roots, parse_python_modules
+from .cache_paths import analysis_cache_sibling, default_analysis_cache_dir
 from .detectors import DetectorConfig, default_detectors
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
@@ -136,6 +142,49 @@ def analyze_modules(
     )
 
 
+@dataclass(frozen=True)
+class CachedAnalysisResult:
+    """Detector findings plus the persistent cache status used to produce them."""
+
+    findings: list[RefactorFinding]
+    cache_status: AnalysisCacheStatus
+
+
+def analyze_modules_with_cache(
+    roots: tuple[Path, ...],
+    modules: list,
+    config: DetectorConfig | None = None,
+    *,
+    analysis_cache_dir: Path | None = None,
+) -> CachedAnalysisResult:
+    """Run detector analysis with a persistent finding cache when configured."""
+
+    config = config or DetectorConfig()
+    if analysis_cache_dir is None:
+        return CachedAnalysisResult(
+            analyze_modules(modules, config),
+            AnalysisCacheStatus.DISABLED,
+        )
+    cache_identity = AnalysisCacheIdentity.from_roots(roots, config)
+    analysis_cache = AnalysisFindingCache(analysis_cache_dir)
+    cache_lookup = analysis_cache.load(cache_identity)
+    if cache_lookup.status is AnalysisCacheStatus.HIT:
+        return CachedAnalysisResult(list(cache_lookup.findings), cache_lookup.status)
+    findings = analyze_modules(modules, config)
+    analysis_cache.store(cache_identity, findings)
+    return CachedAnalysisResult(findings, AnalysisCacheStatus.MISS)
+
+
+def analysis_cache_dir_for_root(
+    root: Path, parse_cache_dir: Path | None, use_cache: bool
+) -> Path | None:
+    if not use_cache:
+        return None
+    if parse_cache_dir is not None:
+        return analysis_cache_sibling(parse_cache_dir)
+    return default_analysis_cache_dir(root)
+
+
 def analyze_path(
     root: Path,
     config: DetectorConfig | None = None,
@@ -145,15 +194,22 @@ def analyze_path(
     parse_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
-    return analyze_modules(
-        parse_python_modules(
-            root,
-            cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-        ),
-        config,
+    modules = parse_python_modules(
+        root,
+        cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+        parse_workers=parse_workers,
     )
+    return analyze_modules_with_cache(
+        (root,),
+        modules,
+        config,
+        analysis_cache_dir=analysis_cache_dir_for_root(
+            root,
+            cache_dir,
+            use_parse_cache,
+        ),
+    ).findings
 
 
 def analyze_paths(
@@ -165,15 +221,23 @@ def analyze_paths(
     parse_workers: int = 1,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
-    return analyze_modules(
-        parse_python_module_roots(
-            roots,
-            cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-            parse_workers=parse_workers,
-        ),
-        config,
+    modules = parse_python_module_roots(
+        roots,
+        cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
+        parse_workers=parse_workers,
     )
+    root = roots[0]
+    return analyze_modules_with_cache(
+        roots,
+        modules,
+        config,
+        analysis_cache_dir=analysis_cache_dir_for_root(
+            root,
+            cache_dir,
+            use_parse_cache,
+        ),
+    ).findings
 
 
 def analyze_lean_export(path: Path) -> list[RefactorFinding]:

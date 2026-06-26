@@ -9,6 +9,7 @@ from time import perf_counter
 from typing import Iterable
 
 from .analysis import analyze_modules
+from .analysis_cache import AnalysisCacheStatus
 from .ast_tools import ParsedModule, parse_python_modules
 from .detectors import DetectorConfig
 from .collection_algebra import sorted_tuple
@@ -24,6 +25,7 @@ class ScanTiming(SemanticRecord):
     analysis_seconds: float = 0.0
     planning_seconds: float = 0.0
     source_index_seconds: float = 0.0
+    analysis_cache_status: AnalysisCacheStatus | None = None
 
     @property
     def total_seconds(self) -> float:
@@ -41,6 +43,11 @@ class ScanTiming(SemanticRecord):
             "analysis_seconds": self.analysis_seconds,
             "planning_seconds": self.planning_seconds,
             "source_index_seconds": self.source_index_seconds,
+            "analysis_cache_status": (
+                None
+                if self.analysis_cache_status is None
+                else self.analysis_cache_status.value
+            ),
             "total_seconds": self.total_seconds,
         }
 
