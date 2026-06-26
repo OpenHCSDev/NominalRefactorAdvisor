@@ -10663,6 +10663,10 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     )
     replacement_plan_path = bundle_dir / bundle_record["replacement_plan_path"]
     replacement_plan = load_codemod_plan_document(replacement_plan_path)
+    commands = {
+        command["action_id"]: command
+        for command in bundle_record["commands"]
+    }
 
     assert result.returncode == 0, result.stderr
     assert payload["authoring_bundle"] == bundle_index
@@ -10676,6 +10680,29 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert bundle_record["authoring_record"] == records[0]
     assert bundle_record["replacement_plan_path"].endswith("replacement-plan.json")
     assert replacement_plan.has_recipes
+    assert set(commands) == {
+        "resolve_selector",
+        "scaffold_replacement_plan",
+        "validate_replacement_plan",
+        "simulate_replacement_plan",
+        "apply_replacement_plan",
+    }
+    assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
+    assert commands["simulate_replacement_plan"]["args"][-2:] == [
+        replacement_plan_path.as_posix(),
+        "--codemod-simulate",
+    ]
+
+    validate_command = commands["validate_replacement_plan"]
+    validate_result = subprocess.run(
+        validate_command["argv"],
+        cwd=validate_command["cwd"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert validate_result.returncode == 0, validate_result.stderr
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(

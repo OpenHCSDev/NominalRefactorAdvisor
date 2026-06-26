@@ -856,12 +856,184 @@ def cli_artifact_slug(value: str) -> str:
 
 
 @dataclass(frozen=True)
+class CodemodCliCommandSpec:
+    """Directly runnable CLI action emitted by codemod workflow artifacts."""
+
+    action_id: str
+    args: tuple[str, ...]
+    cwd: Path
+    module: str = "nominal_refactor_advisor"
+    python_executable: str = sys.executable
+
+    @property
+    def argv(self) -> tuple[str, ...]:
+        return (
+            self.python_executable,
+            "-m",
+            self.module,
+            *self.args,
+        )
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "action_id": self.action_id,
+            "cwd": self.cwd.as_posix(),
+            "python_executable": self.python_executable,
+            "module": self.module,
+            "args": self.args,
+            "argv": self.argv,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleCommandContext:
+    """Paths and roots required to emit one replayable authoring command."""
+
+    roots: tuple[Path, ...]
+    evidence_selector_file: Path
+    replacement_plan_file: Path
+    cwd: Path
+
+    @property
+    def root_args(self) -> tuple[str, ...]:
+        return tuple(root.as_posix() for root in self.roots)
+
+    @property
+    def selector_arg(self) -> str:
+        return self.evidence_selector_file.as_posix()
+
+    @property
+    def plan_arg(self) -> str:
+        return self.replacement_plan_file.as_posix()
+
+
+class CodemodAuthoringBundleCommandTemplate(ABC, metaclass=AutoRegisterMeta):
+    """Registered command template emitted into an authoring bundle."""
+
+    __registry__: ClassVar[dict[str, type["CodemodAuthoringBundleCommandTemplate"]]] = {}
+    __registry_key__ = "action_id"
+    __skip_if_no_key__ = True
+
+    action_id: ClassVar[str | None] = None
+    registry_order: ClassVar[int]
+
+    @classmethod
+    def ordered_template_types(
+        cls,
+    ) -> tuple[type["CodemodAuthoringBundleCommandTemplate"], ...]:
+        return tuple(
+            sorted(
+                cls.__registry__.values(),
+                key=lambda template_type: template_type.registry_order,
+            )
+        )
+
+    def command_spec(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> CodemodCliCommandSpec:
+        if self.action_id is None:
+            raise RuntimeError("registered authoring command template has no action_id")
+        return CodemodCliCommandSpec(
+            action_id=self.action_id,
+            args=self.command_args(context),
+            cwd=context.cwd,
+        )
+
+    @abstractmethod
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+    action_id = "resolve_selector"
+    registry_order = 10
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-resolve-selector",
+            context.selector_arg,
+        )
+
+
+class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+    action_id = "scaffold_replacement_plan"
+    registry_order = 20
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-replacement-plan",
+            context.selector_arg,
+            "--codemod-plan-out",
+            context.plan_arg,
+        )
+
+
+class ValidateReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+    action_id = "validate_replacement_plan"
+    registry_order = 30
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            "--codemod-plan",
+            context.plan_arg,
+            "--codemod-validate-plan",
+        )
+
+
+class ReplacementPlanExecutionCommandTemplate(
+    CodemodAuthoringBundleCommandTemplate,
+    ABC,
+):
+    execution_flag: ClassVar[str]
+
+    def command_args(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return (
+            *context.root_args,
+            "--codemod-plan",
+            context.plan_arg,
+            self.execution_flag,
+        )
+
+
+class SimulateReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
+    action_id = "simulate_replacement_plan"
+    registry_order = 40
+    execution_flag = "--codemod-simulate"
+
+
+class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplate):
+    action_id = "apply_replacement_plan"
+    registry_order = 50
+    execution_flag = "--codemod-apply"
+
+
+@dataclass(frozen=True)
 class CodemodAuthoringBundleWriter:
     """Materialize per-finding synthesis authoring artifacts for agents."""
 
     output_dir: Path
     snapshot: CodemodSourceSnapshot
     plan: FindingRecipePlan
+    roots: tuple[Path, ...]
+    cwd: Path
 
     def write(self) -> JsonObject:
         records = tuple(
@@ -902,11 +1074,33 @@ class CodemodAuthoringBundleWriter:
                 self.output_dir
             ).as_posix(),
             "replacement_plan_path": plan_path.relative_to(self.output_dir).as_posix(),
+            "commands": tuple(
+                command.to_dict()
+                for command in self.command_specs(selector_path, plan_path)
+            ),
             "authoring_record": authoring_record.to_dict(),
         }
 
     def record_dir(self, record_index: int, detector_id: str) -> Path:
         return self.output_dir / f"{record_index:04d}-{cli_artifact_slug(detector_id)}"
+
+    def command_specs(
+        self,
+        evidence_selector_file: Path,
+        replacement_plan_file: Path,
+    ) -> tuple[CodemodCliCommandSpec, ...]:
+        context = CodemodAuthoringBundleCommandContext(
+            roots=self.roots,
+            evidence_selector_file=evidence_selector_file,
+            replacement_plan_file=replacement_plan_file,
+            cwd=self.cwd,
+        )
+        return tuple(
+            template_type().command_spec(context)
+            for template_type in (
+                CodemodAuthoringBundleCommandTemplate.ordered_template_types()
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -2383,6 +2577,8 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
             output_dir=output_dir,
             snapshot=snapshot,
             plan=plan,
+            roots=self.roots,
+            cwd=Path.cwd(),
         ).write()
 
     def apply_synthesized_plan(
