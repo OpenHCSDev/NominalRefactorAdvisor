@@ -891,6 +891,17 @@ class CodemodAuthoringWorkflowId(str, Enum):
     SELECTED_OPERATION_TEMPLATE = "selected_operation_template"
 
 
+class CodemodAuthoringArtifactRole(str, Enum):
+    """Stable artifact roles used by codemod authoring workflows."""
+
+    EVIDENCE_SELECTOR_FILE = "evidence_selector"
+    REPLACEMENT_SCAFFOLD_FILE = "replacement_scaffold"
+    REPLACEMENT_PLAN_FILE = "replacement_plan"
+    SELECTED_OPERATION_TEMPLATE_FILE = "selected_operation_template"
+    SELECTED_OPERATION_SCAFFOLD_FILE = "selected_operation_scaffold"
+    SELECTED_OPERATION_PLAN_FILE = "selected_operation_plan"
+
+
 AuthoringTemplateRegistryKey: TypeAlias = (
     CodemodAuthoringCommandActionId | CodemodAuthoringWorkflowId
 )
@@ -969,31 +980,127 @@ class CodemodAuthoringBundleCommandContext:
             ) from error
         return relative_path.as_posix()
 
+    def artifact_path(self, role: CodemodAuthoringArtifactRole) -> Path:
+        return {
+            CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE: (
+                self.evidence_selector_file
+            ),
+            CodemodAuthoringArtifactRole.REPLACEMENT_SCAFFOLD_FILE: (
+                self.replacement_scaffold_file
+            ),
+            CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE: (
+                self.replacement_plan_file
+            ),
+            CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE: (
+                self.operation_template_file
+            ),
+            CodemodAuthoringArtifactRole.SELECTED_OPERATION_SCAFFOLD_FILE: (
+                self.selected_operation_scaffold_file
+            ),
+            CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE: (
+                self.selected_operation_plan_file
+            ),
+        }[role]
+
+    def bundle_relative_paths(
+        self,
+        roles: tuple[CodemodAuthoringArtifactRole, ...],
+    ) -> tuple[str, ...]:
+        return tuple(
+            self.bundle_relative_path(self.artifact_path(role)) for role in roles
+        )
+
 
 @dataclass(frozen=True)
-class CodemodAuthoringWorkflowSpec:
-    """Ordered commands and artifacts for one bundle authoring workflow."""
+class CodemodAuthoringWorkflowDefinition:
+    """Shared identity and roles for authoring workflow views."""
 
     workflow_id: CodemodAuthoringWorkflowId
     description: str
-    editable_paths: tuple[str, ...]
-    review_paths: tuple[str, ...]
-    generated_paths: tuple[str, ...]
+    editable_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
+    review_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
+    generated_artifact_roles: tuple[CodemodAuthoringArtifactRole, ...]
     command_action_ids: tuple[CodemodAuthoringCommandActionId, ...]
     default_next_action_id: CodemodAuthoringCommandActionId
 
+    def definition_items(self) -> tuple[tuple[str, JsonValue], ...]:
+        return (
+            ("workflow_id", self.workflow_id.value),
+            ("description", self.description),
+            (
+                "editable_artifact_roles",
+                tuple(role.value for role in self.editable_artifact_roles),
+            ),
+            (
+                "review_artifact_roles",
+                tuple(role.value for role in self.review_artifact_roles),
+            ),
+            (
+                "generated_artifact_roles",
+                tuple(role.value for role in self.generated_artifact_roles),
+            ),
+            (
+                "command_action_ids",
+                tuple(action_id.value for action_id in self.command_action_ids),
+            ),
+            ("default_next_action_id", self.default_next_action_id.value),
+        )
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringWorkflowSpec(CodemodAuthoringWorkflowDefinition):
+    """Ordered commands and artifacts for one bundle authoring workflow."""
+
+    editable_artifacts: tuple[str, ...]
+    review_artifacts: tuple[str, ...]
+    generated_artifacts: tuple[str, ...]
+
+    def to_dict(self) -> JsonObject:
+        payload = JsonObject(dict(self.definition_items()))
+        payload.update(
+            {
+                "editable_artifacts": self.editable_artifacts,
+                "review_artifacts": self.review_artifacts,
+                "generated_artifacts": self.generated_artifacts,
+            }
+        )
+        return payload
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringCommandManifest:
+    """Manifest row for one registered replayable authoring command."""
+
+    action_id: CodemodAuthoringCommandActionId
+    class_name: str
+    description: str
+    registry_order: int
+
     def to_dict(self) -> JsonObject:
         return {
-            "workflow_id": self.workflow_id.value,
+            "action_id": self.action_id.value,
+            "class_name": self.class_name,
             "description": self.description,
-            "editable_paths": self.editable_paths,
-            "review_paths": self.review_paths,
-            "generated_paths": self.generated_paths,
-            "command_action_ids": tuple(
-                action_id.value for action_id in self.command_action_ids
-            ),
-            "default_next_action_id": self.default_next_action_id.value,
+            "registry_order": self.registry_order,
         }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringWorkflowManifest(CodemodAuthoringWorkflowDefinition):
+    """Manifest row for one registered authoring workflow."""
+
+    class_name: str
+    registry_order: int
+
+    def to_dict(self) -> JsonObject:
+        payload = JsonObject(dict(self.definition_items()))
+        payload.update(
+            {
+                "class_name": self.class_name,
+                "registry_order": self.registry_order,
+            }
+        )
+        return payload
 
 
 class OrderedAuthoringTemplate(ABC):
@@ -1034,6 +1141,9 @@ class CodemodAuthoringBundleWorkflowTemplate(
     description: ClassVar[str]
     command_action_ids: ClassVar[tuple[CodemodAuthoringCommandActionId, ...]]
     default_next_action_id: ClassVar[CodemodAuthoringCommandActionId]
+    editable_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
+    review_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
+    generated_artifact_roles: ClassVar[tuple[CodemodAuthoringArtifactRole, ...]] = ()
 
     @property
     def required_workflow_id(self) -> CodemodAuthoringWorkflowId:
@@ -1050,33 +1160,32 @@ class CodemodAuthoringBundleWorkflowTemplate(
         return CodemodAuthoringWorkflowSpec(
             workflow_id=self.required_workflow_id,
             description=self.description,
-            editable_paths=self.editable_paths(context),
-            review_paths=self.review_paths(context),
-            generated_paths=self.generated_paths(context),
+            editable_artifacts=context.bundle_relative_paths(
+                self.editable_artifact_roles
+            ),
+            review_artifacts=context.bundle_relative_paths(self.review_artifact_roles),
+            generated_artifacts=context.bundle_relative_paths(
+                self.generated_artifact_roles
+            ),
+            editable_artifact_roles=self.editable_artifact_roles,
+            review_artifact_roles=self.review_artifact_roles,
+            generated_artifact_roles=self.generated_artifact_roles,
             command_action_ids=self.command_action_ids,
             default_next_action_id=self.default_next_action_id,
         )
 
-    @abstractmethod
-    def editable_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def review_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        raise NotImplementedError
-
-    def generated_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        del context
-        return ()
+    def workflow_manifest(self) -> CodemodAuthoringWorkflowManifest:
+        return CodemodAuthoringWorkflowManifest(
+            workflow_id=self.required_workflow_id,
+            class_name=type(self).__name__,
+            description=self.description,
+            registry_order=self.registry_order,
+            editable_artifact_roles=self.editable_artifact_roles,
+            review_artifact_roles=self.review_artifact_roles,
+            generated_artifact_roles=self.generated_artifact_roles,
+            command_action_ids=self.command_action_ids,
+            default_next_action_id=self.default_next_action_id,
+        )
 
 
 class ReplacementPlanAuthoringWorkflowTemplate(
@@ -1095,23 +1204,11 @@ class ReplacementPlanAuthoringWorkflowTemplate(
         CodemodAuthoringCommandActionId.APPLY_REPLACEMENT_PLAN,
     )
     default_next_action_id = CodemodAuthoringCommandActionId.SIMULATE_REPLACEMENT_PLAN
-
-    def editable_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            context.bundle_relative_path(context.replacement_plan_file),
-        )
-
-    def review_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            context.bundle_relative_path(context.evidence_selector_file),
-            context.bundle_relative_path(context.replacement_scaffold_file),
-        )
+    editable_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
+    review_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+        CodemodAuthoringArtifactRole.REPLACEMENT_SCAFFOLD_FILE,
+    )
 
 
 class SelectedOperationAuthoringWorkflowTemplate(
@@ -1132,31 +1229,16 @@ class SelectedOperationAuthoringWorkflowTemplate(
     default_next_action_id = (
         CodemodAuthoringCommandActionId.SIMULATE_SELECTED_OPERATION_PLAN
     )
-
-    def editable_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            context.bundle_relative_path(context.operation_template_file),
-        )
-
-    def review_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            context.bundle_relative_path(context.evidence_selector_file),
-            context.bundle_relative_path(context.selected_operation_scaffold_file),
-        )
-
-    def generated_paths(
-        self,
-        context: CodemodAuthoringBundleCommandContext,
-    ) -> tuple[str, ...]:
-        return (
-            context.bundle_relative_path(context.selected_operation_plan_file),
-        )
+    editable_artifact_roles = (
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_TEMPLATE_FILE,
+    )
+    review_artifact_roles = (
+        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_SCAFFOLD_FILE,
+    )
+    generated_artifact_roles = (
+        CodemodAuthoringArtifactRole.SELECTED_OPERATION_PLAN_FILE,
+    )
 
 
 class CodemodAuthoringBundleCommandTemplate(
@@ -1187,6 +1269,16 @@ class CodemodAuthoringBundleCommandTemplate(
             action_id=self.action_id,
             args=self.command_args(context),
             cwd=context.cwd,
+        )
+
+    def command_manifest(self) -> CodemodAuthoringCommandManifest:
+        if self.action_id is None:
+            raise RuntimeError("registered authoring command template has no action_id")
+        return CodemodAuthoringCommandManifest(
+            action_id=self.action_id,
+            class_name=type(self).__name__,
+            description=(type(self).__doc__ or "").strip(),
+            registry_order=self.registry_order,
         )
 
     @abstractmethod
@@ -1484,6 +1576,38 @@ class CodemodAuthoringBundleWriter:
                 ),
             )
         )
+
+
+def codemod_authoring_command_manifest_payloads() -> tuple[JsonObject, ...]:
+    """Return manifest rows for registered authoring bundle command actions."""
+
+    return tuple(
+        template_type().command_manifest().to_dict()
+        for template_type in CodemodAuthoringBundleCommandTemplate.ordered_template_types()
+    )
+
+
+def codemod_authoring_workflow_manifest_payloads() -> tuple[JsonObject, ...]:
+    """Return manifest rows for registered authoring bundle workflows."""
+
+    return tuple(
+        template_type().workflow_manifest().to_dict()
+        for template_type in (
+            CodemodAuthoringBundleWorkflowTemplate.ordered_template_types()
+        )
+    )
+
+
+def codemod_cli_dsl_manifest_payload() -> JsonObject:
+    """Return the codemod DSL manifest plus executable authoring workflow metadata."""
+
+    payload = codemod_dsl_manifest().to_dict()
+    payload["authoring_artifact_roles"] = tuple(
+        artifact_role.value for artifact_role in CodemodAuthoringArtifactRole
+    )
+    payload["authoring_command_actions"] = codemod_authoring_command_manifest_payloads()
+    payload["authoring_workflows"] = codemod_authoring_workflow_manifest_payloads()
+    return payload
 
 
 @dataclass(frozen=True)
@@ -2249,7 +2373,7 @@ class CodemodDslManifestCliCommand(CliEarlyExitCommand):
         return self.args.codemod_dsl_manifest
 
     def run(self) -> int:
-        print(json.dumps(codemod_dsl_manifest().to_dict(), indent=2))
+        print(json.dumps(codemod_cli_dsl_manifest_payload(), indent=2))
         return 0
 
 

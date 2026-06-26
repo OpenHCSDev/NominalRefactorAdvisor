@@ -9557,6 +9557,28 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
         selector["selector"] == "source_index_target"
         for selector in payload["selectors"]
     )
+    command_actions = {
+        command["action_id"]: command
+        for command in payload["authoring_command_actions"]
+    }
+    workflows = {
+        workflow["workflow_id"]: workflow
+        for workflow in payload["authoring_workflows"]
+    }
+    assert "replacement_plan" in payload["authoring_artifact_roles"]
+    assert "simulate_replacement_plan" in command_actions
+    assert command_actions["simulate_replacement_plan"]["class_name"] == (
+        "SimulateReplacementPlanCommandTemplate"
+    )
+    assert workflows["replacement_plan"]["editable_artifact_roles"] == [
+        "replacement_plan",
+    ]
+    assert workflows["replacement_plan"]["default_next_action_id"] == (
+        "simulate_replacement_plan"
+    )
+    assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
+        "selected_operation_plan",
+    ]
 
 
 def test_module_cli_emits_and_validates_codemod_dsl_example_plan(
@@ -10863,17 +10885,26 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     assert set(workflows["selected_operation_template"]["command_action_ids"]) <= set(
         commands
     )
-    assert workflows["replacement_plan"]["editable_paths"] == [
+    assert workflows["replacement_plan"]["editable_artifacts"] == [
         bundle_record["replacement_plan_path"]
+    ]
+    assert workflows["replacement_plan"]["editable_artifact_roles"] == [
+        "replacement_plan"
     ]
     assert workflows["replacement_plan"]["default_next_action_id"] == (
         "simulate_replacement_plan"
     )
-    assert workflows["selected_operation_template"]["editable_paths"] == [
+    assert workflows["selected_operation_template"]["editable_artifacts"] == [
         bundle_record["selected_operation_template_path"]
     ]
-    assert workflows["selected_operation_template"]["generated_paths"] == [
+    assert workflows["selected_operation_template"]["editable_artifact_roles"] == [
+        "selected_operation_template"
+    ]
+    assert workflows["selected_operation_template"]["generated_artifacts"] == [
         bundle_record["selected_operation_plan_path"]
+    ]
+    assert workflows["selected_operation_template"]["generated_artifact_roles"] == [
+        "selected_operation_plan"
     ]
     assert workflows["selected_operation_template"]["default_next_action_id"] == (
         "simulate_selected_operation_plan"
