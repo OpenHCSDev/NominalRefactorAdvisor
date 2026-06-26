@@ -114,6 +114,7 @@ from nominal_refactor_advisor.codemod import (
     simulate_codemod_candidates,
 )
 from nominal_refactor_advisor.detectors import DetectorConfig
+from nominal_refactor_advisor.detectors import _base as base_detectors
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.economics import (
@@ -6166,6 +6167,48 @@ def test_detects_manual_companion_dataclass_surface(tmp_path: Path) -> None:
     assert "dataclasses.fields(PipelineConfig)" in (finding.codemod_patch or "")
     assert finding.compression_certificate is not None
     assert finding.compression_certificate.pays_rent
+
+
+def test_dataclass_signature_projection_reuses_cached_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nfrom dataclasses import dataclass\n\n\n@dataclass(frozen=True)\nclass PipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n\n\n@dataclass(frozen=True)\nclass LazyPipelineConfig:\n    batch_size: int\n    output_dir: str\n    retries: int = 0\n    inherited_fields: frozenset[str] = frozenset()\n",
+    )
+    module = parse_python_modules(tmp_path)[0]
+    classes = {
+        node.name: node
+        for node in module.module.body
+        if isinstance(node, ast.ClassDef)
+    }
+    unparse_calls = 0
+    real_unparse = base_detectors.ast.unparse
+
+    def counted_unparse(node: ast.AST) -> str:
+        nonlocal unparse_calls
+        unparse_calls += 1
+        return real_unparse(node)
+
+    monkeypatch.setattr(base_detectors.ast, "unparse", counted_unparse)
+
+    first_candidate = base_detectors._manual_companion_dataclass_surface_candidate_for_pair(
+        module,
+        classes["PipelineConfig"],
+        classes["LazyPipelineConfig"],
+    )
+    second_candidate = base_detectors._manual_companion_dataclass_surface_candidate_for_pair(
+        module,
+        classes["PipelineConfig"],
+        classes["LazyPipelineConfig"],
+    )
+
+    assert first_candidate is not None
+    assert second_candidate is not None
+    assert first_candidate.shared_field_names == second_candidate.shared_field_names
+    assert unparse_calls == 7
 
 
 def test_companion_dataclass_surface_requires_matching_defaults(tmp_path: Path) -> None:

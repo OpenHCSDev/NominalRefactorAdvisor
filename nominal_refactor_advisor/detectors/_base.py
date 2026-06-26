@@ -4998,7 +4998,10 @@ def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
     return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
-def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
+@lru_cache(maxsize=None)
+def _dataclass_field_signature_items(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, str], ...]:
     signatures: dict[str, str] = {}
     for statement in node.body:
         if not isinstance(statement, ast.AnnAssign) or not isinstance(
@@ -5010,13 +5013,15 @@ def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
             "typing.ClassVar"
         ):
             continue
-        value_fingerprint = (
-            ast.dump(statement.value, include_attributes=False)
-            if statement.value is not None
-            else ""
-        )
+        value_fingerprint = ""
+        if statement.value is not None:
+            value_fingerprint = ast.dump(statement.value, include_attributes=False)
         signatures[statement.target.id] = f"{annotation_text}={value_fingerprint}"
-    return signatures
+    return tuple(signatures.items())
+
+
+def _dataclass_field_signature_map(node: ast.ClassDef) -> dict[str, str]:
+    return dict(_dataclass_field_signature_items(node))
 
 
 def _dataclass_companion_surface_role(
