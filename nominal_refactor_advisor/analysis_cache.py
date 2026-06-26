@@ -124,11 +124,18 @@ class AnalysisCacheIdentity:
 
     @classmethod
     def from_roots(
-        cls, roots: tuple[Path, ...], config: DetectorConfig
+        cls,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        *,
+        include_tests: bool = True,
     ) -> "AnalysisCacheIdentity":
         source_files = tuple(
             SourceFileSignature.from_path(path)
-            for path in python_source_paths_for_roots(roots)
+            for path in python_source_paths_for_roots(
+                roots,
+                include_tests=include_tests,
+            )
         )
         return cls(
             roots=tuple(str(root.resolve()) for root in roots),

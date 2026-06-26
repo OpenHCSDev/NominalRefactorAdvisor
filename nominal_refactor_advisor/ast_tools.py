@@ -20,7 +20,7 @@ import os
 import hashlib
 import pickle
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -733,14 +733,51 @@ def _parse_module_roots_concurrently(
 
 
 @dataclass(frozen=True)
+class PythonSourcePathPolicy:
+    """Decide which Python source files belong to one scan."""
+
+    include_tests: bool = True
+
+    def allows_directory_name(self, directory_name: str) -> bool:
+        if directory_name in _IGNORED_PYTHON_TREE_DIRS:
+            return False
+        if directory_name.endswith((".egg-info", ".dist-info")):
+            return False
+        if not self.include_tests and self.is_test_directory_name(directory_name):
+            return False
+        return True
+
+    def allows_file_path(self, path: Path) -> bool:
+        if path.suffix != ".py":
+            return False
+        if self.include_tests:
+            return True
+        return not self.is_test_path(path)
+
+    @staticmethod
+    def is_test_directory_name(directory_name: str) -> bool:
+        return directory_name.lower() in {"test", "tests"}
+
+    @classmethod
+    def is_test_path(cls, path: Path) -> bool:
+        if any(cls.is_test_directory_name(part) for part in path.parts):
+            return True
+        file_name = path.name.lower()
+        return file_name.startswith("test_") or file_name.endswith("_test.py")
+
+
+@dataclass(frozen=True)
 class PythonSourcePathDiscovery:
     """Discover deterministic Python source paths for one advisor scan root."""
 
     root: Path
+    source_policy: PythonSourcePathPolicy = field(
+        default_factory=PythonSourcePathPolicy
+    )
 
     def paths(self) -> tuple[Path, ...]:
         if self.root.is_file():
-            if self.root.suffix == ".py":
+            if self.source_policy.allows_file_path(self.root):
                 return (self.root,)
             return ()
 
@@ -750,24 +787,29 @@ class PythonSourcePathDiscovery:
                 (
                     dirname
                     for dirname in dirnames
-                    if dirname not in _IGNORED_PYTHON_TREE_DIRS
-                    and (not dirname.endswith((".egg-info", ".dist-info")))
+                    if self.source_policy.allows_directory_name(dirname)
                 )
             )
             directory_path = Path(directory)
             for filename in sorted(filenames):
-                if filename.endswith(".py"):
-                    paths.append(directory_path / filename)
+                path = directory_path / filename
+                if self.source_policy.allows_file_path(path):
+                    paths.append(path)
         return tuple(paths)
 
 
-def python_source_paths_for_roots(roots: tuple[Path, ...]) -> tuple[Path, ...]:
+def python_source_paths_for_roots(
+    roots: tuple[Path, ...],
+    *,
+    include_tests: bool = True,
+) -> tuple[Path, ...]:
     """Return de-duplicated Python source paths for multiple scan roots."""
 
     paths: list[Path] = []
     seen_paths: set[Path] = set()
+    source_policy = PythonSourcePathPolicy(include_tests=include_tests)
     for root in roots:
-        for path in PythonSourcePathDiscovery(root).paths():
+        for path in PythonSourcePathDiscovery(root, source_policy).paths():
             normalized_path = path.resolve()
             if normalized_path in seen_paths:
                 continue
@@ -780,6 +822,7 @@ def python_source_paths_for_roots(roots: tuple[Path, ...]) -> tuple[Path, ...]:
 class PythonModuleRootParser(PythonModuleParseContext):
     root: Path
     parse_workers: int = _DEFAULT_PARSE_WORKERS
+    include_tests: bool = True
 
     @classmethod
     def for_root(
@@ -789,6 +832,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         cache_dir: Path | None = None,
         use_parse_cache: bool = True,
         parse_workers: int = _DEFAULT_PARSE_WORKERS,
+        include_tests: bool = True,
     ) -> PythonModuleRootParser:
         resolved_cache_dir = (
             cache_dir
@@ -801,6 +845,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
             cache_dir=resolved_cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
+            include_tests=include_tests,
         )
 
     @classmethod
@@ -811,17 +856,20 @@ class PythonModuleRootParser(PythonModuleParseContext):
         cache_dir: Path | None = None,
         use_parse_cache: bool = True,
         parse_workers: int = _DEFAULT_PARSE_WORKERS,
+        include_tests: bool = True,
     ) -> list[ParsedModule]:
         parser = cls.for_root(
             root,
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
+            include_tests=include_tests,
         )
         return parser.parsed_modules()
 
     def parsed_modules(self) -> list[ParsedModule]:
-        paths = PythonSourcePathDiscovery(self.root).paths()
+        source_policy = PythonSourcePathPolicy(include_tests=self.include_tests)
+        paths = PythonSourcePathDiscovery(self.root, source_policy).paths()
         if self.parse_workers <= 1 or len(paths) <= 1:
             return _parse_module_roots(self, paths)
         return _parse_module_roots_concurrently(self, paths)
@@ -833,6 +881,7 @@ def parse_python_modules(
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
+    include_tests: bool = True,
 ) -> list[ParsedModule]:
     """Parse one path (file or directory) into canonical ParsedModule records."""
     return PythonModuleRootParser.parse(
@@ -840,6 +889,7 @@ def parse_python_modules(
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
+        include_tests=include_tests,
     )
 
 
@@ -849,6 +899,7 @@ def parse_python_module_roots(
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
     parse_workers: int = _DEFAULT_PARSE_WORKERS,
+    include_tests: bool = True,
 ) -> list[ParsedModule]:
     """Parse multiple file or directory roots into one de-duplicated module set."""
     modules: list[ParsedModule] = []
@@ -859,6 +910,7 @@ def parse_python_module_roots(
             cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
+            include_tests=include_tests,
         )
         for module in parser.parsed_modules():
             normalized_path = module.path.resolve()

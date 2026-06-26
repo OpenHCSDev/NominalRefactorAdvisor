@@ -5299,6 +5299,39 @@ def test_parse_python_module_roots_combines_files_and_dedupes(
     assert [module.path.name for module in modules] == ["alpha.py", "beta.py"]
 
 
+def test_parse_python_modules_can_skip_test_trees(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/prod.py", "\nclass Production:\n    pass\n")
+    _write_module(tmp_path, "tests/test_prod.py", "\nclass TestProduction:\n    pass\n")
+    _write_module(tmp_path, "pkg/test_helper.py", "\nclass TestHelper:\n    pass\n")
+
+    production_modules = parse_python_modules(tmp_path, include_tests=False)
+    all_modules = parse_python_modules(tmp_path, include_tests=True)
+
+    assert [module.path.name for module in production_modules] == ["prod.py"]
+    assert [module.path.name for module in all_modules] == [
+        "prod.py",
+        "test_helper.py",
+        "test_prod.py",
+    ]
+
+
+def test_parse_python_module_roots_can_skip_direct_test_files(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/prod.py", "\nclass Production:\n    pass\n")
+    _write_module(tmp_path, "tests/test_prod.py", "\nclass TestProduction:\n    pass\n")
+
+    modules = parse_python_module_roots(
+        (
+            tmp_path / "pkg/prod.py",
+            tmp_path / "tests/test_prod.py",
+        ),
+        include_tests=False,
+    )
+
+    assert [module.path.name for module in modules] == ["prod.py"]
+
+
 def test_parse_python_modules_reuses_ast_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -9551,6 +9584,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
             "4",
             "--analysis-workers",
             "3",
+            "--include-tests",
             "--cache-dir",
             ".nra-cache/ast",
             "--context-root",
@@ -9580,6 +9614,7 @@ def test_cli_argument_specs_build_parser_for_flag_actions() -> None:
     assert args.calibrate == Path("calibration.json")
     assert args.parse_workers == 4
     assert args.analysis_workers == 3
+    assert args.include_tests is True
     assert args.cache_dir == Path(".nra-cache/ast")
     assert args.context_roots == [Path("nominal_refactor_advisor")]
     assert args.auto_context_root is False

@@ -253,6 +253,15 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--include-tests",),
+            action="store_true",
+            default=False,
+            help=(
+                "Include test files and test directories in source discovery. "
+                "By default repo scans analyze production source only."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--cache-dir",),
             value_type=Path,
             help=(
@@ -4418,6 +4427,7 @@ def main() -> int:
                 roots,
                 config,
                 analysis_cache_dir=analysis_cache_dir,
+                include_tests=args.include_tests,
             )
             analysis_seconds = round(perf_counter() - started, 3)
         if (
@@ -4435,6 +4445,7 @@ def main() -> int:
                 cache_dir=parse_cache_dir,
                 use_parse_cache=args.use_parse_cache,
                 parse_workers=args.parse_workers,
+                include_tests=args.include_tests,
             )
             parse_seconds = round(perf_counter() - started, 3)
             if not codemod_scan_query_mode.needs_analysis:
@@ -4449,6 +4460,7 @@ def main() -> int:
                     config,
                     analysis_cache_dir=analysis_cache_dir,
                     analysis_workers=args.analysis_workers,
+                    include_tests=args.include_tests,
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status

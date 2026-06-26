@@ -263,6 +263,7 @@ class AnalysisCacheResolutionAuthority:
         cache_result: CachedAnalysisResult,
         analysis_cache_dir: Path | None,
         analysis_workers: int,
+        include_tests: bool,
     ) -> None:
         self._roots = roots
         self._modules = modules
@@ -270,6 +271,7 @@ class AnalysisCacheResolutionAuthority:
         self._cache_result = cache_result
         self._analysis_cache_dir = analysis_cache_dir
         self._analysis_workers = analysis_workers
+        self._include_tests = include_tests
 
     @property
     def cache_result(self) -> CachedAnalysisResult:
@@ -286,7 +288,11 @@ class AnalysisCacheResolutionAuthority:
         )
 
     def analyze_and_store_miss(self) -> CachedAnalysisResult:
-        cache_identity = AnalysisCacheIdentity.from_roots(self._roots, self._config)
+        cache_identity = AnalysisCacheIdentity.from_roots(
+            self._roots,
+            self._config,
+            include_tests=self._include_tests,
+        )
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
         findings = analyze_modules(
             self._modules,
@@ -366,6 +372,7 @@ def analyze_modules_with_cache(
     *,
     analysis_cache_dir: Path | None = None,
     analysis_workers: int = 1,
+    include_tests: bool = True,
 ) -> CachedAnalysisResult:
     """Run detector analysis with a persistent finding cache when configured."""
 
@@ -374,6 +381,7 @@ def analyze_modules_with_cache(
         roots,
         config,
         analysis_cache_dir=analysis_cache_dir,
+        include_tests=include_tests,
     )
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
@@ -382,6 +390,7 @@ def analyze_modules_with_cache(
         cache_result=cache_result,
         analysis_cache_dir=analysis_cache_dir,
         analysis_workers=analysis_workers,
+        include_tests=include_tests,
     )
     return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
         authority
@@ -393,13 +402,18 @@ def load_analysis_cache_for_roots(
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
+    include_tests: bool = True,
 ) -> CachedAnalysisResult:
     """Load detector findings from persistent cache without parsed modules."""
 
     config = config or DetectorConfig()
     if analysis_cache_dir is None:
         return CachedAnalysisResult([], AnalysisCacheStatus.DISABLED)
-    cache_identity = AnalysisCacheIdentity.from_roots(roots, config)
+    cache_identity = AnalysisCacheIdentity.from_roots(
+        roots,
+        config,
+        include_tests=include_tests,
+    )
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status is AnalysisCacheStatus.HIT:
@@ -425,6 +439,7 @@ def analyze_path(
     use_parse_cache: bool = True,
     parse_workers: int = 1,
     analysis_workers: int = 1,
+    include_tests: bool = True,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
     modules = parse_python_modules(
@@ -432,6 +447,7 @@ def analyze_path(
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
+        include_tests=include_tests,
     )
     return analyze_modules_with_cache(
         (root,),
@@ -443,6 +459,7 @@ def analyze_path(
             use_parse_cache,
         ),
         analysis_workers=analysis_workers,
+        include_tests=include_tests,
     ).findings
 
 
@@ -454,6 +471,7 @@ def analyze_paths(
     use_parse_cache: bool = True,
     parse_workers: int = 1,
     analysis_workers: int = 1,
+    include_tests: bool = True,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
     modules = parse_python_module_roots(
@@ -461,6 +479,7 @@ def analyze_paths(
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
+        include_tests=include_tests,
     )
     root = roots[0]
     return analyze_modules_with_cache(
@@ -473,6 +492,7 @@ def analyze_paths(
             use_parse_cache,
         ),
         analysis_workers=analysis_workers,
+        include_tests=include_tests,
     ).findings
 
 
