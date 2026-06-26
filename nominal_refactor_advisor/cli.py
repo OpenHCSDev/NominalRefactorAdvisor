@@ -97,6 +97,7 @@ from .codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
 )
+from .codemod_authoring import CodemodAuthoringWorkflowPlanner
 from .detectors import DetectorConfig
 from .economics import (
     EconomicsProofReport,
@@ -2421,6 +2422,18 @@ class CodemodAuthoringBundleWriter:
             selected_plan_path,
             goal_replay_plan_path,
         )
+        command_payloads = tuple(
+            command.to_dict() for command in self.command_specs(context)
+        )
+        workflow_payloads = tuple(
+            workflow.to_dict() for workflow in self.workflow_specs(context)
+        )
+        workflow_readiness = CodemodAuthoringWorkflowPlanner.from_payloads(
+            command_payloads,
+            workflow_payloads,
+        ).bundle_readiness(
+            self.available_authoring_artifacts(context),
+        ).to_dict()
         return {
             "record_index": record_index,
             "finding_id": authoring_record.finding_id,
@@ -2443,14 +2456,9 @@ class CodemodAuthoringBundleWriter:
             "goal_replay_plan_path": goal_replay_plan_path.relative_to(
                 self.output_dir
             ).as_posix(),
-            "commands": tuple(
-                command.to_dict()
-                for command in self.command_specs(context)
-            ),
-            "workflows": tuple(
-                workflow.to_dict()
-                for workflow in self.workflow_specs(context)
-            ),
+            "commands": command_payloads,
+            "workflows": workflow_payloads,
+            "workflow_readiness": workflow_readiness,
             "authoring_record": authoring_record.to_dict(),
         }
 
@@ -2502,6 +2510,19 @@ class CodemodAuthoringBundleWriter:
             for template_type in OrderedAuthoringTemplateRegistry(
                 CodemodAuthoringBundleWorkflowTemplate.__registry__
             ).template_types()
+        )
+
+    def available_authoring_artifacts(
+        self,
+        context: CodemodAuthoringBundleCommandContext,
+    ) -> tuple[str, ...]:
+        return tuple(
+            context.bundle_relative_path(path)
+            for path in (
+                context.artifact_path(role)
+                for role in CodemodAuthoringArtifactRole
+            )
+            if path.exists()
         )
 
     @staticmethod

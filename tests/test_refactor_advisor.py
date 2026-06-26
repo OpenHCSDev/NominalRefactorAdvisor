@@ -11759,6 +11759,10 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         workflow["workflow_id"]: workflow
         for workflow in bundle_record["workflows"]
     }
+    readiness_workflows = {
+        workflow["workflow_id"]: workflow
+        for workflow in bundle_record["workflow_readiness"]["workflows"]
+    }
 
     assert result.returncode == 0, result.stderr
     assert payload["authoring_bundle"] == bundle_index
@@ -11841,6 +11845,34 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         "goal_replay_plan"
     ]
     assert workflows["goal_refactor"]["default_next_action_id"] == "run_goal_refactor"
+    assert bundle_record["goal_replay_plan_path"] not in (
+        bundle_record["workflow_readiness"]["available_artifacts"]
+    )
+    goal_readiness = readiness_workflows["goal_refactor"]
+    goal_command_readiness = {
+        readiness["action_id"]: readiness
+        for readiness in goal_readiness["command_readiness"]
+    }
+    goal_action_plans = {
+        plan["target_action_id"]: plan for plan in goal_readiness["action_plans"]
+    }
+    assert goal_readiness["next_action_id"] == "run_goal_refactor"
+    assert goal_command_readiness["run_goal_refactor"]["runnable"] is True
+    assert goal_command_readiness["simulate_goal_replay_plan"]["runnable"] is False
+    assert goal_command_readiness["simulate_goal_replay_plan"][
+        "missing_artifacts"
+    ] == [
+        bundle_record["goal_replay_plan_path"]
+    ]
+    assert goal_action_plans["simulate_goal_replay_plan"]["action_ids"] == [
+        "run_goal_refactor",
+        "simulate_goal_replay_plan",
+    ]
+    assert goal_action_plans["apply_goal_replay_plan"]["action_ids"] == [
+        "run_goal_refactor",
+        "apply_goal_replay_plan",
+    ]
+    assert goal_action_plans["apply_goal_replay_plan"]["blocked"] is False
     assert commands["simulate_replacement_plan"]["args"][0] == tmp_path.as_posix()
     assert commands["simulate_replacement_plan"]["args"][-2:] == [
         replacement_plan_path.as_posix(),
@@ -12007,6 +12039,48 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
     assert simulate_payload["applied"] is False
     assert simulate_payload["parse_valid"] is True
     assert "+class GeneratedRecord(SemanticRecord):" in simulate_payload["unified_diff"]
+
+
+def test_codemod_authoring_workflow_planner_chains_generated_artifacts() -> None:
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
+
+    planner = CodemodAuthoringWorkflowPlanner.from_payloads(
+        command_payloads=(
+            {
+                "action_id": "write_plan",
+                "required_artifacts": ("selector",),
+                "generated_artifacts": ("plan",),
+            },
+            {
+                "action_id": "apply_plan",
+                "required_artifacts": ("plan",),
+                "generated_artifacts": (),
+            },
+        ),
+        workflow_payloads=(
+            {
+                "workflow_id": "nominal_boundary",
+                "command_action_ids": ("write_plan", "apply_plan"),
+                "default_next_action_id": "apply_plan",
+            },
+        ),
+    )
+    payload = planner.bundle_readiness(("selector",)).to_dict()
+    workflow = payload["workflows"][0]
+    command_readiness = {
+        readiness["action_id"]: readiness
+        for readiness in workflow["command_readiness"]
+    }
+    action_plans = {
+        plan["target_action_id"]: plan for plan in workflow["action_plans"]
+    }
+
+    assert workflow["next_action_id"] == "write_plan"
+    assert command_readiness["write_plan"]["runnable"] is True
+    assert command_readiness["apply_plan"]["runnable"] is False
+    assert command_readiness["apply_plan"]["missing_artifacts"] == ("plan",)
+    assert action_plans["apply_plan"]["blocked"] is False
+    assert action_plans["apply_plan"]["action_ids"] == ("write_plan", "apply_plan")
 
 
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
@@ -14561,6 +14635,13 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 
 
 def test_codemod_workflow_types_are_public_package_exports() -> None:
+    from nominal_refactor_advisor import CodemodAuthoringActionPlan
+    from nominal_refactor_advisor import CodemodAuthoringBundleReadiness
+    from nominal_refactor_advisor import CodemodAuthoringCommandModel
+    from nominal_refactor_advisor import CodemodAuthoringCommandReadiness
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowModel
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
     from nominal_refactor_advisor import CodemodFindingChangeCarrier
     from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingDelta
@@ -14592,6 +14673,24 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
 
     assert CodemodPlanJsonParser().recipes({}) == ()
     assert isinstance(codemod_dsl_manifest(), CodemodDslManifest)
+    assert CodemodAuthoringActionPlan.__name__ == "CodemodAuthoringActionPlan"
+    assert (
+        CodemodAuthoringBundleReadiness.__name__
+        == "CodemodAuthoringBundleReadiness"
+    )
+    assert CodemodAuthoringCommandModel.__name__ == "CodemodAuthoringCommandModel"
+    assert (
+        CodemodAuthoringCommandReadiness.__name__
+        == "CodemodAuthoringCommandReadiness"
+    )
+    assert CodemodAuthoringWorkflowModel.__name__ == "CodemodAuthoringWorkflowModel"
+    assert CodemodAuthoringWorkflowPlanner.__name__ == (
+        "CodemodAuthoringWorkflowPlanner"
+    )
+    assert (
+        CodemodAuthoringWorkflowReadiness.__name__
+        == "CodemodAuthoringWorkflowReadiness"
+    )
 
     delta = CodemodFindingDelta(
         before_finding_ids=("a", "b"),
