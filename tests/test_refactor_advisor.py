@@ -4,6 +4,7 @@ import argparse
 import ast
 import inspect
 import json
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -5409,6 +5410,21 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
     changed_lookup = cache.load(changed_identity)
     assert changed_lookup.status is AnalysisCacheStatus.MISS
     assert changed_lookup.findings == ()
+
+
+def test_analysis_cache_identity_survives_content_preserving_touch(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Cached:\n    pass\n")
+    module_path = tmp_path / "pkg" / "mod.py"
+    config = DetectorConfig()
+    first_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+
+    changed_time = module_path.stat().st_mtime + 10
+    os.utime(module_path, (changed_time, changed_time))
+    second_identity = AnalysisCacheIdentity.from_roots((tmp_path / "pkg",), config)
+
+    assert second_identity == first_identity
 
 
 def test_analyze_paths_reuses_detector_findings(

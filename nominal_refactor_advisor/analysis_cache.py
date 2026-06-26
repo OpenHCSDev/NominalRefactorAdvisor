@@ -24,7 +24,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 1
+    version: int = 2
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -60,16 +60,16 @@ class SourceFileSignature:
     """Filesystem identity used to invalidate one cached analysis result."""
 
     path: str
-    mtime_ns: int
-    size: int
+    source_hash: str
 
     @classmethod
     def from_path(cls, path: Path) -> "SourceFileSignature":
-        path_stat = path.stat()
         return cls(
             path=str(path.resolve()),
-            mtime_ns=path_stat.st_mtime_ns,
-            size=path_stat.st_size,
+            source_hash=hashlib.blake2s(
+                path.read_bytes(),
+                digest_size=16,
+            ).hexdigest(),
         )
 
 
