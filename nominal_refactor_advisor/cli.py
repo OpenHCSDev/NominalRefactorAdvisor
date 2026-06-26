@@ -521,6 +521,14 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-selected-replace-text",),
+            nargs=2,
+            help=(
+                "Build a selected-target replace_text template from OLD_SOURCE "
+                "and NEW_SOURCE without a separate operation-template JSON file."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-diff",),
             action="store_true",
             help="Emit a unified diff for all currently planned codemod rewrites.",
@@ -825,6 +833,155 @@ def load_codemod_operation_plan_template(
 
     payload = JsonDocumentSource(path).load()
     return RefactorRecipeOperationPlanTemplate.from_json_value(payload)
+
+
+@dataclass(frozen=True)
+class CodemodSelectedOperationTemplateSourceManifest:
+    """Manifest row for one selected-operation template source."""
+
+    source_id: str
+    option_name: str
+    class_name: str
+    registry_order: int
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "source_id": self.source_id,
+            "option_name": self.option_name,
+            "class_name": self.class_name,
+            "registry_order": self.registry_order,
+        }
+
+
+class SelectedOperationTemplateSource(ABC, metaclass=AutoRegisterMeta):
+    """Registered CLI source for selected-target operation templates."""
+
+    __registry__: ClassVar[dict[str, type["SelectedOperationTemplateSource"]]] = {}
+    __registry_key__ = "source_id"
+    __skip_if_no_key__ = True
+
+    source_id: ClassVar[str]
+    option_name: ClassVar[str]
+    registry_order: ClassVar[int]
+
+    @classmethod
+    def ordered_source_types(
+        cls,
+    ) -> tuple[type["SelectedOperationTemplateSource"], ...]:
+        return tuple(
+            sorted(
+                cls.__registry__.values(),
+                key=lambda source_type: source_type.registry_order,
+            )
+        )
+
+    @classmethod
+    def selected_sources(
+        cls,
+        args: argparse.Namespace,
+    ) -> tuple["SelectedOperationTemplateSource", ...]:
+        return tuple(
+            source_type()
+            for source_type in cls.ordered_source_types()
+            if source_type().is_supplied(args)
+        )
+
+    @classmethod
+    def selected_option_names(cls, args: argparse.Namespace) -> tuple[str, ...]:
+        return tuple(source.option_name for source in cls.selected_sources(args))
+
+    @classmethod
+    def required_source(
+        cls,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser,
+    ) -> "SelectedOperationTemplateSource":
+        sources = cls.selected_sources(args)
+        if len(sources) == 1:
+            return sources[0]
+        if not sources:
+            parser.error(
+                "--codemod-selected-operation-plan requires one selected-operation "
+                "template source"
+            )
+        parser.error(
+            "selected-operation template sources are mutually exclusive: "
+            + ", ".join(source.option_name for source in sources)
+        )
+
+    def source_manifest(self) -> CodemodSelectedOperationTemplateSourceManifest:
+        return CodemodSelectedOperationTemplateSourceManifest(
+            source_id=self.source_id,
+            option_name=self.option_name,
+            class_name=type(self).__name__,
+            registry_order=self.registry_order,
+        )
+
+    @abstractmethod
+    def is_supplied(self, args: argparse.Namespace) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def operation_plan_template(
+        self,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser,
+    ) -> RefactorRecipeOperationPlanTemplate:
+        raise NotImplementedError
+
+
+class JsonSelectedOperationTemplateSource(SelectedOperationTemplateSource):
+    """Load selected-target operation templates from JSON."""
+
+    source_id = "json_operation_template"
+    option_name = "--codemod-operation-template"
+    registry_order = 10
+
+    def is_supplied(self, args: argparse.Namespace) -> bool:
+        return args.codemod_operation_template is not None
+
+    def operation_plan_template(
+        self,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser,
+    ) -> RefactorRecipeOperationPlanTemplate:
+        try:
+            return load_codemod_operation_plan_template(args.codemod_operation_template)
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            parser.error(str(error))
+
+
+class ReplaceTextSelectedOperationTemplateSource(SelectedOperationTemplateSource):
+    """Build one replace_text template directly from CLI operands."""
+
+    source_id = "replace_text_operands"
+    option_name = "--codemod-selected-replace-text"
+    registry_order = 20
+
+    def is_supplied(self, args: argparse.Namespace) -> bool:
+        return args.codemod_selected_replace_text is not None
+
+    def operation_plan_template(
+        self,
+        args: argparse.Namespace,
+        parser: argparse.ArgumentParser,
+    ) -> RefactorRecipeOperationPlanTemplate:
+        del parser
+        old_source, new_source = cast(
+            tuple[str, str],
+            tuple(args.codemod_selected_replace_text),
+        )
+        return RefactorRecipeOperationPlanTemplate.from_operation_templates(
+            (
+                RefactorRecipeOperationTemplate.from_payload(
+                    {
+                        "operation": RefactorRecipeOperationKind.REPLACE_TEXT.value,
+                        OLD_SOURCE_PAYLOAD_FIELD: old_source,
+                        NEW_SOURCE_PAYLOAD_FIELD: new_source,
+                    }
+                ),
+            )
+        )
 
 
 def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
@@ -1598,6 +1755,15 @@ def codemod_authoring_workflow_manifest_payloads() -> tuple[JsonObject, ...]:
     )
 
 
+def codemod_selected_operation_template_source_payloads() -> tuple[JsonObject, ...]:
+    """Return manifest rows for selected-operation template sources."""
+
+    return tuple(
+        source_type().source_manifest().to_dict()
+        for source_type in SelectedOperationTemplateSource.ordered_source_types()
+    )
+
+
 def codemod_cli_dsl_manifest_payload() -> JsonObject:
     """Return the codemod DSL manifest plus executable authoring workflow metadata."""
 
@@ -1607,6 +1773,9 @@ def codemod_cli_dsl_manifest_payload() -> JsonObject:
     )
     payload["authoring_command_actions"] = codemod_authoring_command_manifest_payloads()
     payload["authoring_workflows"] = codemod_authoring_workflow_manifest_payloads()
+    payload["selected_operation_template_sources"] = (
+        codemod_selected_operation_template_source_payloads()
+    )
     return payload
 
 
@@ -2889,6 +3058,37 @@ class CodemodExecutionMode:
 
 
 @dataclass(frozen=True)
+class SelectedOperationTemplateSourceSelection:
+    """Validated pairing between selected-operation selector and template source."""
+
+    selector_option_name: str
+    selector_supplied: bool
+    template_source_options: tuple[str, ...]
+
+    @property
+    def template_source_count(self) -> int:
+        return len(self.template_source_options)
+
+    def validation_error(self) -> str | None:
+        if self.template_source_count > 1:
+            return (
+                "selected-operation template sources are mutually exclusive: "
+                + ", ".join(self.template_source_options)
+            )
+        error_by_state = {
+            (False, 1): (
+                ", ".join(self.template_source_options)
+                + f" requires {self.selector_option_name}"
+            ),
+            (True, 0): (
+                f"{self.selector_option_name} requires one selected-operation "
+                "template source"
+            ),
+        }
+        return error_by_state.get((self.selector_supplied, self.template_source_count))
+
+
+@dataclass(frozen=True)
 class CodemodScanQueryMode:
     """Validated family of scan-backed codemod DSL query modes."""
 
@@ -2898,7 +3098,7 @@ class CodemodScanQueryMode:
     target_source_selector_path: Path | None
     replacement_plan_selector_path: Path | None
     selected_operation_plan_selector_path: Path | None
-    operation_template_path: Path | None
+    selected_operation_template_source_options: tuple[str, ...]
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -2911,7 +3111,9 @@ class CodemodScanQueryMode:
             selected_operation_plan_selector_path=(
                 args.codemod_selected_operation_plan
             ),
-            operation_template_path=args.codemod_operation_template,
+            selected_operation_template_source_options=(
+                SelectedOperationTemplateSource.selected_option_names(args)
+            ),
         )
 
     @property
@@ -2936,22 +3138,13 @@ class CodemodScanQueryMode:
         )
 
     def require_valid(self, parser: argparse.ArgumentParser) -> None:
-        if (
-            self.operation_template_path is not None
-            and self.selected_operation_plan_selector_path is None
-        ):
-            parser.error(
-                "--codemod-operation-template requires "
-                "--codemod-selected-operation-plan"
-            )
-        if (
-            self.selected_operation_plan_selector_path is not None
-            and self.operation_template_path is None
-        ):
-            parser.error(
-                "--codemod-selected-operation-plan requires "
-                "--codemod-operation-template"
-            )
+        template_source_selection = SelectedOperationTemplateSourceSelection(
+            selector_option_name="--codemod-selected-operation-plan",
+            selector_supplied=self.selected_operation_plan_selector_path is not None,
+            template_source_options=self.selected_operation_template_source_options,
+        )
+        if (error := template_source_selection.validation_error()) is not None:
+            parser.error(error)
         if self.mode_count <= 1:
             return
         parser.error(
@@ -3455,12 +3648,12 @@ class CodemodSelectedOperationPlanCliCommand(CodemodSelectorQueryCliCommand):
         snapshot: CodemodSourceSnapshot,
         selector: CodemodTargetSelector,
     ) -> CodemodSelectedOperationPlanScaffoldReport:
-        try:
-            operation_plan_template = load_codemod_operation_plan_template(
-                self.args.codemod_operation_template
-            )
-        except (OSError, json.JSONDecodeError, ValueError) as error:
-            self.parser.error(str(error))
+        operation_plan_template = (
+            SelectedOperationTemplateSource.required_source(
+                self.args,
+                self.parser,
+            ).operation_plan_template(self.args, self.parser)
+        )
         return snapshot.selected_operation_plan_scaffold_report(
             selector,
             operation_plan_template,
