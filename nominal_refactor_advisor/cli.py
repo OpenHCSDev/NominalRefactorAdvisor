@@ -1729,6 +1729,13 @@ class CodemodAuthoringWorkflowId(str, Enum):
     GOAL_REFACTOR = "goal_refactor"
 
 
+class CodemodAuthoringBundleControlActionId(str, Enum):
+    """Stable action ids for authoring bundle control commands."""
+
+    AUTHORING_STATUS = "authoring_status"
+    AUTHORING_RUN_ACTION = "authoring_run_action"
+
+
 class CodemodAuthoringArtifactRole(str, Enum):
     """Stable artifact roles used by codemod authoring workflows."""
 
@@ -1750,7 +1757,7 @@ AuthoringTemplateRegistryKey: TypeAlias = (
 class CodemodCliCommandSpec:
     """Directly runnable CLI action emitted by codemod workflow artifacts."""
 
-    action_id: CodemodAuthoringCommandActionId
+    action_id: Enum
     args: tuple[str, ...]
     cwd: Path
     module: str = "nominal_refactor_advisor"
@@ -1771,7 +1778,7 @@ class CodemodCliCommandSpec:
 
     def to_dict(self) -> JsonObject:
         return {
-            "action_id": self.action_id.value,
+            "action_id": str(self.action_id.value),
             "cwd": self.cwd.as_posix(),
             "python_executable": self.python_executable,
             "module": self.module,
@@ -1786,6 +1793,24 @@ class CodemodCliCommandSpec:
             "required_artifacts": self.required_artifacts,
             "generated_artifacts": self.generated_artifacts,
         }
+
+
+@dataclass(frozen=True, kw_only=True)
+class CodemodAuthoringWorkflowActionCommandSpec(CodemodCliCommandSpec):
+    """Runnable bundle-control command for one workflow target action."""
+
+    workflow_id: CodemodAuthoringWorkflowId
+    target_action_id: CodemodAuthoringCommandActionId
+
+    def to_dict(self) -> JsonObject:
+        payload = super().to_dict()
+        payload.update(
+            {
+                "workflow_id": self.workflow_id.value,
+                "target_action_id": self.target_action_id.value,
+            }
+        )
+        return payload
 
 
 @dataclass(frozen=True)
@@ -2416,6 +2441,10 @@ class CodemodAuthoringBundleWriter:
     roots: tuple[Path, ...]
     cwd: Path
 
+    @property
+    def index_path(self) -> Path:
+        return self.output_dir / "index.json"
+
     def write(self) -> JsonObject:
         records = tuple(
             self.write_record(record_index, record)
@@ -2423,9 +2452,10 @@ class CodemodAuthoringBundleWriter:
         )
         payload: JsonObject = {
             **self.plan.synthesis_payload(),
+            "bundle_commands": self.bundle_control_commands(),
             "records": records,
         }
-        write_cli_json_artifact(self.output_dir / "index.json", payload)
+        write_cli_json_artifact(self.index_path, payload)
         return payload
 
     def write_record(
@@ -2467,12 +2497,10 @@ class CodemodAuthoringBundleWriter:
             selected_plan_path,
             goal_replay_plan_path,
         )
-        command_payloads = tuple(
-            command.to_dict() for command in self.command_specs(context)
-        )
-        workflow_payloads = tuple(
-            workflow.to_dict() for workflow in self.workflow_specs(context)
-        )
+        command_specs = self.command_specs(context)
+        workflow_specs = self.workflow_specs(context)
+        command_payloads = tuple(command.to_dict() for command in command_specs)
+        workflow_payloads = tuple(workflow.to_dict() for workflow in workflow_specs)
         workflow_readiness = CodemodAuthoringWorkflowPlanner.from_payloads(
             command_payloads,
             workflow_payloads,
@@ -2503,6 +2531,13 @@ class CodemodAuthoringBundleWriter:
             ).as_posix(),
             "commands": command_payloads,
             "workflows": workflow_payloads,
+            "workflow_action_commands": tuple(
+                command.to_dict()
+                for command in self.workflow_action_command_specs(
+                    record_index,
+                    workflow_specs,
+                )
+            ),
             "workflow_readiness": workflow_readiness,
             "authoring_record": authoring_record.to_dict(),
         }
@@ -2544,6 +2579,59 @@ class CodemodAuthoringBundleWriter:
             for template_type in OrderedAuthoringTemplateRegistry(
                 CodemodAuthoringBundleCommandTemplate.__registry__
             ).template_types()
+        )
+
+    def bundle_control_commands(self) -> JsonObject:
+        return {
+            "status": self.status_command_spec().to_dict(),
+        }
+
+    def status_command_spec(self) -> CodemodCliCommandSpec:
+        return CodemodCliCommandSpec(
+            action_id=CodemodAuthoringBundleControlActionId.AUTHORING_STATUS,
+            args=(
+                "--codemod-authoring-status",
+                self.index_path.as_posix(),
+            ),
+            cwd=self.cwd,
+        )
+
+    def workflow_action_command_specs(
+        self,
+        record_index: int,
+        workflow_specs: tuple[CodemodAuthoringWorkflowSpec, ...],
+    ) -> tuple[CodemodAuthoringWorkflowActionCommandSpec, ...]:
+        return tuple(
+            CodemodAuthoringWorkflowActionCommandSpec(
+                workflow_id=workflow.workflow_id,
+                target_action_id=action_id,
+                action_id=CodemodAuthoringBundleControlActionId.AUTHORING_RUN_ACTION,
+                args=self.workflow_action_command_args(
+                    record_index,
+                    workflow.workflow_id,
+                    action_id,
+                ),
+                cwd=self.cwd,
+            )
+            for workflow in workflow_specs
+            for action_id in workflow.command_action_ids
+        )
+
+    def workflow_action_command_args(
+        self,
+        record_index: int,
+        workflow_id: CodemodAuthoringWorkflowId,
+        target_action_id: CodemodAuthoringCommandActionId,
+    ) -> tuple[str, ...]:
+        return (
+            "--codemod-authoring-run-action",
+            self.index_path.as_posix(),
+            "--codemod-authoring-record-index",
+            str(record_index),
+            "--codemod-authoring-workflow-id",
+            workflow_id.value,
+            "--codemod-authoring-target-action",
+            target_action_id.value,
         )
 
     def workflow_specs(

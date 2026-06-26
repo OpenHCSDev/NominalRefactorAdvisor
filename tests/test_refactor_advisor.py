@@ -11739,6 +11739,7 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
     records = payload["synthesis_authoring"]["records"]
     selector_payload = records[0]["evidence_selector"]
     bundle_index = json.loads((bundle_dir / "index.json").read_text(encoding="utf-8"))
+    bundle_commands = bundle_index["bundle_commands"]
     bundle_record = bundle_index["records"][0]
     bundle_selector = json.loads(
         (bundle_dir / bundle_record["selector_path"]).read_text(encoding="utf-8")
@@ -11763,9 +11764,25 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         workflow["workflow_id"]: workflow
         for workflow in bundle_record["workflow_readiness"]["workflows"]
     }
+    workflow_action_commands = {
+        (
+            command["workflow_id"],
+            command["target_action_id"],
+        ): command
+        for command in bundle_record["workflow_action_commands"]
+    }
 
     assert result.returncode == 0, result.stderr
     assert payload["authoring_bundle"] == bundle_index
+    assert bundle_commands["status"]["action_id"] == "authoring_status"
+    assert bundle_commands["status"]["args"] == [
+        "--codemod-authoring-status",
+        (bundle_dir / "index.json").as_posix(),
+    ]
+    assert (
+        bundle_commands["status"]["argv"][-2:]
+        == bundle_commands["status"]["args"]
+    )
     assert (
         records[0]["finding_id"]
         == payload["synthesis_report"]["records"][0]["finding_id"]
@@ -11809,6 +11826,24 @@ def test_module_cli_synthesizes_authoring_selectors(tmp_path: Path) -> None:
         "selected_operation_template",
         "goal_refactor",
     }
+    assert (
+        workflow_action_commands[
+            ("goal_refactor", "simulate_goal_replay_plan")
+        ]["action_id"]
+        == "authoring_run_action"
+    )
+    assert workflow_action_commands[
+        ("goal_refactor", "simulate_goal_replay_plan")
+    ]["args"] == [
+        "--codemod-authoring-run-action",
+        (bundle_dir / "index.json").as_posix(),
+        "--codemod-authoring-record-index",
+        "0",
+        "--codemod-authoring-workflow-id",
+        "goal_refactor",
+        "--codemod-authoring-target-action",
+        "simulate_goal_replay_plan",
+    ]
     assert set(workflows["replacement_plan"]["command_action_ids"]) <= set(commands)
     assert set(workflows["selected_operation_template"]["command_action_ids"]) <= set(
         commands
@@ -11998,6 +12033,13 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
         command["action_id"]: command
         for command in bundle_record["commands"]
     }
+    workflow_action_commands = {
+        (
+            command["workflow_id"],
+            command["target_action_id"],
+        ): command
+        for command in bundle_record["workflow_action_commands"]
+    }
     goal_replay_plan_path = bundle_dir / bundle_record["goal_replay_plan_path"]
 
     assert result.returncode == 0, result.stderr
@@ -12044,18 +12086,12 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
     assert initial_goal_commands["simulate_goal_replay_plan"]["runnable"] is False
 
     run_action_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-authoring-run-action",
-            (bundle_dir / "index.json").as_posix(),
-            "--codemod-authoring-record-index",
-            "0",
-            "--codemod-authoring-target-action",
-            "simulate_goal_replay_plan",
-        ],
-        cwd=repo_root,
+        workflow_action_commands[
+            ("goal_refactor", "simulate_goal_replay_plan")
+        ]["argv"],
+        cwd=workflow_action_commands[
+            ("goal_refactor", "simulate_goal_replay_plan")
+        ]["cwd"],
         capture_output=True,
         text=True,
         check=False,
