@@ -12083,6 +12083,50 @@ def test_codemod_authoring_workflow_planner_chains_generated_artifacts() -> None
     assert action_plans["apply_plan"]["action_ids"] == ("write_plan", "apply_plan")
 
 
+def test_codemod_authoring_workflow_planner_tries_alternate_generators() -> None:
+    from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
+
+    planner = CodemodAuthoringWorkflowPlanner.from_payloads(
+        command_payloads=(
+            {
+                "action_id": "write_plan_from_missing_context",
+                "required_artifacts": ("missing_context",),
+                "generated_artifacts": ("plan",),
+            },
+            {
+                "action_id": "write_plan_from_selector",
+                "required_artifacts": ("selector",),
+                "generated_artifacts": ("plan",),
+            },
+            {
+                "action_id": "apply_plan",
+                "required_artifacts": ("plan",),
+                "generated_artifacts": (),
+            },
+        ),
+        workflow_payloads=(
+            {
+                "workflow_id": "nominal_boundary",
+                "command_action_ids": (
+                    "write_plan_from_missing_context",
+                    "write_plan_from_selector",
+                    "apply_plan",
+                ),
+                "default_next_action_id": "apply_plan",
+            },
+        ),
+    )
+
+    action_plan = planner.plan_to_action("apply_plan", ("selector",)).to_dict()
+
+    assert action_plan["blocked"] is False
+    assert action_plan["missing_artifacts"] == ()
+    assert action_plan["action_ids"] == (
+        "write_plan_from_selector",
+        "apply_plan",
+    )
+
+
 def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     tmp_path: Path,
 ) -> None:

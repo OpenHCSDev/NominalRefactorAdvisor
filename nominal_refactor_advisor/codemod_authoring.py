@@ -264,6 +264,14 @@ class CodemodAuthoringWorkflowPlanner:
         action_ids: list[str] = []
         missing_artifacts: list[str] = []
 
+        def restore_plan_state(
+            available_snapshot: set[str],
+            action_id_snapshot: list[str],
+        ) -> None:
+            available.clear()
+            available.update(available_snapshot)
+            action_ids[:] = action_id_snapshot
+
         def ensure_artifact(artifact: str, visiting_artifacts: frozenset[str]) -> bool:
             if artifact in available:
                 return True
@@ -275,22 +283,35 @@ class CodemodAuthoringWorkflowPlanner:
                 missing_artifacts.append(artifact)
                 return False
             next_visiting_artifacts = visiting_artifacts | frozenset((artifact,))
+            generator_missing_artifacts: list[str] = []
             for generator in generators:
+                available_snapshot = set(available)
+                action_id_snapshot = list(action_ids)
+                missing_start = len(missing_artifacts)
                 if ensure_command(generator, next_visiting_artifacts):
                     return True
-            missing_artifacts.append(artifact)
+                generator_missing_artifacts.extend(missing_artifacts[missing_start:])
+                del missing_artifacts[missing_start:]
+                restore_plan_state(available_snapshot, action_id_snapshot)
+            if generator_missing_artifacts:
+                missing_artifacts.extend(generator_missing_artifacts)
+            else:
+                missing_artifacts.append(artifact)
             return False
 
         def ensure_command(
             command: CodemodAuthoringCommandModel,
             visiting_artifacts: frozenset[str],
         ) -> bool:
+            available_snapshot = set(available)
+            action_id_snapshot = list(action_ids)
             unresolved_requirements = tuple(
                 artifact
                 for artifact in command.required_artifacts
                 if not ensure_artifact(artifact, visiting_artifacts)
             )
             if unresolved_requirements:
+                restore_plan_state(available_snapshot, action_id_snapshot)
                 return False
             if command.action_id not in action_ids:
                 action_ids.append(command.action_id)
