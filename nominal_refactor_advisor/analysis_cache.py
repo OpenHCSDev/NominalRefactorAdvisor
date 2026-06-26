@@ -10,7 +10,11 @@ import pickle
 import sys
 from typing import TypeAlias
 
-from .ast_tools import python_source_paths_for_roots
+from .ast_tools import (
+    ParsedModule,
+    PythonSourcePathPolicy,
+    python_source_paths_for_roots,
+)
 from .detectors import DetectorConfig, IssueDetector
 from .models import RefactorFinding
 
@@ -24,7 +28,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 2
+    version: int = 3
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -35,6 +39,7 @@ class AnalysisCacheStatus(StrEnum):
 
     DISABLED = "disabled"
     HIT = "hit"
+    PARTIAL = "partial"
     MISS = "miss"
 
 
@@ -74,13 +79,52 @@ class SourceFileSignature:
 
 
 @dataclass(frozen=True)
+class ModuleSourceSignature:
+    """Parsed-module identity used for per-module detector-output shards."""
+
+    path: str
+    parsed_import_name: str
+    is_package_init: bool
+    source_hash: str
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> "ModuleSourceSignature":
+        return cls(
+            str(module.path.resolve()),
+            module.module_name,
+            module.is_package_init,
+            hashlib.blake2s(
+                module.source.encode("utf-8"),
+                digest_size=16,
+            ).hexdigest(),
+        )
+
+
+@dataclass(frozen=True)
+class DetectorTypeSignature:
+    """Stable identity for one registered detector implementation."""
+
+    registered_key: str
+    implementation_import_path: str
+    qualname: str
+    first_lineno: int
+
+
+@dataclass(frozen=True)
 class DetectorRegistrySignature:
     """Stable identity for the detector family participating in one scan."""
 
-    detector_types: tuple[tuple[str, str, str, int], ...]
+    detector_types: tuple[DetectorTypeSignature, ...]
 
     @classmethod
     def current(cls) -> "DetectorRegistrySignature":
+        return cls.from_detector_types(IssueDetector.registered_detector_types())
+
+    @classmethod
+    def from_detector_types(
+        cls,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "DetectorRegistrySignature":
         registered_key_by_type = {
             registered_type: str(registered_key)
             for registered_key, registered_type in IssueDetector.__registry__.items()
@@ -89,38 +133,61 @@ class DetectorRegistrySignature:
             tuple(
                 cls._detector_type_identity(
                     detector_type,
-                    registered_key_by_type[detector_type],
+                    cls._registered_key_for_detector_type(
+                        detector_type,
+                        registered_key_by_type,
+                    ),
                 )
-                for detector_type in IssueDetector.registered_detector_types()
+                for detector_type in detector_types
             )
         )
 
     @classmethod
+    def _registered_key_for_detector_type(
+        cls,
+        detector_type: type[IssueDetector],
+        registered_key_by_type: dict[type[IssueDetector], str],
+    ) -> str:
+        registered_key = registered_key_by_type.get(detector_type)
+        if registered_key is not None:
+            return registered_key
+        detector_id = detector_type.detector_id
+        if detector_id is not None:
+            return detector_id
+        return detector_type.__qualname__
+
+    @classmethod
     def _detector_type_identity(
         cls, detector_type: type[IssueDetector], registered_key: str
-    ) -> tuple[str, str, str, int]:
+    ) -> DetectorTypeSignature:
         class_dict = vars(detector_type)
         first_lineno = 0
         if "__firstlineno__" in class_dict:
             first_lineno = int(class_dict["__firstlineno__"])
-        return (
-            registered_key,
-            detector_type.__module__,
-            detector_type.__qualname__,
-            first_lineno,
+        return DetectorTypeSignature(
+            registered_key=registered_key,
+            implementation_import_path=detector_type.__module__,
+            qualname=detector_type.__qualname__,
+            first_lineno=first_lineno,
         )
 
 
-@dataclass(frozen=True)
-class AnalysisCacheIdentity:
-    """Complete invalidation identity for one detector-output cache entry."""
+@dataclass(frozen=True, kw_only=True)
+class AnalysisCacheEntryContext:
+    """Shared invalidation context for detector-output cache entries."""
 
-    roots: tuple[str, ...]
     config: DetectorConfigSignature
-    source_files: tuple[SourceFileSignature, ...]
     detector_registry: DetectorRegistrySignature
     python_version: tuple[int, int]
     schema: AnalysisCacheSchema = analysis_cache_schema
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalysisCacheIdentity(AnalysisCacheEntryContext):
+    """Complete invalidation identity for one detector-output cache entry."""
+
+    roots: tuple[str, ...]
+    source_files: tuple[SourceFileSignature, ...]
 
     @classmethod
     def from_roots(
@@ -128,21 +195,49 @@ class AnalysisCacheIdentity:
         roots: tuple[Path, ...],
         config: DetectorConfig,
         *,
-        include_tests: bool = True,
+        source_policy: PythonSourcePathPolicy | None = None,
     ) -> "AnalysisCacheIdentity":
         source_files = tuple(
             SourceFileSignature.from_path(path)
             for path in python_source_paths_for_roots(
                 roots,
-                include_tests=include_tests,
+                source_policy=source_policy,
             )
         )
         return cls(
-            roots=tuple(str(root.resolve()) for root in roots),
             config=detector_config_signature(config),
-            source_files=source_files,
             detector_registry=DetectorRegistrySignature.current(),
             python_version=(sys.version_info.major, sys.version_info.minor),
+            roots=tuple(str(root.resolve()) for root in roots),
+            source_files=source_files,
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
+class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
+    """Invalidation identity for one module's per-module detector findings."""
+
+    source_file: ModuleSourceSignature
+
+    @classmethod
+    def from_module(
+        cls,
+        module: ParsedModule,
+        config: DetectorConfig,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "PerModuleAnalysisCacheIdentity":
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.from_detector_types(
+                detector_types
+            ),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            source_file=ModuleSourceSignature.from_module(module),
         )
 
     @property
@@ -157,7 +252,10 @@ class AnalysisFindingCache:
 
     storage_root: Path | None
 
-    def load(self, identity: AnalysisCacheIdentity) -> AnalysisCacheLookup:
+    def load(
+        self,
+        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+    ) -> AnalysisCacheLookup:
         if self.storage_root is None:
             return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
         cache_path = self._entry_path(identity)
@@ -191,7 +289,9 @@ class AnalysisFindingCache:
         return analysis_cache_lookup(AnalysisCacheStatus.HIT, tuple(findings))
 
     def store(
-        self, identity: AnalysisCacheIdentity, findings: list[RefactorFinding]
+        self,
+        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+        findings: list[RefactorFinding],
     ) -> None:
         if self.storage_root is None:
             return
@@ -203,7 +303,10 @@ class AnalysisFindingCache:
         except OSError:
             return
 
-    def _entry_path(self, identity: AnalysisCacheIdentity) -> Path:
+    def _entry_path(
+        self,
+        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+    ) -> Path:
         if self.storage_root is None:
             raise ValueError("analysis cache directory is disabled")
         return self.storage_root / f"{identity.cache_token}.pickle"

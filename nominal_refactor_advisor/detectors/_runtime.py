@@ -6673,6 +6673,7 @@ def _embedded_static_payload_candidates(
 class DeadEmbeddedStaticPayloadDetector(
     ConfiguredModuleCollectorCandidateDetector[EmbeddedStaticPayloadCandidate]
 ):
+    cache_granularity = DetectorCacheGranularity.GLOBAL
     candidate_collector = _embedded_static_payload_candidates
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -8090,6 +8091,7 @@ def _non_nominal_private_helper_candidates(
 class UnreferencedPrivateFunctionDetector(
     ConfiguredModuleCollectorCandidateDetector[UnreferencedPrivateFunctionCandidate]
 ):
+    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Unreferenced private function should be deleted or made explicit",
@@ -8139,6 +8141,7 @@ class UnreferencedPrivateFunctionDetector(
 class NonNominalPrivateHelperDetector(
     ConfiguredModuleCollectorCandidateDetector[NonNominalPrivateHelperCandidate]
 ):
+    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Escaped private helper should become nominal",
@@ -8215,6 +8218,7 @@ class NonNominalPrivateHelperDetector(
 class PrivateHelperSemanticClusterDetector(
     ConfiguredModuleCollectorCandidateDetector[PrivateHelperSemanticClusterCandidate]
 ):
+    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Private helper cluster should have a semantic owner",
@@ -8291,6 +8295,7 @@ class PrivateHelperSemanticClusterDetector(
 class DanglingPrivateMethodDetector(
     ConfiguredModuleCollectorCandidateDetector[DanglingPrivateMethodCandidate]
 ):
+    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Dangling private method should be deleted or made nominal",

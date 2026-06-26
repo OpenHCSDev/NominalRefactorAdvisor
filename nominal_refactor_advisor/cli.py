@@ -33,7 +33,7 @@ from .analysis import (
     plan_paths,
 )
 from .analysis_cache import AnalysisCacheStatus
-from .ast_tools import ParsedModule, parse_python_module_roots
+from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
 from .cache_paths import default_parse_cache_dir
 from .calibration import (
     CalibrationReport,
@@ -4355,6 +4355,7 @@ def main() -> int:
         parse_cache_dir,
         args.use_parse_cache,
     )
+    source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
     if args.predict_scan:
         SingleRootModeAuthority(
             parser=parser,
@@ -4427,7 +4428,7 @@ def main() -> int:
                 roots,
                 config,
                 analysis_cache_dir=analysis_cache_dir,
-                include_tests=args.include_tests,
+                source_policy=source_policy,
             )
             analysis_seconds = round(perf_counter() - started, 3)
         if (
@@ -4445,7 +4446,7 @@ def main() -> int:
                 cache_dir=parse_cache_dir,
                 use_parse_cache=args.use_parse_cache,
                 parse_workers=args.parse_workers,
-                include_tests=args.include_tests,
+                source_policy=source_policy,
             )
             parse_seconds = round(perf_counter() - started, 3)
             if not codemod_scan_query_mode.needs_analysis:
@@ -4460,7 +4461,7 @@ def main() -> int:
                     config,
                     analysis_cache_dir=analysis_cache_dir,
                     analysis_workers=args.analysis_workers,
-                    include_tests=args.include_tests,
+                    source_policy=source_policy,
                 )
                 unfiltered_findings = analysis_result.findings
                 analysis_cache_status = analysis_result.cache_status

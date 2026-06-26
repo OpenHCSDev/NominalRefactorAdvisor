@@ -531,6 +531,13 @@ class DetectorConfig:
         return cls(**config_values)
 
 
+class DetectorCacheGranularity(StrEnum):
+    """Detector-output cache granularity supported by a detector contract."""
+
+    GLOBAL = "global"
+    PER_MODULE = "per_module"
+
+
 class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     """Metaclass-registered detector base class."""
 
@@ -541,6 +548,9 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     finding_spec: ClassVar[FindingSpec]
     genericity: ClassVar[str] = "generic"
     detector_priority: ClassVar[int] = 0
+    cache_granularity: ClassVar[DetectorCacheGranularity] = (
+        DetectorCacheGranularity.GLOBAL
+    )
 
     @classmethod
     def registered_detector_types(cls) -> tuple[type["IssueDetector"], ...]:
@@ -607,6 +617,10 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
 
 class PerModuleIssueDetector(IssueDetector):
     """Detector base that evaluates one parsed module at a time."""
+
+    cache_granularity: ClassVar[DetectorCacheGranularity] = (
+        DetectorCacheGranularity.PER_MODULE
+    )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

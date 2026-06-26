@@ -16,10 +16,21 @@ from .analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisFindingCache,
+    PerModuleAnalysisCacheIdentity,
 )
-from .ast_tools import ParsedModule, parse_python_module_roots, parse_python_modules
+from .ast_tools import (
+    ParsedModule,
+    PythonSourcePathPolicy,
+    parse_python_module_roots,
+    parse_python_modules,
+)
 from .cache_paths import analysis_cache_sibling, default_analysis_cache_dir
-from .detectors import DetectorConfig, IssueDetector, default_detectors
+from .detectors import (
+    DetectorCacheGranularity,
+    DetectorConfig,
+    IssueDetector,
+    default_detectors,
+)
 from .lean_export import findings_from_lean_export_path
 from .models import RefactorFinding, RefactorPlan
 from .planner import build_refactor_plans
@@ -197,6 +208,85 @@ def detect_with_active_worker_state(
     return state.detect_with(detector_type)
 
 
+@dataclass(frozen=True)
+class PerModuleDetectorShardWorkerState:
+    """Process-local parsed source for per-module detector shard tasks."""
+
+    modules: tuple[ParsedModule, ...]
+    config: DetectorConfig
+    detector_types: tuple[type[IssueDetector], ...]
+
+    def detect_module_index(self, module_index: int) -> list[RefactorFinding]:
+        return analyze_detector_types(
+            [self.modules[module_index]],
+            self.config,
+            detector_types=self.detector_types,
+            analysis_workers=1,
+        )
+
+
+per_module_detector_shard_worker_state: PerModuleDetectorShardWorkerState | None = None
+
+
+def initialize_per_module_detector_shard_worker(
+    state: PerModuleDetectorShardWorkerState,
+) -> None:
+    """Install parsed source once per per-module shard worker."""
+
+    global per_module_detector_shard_worker_state
+    per_module_detector_shard_worker_state = state
+
+
+def detect_per_module_shard_with_active_state(
+    module_index: int,
+) -> list[RefactorFinding]:
+    """Run per-module detector classes for one parsed module in a worker."""
+
+    state = per_module_detector_shard_worker_state
+    if state is None:
+        raise RuntimeError("per-module shard worker state has not been initialized")
+    return state.detect_module_index(module_index)
+
+
+def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
+    """Return registered detector classes in the default analysis order."""
+
+    return tuple(type(detector) for detector in default_detectors())
+
+
+@dataclass(frozen=True)
+class DetectorTypePartition:
+    """Split detectors by the cache granularity their contract supports."""
+
+    per_module_detector_types: tuple[type[IssueDetector], ...]
+    global_detector_types: tuple[type[IssueDetector], ...]
+
+    @classmethod
+    def from_detector_types(
+        cls,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> "DetectorTypePartition":
+        per_module_detector_types: list[type[IssueDetector]] = []
+        global_detector_types: list[type[IssueDetector]] = []
+        for detector_type in detector_types:
+            if detector_type.cache_granularity is DetectorCacheGranularity.PER_MODULE:
+                per_module_detector_types.append(detector_type)
+            else:
+                global_detector_types.append(detector_type)
+        return cls(
+            per_module_detector_types=tuple(per_module_detector_types),
+            global_detector_types=tuple(global_detector_types),
+        )
+
+    @property
+    def has_per_module_detectors(self) -> bool:
+        return bool(self.per_module_detector_types)
+
+    @property
+    def has_global_detectors(self) -> bool:
+        return bool(self.global_detector_types)
+
+
 class SortedFindingsAuthority:
     """Centralize the stable presentation order for detector findings."""
 
@@ -217,7 +307,24 @@ def analyze_modules(
     """Run all registered detectors against parsed modules."""
 
     config = config or DetectorConfig()
-    detector_types = tuple(type(detector) for detector in default_detectors())
+    detector_types = default_detector_types_for_analysis()
+    return analyze_detector_types(
+        modules,
+        config,
+        detector_types=detector_types,
+        analysis_workers=analysis_workers,
+    )
+
+
+def analyze_detector_types(
+    modules: list[ParsedModule],
+    config: DetectorConfig,
+    *,
+    detector_types: tuple[type[IssueDetector], ...],
+    analysis_workers: int = 1,
+) -> list[RefactorFinding]:
+    """Run selected detector classes against parsed modules."""
+
     worker_plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=analysis_workers,
         available_detector_type_count=len(detector_types),
@@ -263,7 +370,7 @@ class AnalysisCacheResolutionAuthority:
         cache_result: CachedAnalysisResult,
         analysis_cache_dir: Path | None,
         analysis_workers: int,
-        include_tests: bool,
+        source_policy: PythonSourcePathPolicy | None,
     ) -> None:
         self._roots = roots
         self._modules = modules
@@ -271,7 +378,7 @@ class AnalysisCacheResolutionAuthority:
         self._cache_result = cache_result
         self._analysis_cache_dir = analysis_cache_dir
         self._analysis_workers = analysis_workers
-        self._include_tests = include_tests
+        self._source_policy = source_policy
 
     @property
     def cache_result(self) -> CachedAnalysisResult:
@@ -291,16 +398,142 @@ class AnalysisCacheResolutionAuthority:
         cache_identity = AnalysisCacheIdentity.from_roots(
             self._roots,
             self._config,
-            include_tests=self._include_tests,
+            source_policy=self._source_policy,
         )
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
-        findings = analyze_modules(
+        incremental_result = IncrementalAnalysisCacheResolver(
+            modules=self._modules,
+            config=self._config,
+            analysis_cache=analysis_cache,
+            analysis_workers=self._analysis_workers,
+        ).result()
+        findings = incremental_result.findings
+        analysis_cache.store(cache_identity, findings)
+        return CachedAnalysisResult(findings, incremental_result.cache_status)
+
+
+@dataclass(frozen=True)
+class IncrementalAnalysisResult:
+    """Exact detector findings plus the shard-cache reuse status."""
+
+    findings: list[RefactorFinding]
+    cache_status: AnalysisCacheStatus
+
+
+class IncrementalAnalysisCacheResolver:
+    """Reuse per-module detector shards while rerunning global detectors exactly."""
+
+    def __init__(
+        self,
+        *,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+        analysis_cache: AnalysisFindingCache,
+        analysis_workers: int,
+    ) -> None:
+        self._modules = modules
+        self._config = config
+        self._analysis_cache = analysis_cache
+        self._analysis_workers = analysis_workers
+        self._detector_partition = DetectorTypePartition.from_detector_types(
+            default_detector_types_for_analysis()
+        )
+
+    def result(self) -> IncrementalAnalysisResult:
+        per_module_findings = self._per_module_findings()
+        global_findings = self._global_findings()
+        findings = SortedFindingsAuthority.sort(
+            [*per_module_findings.findings, *global_findings]
+        )
+        return IncrementalAnalysisResult(
+            findings=findings,
+            cache_status=per_module_findings.cache_status,
+        )
+
+    def _per_module_findings(self) -> IncrementalAnalysisResult:
+        if not self._detector_partition.has_per_module_detectors:
+            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+
+        findings: list[RefactorFinding] = []
+        hit_count = 0
+        missing_modules: list[ParsedModule] = []
+        missing_identities: list[PerModuleAnalysisCacheIdentity] = []
+        for module in self._modules:
+            identity = PerModuleAnalysisCacheIdentity.from_module(
+                module,
+                self._config,
+                self._detector_partition.per_module_detector_types,
+            )
+            cache_lookup = self._analysis_cache.load(identity)
+            if cache_lookup.status is AnalysisCacheStatus.HIT:
+                hit_count += 1
+                findings.extend(cache_lookup.findings)
+                continue
+            missing_modules.append(module)
+            missing_identities.append(identity)
+
+        for identity, module_findings in zip(
+            missing_identities,
+            self._missing_per_module_findings(missing_modules),
+            strict=True,
+        ):
+            self._analysis_cache.store(identity, module_findings)
+            findings.extend(module_findings)
+
+        cache_status = (
+            AnalysisCacheStatus.MISS
+            if hit_count == 0
+            else AnalysisCacheStatus.PARTIAL
+        )
+        return IncrementalAnalysisResult(findings, cache_status)
+
+    def _missing_per_module_findings(
+        self,
+        missing_modules: list[ParsedModule],
+    ) -> list[list[RefactorFinding]]:
+        if not missing_modules:
+            return []
+        worker_plan = DetectorAnalysisWorkerPlan(
+            requested_worker_count=self._analysis_workers,
+            available_detector_type_count=len(missing_modules),
+            module_count=len(missing_modules),
+        )
+        if worker_plan.uses_process_pool:
+            state = PerModuleDetectorShardWorkerState(
+                modules=tuple(missing_modules),
+                config=self._config,
+                detector_types=self._detector_partition.per_module_detector_types,
+            )
+            with ProcessPoolExecutor(
+                max_workers=worker_plan.effective_worker_count,
+                initializer=initialize_per_module_detector_shard_worker,
+                initargs=(state,),
+            ) as executor:
+                return list(
+                    executor.map(
+                        detect_per_module_shard_with_active_state,
+                        range(len(missing_modules)),
+                    )
+                )
+        return [
+            analyze_detector_types(
+                [module],
+                self._config,
+                detector_types=self._detector_partition.per_module_detector_types,
+                analysis_workers=1,
+            )
+            for module in missing_modules
+        ]
+
+    def _global_findings(self) -> list[RefactorFinding]:
+        if not self._detector_partition.has_global_detectors:
+            return []
+        return analyze_detector_types(
             self._modules,
             self._config,
+            detector_types=self._detector_partition.global_detector_types,
             analysis_workers=self._analysis_workers,
         )
-        analysis_cache.store(cache_identity, findings)
-        return CachedAnalysisResult(findings, AnalysisCacheStatus.MISS)
 
 
 class AnalysisCacheStatusStrategy(ABC, metaclass=AutoRegisterMeta):
@@ -372,7 +605,7 @@ def analyze_modules_with_cache(
     *,
     analysis_cache_dir: Path | None = None,
     analysis_workers: int = 1,
-    include_tests: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
 ) -> CachedAnalysisResult:
     """Run detector analysis with a persistent finding cache when configured."""
 
@@ -381,7 +614,7 @@ def analyze_modules_with_cache(
         roots,
         config,
         analysis_cache_dir=analysis_cache_dir,
-        include_tests=include_tests,
+        source_policy=source_policy,
     )
     authority = AnalysisCacheResolutionAuthority(
         roots=roots,
@@ -390,7 +623,7 @@ def analyze_modules_with_cache(
         cache_result=cache_result,
         analysis_cache_dir=analysis_cache_dir,
         analysis_workers=analysis_workers,
-        include_tests=include_tests,
+        source_policy=source_policy,
     )
     return AnalysisCacheStatusStrategy.for_status(cache_result.cache_status).result(
         authority
@@ -402,7 +635,7 @@ def load_analysis_cache_for_roots(
     config: DetectorConfig | None = None,
     *,
     analysis_cache_dir: Path | None = None,
-    include_tests: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
 ) -> CachedAnalysisResult:
     """Load detector findings from persistent cache without parsed modules."""
 
@@ -412,7 +645,7 @@ def load_analysis_cache_for_roots(
     cache_identity = AnalysisCacheIdentity.from_roots(
         roots,
         config,
-        include_tests=include_tests,
+        source_policy=source_policy,
     )
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
@@ -439,7 +672,7 @@ def analyze_path(
     use_parse_cache: bool = True,
     parse_workers: int = 1,
     analysis_workers: int = 1,
-    include_tests: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
     modules = parse_python_modules(
@@ -447,7 +680,7 @@ def analyze_path(
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        include_tests=include_tests,
+        source_policy=source_policy,
     )
     return analyze_modules_with_cache(
         (root,),
@@ -459,7 +692,7 @@ def analyze_path(
             use_parse_cache,
         ),
         analysis_workers=analysis_workers,
-        include_tests=include_tests,
+        source_policy=source_policy,
     ).findings
 
 
@@ -471,7 +704,7 @@ def analyze_paths(
     use_parse_cache: bool = True,
     parse_workers: int = 1,
     analysis_workers: int = 1,
-    include_tests: bool = True,
+    source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""
     modules = parse_python_module_roots(
@@ -479,7 +712,7 @@ def analyze_paths(
         cache_dir=cache_dir,
         use_parse_cache=use_parse_cache,
         parse_workers=parse_workers,
-        include_tests=include_tests,
+        source_policy=source_policy,
     )
     root = roots[0]
     return analyze_modules_with_cache(
@@ -492,7 +725,7 @@ def analyze_paths(
             use_parse_cache,
         ),
         analysis_workers=analysis_workers,
-        include_tests=include_tests,
+        source_policy=source_policy,
     ).findings
 
 

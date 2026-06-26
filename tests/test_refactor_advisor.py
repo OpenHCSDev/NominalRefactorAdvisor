@@ -16,6 +16,7 @@ import pytest
 from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     analyze_modules,
+    analyze_modules_with_cache,
     analyze_paths,
 )
 from nominal_refactor_advisor.ast_tools import (
@@ -42,6 +43,8 @@ from nominal_refactor_advisor.ast_tools import (
     SentinelTypeObservationFamily,
     StringLiteralDispatchObservationFamily,
     NumericLiteralDispatchObservationFamily,
+    ParsedModule,
+    PythonSourcePathPolicy,
     TypedLiteralObservationSpec,
     collect_family_items,
     collect_scoped_observations,
@@ -5305,8 +5308,14 @@ def test_parse_python_modules_can_skip_test_trees(tmp_path: Path) -> None:
     _write_module(tmp_path, "tests/test_prod.py", "\nclass TestProduction:\n    pass\n")
     _write_module(tmp_path, "pkg/test_helper.py", "\nclass TestHelper:\n    pass\n")
 
-    production_modules = parse_python_modules(tmp_path, include_tests=False)
-    all_modules = parse_python_modules(tmp_path, include_tests=True)
+    production_modules = parse_python_modules(
+        tmp_path,
+        source_policy=PythonSourcePathPolicy(include_tests=False),
+    )
+    all_modules = parse_python_modules(
+        tmp_path,
+        source_policy=PythonSourcePathPolicy(include_tests=True),
+    )
 
     assert [module.path.name for module in production_modules] == ["prod.py"]
     assert [module.path.name for module in all_modules] == [
@@ -5327,7 +5336,7 @@ def test_parse_python_module_roots_can_skip_direct_test_files(
             tmp_path / "pkg/prod.py",
             tmp_path / "tests/test_prod.py",
         ),
-        include_tests=False,
+        source_policy=PythonSourcePathPolicy(include_tests=False),
     )
 
     assert [module.path.name for module in modules] == ["prod.py"]
@@ -5443,22 +5452,22 @@ def test_analyze_paths_reuses_detector_findings(
         "cached summary",
         (SourceLocation(str(module_path), 2, "Cached"),),
     )
-    analyze_calls = 0
+    detector_calls = 0
 
-    def counted_analyze_modules(
-        modules: list[object],
-        config: DetectorConfig | None = None,
-        *,
-        analysis_workers: int = 1,
-    ) -> list[RefactorFinding]:
-        nonlocal analyze_calls
-        del modules, config, analysis_workers
-        analyze_calls += 1
-        return [finding]
+    class CountingDetector(base_detectors.IssueDetector):
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            nonlocal detector_calls
+            del modules, config
+            detector_calls += 1
+            return [finding]
 
     monkeypatch.setattr(
-        "nominal_refactor_advisor.analysis.analyze_modules",
-        counted_analyze_modules,
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingDetector,),
     )
 
     first_findings = analyze_paths(
@@ -5474,7 +5483,102 @@ def test_analyze_paths_reuses_detector_findings(
 
     assert first_findings == [finding]
     assert second_findings == [finding]
-    assert analyze_calls == 1
+    assert detector_calls == 1
+
+
+def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(tmp_path, "pkg/a.py", "\nclass Alpha:\n    pass\n")
+    _write_module(tmp_path, "pkg/b.py", "\nclass Beta:\n    pass\n")
+    root = tmp_path / "pkg"
+    cache_dir = tmp_path / ".nra-cache" / "analysis"
+    local_calls: dict[str, int] = {}
+    global_calls = 0
+    finding_spec = _finding_spec(
+        PatternId.NOMINAL_BOUNDARY,
+        "Cache test",
+        "cache test",
+        "cache test",
+        "cache test",
+    )
+
+    class CountingPerModuleDetector(base_detectors.PerModuleIssueDetector):
+        def _findings_for_module(
+            self,
+            module: ParsedModule,
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            module_path = module.path
+            module_name = module_path.name
+            local_calls[module_name] = local_calls.get(module_name, 0) + 1
+            return [
+                finding_spec.build(
+                    "counting_per_module",
+                    f"local {module_name}",
+                    (SourceLocation(str(module_path), 2, module_name),),
+                )
+            ]
+
+    class CountingGlobalDetector(base_detectors.IssueDetector):
+        def _collect_findings(
+            self,
+            modules: list[ParsedModule],
+            config: DetectorConfig,
+        ) -> list[RefactorFinding]:
+            del config
+            nonlocal global_calls
+            global_calls += 1
+            module_names = tuple(module.path.name for module in modules)
+            first_module = modules[0]
+            return [
+                finding_spec.build(
+                    "counting_global",
+                    f"global {module_names}",
+                    (SourceLocation(str(first_module.path), 1, "global"),),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingPerModuleDetector, CountingGlobalDetector),
+    )
+
+    modules = parse_python_module_roots((root,))
+    first_result = analyze_modules_with_cache(
+        (root,),
+        modules,
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+    assert first_result.cache_status is AnalysisCacheStatus.MISS
+    assert local_calls == {"a.py": 1, "b.py": 1}
+    assert global_calls == 1
+
+    (root / "b.py").write_text("\nclass Beta:\n    pass\n\nclass Changed:\n    pass\n")
+    changed_modules = parse_python_module_roots((root,))
+    changed_result = analyze_modules_with_cache(
+        (root,),
+        changed_modules,
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+    assert changed_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert local_calls == {"a.py": 1, "b.py": 2}
+    assert global_calls == 2
+
+    hit_modules = parse_python_module_roots((root,))
+    hit_result = analyze_modules_with_cache(
+        (root,),
+        hit_modules,
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+    assert hit_result.cache_status is AnalysisCacheStatus.HIT
+    assert local_calls == {"a.py": 1, "b.py": 2}
+    assert global_calls == 2
 
 
 def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> None:
