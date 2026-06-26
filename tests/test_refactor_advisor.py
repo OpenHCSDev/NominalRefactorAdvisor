@@ -12043,22 +12043,48 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
     assert initial_goal_readiness["next_action_id"] == "run_goal_refactor"
     assert initial_goal_commands["simulate_goal_replay_plan"]["runnable"] is False
 
-    run_goal_result = subprocess.run(
-        commands["run_goal_refactor"]["argv"],
-        cwd=commands["run_goal_refactor"]["cwd"],
+    run_action_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            "--codemod-authoring-run-action",
+            (bundle_dir / "index.json").as_posix(),
+            "--codemod-authoring-record-index",
+            "0",
+            "--codemod-authoring-target-action",
+            "simulate_goal_replay_plan",
+        ],
+        cwd=repo_root,
         capture_output=True,
         text=True,
         check=False,
     )
-    run_goal_payload = json.loads(run_goal_result.stdout)
+    run_action_payload = json.loads(run_action_result.stdout)
+    run_goal_payload = run_action_payload["command_runs"][0]["stdout_json"]
+    simulate_payload = run_action_payload["command_runs"][1]["stdout_json"]
     replay_payload = json.loads(goal_replay_plan_path.read_text(encoding="utf-8"))
     replay_sequence = load_codemod_plan_sequence(goal_replay_plan_path)
 
-    assert run_goal_result.returncode == 0, run_goal_result.stderr
+    assert run_action_result.returncode == 0, run_action_result.stderr
+    assert run_action_payload["completed"] is True
+    assert run_action_payload["action_plan"]["action_ids"] == [
+        "run_goal_refactor",
+        "simulate_goal_replay_plan",
+    ]
+    assert [
+        command_run["action_id"] for command_run in run_action_payload["command_runs"]
+    ] == [
+        "run_goal_refactor",
+        "simulate_goal_replay_plan",
+    ]
     assert run_goal_payload["completed"] is True
     assert run_goal_payload["achieved"] is True
     assert run_goal_payload["replay_sequence"] == replay_payload
     assert replay_sequence.has_recipes
+    assert simulate_payload["applied"] is False
+    assert simulate_payload["parse_valid"] is True
+    assert "+class GeneratedRecord(SemanticRecord):" in simulate_payload["unified_diff"]
 
     refreshed_status_result = subprocess.run(
         [
@@ -12093,20 +12119,6 @@ def test_authoring_bundle_goal_refactor_command_generates_replay_plan(
     )
     assert refreshed_goal_commands["simulate_goal_replay_plan"]["runnable"] is True
     assert refreshed_goal_commands["apply_goal_replay_plan"]["runnable"] is True
-
-    simulate_result = subprocess.run(
-        commands["simulate_goal_replay_plan"]["argv"],
-        cwd=commands["simulate_goal_replay_plan"]["cwd"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    simulate_payload = json.loads(simulate_result.stdout)
-
-    assert simulate_result.returncode == 0, simulate_result.stderr
-    assert simulate_payload["applied"] is False
-    assert simulate_payload["parse_valid"] is True
-    assert "+class GeneratedRecord(SemanticRecord):" in simulate_payload["unified_diff"]
 
 
 def test_codemod_authoring_workflow_planner_chains_generated_artifacts() -> None:
@@ -14747,15 +14759,22 @@ def test_module_cli_simulates_projected_findings_with_executable_continuation(
 
 
 def test_codemod_workflow_types_are_public_package_exports() -> None:
+    from nominal_refactor_advisor import CodemodAuthoringActionRunReport
+    from nominal_refactor_advisor import CodemodAuthoringActionRunRequest
     from nominal_refactor_advisor import CodemodAuthoringActionPlan
     from nominal_refactor_advisor import CodemodAuthoringArtifactInventory
+    from nominal_refactor_advisor import CodemodAuthoringBundleActionRunner
     from nominal_refactor_advisor import CodemodAuthoringBundleReadiness
     from nominal_refactor_advisor import CodemodAuthoringBundleRecordStatus
     from nominal_refactor_advisor import CodemodAuthoringBundleStatus
     from nominal_refactor_advisor import CodemodAuthoringBundleStatusReporter
+    from nominal_refactor_advisor import CodemodAuthoringCommandInvocation
     from nominal_refactor_advisor import CodemodAuthoringCommandModel
     from nominal_refactor_advisor import CodemodAuthoringCommandReadiness
+    from nominal_refactor_advisor import CodemodAuthoringCommandRun
     from nominal_refactor_advisor import CodemodAuthoringPayloadReader
+    from nominal_refactor_advisor import CodemodAuthoringRecordReference
+    from nominal_refactor_advisor import CodemodAuthoringTargetAction
     from nominal_refactor_advisor import CodemodAuthoringWorkflowModel
     from nominal_refactor_advisor import CodemodAuthoringWorkflowPlanner
     from nominal_refactor_advisor import CodemodAuthoringWorkflowReadiness
@@ -14790,10 +14809,22 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
 
     assert CodemodPlanJsonParser().recipes({}) == ()
     assert isinstance(codemod_dsl_manifest(), CodemodDslManifest)
+    assert (
+        CodemodAuthoringActionRunReport.__name__
+        == "CodemodAuthoringActionRunReport"
+    )
+    assert (
+        CodemodAuthoringActionRunRequest.__name__
+        == "CodemodAuthoringActionRunRequest"
+    )
     assert CodemodAuthoringActionPlan.__name__ == "CodemodAuthoringActionPlan"
     assert (
         CodemodAuthoringArtifactInventory.__name__
         == "CodemodAuthoringArtifactInventory"
+    )
+    assert (
+        CodemodAuthoringBundleActionRunner.__name__
+        == "CodemodAuthoringBundleActionRunner"
     )
     assert (
         CodemodAuthoringBundleReadiness.__name__
@@ -14810,10 +14841,20 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     )
     assert CodemodAuthoringCommandModel.__name__ == "CodemodAuthoringCommandModel"
     assert (
+        CodemodAuthoringCommandInvocation.__name__
+        == "CodemodAuthoringCommandInvocation"
+    )
+    assert CodemodAuthoringCommandRun.__name__ == "CodemodAuthoringCommandRun"
+    assert (
         CodemodAuthoringCommandReadiness.__name__
         == "CodemodAuthoringCommandReadiness"
     )
     assert CodemodAuthoringPayloadReader.__name__ == "CodemodAuthoringPayloadReader"
+    assert (
+        CodemodAuthoringRecordReference.__name__
+        == "CodemodAuthoringRecordReference"
+    )
+    assert CodemodAuthoringTargetAction.__name__ == "CodemodAuthoringTargetAction"
     assert CodemodAuthoringWorkflowModel.__name__ == "CodemodAuthoringWorkflowModel"
     assert CodemodAuthoringWorkflowPlanner.__name__ == (
         "CodemodAuthoringWorkflowPlanner"

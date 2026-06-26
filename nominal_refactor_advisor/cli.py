@@ -98,6 +98,7 @@ from .codemod_workflow import (
     CodemodSimulationFindingProjection,
 )
 from .codemod_authoring import (
+    CodemodAuthoringBundleActionRunner,
     CodemodAuthoringBundleStatusReporter,
     CodemodAuthoringWorkflowPlanner,
 )
@@ -516,6 +517,38 @@ _CLI_ARGUMENT_SPECS = (
                 "Load an authoring bundle index.json, recompute workflow readiness "
                 "from the current artifact files, emit JSON, and exit without "
                 "scanning."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-run-action",),
+            value_type=Path,
+            help=(
+                "Load an authoring bundle index.json, plan the command chain for "
+                "--codemod-authoring-target-action, execute it, emit JSON, and "
+                "exit without scanning."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-record-index",),
+            value_type=int,
+            default=0,
+            help=(
+                "Record index to use with --codemod-authoring-run-action. "
+                "Defaults to 0."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-workflow-id",),
+            help=(
+                "Optional workflow id for --codemod-authoring-run-action. If "
+                "omitted, the workflow is inferred from the target action."
+            ),
+        ),
+        CliArgumentSpec(
+            flags=("--codemod-authoring-target-action",),
+            help=(
+                "Target action id for --codemod-authoring-run-action, such as "
+                "simulate_goal_replay_plan."
             ),
         ),
         CliArgumentSpec(
@@ -3464,6 +3497,41 @@ class CodemodAuthoringStatusCliCommand(CliEarlyExitCommand):
             self.parser.error(str(error))
         print(json.dumps(payload, indent=2))
         return 0
+
+
+class CodemodAuthoringRunActionCliCommand(CliEarlyExitCommand):
+    """Run a planned command chain from an authoring bundle."""
+
+    command_id = "codemod_authoring_run_action"
+
+    @property
+    def requested(self) -> bool:
+        return self.args.codemod_authoring_run_action is not None
+
+    def run(self) -> int:
+        if self.args.codemod_authoring_target_action is None:
+            self.parser.error(
+                "--codemod-authoring-run-action requires "
+                "--codemod-authoring-target-action"
+            )
+        try:
+            report = CodemodAuthoringBundleActionRunner(
+                bundle_index_path=self.args.codemod_authoring_run_action,
+                record_index=self.args.codemod_authoring_record_index,
+                workflow_id=self.args.codemod_authoring_workflow_id,
+                target_action_id=self.args.codemod_authoring_target_action,
+            ).run()
+        except (
+            OSError,
+            json.JSONDecodeError,
+            TypeError,
+            ValueError,
+            IndexError,
+            KeyError,
+        ) as error:
+            self.parser.error(str(error))
+        print(json.dumps(report.to_dict(), indent=2))
+        return report.exit_code
 
 
 class CodemodValidatePlanCliCommand(CliEarlyExitCommand):

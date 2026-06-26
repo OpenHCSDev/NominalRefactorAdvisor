@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,12 @@ class CodemodAuthoringPayloadReader:
     def optional_int(self, key: str) -> int | None:
         value = self.payload.get(key)
         if value is None or isinstance(value, int):
+            return value
+        raise TypeError(f"{key} must be an integer")
+
+    def integer(self, key: str) -> int:
+        value = self.payload[key]
+        if isinstance(value, int):
             return value
         raise TypeError(f"{key} must be an integer")
 
@@ -127,10 +134,23 @@ class CodemodAuthoringCommandReadiness:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringActionPlan:
-    """Command sequence required to reach one target workflow action."""
+class CodemodAuthoringRecordReference:
+    """Reference to one record in an authoring bundle."""
+
+    record_index: int
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringTargetAction:
+    """Target action id within an authoring workflow."""
 
     target_action_id: str
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringActionPlan(CodemodAuthoringTargetAction):
+    """Command sequence required to reach one target workflow action."""
+
     action_ids: tuple[str, ...]
     missing_artifacts: tuple[str, ...]
 
@@ -231,10 +251,9 @@ class CodemodAuthoringArtifactInventory:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringBundleRecordStatus:
+class CodemodAuthoringBundleRecordStatus(CodemodAuthoringRecordReference):
     """Current workflow status for one authoring bundle record."""
 
-    record_index: int | None
     finding_id: str | None
     detector_id: str | None
     readiness: CodemodAuthoringBundleReadiness
@@ -310,7 +329,7 @@ class CodemodAuthoringBundleStatusReporter:
             commands,
         ).available_artifacts
         return CodemodAuthoringBundleRecordStatus(
-            record_index=reader.optional_int("record_index"),
+            record_index=reader.integer("record_index"),
             finding_id=reader.optional_string("finding_id"),
             detector_id=reader.optional_string("detector_id"),
             readiness=CodemodAuthoringWorkflowPlanner(
@@ -318,6 +337,20 @@ class CodemodAuthoringBundleStatusReporter:
                 workflows=workflows,
             ).bundle_readiness(available_artifacts),
         )
+
+    def record_payload_at(
+        self,
+        record_index: int,
+    ) -> JsonObject:
+        reader = CodemodAuthoringPayloadReader(self.bundle_index)
+        for position, record_payload in enumerate(reader.object_tuple("records")):
+            record_reader = CodemodAuthoringPayloadReader(record_payload)
+            payload_record_index = record_reader.optional_int("record_index")
+            if payload_record_index == record_index:
+                return record_payload
+            if payload_record_index is None and position == record_index:
+                return record_payload
+        raise IndexError(f"authoring bundle record {record_index} was not found")
 
     def commands(
         self,
@@ -338,6 +371,215 @@ class CodemodAuthoringBundleStatusReporter:
             CodemodAuthoringWorkflowModel.from_payload(workflow_payload)
             for workflow_payload in reader.object_tuple("workflows")
         )
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringCommandInvocation:
+    """Executable argv/cwd pair for one authoring command."""
+
+    action_id: str
+    argv: tuple[str, ...]
+    cwd: Path
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: Mapping[str, JsonValue],
+    ) -> "CodemodAuthoringCommandInvocation":
+        reader = CodemodAuthoringPayloadReader(payload)
+        return cls(
+            action_id=reader.string("action_id"),
+            argv=reader.string_tuple("argv"),
+            cwd=Path(reader.string("cwd")),
+        )
+
+    def run(self) -> "CodemodAuthoringCommandRun":
+        result = subprocess.run(
+            self.argv,
+            cwd=self.cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return CodemodAuthoringCommandRun(
+            invocation=self,
+            returncode=result.returncode,
+            stdout=result.stdout,
+            stderr=result.stderr,
+        )
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringCommandRun:
+    """Captured result for one executed authoring command."""
+
+    invocation: CodemodAuthoringCommandInvocation
+    returncode: int
+    stdout: str
+    stderr: str
+
+    @property
+    def succeeded(self) -> bool:
+        return self.returncode == 0
+
+    @property
+    def stdout_json(self) -> JsonValue:
+        try:
+            return json.loads(self.stdout)
+        except json.JSONDecodeError:
+            return None
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "action_id": self.invocation.action_id,
+            "argv": self.invocation.argv,
+            "cwd": self.invocation.cwd.as_posix(),
+            "returncode": self.returncode,
+            "succeeded": self.succeeded,
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "stdout_json": self.stdout_json,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringActionRunRequest(
+    CodemodAuthoringRecordReference,
+    CodemodAuthoringTargetAction,
+):
+    """Target action request for one authoring bundle record."""
+
+    workflow_id: str | None
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringActionRunReport(CodemodAuthoringActionRunRequest):
+    """Execution report for one planned authoring action chain."""
+
+    workflow: CodemodAuthoringWorkflowModel
+    action_plan: CodemodAuthoringActionPlan
+    command_runs: tuple[CodemodAuthoringCommandRun, ...]
+
+    @property
+    def completed(self) -> bool:
+        return (
+            not self.action_plan.blocked
+            and len(self.command_runs) == len(self.action_plan.action_ids)
+            and all(command_run.succeeded for command_run in self.command_runs)
+        )
+
+    @property
+    def exit_code(self) -> int:
+        if self.completed:
+            return 0
+        return 1
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "record_index": self.record_index,
+            "workflow_id": self.workflow.workflow_id,
+            "target_action_id": self.target_action_id,
+            "completed": self.completed,
+            "action_plan": self.action_plan.to_dict(),
+            "command_runs": tuple(
+                command_run.to_dict() for command_run in self.command_runs
+            ),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleActionRunner(CodemodAuthoringActionRunRequest):
+    """Execute one target action through the bundle workflow planner."""
+
+    bundle_index_path: Path
+
+    def run(self) -> CodemodAuthoringActionRunReport:
+        reporter = CodemodAuthoringBundleStatusReporter.from_index_path(
+            self.bundle_index_path
+        )
+        record_payload = reporter.record_payload_at(self.record_index)
+        commands = reporter.commands(record_payload)
+        workflows = reporter.workflows(record_payload)
+        workflow = self.selected_workflow(workflows)
+        action_plan = CodemodAuthoringWorkflowPlanner(
+            commands=commands,
+            workflows=workflows,
+        ).plan_to_action(
+            self.target_action_id,
+            CodemodAuthoringArtifactInventory(
+                reporter.bundle_root,
+                commands,
+            ).available_artifacts,
+        )
+        return CodemodAuthoringActionRunReport(
+            record_index=self.record_index,
+            workflow_id=self.workflow_id,
+            target_action_id=self.target_action_id,
+            workflow=workflow,
+            action_plan=action_plan,
+            command_runs=self.command_runs(record_payload, action_plan),
+        )
+
+    def selected_workflow(
+        self,
+        workflows: tuple[CodemodAuthoringWorkflowModel, ...],
+    ) -> CodemodAuthoringWorkflowModel:
+        if self.workflow_id is not None:
+            for workflow in workflows:
+                if workflow.workflow_id == self.workflow_id:
+                    self.require_workflow_contains_target(workflow)
+                    return workflow
+            raise ValueError(f"workflow {self.workflow_id!r} was not found")
+        candidate_workflows = tuple(
+            workflow
+            for workflow in workflows
+            if self.target_action_id in workflow.command_action_ids
+        )
+        if len(candidate_workflows) != 1:
+            raise ValueError(
+                f"target action {self.target_action_id!r} matched "
+                f"{len(candidate_workflows)} workflows"
+            )
+        return candidate_workflows[0]
+
+    def require_workflow_contains_target(
+        self,
+        workflow: CodemodAuthoringWorkflowModel,
+    ) -> None:
+        if self.target_action_id not in workflow.command_action_ids:
+            raise ValueError(
+                f"workflow {workflow.workflow_id!r} does not contain target action "
+                f"{self.target_action_id!r}"
+            )
+
+    def command_runs(
+        self,
+        record_payload: Mapping[str, JsonValue],
+        action_plan: CodemodAuthoringActionPlan,
+    ) -> tuple[CodemodAuthoringCommandRun, ...]:
+        if action_plan.blocked:
+            return ()
+        invocations_by_action_id = self.invocations_by_action_id(record_payload)
+        command_runs: list[CodemodAuthoringCommandRun] = []
+        for action_id in action_plan.action_ids:
+            command_run = invocations_by_action_id[action_id].run()
+            command_runs.append(command_run)
+            if not command_run.succeeded:
+                break
+        return tuple(command_runs)
+
+    @staticmethod
+    def invocations_by_action_id(
+        record_payload: Mapping[str, JsonValue],
+    ) -> dict[str, CodemodAuthoringCommandInvocation]:
+        reader = CodemodAuthoringPayloadReader(record_payload)
+        return {
+            invocation.action_id: invocation
+            for invocation in (
+                CodemodAuthoringCommandInvocation.from_payload(command_payload)
+                for command_payload in reader.object_tuple("commands")
+            )
+        }
 
 
 @dataclass(frozen=True)
