@@ -6992,8 +6992,14 @@ class ManualRegistrationDeletionSelection:
         return self.deleted_pair_count == self.expected_pair_count
 
 
+class SharedAssignmentValueMixin:
+    @staticmethod
+    def assignment_value(statement: ast.Assign | ast.AnnAssign) -> ast.AST | None:
+        return statement.value
+
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
+    SharedAssignmentValueMixin,
     BaseNamePayloadOperation,
     AssignmentNamePayloadMixin,
     ClassKeyPairsPayloadMixin,
@@ -7128,10 +7134,6 @@ class DeriveAutoregisterInstanceViewOperation(
                 f"{self.assignment_name!r} is not a plain or annotated assignment"
             )
         return statement
-
-    @staticmethod
-    def assignment_value(statement: ast.Assign | ast.AnnAssign) -> ast.AST | None:
-        return statement.value
 
     def instance_view_matched_pairs(
         self,
@@ -12527,26 +12529,16 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
         )
 
 
-def _field_family_carrier_name(
+def _field_family_carrier_name_from_class_names(
     class_names: tuple[str, ...],
-    field_names: tuple[str, ...] = (),
-) -> str:
+) -> str | None:
     suffix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_suffix(class_names)
     if suffix_tokens:
         return _field_family_base_name_from_tokens(suffix_tokens)
     prefix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_prefix(class_names)
     if prefix_tokens:
         return _field_family_base_name_from_tokens(prefix_tokens)
-    field_tokens = tuple(
-        dict.fromkeys(
-            token
-            for field_name in field_names
-            for token in CLASS_NAME_ALGEBRA.ordered_tokens(field_name)
-        )
-    )
-    if field_tokens:
-        return _field_family_base_name_from_tokens(field_tokens)
-    return "SharedFieldsBase"
+    return None
 
 
 def _field_family_base_name_from_tokens(tokens: tuple[str, ...]) -> str:
@@ -12622,6 +12614,15 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                     "repeated-field carrier collapse target has unsupported class header"
                 )
             )
+        carrier_name = self.carrier_name_or_none(metrics.class_names)
+        if carrier_name is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "repeated-field carrier collapse requires a shared class-name "
+                    "prefix or suffix; field-only carrier names need an authority "
+                    "design decision"
+                )
+            )
         carrier_dataclass_arguments = self.carrier_dataclass_arguments_or_none(targets)
         if carrier_dataclass_arguments is None:
             return FindingRecipeEvaluation(
@@ -12630,10 +12631,6 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
                     "decorator arguments"
                 )
             )
-        carrier_name = _field_family_carrier_name(
-            metrics.class_names,
-            metrics.field_names,
-        )
         if ClassMemberPromotionTargets.matching_class_targets(
             context.source_index,
             source_path=source_path,
@@ -12683,6 +12680,10 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
             f"{field_name}: {field_type_by_name[field_name]}"
             for field_name in metrics.field_names
         )
+
+    @staticmethod
+    def carrier_name_or_none(class_names: tuple[str, ...]) -> str | None:
+        return _field_family_carrier_name_from_class_names(class_names)
 
     @classmethod
     def carrier_dataclass_arguments_or_none(
@@ -13938,7 +13939,10 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClassFamilyCollectionSemanticMirrorRecipeBuilder(CodemodSelectorContext):
+class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
+    SharedAssignmentValueMixin,
+    CodemodSelectorContext,
+):
     """Build recipes for literal subclass collections that mirror a class family."""
 
     finding: RefactorFinding
@@ -14133,10 +14137,6 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(CodemodSelectorContext):
         if not isinstance(argument, ast.Tuple | ast.List | ast.Set):
             return None
         return factory_name, tuple(argument.elts)
-
-    @staticmethod
-    def assignment_value(statement: ast.Assign | ast.AnnAssign) -> ast.AST | None:
-        return statement.value
 
     @classmethod
     def replacement_assignment_source(
@@ -14894,9 +14894,17 @@ class FindingRecipePlanBuilder:
         synthesizer_type = FindingRecipeSynthesizer.__registry__.get(
             finding.detector_id
         )
-        if synthesizer_type is None:
-            return None
-        return synthesizer_type()
+        if synthesizer_type is not None:
+            return synthesizer_type()
+        if self.finding_has_semantic_mirror_role(finding):
+            return SemanticMirrorRegistrationFindingRecipeSynthesizer()
+        return None
+
+    @staticmethod
+    def finding_has_semantic_mirror_role(finding: RefactorFinding) -> bool:
+        from .detectors import IssueDetector
+
+        return finding.detector_id in IssueDetector.semantic_mirror_detector_ids()
 
 
 def codemod_plan_from_findings(

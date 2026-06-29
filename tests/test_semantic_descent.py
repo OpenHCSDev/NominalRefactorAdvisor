@@ -10,6 +10,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
+    LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
 )
@@ -342,6 +343,37 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert simulation.simulation.applied_rewrite_count == 1
 
 
+def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class ProjectionSurfaceAuthority:\n"
+        "    def materialization_rule(self, projection_surface):\n"
+        "        cases = {'module_all_tuple': 1, 'mapping_literal': 2}\n"
+        "        return cases.get(projection_surface)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in LocalRoleCaseLogicDetector().detect(modules, DetectorConfig())
+        if item.detector_id == "local_role_case_logic"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+
+    assert record.detector_id == "local_role_case_logic"
+    assert record.status.value == "rejected_by_safety_check"
+    assert (
+        record.synthesizer_name == "SemanticMirrorRegistrationFindingRecipeSynthesizer"
+    )
+    assert record.action_keys
+    assert "semantic mapping mirror has a stable DSL action key" in record.reason
+    assert plan.document.recipes == ()
+
+
 def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
     tmp_path: Path,
 ) -> None:
@@ -396,6 +428,41 @@ def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
     assert rewritten.count("score: float") == 1
     assert rewritten.count("label: str") == 1
     assert simulation.is_clean is True
+
+
+def test_repeated_field_synthesis_rejects_field_named_carrier(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class TargetKey:\n"
+        "    node_type: str\n"
+        "    qualname: str\n"
+        "    file_path: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Scope:\n"
+        "    node_type: str\n"
+        "    qualname: str\n"
+        "    target_id: str\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
+        if item.detector_id == "repeated_field_family"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+
+    assert record.status.value == "rejected_by_safety_check"
+    assert "shared class-name prefix or suffix" in record.reason
+    assert plan.document.recipes == ()
 
 
 def test_finding_recipe_synthesis_rejects_partial_action_key_overlap(
