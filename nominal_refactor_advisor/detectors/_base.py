@@ -7710,6 +7710,38 @@ class SurfaceRoleRoleCaseAuthority:
         return "registry_projection"
 
 
+class CoverageCoordinatesRoleCase:
+    def __init__(self, axis_name, expected_value, value_factories):
+        self.axis_name = axis_name
+        self.expected_value = expected_value
+        self.value_factories = value_factories
+
+    def matches(self, axis_values):
+        axis_value = axis_values[self.axis_name]
+        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
+            return axis_value in self.expected_value
+        return axis_value == self.expected_value
+
+    def values(self, axis_values):
+        return tuple(factory(axis_values) for factory in self.value_factories)
+
+
+class CoverageCoordinatesRoleCaseAuthority:
+    @classmethod
+    def role_cases(cls):
+        return (
+            CoverageCoordinatesRoleCase('surface_kind', (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX), (lambda axis_values: max(axis_values['key_count'], 1), lambda axis_values: len(axis_values['shared_key_names']))),
+            CoverageCoordinatesRoleCase('surface_kind', _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS, (lambda axis_values: max(axis_values['type_count'], 1), lambda axis_values: len(axis_values['shared_type_names']))),
+        )
+
+    @classmethod
+    def coverage_coordinates(cls, **axis_values):
+        for role_case in cls.role_cases():
+            if role_case.matches(axis_values):
+                return role_case.values(axis_values)
+        return (max(axis_values['key_count'] + axis_values['type_count'], 1), len(axis_values['shared_key_names']) + len(axis_values['shared_type_names']))
+
+
 class _RegistryProjectionSurfaceAnalyzer:
     role_terms: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ("serializer_map", ("serial", "deserial", "codec", "encode", "decode")),
@@ -7847,18 +7879,7 @@ class _RegistryProjectionSurfaceAnalyzer:
         missing_type_names = sorted_tuple(
             frozenset(proof.registered_type_names) - frozenset(shared_type_names)
         )
-        if surface_kind in {
-            _REGISTRY_PROJECTION_KEY_ROSTER,
-            _REGISTRY_PROJECTION_KEY_TO_TYPE_INDEX,
-        }:
-            denominator = max(key_count, 1)
-            numerator = len(shared_key_names)
-        elif surface_kind in _REGISTRY_PROJECTION_TYPE_SURFACE_KINDS:
-            denominator = max(type_count, 1)
-            numerator = len(shared_type_names)
-        else:
-            denominator = max(key_count + type_count, 1)
-            numerator = len(shared_key_names) + len(shared_type_names)
+        denominator, numerator = CoverageCoordinatesRoleCaseAuthority.coverage_coordinates(surface_kind=surface_kind, shared_key_names=shared_key_names, shared_type_names=shared_type_names, key_count=key_count, type_count=type_count)
         return (
             key_count,
             type_count,

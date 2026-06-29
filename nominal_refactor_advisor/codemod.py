@@ -14728,6 +14728,81 @@ class LocalRoleCaseBranchItem:
 
 
 @dataclass(frozen=True)
+class LocalRoleCaseAssignmentItem:
+    """One ordered branch case assigning local result values."""
+
+    axis_name: str
+    expected_source: str
+    value_sources: tuple[str, ...]
+    value_names: tuple[str, ...]
+
+    def construction_source(self, item_class_name: str) -> str:
+        factories = tuple(
+            f"lambda axis_values: {AxisValueExpressionSource(self.value_names).source(value_source)}"
+            for value_source in self.value_sources
+        )
+        value_factories = ", ".join(factories)
+        if len(factories) == 1:
+            value_factories = f"{value_factories},"
+        return (
+            f"{item_class_name}("
+            f"{self.axis_name!r}, {self.expected_source}, ({value_factories}))"
+        )
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseAssignmentDefault:
+    """Default value factories for assignment branch extraction."""
+
+    value_sources: tuple[str, ...]
+    value_names: tuple[str, ...]
+
+    def result_source(self) -> str:
+        expression_source = AxisValueExpressionSource(self.value_names)
+        values = ", ".join(
+            expression_source.source(value_source)
+            for value_source in self.value_sources
+        )
+        if len(self.value_sources) == 1:
+            return f"({values},)"
+        return f"({values})"
+
+
+@dataclass(frozen=True)
+class AxisValueExpressionSource:
+    """Render an expression with selected loads routed through axis_values."""
+
+    value_names: tuple[str, ...]
+
+    def source(self, expression_source: str) -> str:
+        expression = ast.parse(expression_source, mode="eval")
+        transformed = AxisValueExpressionTransformer(
+            value_names=frozenset(self.value_names),
+        ).visit(expression)
+        ast.fix_missing_locations(transformed)
+        return ast.unparse(transformed)
+
+
+@dataclass(frozen=True)
+class AxisValueExpressionTransformer(ast.NodeTransformer):
+    """Route expression-local values through generated authority axis_values."""
+
+    value_names: frozenset[str]
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        if isinstance(node.ctx, ast.Load) and node.id in self.value_names:
+            return ast.copy_location(
+                ast.Subscript(
+                    value=ast.Name(id="axis_values", ctx=ast.Load()),
+                    slice=ast.Constant(value=node.id),
+                    ctx=ast.Load(),
+                ),
+                node,
+            )
+        return node
+
+
+@dataclass(frozen=True)
 class LocalRoleCaseBranchAuthorityExtraction:
     """Safe extraction from ordered literal guard branches to case objects."""
 
@@ -14779,6 +14854,65 @@ class LocalRoleCaseBranchAuthorityExtraction:
 
 
 @dataclass(frozen=True)
+class LocalRoleCaseAssignmentAuthorityExtraction:
+    """Safe extraction from branch-local assignments to case objects."""
+
+    items: tuple[LocalRoleCaseAssignmentItem, ...]
+    default_item: LocalRoleCaseAssignmentDefault
+    owner_function_name: str
+    assignment_names: tuple[str, ...]
+    value_names: tuple[str, ...]
+    return_source: str
+    prelude_source: str = ""
+
+    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
+        item_class_source = (
+            f"class {item_class_name}:\n"
+            "    def __init__(self, axis_name, expected_value, value_factories):\n"
+            "        self.axis_name = axis_name\n"
+            "        self.expected_value = expected_value\n"
+            "        self.value_factories = value_factories\n"
+            "\n"
+            "    def matches(self, axis_values):\n"
+            "        axis_value = axis_values[self.axis_name]\n"
+            "        if isinstance(self.expected_value, (frozenset, list, set, tuple)):\n"
+            "            return axis_value in self.expected_value\n"
+            "        return axis_value == self.expected_value\n"
+            "\n"
+            "    def values(self, axis_values):\n"
+            "        return tuple(factory(axis_values) for factory in self.value_factories)\n"
+        )
+        behavior_method_source = (
+            "    @classmethod\n"
+            f"    def {self.owner_function_name}(cls, **axis_values):\n"
+            "        for role_case in cls.role_cases():\n"
+            "            if role_case.matches(axis_values):\n"
+            "                return role_case.values(axis_values)\n"
+            f"        return {self.default_item.result_source()}\n"
+        )
+        return LocalRoleCaseAuthoritySourceRenderer(
+            item_class_source=item_class_source,
+            authority_name=authority_name,
+            item_rows=tuple(
+                item.construction_source(item_class_name) for item in self.items
+            ),
+            behavior_method_source=behavior_method_source,
+        ).source()
+
+    def delegating_body_source(self, authority_name: str) -> str:
+        arguments = ", ".join(f"{name}={name}" for name in self.value_names)
+        assignment_target = ", ".join(self.assignment_names)
+        delegate_source = (
+            f"{assignment_target} = "
+            f"{authority_name}.{self.owner_function_name}({arguments})"
+        )
+        body_source = delegate_source
+        if self.prelude_source:
+            body_source = f"{self.prelude_source.rstrip()}\n{delegate_source}"
+        return f"{body_source}\n{self.return_source}"
+
+
+@dataclass(frozen=True)
 class LocalRoleCaseLogicRecipeParts:
     """Executable source rewrite facts for local role-case authority extraction."""
 
@@ -14787,7 +14921,11 @@ class LocalRoleCaseLogicRecipeParts:
     insertion_qualname: str
     authority_name: str
     item_class_name: str
-    extraction: LocalRoleCaseAuthorityExtraction | LocalRoleCaseBranchAuthorityExtraction
+    extraction: (
+        LocalRoleCaseAssignmentAuthorityExtraction
+        | LocalRoleCaseAuthorityExtraction
+        | LocalRoleCaseBranchAuthorityExtraction
+    )
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         authority_source = self.extraction.authority_source(
@@ -14945,10 +15083,16 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         self,
         source_path: str,
         node: ast.FunctionDef,
-    ) -> LocalRoleCaseAuthorityExtraction | LocalRoleCaseBranchAuthorityExtraction | None:
-        return self.mapping_extraction_for(source_path, node) or self.branch_extraction_for(
-            source_path,
-            node,
+    ) -> (
+        LocalRoleCaseAssignmentAuthorityExtraction
+        | LocalRoleCaseAuthorityExtraction
+        | LocalRoleCaseBranchAuthorityExtraction
+        | None
+    ):
+        return (
+            self.mapping_extraction_for(source_path, node)
+            or self.branch_extraction_for(source_path, node)
+            or self.assignment_branch_extraction_for(source_path, node)
         )
 
     def mapping_extraction_for(
@@ -15038,6 +15182,197 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             parameter_names=parameter_names,
             prelude_source=prelude_source,
         )
+
+    def assignment_branch_extraction_for(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
+        body = self.semantic_body(node)
+        if len(body) < 3 or not isinstance(body[-1], ast.Return):
+            return None
+        branch_statement = body[-2]
+        if not isinstance(branch_statement, ast.If):
+            return None
+        source = self.sources_by_file_path[source_path]
+        prelude_source = self.prelude_source(source, body[:-2])
+        if prelude_source is None:
+            return None
+        return_source = self.statement_source(source, body[-1])
+        if return_source is None:
+            return None
+        chain = self.assignment_branch_chain(source, branch_statement)
+        if chain is None:
+            return None
+        items, default_item, assignment_names = chain
+        if not self.assignment_items_cover_finding(tuple(items)):
+            return None
+        value_names = self.assignment_value_names(node, body[:-2], items, default_item)
+        if not value_names:
+            return None
+        return LocalRoleCaseAssignmentAuthorityExtraction(
+            items=tuple(
+                replace(item, value_names=value_names) for item in items
+            ),
+            default_item=replace(default_item, value_names=value_names),
+            owner_function_name=node.name,
+            assignment_names=assignment_names,
+            value_names=value_names,
+            return_source=return_source,
+            prelude_source=prelude_source,
+        )
+
+    def assignment_branch_chain(
+        self,
+        source: str,
+        root: ast.If,
+    ) -> tuple[
+        tuple[LocalRoleCaseAssignmentItem, ...],
+        LocalRoleCaseAssignmentDefault,
+        tuple[str, ...],
+    ] | None:
+        items: list[LocalRoleCaseAssignmentItem] = []
+        assignment_names: tuple[str, ...] | None = None
+        current: ast.If | None = root
+        while current is not None:
+            assignments = self.branch_assignments(source, tuple(current.body))
+            if assignments is None:
+                return None
+            branch_assignment_names, value_sources = assignments
+            if assignment_names is None:
+                assignment_names = branch_assignment_names
+            elif assignment_names != branch_assignment_names:
+                return None
+            condition_items = self.assignment_items_for_condition(
+                source,
+                current.test,
+                value_sources,
+            )
+            if not condition_items:
+                return None
+            items.extend(condition_items)
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            default_assignments = self.branch_assignments(
+                source,
+                tuple(current.orelse),
+            )
+            if default_assignments is None:
+                return None
+            default_assignment_names, default_value_sources = default_assignments
+            if assignment_names != default_assignment_names:
+                return None
+            return (
+                tuple(items),
+                LocalRoleCaseAssignmentDefault(
+                    value_sources=default_value_sources,
+                    value_names=(),
+                ),
+                assignment_names,
+            )
+        return None
+
+    def branch_assignments(
+        self,
+        source: str,
+        statements: tuple[ast.stmt, ...],
+    ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+        if not statements:
+            return None
+        assignment_names: list[str] = []
+        value_sources: list[str] = []
+        for statement in statements:
+            if not isinstance(statement, ast.Assign):
+                return None
+            if len(statement.targets) != 1 or not isinstance(
+                statement.targets[0],
+                ast.Name,
+            ):
+                return None
+            value_source = self.node_source(source, statement.value)
+            if value_source is None:
+                return None
+            assignment_names.append(statement.targets[0].id)
+            value_sources.append(value_source)
+        return tuple(assignment_names), tuple(value_sources)
+
+    def assignment_items_for_condition(
+        self,
+        source: str,
+        condition: ast.AST,
+        value_sources: tuple[str, ...],
+    ) -> tuple[LocalRoleCaseAssignmentItem, ...]:
+        return tuple(
+            LocalRoleCaseAssignmentItem(
+                axis_name=item.axis_name,
+                expected_source=item.expected_source,
+                value_sources=value_sources,
+                value_names=(),
+            )
+            for item in self.branch_items_for_condition(
+                source,
+                condition,
+                result_source="",
+            )
+        )
+
+    def assignment_value_names(
+        self,
+        node: ast.FunctionDef,
+        prelude: tuple[ast.stmt, ...],
+        items: tuple[LocalRoleCaseAssignmentItem, ...],
+        default_item: LocalRoleCaseAssignmentDefault,
+    ) -> tuple[str, ...]:
+        ordered_candidate_names = (
+            FunctionParameterProjection.public_names(node) + self.assigned_names(prelude)
+        )
+        candidate_names = frozenset(ordered_candidate_names)
+        axis_names = frozenset(item.axis_name for item in items)
+        if not axis_names <= candidate_names:
+            return ()
+        value_sources = tuple(
+            value_source
+            for item in items
+            for value_source in item.value_sources
+        ) + default_item.value_sources
+        used_names = {
+            child.id
+            for value_source in value_sources
+            for child in ast.walk(ast.parse(value_source, mode="eval"))
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        }
+        return tuple(
+            name for name in ordered_candidate_names if name in axis_names or name in used_names
+        )
+
+    def assignment_items_cover_finding(
+        self,
+        items: tuple[LocalRoleCaseAssignmentItem, ...],
+    ) -> bool:
+        expected_tokens = frozenset(self.finding.metrics.plan_field_names)
+        observed_tokens = frozenset(
+            token
+            for item in items
+            for source in (item.expected_source, *item.value_sources)
+            for token in CLASS_NAME_ALGEBRA.ordered_tokens(source.strip("'\""))
+        )
+        return expected_tokens <= observed_tokens
+
+    @staticmethod
+    def assigned_names(statements: tuple[ast.stmt, ...]) -> tuple[str, ...]:
+        names: list[str] = []
+        for statement in statements:
+            if isinstance(statement, ast.Assign):
+                names.extend(
+                    target.id for target in statement.targets if isinstance(target, ast.Name)
+                )
+            elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target,
+                ast.Name,
+            ):
+                names.append(statement.target.id)
+        return tuple(dict.fromkeys(names))
 
     @staticmethod
     def suffix_branch_slice(body: tuple[ast.stmt, ...]) -> tuple[int, int] | None:
