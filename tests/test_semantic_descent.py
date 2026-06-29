@@ -11,6 +11,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     DerivedMetricCountBoilerplateDetector,
+    DuplicateVisitorMethodBodyDetector,
     InheritedAutoRegisterConfigBoilerplateDetector,
     LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
@@ -483,6 +484,48 @@ def test_derived_metric_count_synthesizes_constructor_rewrite(
     assert simulation.is_clean is True
 
 
+def test_duplicate_visitor_methods_synthesize_alias_rewrite(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "import ast\n"
+        "\n"
+        "class Visitor(ast.NodeVisitor):\n"
+        "    def visit_FunctionDef(self, node):\n"
+        "        self.seen.append(node.name)\n"
+        "\n"
+        "    def visit_AsyncFunctionDef(self, node):\n"
+        "        self.seen.append(node.name)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in DuplicateVisitorMethodBodyDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.detector_id == "duplicate_visitor_method_body"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "DuplicateVisitorMethodBodyFindingRecipeSynthesizer"
+    )
+    assert operation["operation"] == "replace_text"
+    assert "def visit_FunctionDef" in rewritten
+    assert "def visit_AsyncFunctionDef" not in rewritten
+    assert "visit_AsyncFunctionDef = visit_FunctionDef" in rewritten
+    assert simulation.is_clean is True
+
+
 def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
     tmp_path: Path,
 ) -> None:
@@ -601,9 +644,7 @@ def test_finding_recipe_synthesis_rejects_partial_action_key_overlap(
         "    z: int\n",
     )
     modules = parse_python_modules(tmp_path)
-    findings = tuple(
-        RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
-    )
+    findings = tuple(RepeatedFieldFamilyDetector().detect(modules, DetectorConfig()))
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
 
     plan = codemod_plan_from_findings(
@@ -1308,9 +1349,7 @@ def test_semantic_descent_treats_empty_enum_base_as_class_family_authority(
 
     graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
 
-    authority = next(
-        item for item in graph.authorities if item.name == "LabeledMode"
-    )
+    authority = next(item for item in graph.authorities if item.name == "LabeledMode")
     assert authority.kind is SemanticAuthorityKind.CLASS_FAMILY
     assert any(
         graph.projection_by_id[certificate.edge.projection_id].label == "MODE_ENUMS"

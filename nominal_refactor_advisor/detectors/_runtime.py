@@ -788,7 +788,9 @@ def _private_object_boundary_fields(
             field_tokens = frozenset(_private_boundary_identifier_tokens(field_name))
             if not (field_tokens & _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS):
                 continue
-            fields_by_class.setdefault(node.name, []).append((statement.lineno, field_name))
+            fields_by_class.setdefault(node.name, []).append(
+                (statement.lineno, field_name)
+            )
     return fields_by_class
 
 
@@ -1193,6 +1195,7 @@ class LiteralSchemaDispatchBase:
     access_count: int
     key_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
+
 
 @dataclass(frozen=True)
 class LiteralSchemaDispatchOwner(LiteralSchemaDispatchBase):
@@ -5597,10 +5600,7 @@ class _FailSoftFallbackVisitor(ast.NodeVisitor):
     def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
         self.visit_FunctionDef(node)
 
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.symbol_stack.append(node.name)
-        self._visit_statement_sequence(node.body)
-        self.symbol_stack.pop()
+    visit_ClassDef = visit_FunctionDef
 
     def _visit_statement_sequence(self, statements: list[ast.stmt]) -> None:
         for index, statement in enumerate(statements):

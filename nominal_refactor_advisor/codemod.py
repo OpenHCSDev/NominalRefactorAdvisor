@@ -4695,7 +4695,9 @@ class ClassHeaderSpanSourceAuthority:
 
     @staticmethod
     def body_start_line(statement: ast.stmt) -> int:
-        if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        if not isinstance(
+            statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+        ):
             return statement.lineno
         decorator_lines = tuple(
             decorator.lineno
@@ -4983,7 +4985,9 @@ class SemanticCarrierSourceAuthority:
             )
         for base_name in self.base_names:
             ast.parse(f"class _CarrierBaseProbe({base_name}):\n    pass\n")
-        ast.parse(f"{self.dataclass_decorator_source}\nclass _CarrierProbe:\n    pass\n")
+        ast.parse(
+            f"{self.dataclass_decorator_source}\nclass _CarrierProbe:\n    pass\n"
+        )
         if not self.field_declarations:
             raise ValueError("Carrier collapse requires at least one field declaration")
         duplicate_names = tuple(
@@ -6998,6 +7002,7 @@ class SharedAssignmentValueMixin:
     @staticmethod
     def assignment_value(statement: ast.Assign | ast.AnnAssign) -> ast.AST | None:
         return statement.value
+
 
 @dataclass(frozen=True, kw_only=True)
 class DeriveAutoregisterInstanceViewOperation(
@@ -12676,7 +12681,9 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         metrics: FieldFamilyMetrics,
     ) -> tuple[str, ...] | None:
         field_type_by_name = dict(metrics.field_type_map)
-        if any(field_name not in field_type_by_name for field_name in metrics.field_names):
+        if any(
+            field_name not in field_type_by_name for field_name in metrics.field_names
+        ):
             return None
         return tuple(
             f"{field_name}: {field_type_by_name[field_name]}"
@@ -12731,9 +12738,11 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         return (
             *(ast.unparse(argument) for argument in call.args),
             *(
-                f"{keyword.arg}={ast.unparse(keyword.value)}"
-                if keyword.arg is not None
-                else f"**{ast.unparse(keyword.value)}"
+                (
+                    f"{keyword.arg}={ast.unparse(keyword.value)}"
+                    if keyword.arg is not None
+                    else f"**{ast.unparse(keyword.value)}"
+                )
                 for keyword in call.keywords
             ),
         )
@@ -13078,6 +13087,233 @@ class HelperBackedObservationSpecFindingRecipeSynthesizer(
     """Promote helper-backed wrapper entrypoints when they are exact duplicates."""
 
     detector_id = "helper_backed_observation_spec"
+
+
+class DuplicateVisitorMethodBodyFindingRecipeSynthesizer(
+    EvaluatedFindingRecipeSynthesizer
+):
+    """Replace duplicate visitor hook methods with explicit class-scope aliases."""
+
+    detector_id = "duplicate_visitor_method_body"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="duplicate visitor aliasing requires source context"
+            )
+        family = DuplicateVisitorMethodFamily.from_finding(finding)
+        if family is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="finding metrics do not expose visitor methods"
+            )
+        parts = DuplicateVisitorAliasRecipeParts.from_family_context(
+            family,
+            context,
+        )
+        if parts is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "visitor methods were not all resolved, class-local, or exact "
+                    "AST-body duplicates"
+                )
+            )
+        return FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        family = DuplicateVisitorMethodFamily.from_finding(finding)
+        if family is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (family.source_path, method_symbol)
+                for method_symbol in family.method_symbols
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class DuplicateVisitorBase:
+    canonical_method_name: str
+    class_name: str
+    source_path: str
+
+
+@dataclass(frozen=True)
+class DuplicateVisitorMethodFamily(DuplicateVisitorBase):
+    """Class-local visitor methods with duplicate implementations."""
+
+    duplicate_method_names: tuple[str, ...]
+    method_symbols: tuple[str, ...]
+
+    @classmethod
+    def from_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> "DuplicateVisitorMethodFamily | None":
+        if not isinstance(finding.metrics, RepeatedMethodMetrics):
+            return None
+        source_path = RepeatedMethodPromotionFindingRecipeSynthesizer.source_path(
+            finding
+        )
+        if source_path is None:
+            return None
+        method_symbols = finding.metrics.method_symbols
+        if len(method_symbols) < 2:
+            return None
+        parsed_symbols = tuple(
+            cls.class_method_pair(method_symbol) for method_symbol in method_symbols
+        )
+        if any(parsed_symbol is None for parsed_symbol in parsed_symbols):
+            return None
+        class_names = tuple(
+            dict.fromkeys(
+                parsed_symbol[0]
+                for parsed_symbol in parsed_symbols
+                if parsed_symbol is not None
+            )
+        )
+        if len(class_names) != 1:
+            return None
+        method_names = tuple(
+            parsed_symbol[1]
+            for parsed_symbol in parsed_symbols
+            if parsed_symbol is not None
+        )
+        return cls(
+            source_path=source_path,
+            class_name=class_names[0],
+            canonical_method_name=method_names[0],
+            duplicate_method_names=method_names[1:],
+            method_symbols=method_symbols,
+        )
+
+    @staticmethod
+    def class_method_pair(method_symbol: str) -> tuple[str, str] | None:
+        if "." not in method_symbol:
+            return None
+        class_name, method_name = method_symbol.rsplit(".", 1)
+        if not class_name or not method_name:
+            return None
+        return class_name, method_name
+
+
+@dataclass(frozen=True)
+class DuplicateVisitorAliasRecipeParts(DuplicateVisitorBase):
+    """Executable rewrite facts for duplicate visitor method aliasing."""
+
+    replacements: tuple[tuple[str, str], ...]
+
+    @classmethod
+    def from_family_context(
+        cls,
+        family: DuplicateVisitorMethodFamily,
+        context: CodemodSelectorContext,
+    ) -> "DuplicateVisitorAliasRecipeParts | None":
+        target = ClassMemberPromotionTargets.resolve_or_none(
+            context,
+            source_path=family.source_path,
+            class_names=(family.class_name,),
+        )
+        if target is None:
+            return None
+        class_node = target.targets[0].node
+        methods = cls.method_nodes_by_name(class_node)
+        canonical = methods.get(family.canonical_method_name)
+        if canonical is None:
+            return None
+        duplicate_nodes = tuple(
+            methods.get(method_name) for method_name in family.duplicate_method_names
+        )
+        if any(node is None for node in duplicate_nodes):
+            return None
+        if not all(
+            cls.same_body(canonical, duplicate)
+            for duplicate in duplicate_nodes
+            if duplicate is not None
+        ):
+            return None
+        replacements = tuple(
+            (
+                cls.method_source(context, family.source_path, duplicate),
+                cls.alias_source(duplicate, family.canonical_method_name),
+            )
+            for duplicate in duplicate_nodes
+            if duplicate is not None
+        )
+        return cls(
+            source_path=family.source_path,
+            class_name=family.class_name,
+            canonical_method_name=family.canonical_method_name,
+            replacements=replacements,
+        )
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-alias-duplicate-visitor-methods",
+            reason="Replace duplicate visitor hook bodies with explicit aliases.",
+        )
+        for old_source, new_source in self.replacements:
+            recipe = recipe.replace_text(
+                self.class_name,
+                old_source,
+                new_source,
+                source_path=self.source_path,
+            )
+        return recipe
+
+    @staticmethod
+    def method_nodes_by_name(
+        class_node: ast.ClassDef,
+    ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+        return {
+            statement.name: statement
+            for statement in class_node.body
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        }
+
+    @staticmethod
+    def same_body(
+        canonical: ast.FunctionDef | ast.AsyncFunctionDef,
+        duplicate: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        return tuple(
+            ast.dump(statement, include_attributes=False)
+            for statement in canonical.body
+        ) == tuple(
+            ast.dump(statement, include_attributes=False)
+            for statement in duplicate.body
+        )
+
+    @staticmethod
+    def method_source(
+        context: CodemodSelectorContext,
+        source_path: str,
+        method_node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> str:
+        resolved_path = SourcePathResolutionAuthority.from_source_index(
+            source_path,
+            context.source_index,
+        ).required_path()
+        source_lines = context.sources_by_file_path[resolved_path].splitlines(
+            keepends=True
+        )
+        return "".join(source_lines[method_node.lineno - 1 : method_node.end_lineno])
+
+    @staticmethod
+    def alias_source(
+        method_node: ast.FunctionDef | ast.AsyncFunctionDef,
+        canonical_method_name: str,
+    ) -> str:
+        indent = " " * method_node.col_offset
+        return f"{indent}{method_node.name} = {canonical_method_name}\n"
 
 
 class RecipeMetadataAuthority:
@@ -13470,8 +13706,10 @@ class DerivedMetricCallShape:
         cls,
         source: DerivedMetricCallSource,
     ) -> "DerivedMetricCallShape | None":
-        metric_shape = DerivedMetricCountBoilerplateFindingRecipeSynthesizer.metric_shape(
-            source.seed.metric_name
+        metric_shape = (
+            DerivedMetricCountBoilerplateFindingRecipeSynthesizer.metric_shape(
+                source.seed.metric_name
+            )
         )
         if metric_shape is None:
             return None
@@ -13598,7 +13836,9 @@ class DerivedMetricCallReplacement:
         if not removed_line_indexes:
             return None
         return "".join(
-            line for index, line in enumerate(lines) if index not in removed_line_indexes
+            line
+            for index, line in enumerate(lines)
+            if index not in removed_line_indexes
         )
 
     @staticmethod
@@ -14318,9 +14558,11 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        collection_builder = ClassFamilyCollectionSemanticMirrorRecipeBuilder.from_context(
-            finding,
-            context,
+        collection_builder = (
+            ClassFamilyCollectionSemanticMirrorRecipeBuilder.from_context(
+                finding,
+                context,
+            )
         )
         if collection_builder is not None:
             collection_recipe = collection_builder.recipe()
@@ -14367,11 +14609,9 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
                 context,
             )
         )
-        collection_reason = (
-            ClassFamilyCollectionSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-                finding,
-                context,
-            )
+        collection_reason = ClassFamilyCollectionSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+            finding,
+            context,
         )
         return (
             f"semantic class-family mirror `{finding.title}` could not be "
@@ -14473,7 +14713,9 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     ) -> str:
         builder = cls.from_context(finding, context)
         if builder is None:
-            return "class-family collection derivation requires a source selector context"
+            return (
+                "class-family collection derivation requires a source selector context"
+            )
         return builder.rejection_reason()
 
     def recipe(self) -> RefactorRecipe | None:
@@ -14596,10 +14838,9 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
 
     def element_names_match_class_names(self, element_names: tuple[str, ...]) -> bool:
         class_names = self.finding.metrics.plan_class_names
-        return (
-            len(element_names) == len(class_names)
-            and frozenset(element_names) == frozenset(class_names)
-        )
+        return len(element_names) == len(class_names) and frozenset(
+            element_names
+        ) == frozenset(class_names)
 
     @staticmethod
     def element_names_from_class_references(
@@ -14691,7 +14932,10 @@ class SemanticMirrorAuthorityImportSource:
         if common_length == 0:
             return None
         dots = "." * (len(projection_package) - common_length + 1)
-        authority_module_parts = (*authority_package[common_length:], authority_path.stem)
+        authority_module_parts = (
+            *authority_package[common_length:],
+            authority_path.stem,
+        )
         return f"{dots}{'.'.join(authority_module_parts)}"
 
     @staticmethod

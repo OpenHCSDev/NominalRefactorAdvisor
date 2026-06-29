@@ -115,9 +115,11 @@ class FilePathLineModuleNameBase:
     line: int
     module_name: str
 
+
 @dataclass(frozen=True, slots=True)
 class SharedFieldsBase(FilePathLineModuleNameBase):
     class_name: str
+
 
 @dataclass(frozen=True, slots=True)
 class ParallelPrimitiveFieldBundle(SharedFieldsBase):
@@ -135,6 +137,7 @@ class ParallelPrimitiveCarrierCandidate:
 class CarrierBase(SharedFieldsBase):
     base_names: tuple[str, ...]
     nominal_ancestor_names: tuple[str, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class CarrierSurface(CarrierBase):
@@ -756,6 +759,7 @@ class SignatureBase(FilePathLineModuleNameBase):
     signature: CapabilitySignature
     symbol: str
 
+
 @dataclass(frozen=True, slots=True)
 class AbstractionAuthoritySignature(SignatureBase):
     name: str
@@ -823,9 +827,7 @@ class _CapabilityAtomVisitor(ast.NodeVisitor):
         self._record_store_target(node.target)
         self.generic_visit(node)
 
-    def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._record_store_target(node.target)
-        self.generic_visit(node)
+    visit_AugAssign = visit_AnnAssign
 
     def visit_For(self, node: ast.For) -> None:
         self.atoms.add("control:for")
@@ -874,8 +876,7 @@ class _LocalSignatureCollector(ast.NodeVisitor):
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._record_function(node)
 
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        self._record_function(node)
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def _record_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         symbol = ".".join((*self.class_stack, node.name))
