@@ -3393,6 +3393,20 @@ class SourceLineReplacement:
     replacement_lines: tuple[str, ...] = ()
     rationale: str = ""
 
+    @classmethod
+    def delete_target(
+        cls,
+        target_digest: AstTargetDigest,
+        *,
+        rationale: str = "",
+    ) -> "SourceLineReplacement":
+        return cls(
+            file_path=target_digest.file_path,
+            start_line=target_digest.line,
+            end_line=target_digest.end_line,
+            rationale=rationale or f"Delete target {target_digest.qualname!r}.",
+        )
+
 
 @dataclass(frozen=True)
 class SourceOffsetReplacement:
@@ -5235,12 +5249,9 @@ class DeleteTargetOperation(RefactorRecipeOperation):
         target_identifier = self.target.required_identifier(source_index)
         target_digest = source_index.target_by_id[target_identifier]
         return (
-            SourceLineReplacement(
-                file_path=target_digest.file_path,
-                start_line=target_digest.line,
-                end_line=target_digest.end_line,
-                rationale=self.rationale
-                or f"Delete target {target_digest.qualname!r}.",
+            SourceLineReplacement.delete_target(
+                target_digest,
+                rationale=self.rationale,
             ),
         )
 
@@ -5421,11 +5432,9 @@ class DeleteSelectedTargetsOperation(SelectedTargetsOperation):
         self,
         target_digest: AstTargetDigest,
     ) -> SourceLineReplacement:
-        return SourceLineReplacement(
-            file_path=target_digest.file_path,
-            start_line=target_digest.line,
-            end_line=target_digest.end_line,
-            rationale=self.rationale or f"Delete target {target_digest.qualname!r}.",
+        return SourceLineReplacement.delete_target(
+            target_digest,
+            rationale=self.rationale,
         )
 
 
@@ -5493,10 +5502,8 @@ class ExtractAuthorityOperation(RefactorRecipeOperation):
                 rationale=self.rationale
                 or f"Insert authority before {target_digest.qualname!r}.",
             ),
-            SourceLineReplacement(
-                file_path=target_digest.file_path,
-                start_line=target_digest.line,
-                end_line=target_digest.end_line,
+            SourceLineReplacement.delete_target(
+                target_digest,
                 rationale=self.rationale
                 or f"Delete helper target {target_digest.qualname!r}.",
             ),
@@ -14673,8 +14680,32 @@ class LocalRoleCaseAuthoritySourceRenderer:
         )
 
 
+class LocalRoleCaseAuthorityExtractionBase(ABC):
+    """Common renderer contract for extracted role-case authorities."""
+
+    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
+        return LocalRoleCaseAuthoritySourceRenderer(
+            item_class_source=self.role_case_item_class_source(item_class_name),
+            authority_name=authority_name,
+            item_rows=self.role_case_item_rows(item_class_name),
+            behavior_method_source=self.role_case_behavior_method_source(),
+        ).source()
+
+    @abstractmethod
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        raise NotImplementedError
+
+    @abstractmethod
+    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def role_case_behavior_method_source(self) -> str:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class LocalRoleCaseAuthorityExtraction:
+class LocalRoleCaseAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
     """Safe source-level extraction from local role-case logic."""
 
     mapping_name: str
@@ -14682,14 +14713,19 @@ class LocalRoleCaseAuthorityExtraction:
     items: tuple[LocalRoleCaseAuthorityItem, ...]
     owner_function_name: str
 
-    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
-        item_class_source = (
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        return (
             f"class {item_class_name}:\n"
             f"    def __init__(self, {self.axis_name}, value):\n"
             f"        self.{self.axis_name} = {self.axis_name}\n"
             "        self.value = value\n"
         )
-        behavior_method_source = (
+
+    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
+        return tuple(item.construction_source(item_class_name) for item in self.items)
+
+    def role_case_behavior_method_source(self) -> str:
+        return (
             "    @classmethod\n"
             f"    def {self.owner_function_name}(cls, {self.axis_name}):\n"
             "        for role_case in cls.role_cases():\n"
@@ -14697,14 +14733,6 @@ class LocalRoleCaseAuthorityExtraction:
             "                return role_case.value\n"
             "        return None\n"
         )
-        return LocalRoleCaseAuthoritySourceRenderer(
-            item_class_source=item_class_source,
-            authority_name=authority_name,
-            item_rows=tuple(
-                item.construction_source(item_class_name) for item in self.items
-            ),
-            behavior_method_source=behavior_method_source,
-        ).source()
 
     def delegating_body_source(self, authority_name: str) -> str:
         return (
@@ -14803,7 +14831,7 @@ class AxisValueExpressionTransformer(ast.NodeTransformer):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseBranchAuthorityExtraction:
+class LocalRoleCaseBranchAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
     """Safe extraction from ordered literal guard branches to case objects."""
 
     items: tuple[LocalRoleCaseBranchItem, ...]
@@ -14812,8 +14840,8 @@ class LocalRoleCaseBranchAuthorityExtraction:
     parameter_names: tuple[str, ...]
     prelude_source: str = ""
 
-    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
-        item_class_source = (
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        return (
             f"class {item_class_name}:\n"
             "    def __init__(self, axis_name, expected_value, result):\n"
             "        self.axis_name = axis_name\n"
@@ -14826,7 +14854,12 @@ class LocalRoleCaseBranchAuthorityExtraction:
             "            return axis_value in self.expected_value\n"
             "        return axis_value == self.expected_value\n"
         )
-        behavior_method_source = (
+
+    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
+        return tuple(item.construction_source(item_class_name) for item in self.items)
+
+    def role_case_behavior_method_source(self) -> str:
+        return (
             "    @classmethod\n"
             f"    def {self.owner_function_name}(cls, **axis_values):\n"
             "        for role_case in cls.role_cases():\n"
@@ -14834,14 +14867,6 @@ class LocalRoleCaseBranchAuthorityExtraction:
             "                return role_case.result\n"
             f"        return {self.default_source}\n"
         )
-        return LocalRoleCaseAuthoritySourceRenderer(
-            item_class_source=item_class_source,
-            authority_name=authority_name,
-            item_rows=tuple(
-                item.construction_source(item_class_name) for item in self.items
-            ),
-            behavior_method_source=behavior_method_source,
-        ).source()
 
     def delegating_body_source(self, authority_name: str) -> str:
         arguments = ", ".join(f"{name}={name}" for name in self.parameter_names)
@@ -14854,7 +14879,7 @@ class LocalRoleCaseBranchAuthorityExtraction:
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAssignmentAuthorityExtraction:
+class LocalRoleCaseAssignmentAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
     """Safe extraction from branch-local assignments to case objects."""
 
     items: tuple[LocalRoleCaseAssignmentItem, ...]
@@ -14865,8 +14890,8 @@ class LocalRoleCaseAssignmentAuthorityExtraction:
     return_source: str
     prelude_source: str = ""
 
-    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
-        item_class_source = (
+    def role_case_item_class_source(self, item_class_name: str) -> str:
+        return (
             f"class {item_class_name}:\n"
             "    def __init__(self, axis_name, expected_value, value_factories):\n"
             "        self.axis_name = axis_name\n"
@@ -14882,7 +14907,12 @@ class LocalRoleCaseAssignmentAuthorityExtraction:
             "    def values(self, axis_values):\n"
             "        return tuple(factory(axis_values) for factory in self.value_factories)\n"
         )
-        behavior_method_source = (
+
+    def role_case_item_rows(self, item_class_name: str) -> tuple[str, ...]:
+        return tuple(item.construction_source(item_class_name) for item in self.items)
+
+    def role_case_behavior_method_source(self) -> str:
+        return (
             "    @classmethod\n"
             f"    def {self.owner_function_name}(cls, **axis_values):\n"
             "        for role_case in cls.role_cases():\n"
@@ -14890,14 +14920,6 @@ class LocalRoleCaseAssignmentAuthorityExtraction:
             "                return role_case.values(axis_values)\n"
             f"        return {self.default_item.result_source()}\n"
         )
-        return LocalRoleCaseAuthoritySourceRenderer(
-            item_class_source=item_class_source,
-            authority_name=authority_name,
-            item_rows=tuple(
-                item.construction_source(item_class_name) for item in self.items
-            ),
-            behavior_method_source=behavior_method_source,
-        ).source()
 
     def delegating_body_source(self, authority_name: str) -> str:
         arguments = ", ".join(f"{name}={name}" for name in self.value_names)
@@ -14921,11 +14943,7 @@ class LocalRoleCaseLogicRecipeParts:
     insertion_qualname: str
     authority_name: str
     item_class_name: str
-    extraction: (
-        LocalRoleCaseAssignmentAuthorityExtraction
-        | LocalRoleCaseAuthorityExtraction
-        | LocalRoleCaseBranchAuthorityExtraction
-    )
+    extraction: LocalRoleCaseAuthorityExtractionBase
 
     def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
         authority_source = self.extraction.authority_source(
