@@ -12027,12 +12027,24 @@ class FindingRecipeSynthesisReportView(CodemodJsonReport, ABC):
     """Shared JSON projection algorithm for synthesis report views."""
 
     def to_dict(self) -> JsonObject:
+        record_payloads = self.record_payloads()
         return {
-            "records": self.record_payloads(),
+            "records": record_payloads,
             "planned_count": self.planned_count,
             "rejected_count": self.rejected_count,
             "unsupported_count": self.unsupported_count,
+            "status_counts": self.status_counts(record_payloads),
         }
+
+    @staticmethod
+    def status_counts(record_payloads: tuple[JsonObject, ...]) -> JsonObject:
+        counts: dict[str, int] = {}
+        for record in record_payloads:
+            status = record.get("status")
+            if not isinstance(status, str):
+                continue
+            counts[status] = counts.get(status, 0) + 1
+        return counts
 
     @abstractmethod
     def record_payloads(self) -> tuple[JsonObject, ...]:

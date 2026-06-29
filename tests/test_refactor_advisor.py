@@ -15298,6 +15298,72 @@ def test_codemod_workflow_plan_runs_goal_from_json(
     )
 
 
+def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_id = "unsupported_goal_test_detector"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return 'old'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact repeats outside nominal boundary",
+        "Duplicated encoding should move behind the named owner.",
+        "one nominal authority for the semantic fact",
+        "same source fact encoded in parallel branches",
+    ).build(
+        detector_id,
+        "Alpha.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+    )
+    workflow_plan = CodemodWorkflowPlanJsonParser().parse_plan(
+        {
+            "workflow": "refactor_goal",
+            "plan_id": "unsupported-goal",
+            "goal": {
+                "goal_id": "unsupported-goal",
+                "kind": "nominal_boundary_extraction",
+                "detector_ids": [detector_id],
+                "max_stages": 1,
+            },
+        }
+    )
+
+    report = workflow_plan.run(
+        resolved_dir=None,
+        enabled=False,
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        parse_workers=1,
+        dry_run=True,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodFixpointScan(
+            modules=modules,
+            findings=[finding],
+        ),
+    )
+
+    assert report.completed is False
+    assert report.terminal_reason is CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES
+    assert report.terminal_synthesis_report.unsupported_count == 1
+    assert report.terminal_synthesis_report.records[0].detector_id == detector_id
+    payload = report.to_dict()
+    assert payload["terminal_synthesis_report"]["records"][0]["status"] == (
+        "no_synthesizer"
+    )
+    assert payload["terminal_synthesis_report"]["status_counts"] == {
+        "no_synthesizer": 1
+    }
+
+
 def test_module_cli_runs_codemod_refactor_goal_and_writes_replay_plan(
     tmp_path: Path,
 ) -> None:
