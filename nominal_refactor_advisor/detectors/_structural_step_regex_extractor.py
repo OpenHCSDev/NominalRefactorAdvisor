@@ -68,6 +68,12 @@ class _ConstructorCallContext:
 
 
 @dataclass(frozen=True)
+class _ConstructorCallShape:
+    coordinates: tuple[str, ...]
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _AccumulatorFoldStatements:
     assign: ast.stmt
     loop: ast.For
@@ -132,26 +138,37 @@ def _simple_classmethod_return_call(
 def _classmethod_constructor_callee_name(call: ast.Call) -> str | None:
     if isinstance(call.func, ast.Name) and call.func.id == "cls":
         return "cls"
-    if (
-        isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and (call.func.value.id == "cls")
-    ):
-        return f"cls.{call.func.attr}"
     return None
 
 
-def _call_coordinate_fingerprints(call: ast.Call) -> tuple[str, ...] | None:
-    if any((keyword.arg is None for keyword in call.keywords)):
-        return None
-    positional = tuple(ast.dump(arg, annotate_fields=False) for arg in call.args)
-    keywords = tuple(
-        (
+class ConstructorCallShapeAuthority:
+    """Parse constructor call coordinates without keyword sentinels."""
+
+    @staticmethod
+    def sorted_named_keywords(
+        call: ast.Call,
+    ) -> tuple[tuple[str, ast.keyword], ...] | None:
+        named_keywords = []
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return None
+            named_keywords.append((keyword.arg, keyword))
+        return tuple(sorted(named_keywords, key=lambda item: item[0]))
+
+    @classmethod
+    def shape(cls, call: ast.Call) -> _ConstructorCallShape | None:
+        named_keywords = cls.sorted_named_keywords(call)
+        if named_keywords is None:
+            return None
+        positional = tuple(ast.dump(arg, annotate_fields=False) for arg in call.args)
+        keywords = tuple(
             ast.dump(keyword.value, annotate_fields=False)
-            for keyword in sorted(call.keywords, key=lambda item: item.arg or "")
+            for _, keyword in named_keywords
         )
-    )
-    return positional + keywords
+        return _ConstructorCallShape(
+            coordinates=positional + keywords,
+            keyword_names=tuple(keyword_name for keyword_name, _ in named_keywords),
+        )
 
 
 def _constructor_variant_method(
@@ -167,21 +184,14 @@ def _constructor_variant_method(
             ),
         )
         .combine(
-            lambda context: _call_coordinate_fingerprints(context.call),
-            lambda context, coordinate_fingerprints: _ConstructorVariantMethod(
+            lambda context: ConstructorCallShapeAuthority.shape(context.call),
+            lambda context, call_shape: _ConstructorVariantMethod(
                 method_name=method.name,
                 line=method.lineno,
                 callee_name=context.callee_name,
                 positional_count=len(context.call.args),
-                keyword_names=tuple(
-                    (
-                        keyword.arg or ""
-                        for keyword in sorted(
-                            context.call.keywords, key=lambda item: item.arg or ""
-                        )
-                    )
-                ),
-                coordinate_fingerprints=coordinate_fingerprints,
+                keyword_names=call_shape.keyword_names,
+                coordinate_fingerprints=call_shape.coordinates,
             ),
         )
         .unwrap_or_none()
@@ -687,13 +697,10 @@ def _sparse_constructor_variant_family_candidates(
             )
             if call is None or call.args:
                 continue
-            keyword_names = tuple(
-                (
-                    keyword.arg or ""
-                    for keyword in call.keywords
-                    if keyword.arg is not None
-                )
-            )
+            named_keywords = ConstructorCallShapeAuthority.sorted_named_keywords(call)
+            if named_keywords is None:
+                continue
+            keyword_names = tuple(keyword_name for keyword_name, _ in named_keywords)
             if not keyword_names or not set(keyword_names) <= field_names:
                 continue
             methods.append((statement, keyword_names))

@@ -21202,6 +21202,29 @@ def test_detects_constructor_variant_family(tmp_path: Path) -> None:
     assert "ConstructorVariantMixin" in (finding.scaffold or "")
 
 
+def test_constructor_variant_family_ignores_helper_classmethod_calls(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Detector:\n"
+        "    @classmethod\n"
+        "    def primary_ids(cls):\n"
+        "        return cls._ids_for_role(lambda item: item.primary)\n"
+        "\n"
+        "    @classmethod\n"
+        "    def secondary_ids(cls):\n"
+        "        return cls._ids_for_role(lambda item: item.secondary)\n",
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "constructor_variant_family"
+    ]
+    assert findings == []
+
+
 def test_detects_accumulator_fold_family(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
