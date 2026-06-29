@@ -44,7 +44,9 @@ from .impact_ranking import (
     RefactorImpactRankingReport,
 )
 from .models import (
+    DerivedCountMetricShape,
     FieldFamilyMetrics,
+    FindingMetrics,
     ImpactDelta,
     MappingMetrics,
     RefactorFinding,
@@ -10865,7 +10867,7 @@ class RefactorRecipe:
 
     def replace_text(
         self,
-        target_qualname: str,
+        target_qualname: str | None,
         old_source: str,
         new_source: str,
         *,
@@ -13231,6 +13233,409 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
         finding: RefactorFinding,
     ) -> tuple[str, ...]:
         return finding.metrics.plan_field_names
+
+
+class DerivedMetricCountBoilerplateFindingRecipeSynthesizer(FindingRecipeSynthesizer):
+    """Derive metric count fields through the metric constructor authority."""
+
+    detector_id = "derived_metric_count_boilerplate"
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        return (
+            Maybe.of(context)
+            .combine(
+                lambda _: self.single_action_key_for_finding(finding),
+                lambda selector_context, action_key: (selector_context, action_key),
+            )
+            .combine(
+                lambda selector_context_and_key: self.call_replacement_for_finding(
+                    finding,
+                    selector_context_and_key[0],
+                ),
+                lambda selector_context_and_key, replacement: self.recipe_from_replacement(
+                    finding,
+                    selector_context_and_key[1],
+                    replacement,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def recipe_from_replacement(
+        finding: RefactorFinding,
+        action_key: FindingRecipeActionKey,
+        replacement: "DerivedMetricCallReplacement",
+    ) -> RefactorRecipe:
+        return RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-derive-metric-count-constructor",
+            reason=(
+                "Replace explicit metric count fields with the metric constructor "
+                "that derives counts from authoritative collections."
+            ),
+        ).replace_text(
+            None,
+            replacement.old_source,
+            replacement.new_source,
+            source_path=action_key.file_path,
+        )
+
+    def single_action_key_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> FindingRecipeActionKey | None:
+        action_keys = self.action_keys_for_finding(finding)
+        if len(action_keys) != 1:
+            return None
+        return action_keys[0]
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        metric_name = finding.metrics.plan_mapping_name
+        if evidence is None or metric_name is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, f"{metric_name}:{evidence.line}"),),
+        )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        del context
+        metric_name = finding.metrics.plan_mapping_name
+        return (
+            "derived metric-count rewrite requires one source-index context and "
+            f"a `{metric_name}` call whose count keywords are literal len(...) "
+            "projections of collection keywords"
+        )
+
+    @classmethod
+    def call_replacement_for_finding(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> "DerivedMetricCallReplacement | None":
+        return (
+            Maybe.of(DerivedMetricCallSeed.from_finding(finding))
+            .combine(
+                lambda seed: DerivedMetricCallSource.from_seed_context(seed, context),
+                lambda seed, source: source,
+            )
+            .combine(
+                DerivedMetricCallShape.from_source,
+                lambda source, shape: shape,
+            )
+            .combine(
+                DerivedMetricCallMatch.from_shape,
+                lambda shape, match: match,
+            )
+            .combine(
+                DerivedMetricCallCountSelection.from_match,
+                lambda match, count_selection: count_selection,
+            )
+            .project(DerivedMetricCallReplacement.from_count_selection)
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def metric_shape(metric_name: str) -> DerivedCountMetricShape | None:
+        for shape in FindingMetrics.derived_count_metric_shapes():
+            if shape.metric_class_name == metric_name:
+                return shape
+        return None
+
+    @staticmethod
+    def call_at_line(
+        source: str,
+        line: int,
+        metric_name: str,
+    ) -> ast.Call | None:
+        module = ast.parse(source)
+        calls = tuple(
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.Call)
+            and node.lineno == line
+            and _call_name(node.func) == metric_name
+        )
+        if len(calls) != 1:
+            return None
+        return calls[0]
+
+    @classmethod
+    def derived_count_keyword_names(
+        cls,
+        call: ast.Call,
+        field_pairs: tuple[tuple[str, str], ...],
+        collection_keyword_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        keywords = {keyword.arg: keyword for keyword in call.keywords if keyword.arg}
+        collection_names = frozenset(collection_keyword_names)
+        count_names: list[str] = []
+        for count_keyword, collection_keyword in field_pairs:
+            if collection_keyword not in collection_names:
+                continue
+            count_node = keywords.get(count_keyword)
+            collection_node = keywords.get(collection_keyword)
+            if count_node is None or collection_node is None:
+                continue
+            counted_expression = cls.len_call_argument(count_node.value)
+            if counted_expression is None:
+                continue
+            if ast.dump(counted_expression, include_attributes=False) != ast.dump(
+                collection_node.value,
+                include_attributes=False,
+            ):
+                continue
+            count_names.append(count_keyword)
+        return tuple(count_names)
+
+    @staticmethod
+    def len_call_argument(node: ast.AST) -> ast.AST | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if _call_name(node.func) != "len" or len(node.args) != 1:
+            return None
+        return node.args[0]
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallSeed:
+    """Finding-level coordinates for one derived-count metric call."""
+
+    evidence: SourceLocation
+    metric_name: str
+    collection_keyword_names: tuple[str, ...]
+
+    @classmethod
+    def from_finding(
+        cls,
+        finding: RefactorFinding,
+    ) -> "DerivedMetricCallSeed | None":
+        evidence = FindingPrimaryEvidence(finding).source_location
+        metric_name = finding.metrics.plan_mapping_name
+        if evidence is None or metric_name is None:
+            return None
+        return cls(
+            evidence=evidence,
+            metric_name=metric_name,
+            collection_keyword_names=finding.metrics.plan_field_names,
+        )
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallSource:
+    """Source text resolved for a derived-count metric call."""
+
+    seed: DerivedMetricCallSeed
+    source: str
+
+    @classmethod
+    def from_seed_context(
+        cls,
+        seed: DerivedMetricCallSeed,
+        context: CodemodSelectorContext,
+    ) -> "DerivedMetricCallSource | None":
+        source_path = SourcePathResolutionAuthority.from_source_index(
+            seed.evidence.file_path,
+            context.source_index,
+        ).optional_path()
+        if source_path is None:
+            return None
+        source = context.sources_by_file_path.get(source_path)
+        if source is None:
+            return None
+        return cls(seed=seed, source=source)
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallShape:
+    """Metric declaration shape resolved for one derived-count call."""
+
+    source: DerivedMetricCallSource
+    metric_shape: DerivedCountMetricShape
+
+    @classmethod
+    def from_source(
+        cls,
+        source: DerivedMetricCallSource,
+    ) -> "DerivedMetricCallShape | None":
+        metric_shape = DerivedMetricCountBoilerplateFindingRecipeSynthesizer.metric_shape(
+            source.seed.metric_name
+        )
+        if metric_shape is None:
+            return None
+        return cls(source=source, metric_shape=metric_shape)
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallMatch:
+    """AST call node matched to one derived-count metric finding."""
+
+    shape: DerivedMetricCallShape
+    call: ast.Call
+
+    @classmethod
+    def from_shape(
+        cls,
+        shape: DerivedMetricCallShape,
+    ) -> "DerivedMetricCallMatch | None":
+        seed = shape.source.seed
+        call = DerivedMetricCountBoilerplateFindingRecipeSynthesizer.call_at_line(
+            shape.source.source,
+            seed.evidence.line,
+            seed.metric_name,
+        )
+        if call is None:
+            return None
+        return cls(shape=shape, call=call)
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallCountSelection:
+    """Count keywords proven derivable from collection keywords for one call."""
+
+    match: DerivedMetricCallMatch
+    count_keyword_names: tuple[str, ...]
+
+    @classmethod
+    def from_match(
+        cls,
+        match: DerivedMetricCallMatch,
+    ) -> "DerivedMetricCallCountSelection | None":
+        count_names = DerivedMetricCountBoilerplateFindingRecipeSynthesizer.derived_count_keyword_names(
+            match.call,
+            match.shape.metric_shape.field_pairs,
+            match.shape.source.seed.collection_keyword_names,
+        )
+        if not count_names:
+            return None
+        return cls(match=match, count_keyword_names=count_names)
+
+
+@dataclass(frozen=True)
+class DerivedMetricCallReplacement:
+    """Exact text replacement for one derived-count metric constructor call."""
+
+    old_source: str
+    new_source: str
+
+    @classmethod
+    def from_count_selection(
+        cls,
+        selection: DerivedMetricCallCountSelection,
+    ) -> "DerivedMetricCallReplacement | None":
+        match = selection.match
+        seed = match.shape.source.seed
+        return cls.from_call(
+            match.shape.source.source,
+            match.call,
+            metric_name=seed.metric_name,
+            constructor_name=match.shape.metric_shape.constructor_name,
+            count_keyword_names=selection.count_keyword_names,
+        )
+
+    @classmethod
+    def from_call(
+        cls,
+        source: str,
+        call: ast.Call,
+        *,
+        metric_name: str,
+        constructor_name: str,
+        count_keyword_names: tuple[str, ...],
+    ) -> "DerivedMetricCallReplacement | None":
+        old_source = ast.get_source_segment(source, call)
+        if old_source is None:
+            return None
+        new_source = cls.rewrite_call_source(
+            old_source,
+            metric_name=metric_name,
+            constructor_name=constructor_name,
+            count_keyword_names=count_keyword_names,
+            call=call,
+        )
+        if new_source is None or new_source == old_source:
+            return None
+        return cls(old_source=old_source, new_source=new_source)
+
+    @classmethod
+    def rewrite_call_source(
+        cls,
+        old_source: str,
+        *,
+        metric_name: str,
+        constructor_name: str,
+        count_keyword_names: tuple[str, ...],
+        call: ast.Call,
+    ) -> str | None:
+        lines = old_source.splitlines(keepends=True)
+        if not lines:
+            return None
+        first_line = cls.replace_constructor(
+            lines[0],
+            metric_name,
+            constructor_name,
+        )
+        if first_line is None:
+            return None
+        lines[0] = first_line
+        removed_line_indexes = cls.removed_line_indexes(
+            call,
+            count_keyword_names,
+            line_count=len(lines),
+        )
+        if not removed_line_indexes:
+            return None
+        return "".join(
+            line for index, line in enumerate(lines) if index not in removed_line_indexes
+        )
+
+    @staticmethod
+    def replace_constructor(
+        line: str,
+        metric_name: str,
+        constructor_name: str,
+    ) -> str | None:
+        new_line = line.replace(
+            f"{metric_name}(",
+            f"{metric_name}.{constructor_name}(",
+            1,
+        )
+        if new_line == line:
+            return None
+        return new_line
+
+    @staticmethod
+    def removed_line_indexes(
+        call: ast.Call,
+        count_keyword_names: tuple[str, ...],
+        line_count: int,
+    ) -> frozenset[int]:
+        count_names = frozenset(count_keyword_names)
+        indexes: set[int] = set()
+        for keyword in call.keywords:
+            if keyword.arg not in count_names:
+                continue
+            line_number = keyword.lineno
+            end_line_number = keyword.end_lineno
+            if line_number != end_line_number:
+                return frozenset()
+            line_index = line_number - call.lineno
+            if line_index <= 0 or line_index >= line_count:
+                return frozenset()
+            indexes.add(line_index)
+        return frozenset(indexes)
 
 
 class ModuleAssignmentDeletionFindingRecipeSynthesizer(

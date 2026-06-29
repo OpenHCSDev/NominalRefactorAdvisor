@@ -10,6 +10,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
+    DerivedMetricCountBoilerplateDetector,
     InheritedAutoRegisterConfigBoilerplateDetector,
     LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
@@ -438,6 +439,47 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     assert rewritten.count("    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE") == 1
     assert rewritten.count("    __key_extractor__ = class_name_registry_key") == 1
     assert rewritten.count("    __skip_if_no_key__ = True") == 1
+    assert simulation.is_clean is True
+
+
+def test_derived_metric_count_synthesizes_constructor_rewrite(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "def build_metrics(field_names):\n"
+        "    return MappingMetrics(\n"
+        "        mapping_site_count=1,\n"
+        "        field_count=len(field_names),\n"
+        "        mapping_name='case_table',\n"
+        "        field_names=field_names,\n"
+        "    )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in DerivedMetricCountBoilerplateDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.detector_id == "derived_metric_count_boilerplate"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "DerivedMetricCountBoilerplateFindingRecipeSynthesizer"
+    )
+    assert operation["operation"] == "replace_text"
+    assert "MappingMetrics.from_field_names(" in rewritten
+    assert "field_count=len(field_names)" not in rewritten
+    assert "field_names=field_names" in rewritten
     assert simulation.is_clean is True
 
 

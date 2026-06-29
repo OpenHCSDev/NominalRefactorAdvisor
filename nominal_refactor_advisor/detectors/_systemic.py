@@ -2273,9 +2273,8 @@ class InheritedAutoRegisterConfigBoilerplateDetector(IssueDetector):
                         f"# Delete repeated registry protocol fields {field_list} from `{indexed_class.simple_name}`.\n"
                         "# Keep those fields on the inherited shared base. If the runtime registry does not honor inherited config, fix AutoRegisterMeta inheritance semantics instead of copying boilerplate."
                     ),
-                    metrics=MappingMetrics(
+                    metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(repeated_fields),
-                        field_count=len(repeated_fields),
                         mapping_name=indexed_class.simple_name,
                         field_names=repeated_fields,
                     ),

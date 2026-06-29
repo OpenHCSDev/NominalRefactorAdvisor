@@ -1380,9 +1380,8 @@ class GenericRoleCaseTableDetector(
             scaffold=candidate.scaffold,
             codemod_patch=candidate.codemod_patch,
             compression_certificate=candidate.compression_certificate,
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(candidate.sites),
-                field_count=len(candidate.shared_case_tokens),
                 mapping_name="generic_role_case_table",
                 field_names=candidate.shared_case_tokens,
                 source_name=",".join(candidate.broad_semantic_axis_tokens),
@@ -1419,9 +1418,8 @@ class LocalRoleCaseLogicDetector(
             scaffold=candidate.scaffold,
             codemod_patch=candidate.codemod_patch,
             compression_certificate=candidate.compression_certificate,
-            metrics=MappingMetrics(
+            metrics=MappingMetrics.from_field_names(
                 mapping_site_count=1,
-                field_count=len(candidate.case_tokens),
                 mapping_name="local_role_case_logic",
                 field_names=candidate.case_tokens,
                 source_name=",".join(candidate.broad_semantic_axis_tokens),
