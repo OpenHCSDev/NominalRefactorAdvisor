@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
+from typing import ClassVar
+
+from metaclass_registry import AutoRegisterMeta
 
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
@@ -22,6 +26,7 @@ from .codemod import (
     FindingRecipePlan,
     FindingRecipeSynthesisBoundary,
     JsonObject,
+    JsonValue,
     module_name_from_source_path,
 )
 from .detectors import DetectorConfig
@@ -47,6 +52,13 @@ class CodemodRefactorGoalKind(StrEnum):
     """Supported high-level DSL refactor goals."""
 
     NOMINAL_BOUNDARY_EXTRACTION = "nominal_boundary_extraction"
+
+
+class CodemodWorkflowPlanKind(StrEnum):
+    """Top-level executable codemod workflow plans."""
+
+    FIXPOINT = "fixpoint"
+    REFACTOR_GOAL = "refactor_goal"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -241,6 +253,43 @@ class CodemodRefactorGoal:
     pattern_ids: tuple[int, ...] = ()
     max_stages: int = 8
 
+    @classmethod
+    def from_json_value(cls, value: JsonValue) -> "CodemodRefactorGoal":
+        """Parse a reusable goal declaration from codemod workflow-plan JSON."""
+
+        payload = CodemodWorkflowPlanJsonParser.object_payload(
+            value,
+            "codemod refactor goal",
+        )
+        return cls(
+            goal_id=CodemodWorkflowPlanJsonParser.required_string_field(
+                payload,
+                "goal_id",
+            ),
+            kind=CodemodRefactorGoalKind(
+                CodemodWorkflowPlanJsonParser.required_string_field(
+                    payload,
+                    "kind",
+                )
+            ),
+            target_finding_ids=CodemodWorkflowPlanJsonParser.string_tuple_field(
+                payload,
+                "target_finding_ids",
+            ),
+            detector_ids=CodemodWorkflowPlanJsonParser.string_tuple_field(
+                payload,
+                "detector_ids",
+            ),
+            pattern_ids=CodemodWorkflowPlanJsonParser.integer_tuple_field(
+                payload,
+                "pattern_ids",
+            ),
+            max_stages=CodemodWorkflowPlanJsonParser.required_integer_field(
+                payload,
+                "max_stages",
+            ),
+        )
+
     @property
     def has_explicit_targets(self) -> bool:
         return bool(self.target_finding_ids or self.detector_ids or self.pattern_ids)
@@ -271,6 +320,264 @@ class CodemodRefactorGoal:
             "pattern_ids": self.pattern_ids,
             "max_stages": self.max_stages,
         }
+
+
+@dataclass(frozen=True)
+class CodemodWorkflowPlan(ABC, metaclass=AutoRegisterMeta):
+    """Reusable JSON/API plan for closed-loop codemod DSL execution."""
+
+    __registry__: ClassVar[dict[CodemodWorkflowPlanKind, type["CodemodWorkflowPlan"]]] = {}
+    __registry_key__ = "workflow"
+    __skip_if_no_key__ = True
+    workflow: ClassVar[CodemodWorkflowPlanKind | None] = None
+
+    plan_id: str
+
+    @classmethod
+    def workflow_type(
+        cls,
+        workflow: CodemodWorkflowPlanKind,
+    ) -> type["CodemodWorkflowPlan"]:
+        try:
+            return cls.__registry__[workflow]
+        except KeyError as error:
+            raise ValueError(f"unsupported codemod workflow plan kind: {workflow}") from error
+
+    @classmethod
+    @abstractmethod
+    def from_payload(
+        cls,
+        payload: JsonObject,
+        parser: "CodemodWorkflowPlanJsonParser",
+    ) -> "CodemodWorkflowPlan":
+        raise NotImplementedError
+
+    @property
+    def kind(self) -> CodemodWorkflowPlanKind:
+        if self.workflow is None:
+            raise ValueError(f"{type(self).__name__} has no workflow key")
+        return self.workflow
+
+    @abstractmethod
+    def run(
+        self,
+        *,
+        resolved_dir: Path | None,
+        enabled: bool,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        parse_workers: int,
+        dry_run: bool,
+        guard_suite: ArchitectureGuardSuite,
+        initial_scan: "CodemodFixpointScan | None" = None,
+    ) -> "CodemodWorkflowReport":
+        raise NotImplementedError
+
+    @abstractmethod
+    def to_dict(self) -> JsonObject:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CodemodFixpointWorkflowPlan(CodemodWorkflowPlan):
+    """Workflow plan that repeatedly applies finding-backed recipes to a fixpoint."""
+
+    workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.FIXPOINT
+    max_iterations: int = 8
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: JsonObject,
+        parser: "CodemodWorkflowPlanJsonParser",
+    ) -> "CodemodFixpointWorkflowPlan":
+        return cls(
+            plan_id=parser.required_string_field(
+                payload,
+                parser.plan_id_field,
+            ),
+            max_iterations=parser.required_integer_field(
+                payload,
+                parser.max_iterations_field,
+            ),
+        )
+
+    def run(
+        self,
+        *,
+        resolved_dir: Path | None,
+        enabled: bool,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        parse_workers: int,
+        dry_run: bool,
+        guard_suite: ArchitectureGuardSuite,
+        initial_scan: "CodemodFixpointScan | None" = None,
+    ) -> "CodemodWorkflowReport":
+        return CodemodFixpointRunner(
+            resolved_dir=resolved_dir,
+            enabled=enabled,
+            roots=roots,
+            config=config,
+            parse_workers=parse_workers,
+            dry_run=dry_run,
+            initial_scan=initial_scan,
+            guard_suite=guard_suite,
+            max_iterations=self.max_iterations,
+        ).run()
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "workflow": self.kind.value,
+            "plan_id": self.plan_id,
+            "max_iterations": self.max_iterations,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
+    """Workflow plan that drives a declarative refactor goal through staged recipes."""
+
+    workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.REFACTOR_GOAL
+    goal: CodemodRefactorGoal
+
+    @classmethod
+    def from_payload(
+        cls,
+        payload: JsonObject,
+        parser: "CodemodWorkflowPlanJsonParser",
+    ) -> "CodemodRefactorGoalWorkflowPlan":
+        goal = CodemodRefactorGoal.from_json_value(
+            parser.required_field(payload, parser.goal_field)
+        )
+        return cls(
+            plan_id=parser.required_string_field(
+                payload,
+                parser.plan_id_field,
+            ),
+            goal=goal,
+        )
+
+    def run(
+        self,
+        *,
+        resolved_dir: Path | None,
+        enabled: bool,
+        roots: tuple[Path, ...],
+        config: DetectorConfig,
+        parse_workers: int,
+        dry_run: bool,
+        guard_suite: ArchitectureGuardSuite,
+        initial_scan: "CodemodFixpointScan | None" = None,
+    ) -> "CodemodWorkflowReport":
+        return CodemodRefactorGoalRunner(
+            resolved_dir=resolved_dir,
+            enabled=enabled,
+            roots=roots,
+            config=config,
+            parse_workers=parse_workers,
+            dry_run=dry_run,
+            initial_scan=initial_scan,
+            guard_suite=guard_suite,
+            goal=self.goal,
+        ).run()
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "workflow": self.kind.value,
+            "plan_id": self.plan_id,
+            "goal": self.goal.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class CodemodWorkflowPlanJsonParser:
+    """Decode reusable workflow-plan JSON into nominal codemod workflow records."""
+
+    workflow_field: str = "workflow"
+    plan_id_field: str = "plan_id"
+    max_iterations_field: str = "max_iterations"
+    goal_field: str = "goal"
+
+    def parse_plan(self, value: JsonValue) -> CodemodWorkflowPlan:
+        payload = self.object_payload(value, "codemod workflow plan")
+        kind = CodemodWorkflowPlanKind(
+            self.required_string_field(
+                payload,
+                self.workflow_field,
+            )
+        )
+        return CodemodWorkflowPlan.workflow_type(kind).from_payload(payload, self)
+
+    @staticmethod
+    def object_payload(value: JsonValue, label: str) -> JsonObject:
+        if isinstance(value, dict):
+            return JsonObject(value)
+        raise ValueError(f"{label} must be a JSON object")
+
+    @staticmethod
+    def required_field(payload: JsonObject, field_name: str) -> JsonValue:
+        if field_name in payload:
+            return payload[field_name]
+        raise ValueError(f"codemod workflow plan requires `{field_name}`")
+
+    @classmethod
+    def required_string_field(
+        cls,
+        payload: JsonObject,
+        field_name: str,
+    ) -> str:
+        value = cls.required_field(payload, field_name)
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"`{field_name}` must be a string")
+
+    @classmethod
+    def required_integer_field(
+        cls,
+        payload: JsonObject,
+        field_name: str,
+    ) -> int:
+        value = cls.required_field(payload, field_name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        raise ValueError(f"`{field_name}` must be an integer")
+
+    @classmethod
+    def string_tuple_field(
+        cls,
+        payload: JsonObject,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        return tuple(cls.array_items(payload, field_name, str))
+
+    @classmethod
+    def integer_tuple_field(
+        cls,
+        payload: JsonObject,
+        field_name: str,
+    ) -> tuple[int, ...]:
+        values = []
+        for value in cls.array_items(payload, field_name, int):
+            if isinstance(value, bool):
+                raise ValueError(f"`{field_name}` entries must be integers")
+            values.append(value)
+        return tuple(values)
+
+    @staticmethod
+    def array_items(
+        payload: JsonObject,
+        field_name: str,
+        item_type: type[str] | type[int],
+    ) -> tuple[str, ...] | tuple[int, ...]:
+        if field_name not in payload:
+            return ()
+        value = payload[field_name]
+        if not isinstance(value, (list, tuple)):
+            raise ValueError(f"`{field_name}` must be an array")
+        if not all(isinstance(item, item_type) for item in value):
+            raise ValueError(f"`{field_name}` entries must be {item_type.__name__}")
+        return tuple(value)
 
 
 @dataclass(frozen=True)
@@ -390,6 +697,20 @@ class CodemodWorkflowReport:
     def stop_reason(self) -> CodemodWorkflowStopReason:
         return self.terminal_reason
 
+    @property
+    def replay_sequence(self) -> CodemodPlanSequence:
+        return CodemodPlanSequence()
+
+    def to_markdown(self) -> str:
+        return "\n".join(
+            (
+                "Codemod workflow report:",
+                f"   - Completed: {self.completed}",
+                f"   - Stop reason: {self.stop_reason.value}",
+                f"   - Final findings: {self.final_finding_count}",
+            )
+        )
+
 
 @dataclass(frozen=True)
 class CodemodRefactorGoalReport(CodemodWorkflowReport):
@@ -416,6 +737,29 @@ class CodemodRefactorGoalReport(CodemodWorkflowReport):
     @property
     def achieved(self) -> bool:
         return self.completed and not self.final_target_finding_ids
+
+    def to_markdown(self) -> str:
+        lines = [
+            "Codemod refactor goal report:",
+            f"   - Goal: {self.goal.goal_id} ({self.goal.kind.value})",
+            f"   - Completed: {self.completed}",
+            f"   - Achieved: {self.achieved}",
+            f"   - Stop reason: {self.terminal_reason.value}",
+            f"   - Stages: {self.stage_count}",
+            f"   - Rewrites: {self.total_rewrite_count}",
+            f"   - Final findings: {self.final_finding_count}",
+            f"   - Remaining target findings: {len(self.final_target_finding_ids)}",
+        ]
+        for stage in self.stages:
+            lines.append(
+                "   - "
+                f"Stage {stage.stage_index}: "
+                f"rewrites={stage.rewrite_count}, "
+                f"removed_targets={stage.progress.removed_target_finding_count}, "
+                f"surviving_targets={stage.progress.surviving_target_finding_count}, "
+                f"applied={stage.applied}"
+            )
+        return "\n".join(lines)
 
     def to_dict(self) -> JsonObject:
         return {
@@ -751,6 +1095,35 @@ class CodemodFixpointReport(CodemodWorkflowReport):
     @property
     def replay_plan(self) -> CodemodFixpointReplayPlan:
         return CodemodFixpointReplayPlan(iterations=self.iterations)
+
+    @property
+    def replay_sequence(self) -> CodemodPlanSequence:
+        return self.replay_plan.sequence
+
+    def to_markdown(self) -> str:
+        lines = [
+            "Codemod fixpoint report:",
+            f"   - Completed: {self.completed}",
+            f"   - Stop reason: {self.stop_reason.value}",
+            f"   - Iterations: {self.iteration_count}",
+            f"   - Applied rewrites: {self.total_applied_rewrite_count}",
+            f"   - Simulated rewrites: {self.total_simulated_rewrite_count}",
+            f"   - Changed files: {len(self.changed_file_paths)}",
+            f"   - Simulated changed files: {len(self.simulated_changed_file_paths)}",
+            f"   - Final findings: {self.final_finding_count}",
+        ]
+        for iteration in self.iterations:
+            lines.append(
+                "   - "
+                f"Iteration {iteration.iteration_index}: "
+                f"recipes={iteration.recipe_count}, "
+                f"expected_removed={iteration.expected_removed_finding_count}, "
+                f"rewrites={iteration.applied_rewrite_count}, "
+                f"simulated={iteration.simulated_rewrite_count}, "
+                f"applied={iteration.applied}, "
+                f"stop={iteration.stop_label}"
+            )
+        return "\n".join(lines)
 
     def to_dict(self) -> JsonObject:
         return {

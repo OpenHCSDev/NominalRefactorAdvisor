@@ -11277,6 +11277,49 @@ def test_module_cli_rejects_plan_out_for_non_plan_query(tmp_path: Path) -> None:
     )
 
 
+def test_module_cli_runs_codemod_workflow_plan(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
+    workflow_plan_path = tmp_path / "workflow-plan.json"
+    replay_plan_path = tmp_path / "replay-plan.json"
+    workflow_plan_path.write_text(
+        json.dumps(
+            {
+                "workflow": "fixpoint",
+                "plan_id": "empty-fixpoint",
+                "max_iterations": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            tmp_path.as_posix(),
+            "--no-cache",
+            "--json",
+            "--codemod-workflow-plan",
+            workflow_plan_path.as_posix(),
+            "--codemod-plan-out",
+            replay_plan_path.as_posix(),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["completed"] is True
+    assert payload["stop_reason"] == "no_executable_recipes"
+    assert json.loads(replay_plan_path.read_text(encoding="utf-8")) == {"stages": []}
+
+
 def test_module_cli_rejects_authoring_bundle_without_authoring_mode(
     tmp_path: Path,
 ) -> None:
@@ -15118,6 +15161,106 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     assert stage.finding_delta.confirmed_expected_removed_finding_ids(
         stage.expected_removed_finding_ids
     ) == (finding.stable_id,)
+
+
+def test_codemod_workflow_plan_runs_goal_from_json(
+    tmp_path: Path,
+) -> None:
+    from nominal_refactor_advisor.codemod import FindingRecipeActionKey
+    from nominal_refactor_advisor.codemod import FindingRecipeSynthesizer
+    from nominal_refactor_advisor.codemod_workflow import CodemodFixpointScan
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanKind
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
+
+    detector_id = "workflow_plan_goal_test_detector"
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return 'old'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = _finding_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Semantic fact repeats outside nominal boundary",
+        "Duplicated encoding should move behind the named owner.",
+        "one nominal authority for the semantic fact",
+        "same source fact encoded in parallel branches",
+    ).build(
+        detector_id,
+        "Alpha.run encodes the semantic fact outside its boundary.",
+        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+    )
+
+    class WorkflowPlanGoalSynthesizer(FindingRecipeSynthesizer):
+        def action_keys_for_finding(
+            self,
+            finding: RefactorFinding,
+        ) -> tuple[FindingRecipeActionKey, ...]:
+            return FindingRecipeActionKey.from_finding_file_subjects(
+                finding,
+                ((module_path.as_posix(), "Alpha.run"),),
+            )
+
+        def recipe_for_finding(
+            self,
+            finding: RefactorFinding,
+            context: CodemodSelectorContext | None = None,
+        ) -> RefactorRecipe | None:
+            del finding, context
+            return RefactorRecipe("workflow-plan-extract-alpha").replace_text(
+                "Alpha.run",
+                "return 'old'",
+                "return 'new'",
+                source_path=module_path.as_posix(),
+            )
+
+    previous_synthesizer = FindingRecipeSynthesizer.__registry__.get(detector_id)
+    FindingRecipeSynthesizer.__registry__[detector_id] = WorkflowPlanGoalSynthesizer
+    try:
+        workflow_plan = CodemodWorkflowPlanJsonParser().parse_plan(
+            {
+                "workflow": "refactor_goal",
+                "plan_id": "extract-alpha-goal",
+                "goal": {
+                    "goal_id": "extract-alpha-goal",
+                    "kind": "nominal_boundary_extraction",
+                    "detector_ids": [detector_id],
+                    "max_stages": 2,
+                },
+            }
+        )
+        report = workflow_plan.run(
+            resolved_dir=None,
+            enabled=False,
+            roots=(tmp_path,),
+            config=DetectorConfig(),
+            parse_workers=1,
+            dry_run=True,
+            guard_suite=ArchitectureGuardSuite(),
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=[finding],
+            ),
+        )
+    finally:
+        if previous_synthesizer is None:
+            FindingRecipeSynthesizer.__registry__.pop(detector_id, None)
+        else:
+            FindingRecipeSynthesizer.__registry__[detector_id] = previous_synthesizer
+
+    assert workflow_plan.kind is CodemodWorkflowPlanKind.REFACTOR_GOAL
+    assert workflow_plan.to_dict()["workflow"] == "refactor_goal"
+    assert report.completed is True
+    assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
+    assert len(report.replay_sequence.documents) == 1
+    assert (
+        report.replay_sequence.documents[0].recipes[0].operations[0].to_dict()[
+            "operation"
+        ]
+        == "replace_text"
+    )
     replay_payload = report.replay_sequence.to_dict()
     assert len(replay_payload["stages"]) == 1
     assert replay_payload["stages"][0]["recipes"][0]["recipe_id"] == (
@@ -15394,6 +15537,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodFindingChangeCarrier
     from nominal_refactor_advisor import CodemodFindingChangeProjection
     from nominal_refactor_advisor import CodemodFindingDelta
+    from nominal_refactor_advisor import CodemodFixpointWorkflowPlan
     from nominal_refactor_advisor import CodemodFixpointReplayPlan
     from nominal_refactor_advisor import CodemodFixpointRunner
     from nominal_refactor_advisor import CodemodDslManifest
@@ -15410,10 +15554,14 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodRefactorGoalReport
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
     from nominal_refactor_advisor import CodemodRefactorGoalStage
+    from nominal_refactor_advisor import CodemodRefactorGoalWorkflowPlan
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
     from nominal_refactor_advisor import CodemodWorkflowReport
+    from nominal_refactor_advisor import CodemodWorkflowPlan
+    from nominal_refactor_advisor import CodemodWorkflowPlanJsonParser
+    from nominal_refactor_advisor import CodemodWorkflowPlanKind
     from nominal_refactor_advisor import CodemodWorkflowScanRequest
     from nominal_refactor_advisor import ParseCacheRequest
     from nominal_refactor_advisor import ProjectedScanModuleSet
@@ -15505,6 +15653,27 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
+    assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"
+    assert (
+        CodemodFixpointWorkflowPlan(
+            plan_id="finding-backed-fixpoint",
+            max_iterations=8,
+        ).kind
+        is CodemodWorkflowPlanKind.FIXPOINT
+    )
+    assert CodemodRefactorGoalWorkflowPlan.__name__ == "CodemodRefactorGoalWorkflowPlan"
+    assert (
+        CodemodWorkflowPlanJsonParser()
+        .parse_plan(
+            {
+                "workflow": "fixpoint",
+                "plan_id": "finding-backed-fixpoint",
+                "max_iterations": 8,
+            }
+        )
+        .max_iterations
+        == 8
+    )
     assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True

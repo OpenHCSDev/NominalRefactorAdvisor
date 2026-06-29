@@ -98,6 +98,8 @@ from .codemod_workflow import (
     CodemodRefactorGoalReport,
     CodemodRefactorGoalRunner,
     CodemodSimulationFindingProjection,
+    CodemodWorkflowPlan,
+    CodemodWorkflowPlanJsonParser,
 )
 from .codemod_authoring import (
     CodemodAuthoringBundleActionRunner,
@@ -723,6 +725,14 @@ _CLI_ARGUMENT_SPECS = (
             ),
         ),
         CliArgumentSpec(
+            flags=("--codemod-workflow-plan",),
+            value_type=Path,
+            help=(
+                "Load a reusable codemod workflow DSL plan JSON and run it. "
+                "Supported workflows: fixpoint, refactor_goal."
+            ),
+        ),
+        CliArgumentSpec(
             flags=("--codemod-fixpoint-max-iterations",),
             value_type=int,
             default=8,
@@ -1307,6 +1317,16 @@ def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
     return CodemodPlanJsonParser().parse_sequence(payload)
 
 
+def load_codemod_workflow_plan(path: Path) -> CodemodWorkflowPlan:
+    """Load one reusable codemod workflow plan from JSON."""
+
+    payload = cast(
+        JsonObject,
+        JsonDocumentSource(path).load(),
+    )
+    return CodemodWorkflowPlanJsonParser().parse_plan(payload)
+
+
 def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
     """Load a codemod document or sequence and return its normalized JSON shape."""
 
@@ -1706,6 +1726,7 @@ def codemod_plan_output_supported(args: argparse.Namespace) -> bool:
             bool(SelectedOperationTargetSelectorSource.selected_sources(args)),
             args.codemod_fixpoint,
             args.codemod_refactor_goal is not None,
+            args.codemod_workflow_plan is not None,
         )
     )
 
@@ -2833,29 +2854,7 @@ class CodemodProjectedFindingReporter(ABC):
 def format_codemod_fixpoint_markdown(report: CodemodFixpointReport) -> str:
     """Render a concise fixpoint workflow summary."""
 
-    lines = [
-        "Codemod fixpoint report:",
-        f"   - Completed: {report.completed}",
-        f"   - Stop reason: {report.stop_reason.value}",
-        f"   - Iterations: {report.iteration_count}",
-        f"   - Applied rewrites: {report.total_applied_rewrite_count}",
-        f"   - Simulated rewrites: {report.total_simulated_rewrite_count}",
-        f"   - Changed files: {len(report.changed_file_paths)}",
-        f"   - Simulated changed files: {len(report.simulated_changed_file_paths)}",
-        f"   - Final findings: {report.final_finding_count}",
-    ]
-    for iteration in report.iterations:
-        lines.append(
-            "   - "
-            f"Iteration {iteration.iteration_index}: "
-            f"recipes={iteration.recipe_count}, "
-            f"expected_removed={iteration.expected_removed_finding_count}, "
-            f"rewrites={iteration.applied_rewrite_count}, "
-            f"simulated={iteration.simulated_rewrite_count}, "
-            f"applied={iteration.applied}, "
-            f"stop={iteration.stop_label}"
-        )
-    return "\n".join(lines)
+    return report.to_markdown()
 
 
 def format_codemod_refactor_goal_markdown(
@@ -2863,27 +2862,7 @@ def format_codemod_refactor_goal_markdown(
 ) -> str:
     """Render a concise goal-directed codemod workflow summary."""
 
-    lines = [
-        "Codemod refactor goal report:",
-        f"   - Goal: {report.goal.goal_id} ({report.goal.kind.value})",
-        f"   - Completed: {report.completed}",
-        f"   - Achieved: {report.achieved}",
-        f"   - Stop reason: {report.terminal_reason.value}",
-        f"   - Stages: {report.stage_count}",
-        f"   - Rewrites: {report.total_rewrite_count}",
-        f"   - Final findings: {report.final_finding_count}",
-        f"   - Remaining target findings: {len(report.final_target_finding_ids)}",
-    ]
-    for stage in report.stages:
-        lines.append(
-            "   - "
-            f"Stage {stage.stage_index}: "
-            f"rewrites={stage.rewrite_count}, "
-            f"removed_targets={stage.progress.removed_target_finding_count}, "
-            f"surviving_targets={stage.progress.surviving_target_finding_count}, "
-            f"applied={stage.applied}"
-        )
-    return "\n".join(lines)
+    return report.to_markdown()
 
 
 def codemod_refactor_goal_from_args(
@@ -4911,6 +4890,7 @@ def main() -> int:
     JsonDocumentInputSet.from_option_paths(
         (
             ("--codemod-plan", (args.codemod_plan,)),
+            ("--codemod-workflow-plan", (args.codemod_workflow_plan,)),
             ("--codemod-resolve-selector", (args.codemod_resolve_selector,)),
             ("--codemod-target-source", (args.codemod_target_source,)),
             ("--codemod-replacement-plan", (args.codemod_replacement_plan,)),
@@ -4927,6 +4907,7 @@ def main() -> int:
         args.codemod_plan is not None
         or codemod_execution_mode.requested
         or args.codemod_fixpoint
+        or args.codemod_workflow_plan is not None
         or args.codemod_refactor_goal is not None
         or codemod_scan_query_mode.requested
     )
@@ -4939,10 +4920,22 @@ def main() -> int:
         parser.error(
             "--codemod-continuation-plan-out requires --codemod-project-findings"
         )
+    if args.codemod_workflow_plan is not None and (
+        args.codemod_fixpoint or args.codemod_refactor_goal is not None
+    ):
+        parser.error(
+            "--codemod-workflow-plan cannot be combined with "
+            "--codemod-fixpoint or --codemod-refactor-goal"
+        )
     if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
         parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
     if args.codemod_goal_plan_out is not None and args.codemod_refactor_goal is None:
         parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
+    codemod_workflow_plan = (
+        load_codemod_workflow_plan(args.codemod_workflow_plan)
+        if args.codemod_workflow_plan is not None
+        else None
+    )
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
@@ -4952,6 +4945,7 @@ def main() -> int:
         codemod_requested
         and not explicit_impact_ranking_request
         and not args.codemod_fixpoint
+        and codemod_workflow_plan is None
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not codemod_plan_sequence.has_recipes
@@ -4962,6 +4956,7 @@ def main() -> int:
     if (
         codemod_requested
         and not args.codemod_fixpoint
+        and codemod_workflow_plan is None
         and args.codemod_refactor_goal is None
         and not codemod_scan_query_mode.requested
         and not args.include_impact_ranking
@@ -5069,6 +5064,7 @@ def main() -> int:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
             or args.codemod_fixpoint
+            or codemod_workflow_plan is not None
             or codemod_scan_query_mode.requested,
             semantic_refactor_gate=emitted_semantic_refactor_gate,
             raw_findings=(
@@ -5197,6 +5193,26 @@ def main() -> int:
         modules,
         architecture_guard_rules,
     )
+    if codemod_workflow_plan is not None:
+        report = codemod_workflow_plan.run(
+            resolved_dir=parse_cache_dir,
+            enabled=args.use_parse_cache,
+            roots=roots,
+            config=config,
+            parse_workers=args.parse_workers,
+            guard_suite=codemod_plan_sequence.guard_suite,
+            dry_run=not args.codemod_apply,
+            initial_scan=CodemodFixpointScan(
+                modules=modules,
+                findings=findings,
+            ),
+        )
+        write_cli_json_artifact(args.codemod_plan_out, report.replay_sequence.to_dict())
+        if args.json:
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(report.to_markdown())
+        return 0 if report.completed else 1
     if args.codemod_fixpoint:
         report = CodemodFixpointRunner(
             resolved_dir=parse_cache_dir,
