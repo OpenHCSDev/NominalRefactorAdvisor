@@ -7348,9 +7348,13 @@ _ABCOptimizerClassDeclarationSignaturesByFamily: TypeAlias = dict[
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerSharedMethodGroup:
+class _ABCOptimizerMethodGroupSurface:
     methods: _ABCOptimizerMethods
     shared_statement_count: int
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerSharedMethodGroup(_ABCOptimizerMethodGroupSurface):
     class_count: int
 
 
@@ -7361,9 +7365,9 @@ class _ABCOptimizerProfileResidueContext(ResidueHookNamesCarrier):
 
 
 @dataclass(frozen=True)
-class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
-    methods: _ABCOptimizerMethods
-    shared_statement_count: int
+class _ABCOptimizerMethodGroupProfile(
+    _ABCOptimizerMethodGroupSurface, ResidueHookNamesCarrier
+):
     varying_coordinates: tuple[_SemanticCoordinate, ...]
     compression_certificate: CompressionCertificate
 
@@ -7387,15 +7391,20 @@ class _ABCOptimizerResiduePlacement(ResidueHookNamesCarrier):
 
 
 @dataclass(frozen=True)
+class _ABCOptimizerFamilyMethodSurface:
+    base_name: str
+    method_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class _ABCOptimizerFamilyPlan(
+    _ABCOptimizerFamilyMethodSurface,
     ResidueHookNamesCarrier,
     ABCOptimizerAxisDesignCarrier,
     ABCOptimizerHierarchyMetricsCarrier,
     ABCOptimizerResiduePlacementCarrier,
 ):
-    base_name: str
     class_names: tuple[str, ...]
-    method_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -7414,12 +7423,23 @@ _ABCOptimizerFamilyCandidateBuilder: TypeAlias = Callable[
 ]
 
 
-@dataclass(frozen=True, order=True)
-class _ABCOptimizerFamilyCandidateOrder:
+@dataclass(frozen=True)
+class _ABCOptimizerFamilyCandidateOrder(_ABCOptimizerFamilyMethodSurface):
     file_path: str
     line: int
-    base_name: str
-    method_names: tuple[str, ...]
+
+    def __lt__(self, other: "_ABCOptimizerFamilyCandidateOrder") -> bool:
+        return (
+            self.file_path,
+            self.line,
+            self.base_name,
+            self.method_names,
+        ) < (
+            other.file_path,
+            other.line,
+            other.base_name,
+            other.method_names,
+        )
 
 
 class _ABCSemanticSkeletonNormalizer(ast.NodeTransformer):

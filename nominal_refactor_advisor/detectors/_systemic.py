@@ -2959,8 +2959,8 @@ declare_candidate_rule_detector(
     ),
     summary=lambda candidate: (
         f"`{candidate.class_name}` registry axis `{candidate.key_type_name}` is not injective: "
-        f"duplicate keys {candidate.duplicate_key_names}, duplicate types "
-        f"{candidate.duplicate_type_names}, missing keyed types {candidate.missing_type_names}."
+        f"duplicate keys {candidate.injectivity_proof.duplicate_key_names}, duplicate types "
+        f"{candidate.injectivity_proof.duplicate_type_names}, missing keyed types {candidate.injectivity_proof.missing_type_names}."
     ),
     evidence=lambda candidate: candidate.evidence,
     scaffold=lambda candidate: (

@@ -6970,9 +6970,20 @@ class _GuardedRegistryLookupBody:
 
 
 @dataclass(frozen=True)
-class _GuardValidatorContext:
+class GuardValidatorSubjectSurface:
     subject_param_name: str
     alias_source_attr: str | None
+
+    @property
+    def subject_axis(self) -> "GuardValidatorSubjectSurface":
+        return GuardValidatorSubjectSurface(
+            subject_param_name=self.subject_param_name,
+            alias_source_attr=self.alias_source_attr,
+        )
+
+
+@dataclass(frozen=True)
+class _GuardValidatorContext(GuardValidatorSubjectSurface):
     body: list[ast.stmt]
     root_names: set[str]
 
@@ -7427,9 +7438,6 @@ def _non_injective_type_registry_candidates(
                 lookup_method_names=fact.lookup_method_names,
                 registered_case_names=fact.registered_case_names,
                 consumer_symbols=fact.consumer_symbols,
-                duplicate_key_names=proof.duplicate_key_names,
-                duplicate_type_names=proof.duplicate_type_names,
-                missing_type_names=proof.missing_type_names,
                 injectivity_proof=proof,
             )
         )
@@ -8915,15 +8923,19 @@ def _repeated_guard_validator_family_candidates(
         )
         is not None
     ]
-    grouped: dict[tuple[str, str | None], list[GuardValidatorFunctionCandidate]] = (
-        defaultdict(list)
-    )
+    grouped: dict[
+        GuardValidatorSubjectSurface, list[GuardValidatorFunctionCandidate]
+    ] = defaultdict(list)
     for candidate in functions:
-        grouped[candidate.subject_param_name, candidate.alias_source_attr].append(
-            candidate
-        )
+        grouped[candidate.subject_axis].append(candidate)
     families: list[RepeatedGuardValidatorFamilyCandidate] = []
-    for (subject_param_name, alias_source_attr), items in sorted(grouped.items()):
+    for subject_axis, items in sorted(
+        grouped.items(),
+        key=lambda entry: (
+            entry[0].subject_param_name,
+            entry[0].alias_source_attr or "",
+        ),
+    ):
         if len(items) < min_family_size:
             continue
         shared_attr_names = sorted_tuple(
@@ -8938,8 +8950,8 @@ def _repeated_guard_validator_family_candidates(
         families.append(
             RepeatedGuardValidatorFamilyCandidate(
                 file_path=str(module.path),
-                subject_param_name=subject_param_name,
-                alias_source_attr=alias_source_attr,
+                subject_param_name=subject_axis.subject_param_name,
+                alias_source_attr=subject_axis.alias_source_attr,
                 functions=ordered,
                 shared_attr_names=shared_attr_names,
                 shared_helper_call_names=shared_helper_call_names,
@@ -10519,34 +10531,32 @@ class ManualFamilyRosterCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class SemanticInheritanceFamilySSOTCandidate(ClassLineWitnessCandidate):
+class InheritanceFamilyRentSurface(ClassLineWitnessCandidate):
     concrete_class_names: tuple[str, ...]
-    semantic_method_names: tuple[str, ...]
     abstract_method_names: tuple[str, ...]
-    key_attr_names: tuple[str, ...]
-    suggested_key_attr_name: str
     membership_object_count: int
     derived_projection_count: int
     rent_margin: int
-    line_count: int
     compression_certificate: CompressionCertificate
 
 
 @dataclass(frozen=True)
-class AutoRegisterMetaRentCandidate(ClassLineWitnessCandidate):
-    concrete_class_names: tuple[str, ...]
+class SemanticInheritanceFamilySSOTCandidate(InheritanceFamilyRentSurface):
+    semantic_method_names: tuple[str, ...]
+    key_attr_names: tuple[str, ...]
+    suggested_key_attr_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class AutoRegisterMetaRentCandidate(InheritanceFamilyRentSurface):
     dynamic_factory_symbols: tuple[str, ...]
     registry_key_attr_name: str | None
     key_extractor_name: str | None
     behavior_method_names: tuple[str, ...]
-    abstract_method_names: tuple[str, ...]
     registry_projection_names: tuple[str, ...]
     consumer_symbols: tuple[str, ...]
     missing_rent_signals: tuple[str, ...]
-    membership_object_count: int
-    derived_projection_count: int
-    rent_margin: int
-    compression_certificate: CompressionCertificate
 
 
 @dataclass(frozen=True)
@@ -10868,10 +10878,21 @@ class MetadataOnlyClassFamilyCandidate(ClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class SelfNamingBuilderCatalogCandidate(ClassLineNumbersGroup):
+class BuilderKeywordSurface:
     builder_name: str
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PositionalKeywordCallSurface:
     positional_arg_count: int
     keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SelfNamingBuilderCatalogCandidate(
+    BuilderKeywordSurface, PositionalKeywordCallSurface, ClassLineNumbersGroup
+):
     line_count: int
 
 
@@ -11513,50 +11534,46 @@ class RepeatedKeyedFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class KeyedRegistryAxisFact:
+class KeyedRegistryAxisSurface:
+    key_type_name: str
+    registry_key_attr_name: str
+    lookup_method_names: tuple[str, ...]
+    registered_case_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InjectiveRegistryProofSurface(KeyedRegistryAxisSurface):
+    injectivity_proof: InjectiveTypeRegistryProof
+
+
+@dataclass(frozen=True)
+class KeyedRegistryAxisFact(InjectiveRegistryProofSurface):
     file_path: str
     line: int
     class_name: str
-    key_type_name: str
-    registry_key_attr_name: str
-    lookup_method_names: tuple[str, ...]
-    registered_case_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    missing_maturity_signals: tuple[str, ...]
-    injectivity_proof: InjectiveTypeRegistryProof
-
-
-@dataclass(frozen=True)
-class PrematureRegistryInfrastructureCandidate(ClassLineWitnessCandidate):
-    key_type_name: str
-    registry_key_attr_name: str
-    lookup_method_names: tuple[str, ...]
-    registered_case_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
     missing_maturity_signals: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class InjectiveTypeRegistryCandidate(ClassLineWitnessCandidate):
-    key_type_name: str
-    registry_key_attr_name: str
-    lookup_method_names: tuple[str, ...]
-    registered_case_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    injectivity_proof: InjectiveTypeRegistryProof
+class PrematureRegistryInfrastructureCandidate(
+    KeyedRegistryAxisSurface, ClassLineWitnessCandidate
+):
+    missing_maturity_signals: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class NonInjectiveTypeRegistryCandidate(ClassLineWitnessCandidate):
-    key_type_name: str
-    registry_key_attr_name: str
-    lookup_method_names: tuple[str, ...]
-    registered_case_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-    duplicate_key_names: tuple[str, ...]
-    duplicate_type_names: tuple[str, ...]
-    missing_type_names: tuple[str, ...]
-    injectivity_proof: InjectiveTypeRegistryProof
+class InjectiveTypeRegistryCandidate(
+    InjectiveRegistryProofSurface, ClassLineWitnessCandidate
+):
+    pass
+
+
+@dataclass(frozen=True)
+class NonInjectiveTypeRegistryCandidate(
+    InjectiveRegistryProofSurface, ClassLineWitnessCandidate
+):
+    pass
 
 
 @dataclass(frozen=True)
@@ -11641,11 +11658,15 @@ class ManualKeyedRecordTableGroupCandidate:
 
 
 @dataclass(frozen=True)
-class RuntimeProductRecordSchemaCandidate(LineWitnessCandidate):
+class CalleeLineSurface:
     callee_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class RuntimeProductRecordSchemaCandidate(CalleeLineSurface, LineWitnessCandidate):
     declared_names: tuple[str, ...]
     context_qualname: str
-    line_count: int
 
     @property
     def witness_name(self) -> str:
@@ -11737,19 +11758,17 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
 
 
 @dataclass(frozen=True)
-class GuardValidatorFunctionCandidate(FunctionLineWitnessCandidate):
-    subject_param_name: str
-    alias_source_attr: str | None
+class GuardValidatorFunctionCandidate(
+    GuardValidatorSubjectSurface, FunctionLineWitnessCandidate
+):
     guard_count: int
     accessed_attr_names: tuple[str, ...]
     helper_call_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class RepeatedGuardValidatorFamilyCandidate:
+class RepeatedGuardValidatorFamilyCandidate(GuardValidatorSubjectSurface):
     file_path: str
-    subject_param_name: str
-    alias_source_attr: str | None
     functions: tuple[GuardValidatorFunctionCandidate, ...]
     shared_attr_names: tuple[str, ...]
     shared_helper_call_names: tuple[str, ...]
@@ -12084,10 +12103,10 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class DirectBuildFindingRendererCandidate(ClassMethodLineWitnessCandidate):
+class DirectBuildFindingRendererCandidate(
+    PositionalKeywordCallSurface, ClassMethodLineWitnessCandidate
+):
     base_name: str
-    positional_arg_count: int
-    keyword_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12101,10 +12120,10 @@ class DerivableCandidateCollectorCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class CanonicalFindingSpecBuilderCandidate(ClassLineWitnessCandidate):
+class CanonicalFindingSpecBuilderCandidate(
+    BuilderKeywordSurface, ClassLineWitnessCandidate
+):
     constructor_name: str
-    builder_name: str
-    keyword_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12142,25 +12161,35 @@ class InlineCandidateRendererDeclarationCandidate(QualnameLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class FacadeOnlyNominalAuthorityCandidate(ClassLineWitnessCandidate):
+class DelegateAuthorityLineSurface:
+    delegate_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class AliasDelegateAuthorityLineSurface(DelegateAuthorityLineSurface):
+    alias_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FacadeOnlyNominalAuthorityCandidate(
+    DelegateAuthorityLineSurface, ClassLineWitnessCandidate
+):
     method_names: tuple[str, ...]
-    delegate_names: tuple[str, ...]
-    line_count: int
 
 
 @dataclass(frozen=True)
-class AliasOnlyNominalAuthorityCandidate(ClassLineWitnessCandidate):
-    alias_names: tuple[str, ...]
-    delegate_names: tuple[str, ...]
-    line_count: int
+class AliasOnlyNominalAuthorityCandidate(
+    AliasDelegateAuthorityLineSurface, ClassLineWitnessCandidate
+):
+    pass
 
 
 @dataclass(frozen=True)
-class ModuleAuthorityReexportCatalogCandidate(LineWitnessCandidate):
+class ModuleAuthorityReexportCatalogCandidate(
+    AliasDelegateAuthorityLineSurface, LineWitnessCandidate
+):
     authority_name: str
-    alias_names: tuple[str, ...]
-    delegate_names: tuple[str, ...]
-    line_count: int
 
 
 @dataclass(frozen=True)
@@ -12305,58 +12334,40 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ClosedAxisConversionMatrixCandidate(LineWitnessCandidate):
+class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
-    source_axis_values: tuple[str, ...]
-    target_axis_values: tuple[str, ...]
     line_numbers: tuple[int, ...]
-    line_count: int
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
     )
 
 
 @dataclass(frozen=True)
-class OptionRecordQuotientCandidate(ClassNameLineNumbersGroup, LineWitnessCandidate):
-    field_names: tuple[str, ...]
-    default_names: tuple[str, ...]
-    common_base_names: tuple[str, ...]
-    line_count: int
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_for_file(self.file_path)
-
-
-@dataclass(frozen=True)
-class IdentityKeywordForwardingShellCandidate(FunctionLineWitnessCandidate):
-    callee_name: str
-    forwarded_keyword_names: tuple[str, ...]
+class FunctionFamilyLineSurface(FunctionFamilyEvidenceSurface):
     line_count: int
 
 
 @dataclass(frozen=True)
-class OptionalKeywordBagAssemblyCandidate(FunctionLineWitnessCandidate):
-    bag_name: str
-    parameter_names: tuple[str, ...]
-    target_keyword_names: tuple[str, ...]
-    call_name: str
-    line_count: int
-
-
-@dataclass(frozen=True)
-class SchemaAccessorFamilyCandidate(ClassLineWitnessCandidate):
-    enum_name: str
-    method_names: tuple[str, ...]
-    field_names: tuple[str, ...]
-    requirement_modes: tuple[str, ...]
-    coercion_kinds: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
+class FunctionFamilyEvidenceCompressionSurface(FunctionFamilyEvidenceSurface):
     compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
-    )
+
+
+@dataclass(frozen=True)
+class FunctionFamilyCompressionSurface(FunctionFamilyLineSurface):
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class OwnerFunctionFamilyCompressionSurface(FunctionFamilyCompressionSurface):
+    owner_parameter_name: str
+    owner_attribute_names: tuple[str, ...]
+
+@dataclass(frozen=True)
+class ClosedAxisConversionMatrixCandidate(
+    FunctionFamilyLineSurface, LineWitnessCandidate
+):
+    source_axis_values: tuple[str, ...]
+    target_axis_values: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12372,15 +12383,66 @@ class DataclassSchemaRegistryMirrorCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class DataclassFieldProjectionBoilerplateCandidate(ClassLineWitnessCandidate):
+class FieldFamilyLineSurface:
     field_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class FieldFamilyCompressionSurface(FieldFamilyLineSurface):
+    line_numbers: tuple[int, ...]
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class DataclassFieldProjectionBoilerplateCandidate(
+    FieldFamilyCompressionSurface, ClassLineWitnessCandidate
+):
     helper_names: tuple[str, ...]
     projection_argument_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "field_names")
+    )
+
+
+@dataclass(frozen=True)
+class OptionRecordQuotientCandidate(
+    FieldFamilyLineSurface, ClassNameLineNumbersGroup, LineWitnessCandidate
+):
+    default_names: tuple[str, ...]
+    common_base_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence_for_file(self.file_path)
+
+
+@dataclass(frozen=True)
+class IdentityKeywordForwardingShellCandidate(
+    CalleeLineSurface, FunctionLineWitnessCandidate
+):
+    forwarded_keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OptionalKeywordBagAssemblyCandidate(FunctionLineWitnessCandidate):
+    bag_name: str
+    parameter_names: tuple[str, ...]
+    target_keyword_names: tuple[str, ...]
+    call_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SchemaAccessorFamilyCandidate(
+    FieldFamilyCompressionSurface, ClassLineWitnessCandidate
+):
+    enum_name: str
+    method_names: tuple[str, ...]
+    requirement_modes: tuple[str, ...]
+    coercion_kinds: tuple[str, ...]
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
 
 
@@ -12402,71 +12464,43 @@ class AllMissingAxisPredicateCandidate(FunctionLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class BridgeAxisDispatchFamilyCandidate(LineWitnessCandidate):
+class BridgeAxisDispatchFamilyCandidate(
+    FunctionFamilyCompressionSurface, LineWitnessCandidate
+):
     dispatch_axis_expression: str
     literal_cases: tuple[str, ...]
-    function_names: tuple[str, ...]
     operation_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)
-class ArrayProtocolProbeBridgeCandidate(LineWitnessCandidate):
-    function_names: tuple[str, ...]
+class ArrayProtocolProbeBridgeCandidate(
+    FunctionFamilyEvidenceCompressionSurface, LineWitnessCandidate
+):
     attribute_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
     probe_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)
-class LifecycleStageSequenceCandidate(LineWitnessCandidate):
-    function_names: tuple[str, ...]
+class LifecycleStageSequenceCandidate(
+    FunctionFamilyCompressionSurface, LineWitnessCandidate
+):
     stage_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)
-class LatentNominalFunctionFamilyCandidate(LineWitnessCandidate):
-    owner_parameter_name: str
-    owner_attribute_names: tuple[str, ...]
+class LatentNominalFunctionFamilyCandidate(
+    OwnerFunctionFamilyCompressionSurface, LineWitnessCandidate
+):
     shared_call_names: tuple[str, ...]
-    function_names: tuple[str, ...]
     consumer_symbols: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)
-class BareFunctionMethodFamilyCandidate(LineWitnessCandidate):
-    owner_parameter_name: str
-    owner_attribute_names: tuple[str, ...]
+class BareFunctionMethodFamilyCandidate(
+    OwnerFunctionFamilyCompressionSurface, LineWitnessCandidate
+):
     shared_axis_name: str
     shared_axis_value: str
-    function_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
-    )
 
 
 @dataclass(frozen=True)
@@ -12490,11 +12524,15 @@ class ABCOptimizerHierarchyMetricsCarrier(ABCOptimizerLatticeMetricsCarrier):
 
 
 @dataclass(frozen=True)
-class ABCOptimizerAxisDesignCarrier:
-    mixin_axis_names: tuple[str, ...]
-    overlap_axis_names: tuple[str, ...]
+class ABCOptimizerAxisSpecCarrier:
     mixin_axis_specs: tuple[str, ...]
     overlap_axis_specs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ABCOptimizerAxisDesignCarrier(ABCOptimizerAxisSpecCarrier):
+    mixin_axis_names: tuple[str, ...]
+    overlap_axis_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12506,7 +12544,35 @@ class ABCOptimizerResiduePlacementCarrier:
 
 
 @dataclass(frozen=True)
+class ABCOptimizerLineCompressionSurface:
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class ABCOptimizerMethodFamilyEvidenceSurface(ABCOptimizerLineCompressionSurface):
+    method_names: tuple[str, ...]
+    method_symbols: tuple[str, ...]
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ABCOptimizerFamilyOptimizationSurface(ABCOptimizerMethodFamilyEvidenceSurface):
+    shared_statement_count: int
+    residue_count: int
+    leaf_residue_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SemanticOverlapABCOptimizationCandidate(
+    ABCOptimizerLineCompressionSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
     ResidueHookNamesCarrier,
@@ -12515,12 +12581,9 @@ class SemanticOverlapABCOptimizationCandidate(
     ABCOptimizerResiduePlacementCarrier,
 ):
     method_name: str
-    line_numbers: tuple[int, ...]
     shared_statement_count: int
     varying_coordinate_count: int
     family_method_names: tuple[str, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
     evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
         MultiFileZippedSourceLocationEvidenceProperty(
             file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
@@ -12532,84 +12595,42 @@ class SemanticOverlapABCOptimizationCandidate(
 
 @dataclass(frozen=True)
 class SemanticOverlapABCFamilyOptimizationCandidate(
+    ABCOptimizerFamilyOptimizationSurface,
     LineWitnessCandidate,
     ClassFamilyWitnessCarrier,
     ResidueHookNamesCarrier,
     ABCOptimizerHierarchyMetricsCarrier,
 ):
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    method_symbols: tuple[str, ...]
-    shared_statement_count: int
-    residue_count: int
     abc_concrete_method_names: tuple[str, ...]
-    leaf_residue_names: tuple[str, ...]
     shared_to_residue_ratio: float
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
-        MultiFileZippedSourceLocationEvidenceProperty(
-            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
-            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
-            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
-        )
-    )
 
 
 @dataclass(frozen=True)
 class GlobalInheritanceOptimizationCandidate(
-    LineWitnessCandidate, ClassFamilyWitnessCarrier, ABCOptimizerLatticeMetricsCarrier
+    ABCOptimizerFamilyOptimizationSurface,
+    LineWitnessCandidate,
+    ClassFamilyWitnessCarrier,
+    ABCOptimizerLatticeMetricsCarrier,
+    ABCOptimizerAxisSpecCarrier,
 ):
-    method_names: tuple[str, ...]
     family_specs: tuple[str, ...]
-    mixin_axis_specs: tuple[str, ...]
-    overlap_axis_specs: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    method_symbols: tuple[str, ...]
-    shared_statement_count: int
-    residue_count: int
-    leaf_residue_names: tuple[str, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
-        MultiFileZippedSourceLocationEvidenceProperty(
-            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
-            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
-            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
-        )
-    )
 
 
 @dataclass(frozen=True)
 class SemanticOverlapABCResidueAxisCatalogCandidate(
-    LineWitnessCandidate, ClassFamilyWitnessCarrier
+    ABCOptimizerMethodFamilyEvidenceSurface, LineWitnessCandidate, ClassFamilyWitnessCarrier
 ):
-    method_names: tuple[str, ...]
     residue_kind_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    method_symbols: tuple[str, ...]
     residue_site_count: int
-    line_count: int
-    compression_certificate: CompressionCertificate
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
-        MultiFileZippedSourceLocationEvidenceProperty(
-            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
-            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
-            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
-        )
-    )
 
 
 @dataclass(frozen=True)
 class ClassLevelInheritanceOptimizationCandidate(
-    LineWitnessCandidate, ClassFamilyWitnessCarrier
+    ABCOptimizerLineCompressionSurface, LineWitnessCandidate, ClassFamilyWitnessCarrier
 ):
-    line_numbers: tuple[int, ...]
     declaration_names: tuple[str, ...]
     declaration_signatures: tuple[str, ...]
     declaration_sources: tuple[str, ...]
-    line_count: int
-    compression_certificate: CompressionCertificate
     evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
         MultiFileZippedSourceLocationEvidenceProperty(
             file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,

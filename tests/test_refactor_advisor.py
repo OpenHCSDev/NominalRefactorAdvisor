@@ -7890,6 +7890,22 @@ def test_distributed_boundary_fanout_suggests_projection_request_for_axis_roles(
     assert "projection-step object" in (finding.codemod_patch or "")
 
 
+def test_distributed_boundary_fanout_ignores_inherited_class_strategy_fields(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/inherited_strategy.py",
+        "\nfrom typing import ClassVar\n\n\nclass StrategyBase:\n    candidate_collector: ClassVar[object]\n\n\nclass MiddleStrategy(StrategyBase):\n    pass\n\n\nclass LocalStrategy(MiddleStrategy):\n    candidate_collector = local_candidates\n\n\nclass RemoteStrategy(StrategyBase):\n    candidate_collector = remote_candidates\n\n\ndef install_local():\n    return DetectorDeclaration(\n        candidate_collector=LocalStrategy.candidate_collector,\n    )\n\n\ndef install_remote():\n    return DetectorDeclaration(\n        candidate_collector=RemoteStrategy.candidate_collector,\n    )\n\n\ndef namespace_entry():\n    namespace = LocalStrategy.candidate_collector\n    return namespace\n",
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "distributed_boundary_fanout"
+    ]
+    assert not any("candidate_collector" in finding.summary for finding in findings)
+
+
 def test_boundary_local_wrapper_collapse_detects_renamed_scope_fanout(
     tmp_path: Path,
 ) -> None:

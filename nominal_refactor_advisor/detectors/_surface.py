@@ -888,6 +888,16 @@ class DistributedBoundaryDeclaration(DistributedBoundarySurface):
 
 
 @dataclass(frozen=True)
+class ClassFieldBoundaryDeclaration(DistributedBoundaryDeclaration):
+    pass
+
+
+@dataclass(frozen=True)
+class InstanceFieldBoundaryDeclaration(DistributedBoundaryDeclaration):
+    pass
+
+
+@dataclass(frozen=True)
 class DistributedBoundaryUse(DistributedBoundarySurface):
     symbol: str
     use_kind: str
@@ -1079,7 +1089,7 @@ def _distributed_boundary_declarations(
     declarations: list[DistributedBoundaryDeclaration] = []
     seen: set[tuple[str, str]] = set()
 
-    def add(class_name: str, field_name: str, line: int) -> None:
+    def add_class_field(class_name: str, field_name: str, line: int) -> None:
         if field_name.startswith("_"):
             return
         if len(_boundary_identifier_tokens(field_name)) < 2:
@@ -1089,7 +1099,25 @@ def _distributed_boundary_declarations(
             return
         seen.add(key)
         declarations.append(
-            DistributedBoundaryDeclaration(
+            ClassFieldBoundaryDeclaration(
+                file_path=str(module.path),
+                line=line,
+                class_name=class_name,
+                field_name=field_name,
+            )
+        )
+
+    def add_instance_field(class_name: str, field_name: str, line: int) -> None:
+        if field_name.startswith("_"):
+            return
+        if len(_boundary_identifier_tokens(field_name)) < 2:
+            return
+        key = (class_name, field_name)
+        if key in seen:
+            return
+        seen.add(key)
+        declarations.append(
+            InstanceFieldBoundaryDeclaration(
                 file_path=str(module.path),
                 line=line,
                 class_name=class_name,
@@ -1104,11 +1132,11 @@ def _distributed_boundary_declarations(
             if isinstance(statement, ast.AnnAssign) and isinstance(
                 statement.target, ast.Name
             ):
-                add(node.name, statement.target.id, statement.lineno)
+                add_class_field(node.name, statement.target.id, statement.lineno)
             elif isinstance(statement, ast.Assign):
                 for target in statement.targets:
                     if isinstance(target, ast.Name):
-                        add(node.name, target.id, statement.lineno)
+                        add_class_field(node.name, target.id, statement.lineno)
             elif (
                 isinstance(statement, ast.FunctionDef) and statement.name == "__init__"
             ):
@@ -1120,15 +1148,78 @@ def _distributed_boundary_declarations(
                                 and isinstance(target.value, ast.Name)
                                 and target.value.id == "self"
                             ):
-                                add(node.name, target.attr, child.lineno)
+                                add_instance_field(node.name, target.attr, child.lineno)
                     elif (
                         isinstance(child, ast.AnnAssign)
                         and isinstance(child.target, ast.Attribute)
                         and isinstance(child.target.value, ast.Name)
                         and child.target.value.id == "self"
                     ):
-                        add(node.name, child.target.attr, child.lineno)
+                        add_instance_field(node.name, child.target.attr, child.lineno)
     return tuple(declarations)
+
+
+def _distributed_boundary_class_base_names(
+    modules: tuple[ParsedModule, ...],
+) -> dict[str, tuple[str, ...]]:
+    return {
+        node.name: CLASS_NODE_AUTHORITY.declared_base_names(node)
+        for module in modules
+        for node in _walk_nodes(module.module)
+        if isinstance(node, ast.ClassDef)
+    }
+
+
+def _class_field_names_by_class(
+    declarations: tuple[DistributedBoundaryDeclaration, ...],
+) -> dict[str, frozenset[str]]:
+    grouped: dict[str, set[str]] = defaultdict(set)
+    for declaration in declarations:
+        if isinstance(declaration, ClassFieldBoundaryDeclaration):
+            grouped[declaration.class_name].add(declaration.field_name)
+    return {
+        class_name: frozenset(field_names)
+        for class_name, field_names in grouped.items()
+    }
+
+
+def _inherits_class_field_contract(
+    declaration: ClassFieldBoundaryDeclaration,
+    *,
+    class_base_names: dict[str, tuple[str, ...]],
+    class_field_names: dict[str, frozenset[str]],
+) -> bool:
+    seen: set[str] = set()
+    pending = list(class_base_names.get(declaration.class_name, ()))
+    while pending:
+        base_name = pending.pop()
+        if base_name in seen:
+            continue
+        seen.add(base_name)
+        if declaration.field_name in class_field_names.get(base_name, frozenset()):
+            return True
+        pending.extend(class_base_names.get(base_name, ()))
+    return False
+
+
+def _active_distributed_boundary_declarations(
+    declarations: tuple[DistributedBoundaryDeclaration, ...],
+    *,
+    class_base_names: dict[str, tuple[str, ...]],
+) -> tuple[DistributedBoundaryDeclaration, ...]:
+    class_field_names = _class_field_names_by_class(declarations)
+    return tuple(
+        declaration
+        for declaration in declarations
+        if not (
+            isinstance(declaration, ClassFieldBoundaryDeclaration)
+            and _inherits_class_field_contract(
+                declaration,
+                class_base_names=class_base_names,
+                class_field_names=class_field_names,
+            )
+        )
+    )
 
 
 class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
@@ -1252,12 +1343,20 @@ def _distributed_boundary_fanout_candidates_cached(
     modules: tuple[ParsedModule, ...],
     config: DetectorConfig,
 ) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    declarations = tuple(
+        declaration
+        for module in modules
+        for declaration in _distributed_boundary_declarations(module)
+    )
+    active_declarations = _active_distributed_boundary_declarations(
+        declarations,
+        class_base_names=_distributed_boundary_class_base_names(modules),
+    )
     declarations_by_field: dict[str, list[DistributedBoundaryDeclaration]] = (
         defaultdict(list)
     )
-    for module in modules:
-        for declaration in _distributed_boundary_declarations(module):
-            declarations_by_field[declaration.field_name].append(declaration)
+    for declaration in active_declarations:
+        declarations_by_field[declaration.field_name].append(declaration)
     field_names = frozenset(
         field_name
         for field_name, declarations in declarations_by_field.items()
