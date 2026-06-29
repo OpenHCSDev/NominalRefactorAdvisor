@@ -24,6 +24,7 @@ from nominal_refactor_advisor.detectors import (
 from nominal_refactor_advisor.detectors._runtime import (
     RuntimeAuthorityBranchSemanticsDetector,
     RuntimeSemanticBranchChainDetector,
+    SemanticInheritanceFamilySSOTDetector,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_descent import (
@@ -643,6 +644,76 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
     assert rewritten.count("    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE") == 1
     assert rewritten.count("    __key_extractor__ = class_name_registry_key") == 1
     assert rewritten.count("    __skip_if_no_key__ = True") == 1
+    assert simulation.is_clean is True
+
+
+def test_semantic_inheritance_family_ssot_synthesizes_registered_root(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "from typing import ClassVar\n"
+        "\n"
+        "class SharedRecipeMetadata:\n"
+        "    recipe_id_suffix: ClassVar[str]\n"
+        "    recipe_reason: ClassVar[str]\n"
+        "\n"
+        "    def action_keys_for_finding(self):\n"
+        "        return ()\n"
+        "\n"
+        "    def assignment_names_for_finding(self):\n"
+        "        return ()\n"
+        "\n"
+        "class RecipeMetadataAuthority(SharedRecipeMetadata):\n"
+        "    pass\n"
+        "\n"
+        "class ClassAssignmentDeletionRecipe(RecipeMetadataAuthority):\n"
+        "    def action_keys_for_finding(self):\n"
+        "        return ()\n"
+        "\n"
+        "class DerivableClassAssignmentRecipe(ClassAssignmentDeletionRecipe):\n"
+        "    assignment_name: ClassVar[str]\n"
+        "    recipe_id_suffix = 'delete-derivable-assignment'\n"
+        "    recipe_reason = 'Delete derivable assignment.'\n"
+        "\n"
+        "    def assignment_names_for_finding(self):\n"
+        "        return (self.assignment_name,)\n"
+        "\n"
+        "class DerivableDetectorIdRecipe(DerivableClassAssignmentRecipe):\n"
+        "    assignment_name = 'detector_id'\n"
+        "\n"
+        "class DerivableCollectorRecipe(DerivableClassAssignmentRecipe):\n"
+        "    assignment_name = 'candidate_collector'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in SemanticInheritanceFamilySSOTDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.detector_id == "semantic_inheritance_family_ssot"
+        and item.metrics.plan_registry_name == "SharedRecipeMetadata"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    namespace: dict[str, object] = {}
+    exec(rewritten_source, namespace)
+    registry = namespace["SharedRecipeMetadata"].__registry__
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "SemanticInheritanceFamilySSOTFindingRecipeSynthesizer"
+    )
+    assert "class SharedRecipeMetadata(ABC, metaclass=AutoRegisterMeta):" in rewritten_source
+    assert "def recipe_id_suffix(self):" in rewritten_source
+    assert "def recipe_reason(self):" in rewritten_source
+    assert "def assignment_name(self):" in rewritten_source
+    assert set(registry) == {"DerivableCollectorRecipe", "DerivableDetectorIdRecipe"}
     assert simulation.is_clean is True
 
 

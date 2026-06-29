@@ -3781,6 +3781,56 @@ def _all_concrete_descendants_have_intermediate_autoregister_authority(
     )
 
 
+def _is_registration_authority_node(node: ast.ClassDef) -> bool:
+    authority = HELPER_SUPPORT_PROJECTION_AUTHORITY
+    return (
+        authority.declares_autoregister_meta(node)
+        or authority.declares_named_registration_authority(node)
+        or authority.inherits_named_registration_authority(node)
+        or authority.declares_registry_protocol_authority(node)
+        or authority.declares_stable_registry_axis_authority(node)
+    )
+
+
+def _registration_authority_ancestor_symbols(
+    class_index: ClassFamilyIndex,
+    *,
+    root_symbol: str,
+    descendant: IndexedClass,
+) -> frozenset[str]:
+    return frozenset(
+        ancestor_symbol
+        for ancestor_symbol in class_index.ancestor_symbols(descendant.symbol)
+        if ancestor_symbol != root_symbol
+        for ancestor in (class_index.class_for(ancestor_symbol),)
+        if ancestor is not None and _is_registration_authority_node(ancestor.node)
+    )
+
+
+def _all_concrete_descendants_share_external_registration_authority(
+    class_index: ClassFamilyIndex,
+    indexed_class: IndexedClass,
+    concrete_descendants: tuple[IndexedClass, ...],
+) -> bool:
+    if not concrete_descendants:
+        return False
+    shared_authorities: frozenset[str] | None = None
+    for descendant in concrete_descendants:
+        authority_symbols = _registration_authority_ancestor_symbols(
+            class_index,
+            root_symbol=indexed_class.symbol,
+            descendant=descendant,
+        )
+        shared_authorities = (
+            authority_symbols
+            if shared_authorities is None
+            else shared_authorities & authority_symbols
+        )
+        if not shared_authorities:
+            return False
+    return bool(shared_authorities)
+
+
 def _semantic_inheritance_method_names(
     indexed_class: IndexedClass, concrete_descendants: tuple[IndexedClass, ...]
 ) -> tuple[str, ...]:
@@ -3932,6 +3982,10 @@ def _semantic_inheritance_family_ssot_candidates(
         if len(concrete_descendants) < minimum_leaf_count:
             continue
         if _all_concrete_descendants_have_intermediate_autoregister_authority(
+            class_index, indexed_class, concrete_descendants
+        ):
+            continue
+        if _all_concrete_descendants_share_external_registration_authority(
             class_index, indexed_class, concrete_descendants
         ):
             continue

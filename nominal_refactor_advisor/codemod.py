@@ -4780,12 +4780,28 @@ class ClassHeaderSpanSourceAuthority:
     def with_base_items(self, base_items: tuple[str, ...]) -> tuple[str, ...]:
         return self.header_lines(base_items, self.indentation)
 
+    def with_items(
+        self,
+        base_items: tuple[str, ...],
+        keyword_items: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return self.header_lines(
+            base_items,
+            self.indentation,
+            keyword_items=keyword_items,
+        )
+
     def header_lines(
         self,
         base_items: tuple[str, ...],
         indentation: str,
+        *,
+        keyword_items: tuple[str, ...] | None = None,
     ) -> tuple[str, ...]:
-        items = (*base_items, *self.keyword_items)
+        resolved_keyword_items = (
+            self.keyword_items if keyword_items is None else keyword_items
+        )
+        items = (*base_items, *resolved_keyword_items)
         if items:
             header = f"class {self.node.name}({', '.join(items)}):"
         else:
@@ -13347,13 +13363,444 @@ class DuplicateVisitorAliasRecipeParts(DuplicateVisitorBase):
         return f"{indent}{method_node.name} = {canonical_method_name}\n"
 
 
-class SharedRecipeIdSuffixRecipeReasonBase:
+class SharedRecipeIdSuffixRecipeReasonBase(ABC):
+    @property
+    @abstractmethod
+    def recipe_id_suffix(self):
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def recipe_reason(self):
+        raise NotImplementedError
+
     recipe_id_suffix: ClassVar[str]
     recipe_reason: ClassVar[str]
 
 
-class RecipeMetadataAuthority(SharedRecipeIdSuffixRecipeReasonBase):
+class RecipeMetadataAuthority(SharedRecipeIdSuffixRecipeReasonBase, ABC):
     """Class-level recipe identity metadata shared by recipe synthesizer families."""
+
+
+class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
+    EvaluatedFindingRecipeSynthesizer
+):
+    """Promote an inheritance family root into its class-time membership authority."""
+
+    detector_id = "semantic_inheritance_family_ssot"
+    recipe_id_suffix = "autoregister-inheritance-family"
+    recipe_reason = (
+        "Make the inheritance root the AutoRegisterMeta membership authority."
+    )
+    metaclass_item: ClassVar[str] = "metaclass=AutoRegisterMeta"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance SSOT rewrite requires source context"
+                )
+            )
+        family_name = finding.metrics.plan_registry_name
+        if family_name is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="semantic inheritance finding has no family root"
+            )
+        source_path = self.source_path_for_family(finding, family_name)
+        if source_path is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance finding has no family-root source path"
+                )
+            )
+        target_id = SourceRewriteTarget(
+            qualname=family_name,
+            source_path=source_path,
+        ).optional_identifier(context.source_index)
+        if target_id is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="semantic inheritance family root did not resolve"
+            )
+        node = context.ast_target_nodes_by_id[target_id]
+        if not isinstance(node, ast.ClassDef):
+            return FindingRecipeEvaluation(
+                rejection_reason="semantic inheritance family root is not a class"
+            )
+        source = context.sources_by_file_path.get(source_path)
+        if source is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="semantic inheritance family source is unavailable"
+            )
+        header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
+        if not header_authority.can_rewrite:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance family root header is not safely rewritable"
+                )
+            )
+        if self.has_conflicting_metaclass(header_authority):
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance family root already has a different "
+                    "metaclass"
+                )
+            )
+        contract_names = self.abstract_contract_names(node)
+        if not contract_names and not self.declares_abstract_member(node):
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance family root has no abstract hook or "
+                    "annotation contract to keep the registry root abstract"
+                )
+            )
+        declaration_source = self.registry_declaration_source(
+            node,
+            family_name,
+            source,
+            contract_names,
+        )
+        if not declaration_source:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "semantic inheritance family root already declares registry "
+                    "authority fields"
+                )
+            )
+        recipe = (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+                reason=self.recipe_reason,
+            )
+            .ensure_import(
+                source_path,
+                "from abc import ABC, abstractmethod\n",
+                rationale=(
+                    "Import ABC and abstractmethod for registered inheritance roots."
+                ),
+            )
+            .ensure_import(
+                source_path,
+                "from typing import ClassVar\n",
+                rationale="Import ClassVar for registry declarations.",
+            )
+            .ensure_import(
+                source_path,
+                "from metaclass_registry import AutoRegisterMeta\n",
+                rationale="Import AutoRegisterMeta for class-time registration.",
+            )
+            .replace_text(
+                family_name,
+                "".join(header_authority.current_header_lines),
+                (
+                    "".join(self.autoregister_header_lines(header_authority))
+                    + declaration_source
+                ),
+                source_path=source_path,
+                rationale=self.recipe_reason,
+            )
+        )
+        recipe = self.with_intermediate_contract_rewrites(
+            recipe,
+            finding,
+            context,
+            family_name,
+        )
+        return FindingRecipeEvaluation(recipe=recipe)
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        family_name = finding.metrics.plan_registry_name
+        if family_name is None:
+            return ()
+        source_path = self.source_path_for_family(finding, family_name)
+        if source_path is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((source_path, family_name),),
+        )
+
+    @staticmethod
+    def source_path_for_family(
+        finding: RefactorFinding,
+        family_name: str,
+    ) -> str | None:
+        for evidence in finding.evidence:
+            if evidence.symbol == family_name:
+                return evidence.file_path
+        evidence = FindingPrimaryEvidence(finding).source_location
+        return None if evidence is None else evidence.file_path
+
+    @classmethod
+    def autoregister_header_lines(
+        cls,
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> tuple[str, ...]:
+        base_items = cls.with_unique_item(header_authority.base_items, "ABC")
+        keyword_items = cls.with_unique_item(
+            header_authority.keyword_items,
+            cls.metaclass_item,
+        )
+        return header_authority.with_items(base_items, keyword_items)
+
+    @classmethod
+    def has_conflicting_metaclass(
+        cls,
+        header_authority: ClassHeaderSpanSourceAuthority,
+    ) -> bool:
+        for keyword_item in header_authority.keyword_items:
+            if not keyword_item.startswith("metaclass="):
+                continue
+            return keyword_item != cls.metaclass_item
+        return False
+
+    @staticmethod
+    def with_unique_item(items: tuple[str, ...], item: str) -> tuple[str, ...]:
+        if item in items:
+            return items
+        return (*items, item)
+
+    @classmethod
+    def registry_declaration_source(
+        cls,
+        node: ast.ClassDef,
+        family_name: str,
+        source: str,
+        contract_names: tuple[str, ...],
+    ) -> str:
+        declared_names = cls.declared_names(node)
+        registry_declarations = tuple(
+            line
+            for name, line in cls.registry_declarations(family_name, source, node)
+            if name not in declared_names
+        )
+        abstract_contract_declarations = tuple(
+            cls.abstract_property_source(cls.body_indent(node, source), name)
+            for name in contract_names
+            if name not in cls.abstract_property_names(node)
+        )
+        declarations = (*registry_declarations, *abstract_contract_declarations)
+        if not declarations:
+            return ""
+        return f"{''.join(declarations)}\n"
+
+    @classmethod
+    def with_intermediate_contract_rewrites(
+        cls,
+        recipe: RefactorRecipe,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+        family_name: str,
+    ) -> RefactorRecipe:
+        planned_recipe = recipe
+        for class_name in finding.metrics.plan_class_names:
+            if class_name == family_name:
+                continue
+            target_id = SourceRewriteTarget(
+                qualname=class_name,
+            ).optional_identifier(context.source_index)
+            if target_id is None:
+                continue
+            target = context.source_index.target_by_id[target_id]
+            source = context.sources_by_file_path.get(target.file_path)
+            node = context.ast_target_nodes_by_id[target_id]
+            if source is None or not isinstance(node, ast.ClassDef):
+                continue
+            contract_source = cls.intermediate_contract_source(node, source)
+            if contract_source is None:
+                continue
+            old_source, new_source = contract_source
+            planned_recipe = planned_recipe.replace_text(
+                class_name,
+                old_source,
+                new_source,
+                source_path=target.file_path,
+                rationale=(
+                    "Keep intermediate registered-family classes abstract until "
+                    "leaves bind their declared class contracts."
+                ),
+            )
+        return planned_recipe
+
+    @classmethod
+    def intermediate_contract_source(
+        cls,
+        node: ast.ClassDef,
+        source: str,
+    ) -> tuple[str, str] | None:
+        missing_contract_names = tuple(
+            name
+            for name in cls.abstract_contract_names(node)
+            if name not in cls.abstract_property_names(node)
+        )
+        if not missing_contract_names:
+            return None
+        indent = cls.body_indent(node, source)
+        insertion_source = "".join(
+            cls.abstract_property_source(indent, name)
+            for name in missing_contract_names
+        )
+        docstring_node = cls.docstring_node(node)
+        if docstring_node is None:
+            header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
+            old_source = "".join(header_authority.current_header_lines)
+            return old_source, f"{old_source}{insertion_source}"
+        geometry = SourceTextGeometry(source)
+        start_offset, end_offset = geometry.node_span_offsets(
+            SourceNodeSpan(docstring_node)
+        )
+        old_source = source[start_offset:end_offset]
+        return old_source, f"{old_source}{insertion_source}"
+
+    @staticmethod
+    def docstring_node(node: ast.ClassDef) -> ast.stmt | None:
+        if not node.body:
+            return None
+        first_statement = node.body[0]
+        if (
+            isinstance(first_statement, ast.Expr)
+            and isinstance(first_statement.value, ast.Constant)
+            and isinstance(first_statement.value.value, str)
+        ):
+            return first_statement
+        return None
+
+    @classmethod
+    def registry_declarations(
+        cls,
+        family_name: str,
+        source: str,
+        node: ast.ClassDef,
+    ) -> tuple[tuple[str, str], ...]:
+        indent = cls.body_indent(node, source)
+        return (
+            (
+                "__registry__",
+                (
+                    f"{indent}__registry__: "
+                    "ClassVar[\n"
+                    f"{indent}    dict[str, type[\"{family_name}\"]]\n"
+                    f"{indent}] = {{}}\n"
+                ),
+            ),
+            ("__registry_key__", f'{indent}__registry_key__ = "registry_key"\n'),
+            (
+                "_registry_key",
+                (
+                    "\n"
+                    f"{indent}@staticmethod\n"
+                    f"{indent}def _registry_key("
+                    "name: str, cls: type[object]"
+                    ") -> str:\n"
+                    f"{indent}    del cls\n"
+                    f"{indent}    return name\n\n"
+                ),
+            ),
+            (
+                "__key_extractor__",
+                f"{indent}__key_extractor__ = staticmethod(_registry_key)\n",
+            ),
+            ("__skip_if_no_key__", f"{indent}__skip_if_no_key__ = True\n"),
+        )
+
+    @classmethod
+    def abstract_property_source(cls, indent: str, name: str) -> str:
+        return (
+            "\n"
+            f"{indent}@property\n"
+            f"{indent}@abstractmethod\n"
+            f"{indent}def {name}(self):\n"
+            f"{indent}    raise NotImplementedError\n"
+        )
+
+    @classmethod
+    def abstract_contract_names(cls, node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            name
+            for statement in node.body
+            if isinstance(statement, ast.AnnAssign) and statement.value is None
+            for name in cls.assignment_target_name(statement)
+            if name not in cls.registry_declaration_names()
+        )
+
+    @staticmethod
+    def assignment_target_name(statement: ast.AnnAssign) -> tuple[str, ...]:
+        if isinstance(statement.target, ast.Name):
+            return (statement.target.id,)
+        return ()
+
+    @staticmethod
+    def registry_declaration_names() -> frozenset[str]:
+        return frozenset(
+            (
+                "__registry__",
+                "__registry_key__",
+                "__key_extractor__",
+                "__skip_if_no_key__",
+            )
+        )
+
+    @classmethod
+    def declares_abstract_member(cls, node: ast.ClassDef) -> bool:
+        return any(
+            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and cls.has_decorator(statement, "abstractmethod")
+            for statement in node.body
+        )
+
+    @classmethod
+    def abstract_property_names(cls, node: ast.ClassDef) -> frozenset[str]:
+        return frozenset(
+            statement.name
+            for statement in node.body
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and cls.has_decorator(statement, "abstractmethod")
+        )
+
+    @staticmethod
+    def has_decorator(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        decorator_name: str,
+    ) -> bool:
+        return any(
+            (
+                isinstance(decorator, ast.Name)
+                and decorator.id == decorator_name
+            )
+            or (
+                isinstance(decorator, ast.Attribute)
+                and decorator.attr == decorator_name
+            )
+            for decorator in node.decorator_list
+        )
+
+    @staticmethod
+    def declared_names(node: ast.ClassDef) -> frozenset[str]:
+        return frozenset(
+            name
+            for statement in node.body
+            for pair in (SingleAssignmentAndValueNameProjection(statement).pair,)
+            if pair is not None
+            for name, _ in (pair,)
+        )
+
+    @staticmethod
+    def body_indent(node: ast.ClassDef, source: str) -> str:
+        source_lines = source.splitlines(keepends=True)
+        if node.body:
+            body_line = source_lines[node.body[0].lineno - 1]
+            indent = body_line[: len(body_line) - len(body_line.lstrip())]
+            if indent:
+                return indent
+        header_line = source_lines[node.lineno - 1]
+        header_indent = header_line[: len(header_line) - len(header_line.lstrip())]
+        return f"{header_indent}    "
 
 
 class ClassAssignmentDeletionFindingRecipeSynthesizer(
@@ -13454,6 +13901,11 @@ class DerivableClassAssignmentFindingRecipeSynthesizer(
     ClassAssignmentDeletionFindingRecipeSynthesizer
 ):
     """Build assignment-deletion recipes for derivable detector declarations."""
+
+    @property
+    @abstractmethod
+    def assignment_name(self):
+        raise NotImplementedError
 
     assignment_name: ClassVar[str]
     recipe_id_suffix = "delete-derivable-assignment"
@@ -14680,8 +15132,16 @@ class LocalRoleCaseAuthoritySourceRenderer:
         )
 
 
-class LocalRoleCaseAuthorityExtractionBase(ABC):
+class LocalRoleCaseAuthorityExtractionBase(ABC, metaclass=AutoRegisterMeta):
     """Common renderer contract for extracted role-case authorities."""
+
+    __registry__: ClassVar[
+        dict[str, type["LocalRoleCaseAuthorityExtractionBase"]]
+    ] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+    registry_key_suffix: ClassVar[str] = "AuthorityExtraction"
 
     def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
         return LocalRoleCaseAuthoritySourceRenderer(

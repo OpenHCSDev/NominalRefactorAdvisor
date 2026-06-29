@@ -16523,6 +16523,21 @@ def test_ignores_semantic_inheritance_family_with_inherited_registry_authority(
     )
 
 
+def test_ignores_semantic_inheritance_family_with_external_registered_root(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\nfrom abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\n\nclass FindingRecipeSynthesizer(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "detector_id"\n    __skip_if_no_key__ = True\n\n    @abstractmethod\n    def recipe_for_finding(self):\n        raise NotImplementedError\n\n\nclass SharedRecipeMetadata(ABC):\n    @property\n    @abstractmethod\n    def recipe_id_suffix(self):\n        raise NotImplementedError\n\n    @property\n    @abstractmethod\n    def recipe_reason(self):\n        raise NotImplementedError\n\n\nclass RecipeMetadataAuthority(SharedRecipeMetadata, ABC):\n    pass\n\n\nclass ClassAssignmentDeletionRecipe(RecipeMetadataAuthority, FindingRecipeSynthesizer, ABC):\n    def recipe_for_finding(self):\n        return self.recipe_reason\n\n\nclass DerivableClassAssignmentRecipe(ClassAssignmentDeletionRecipe):\n    @property\n    @abstractmethod\n    def assignment_name(self):\n        raise NotImplementedError\n\n    assignment_name: ClassVar[str]\n    recipe_id_suffix = "delete-derivable-assignment"\n    recipe_reason = "Delete derivable assignment."\n\n\nclass DerivableDetectorIdRecipe(DerivableClassAssignmentRecipe):\n    detector_id = "derivable_detector_id"\n    assignment_name = "detector_id"\n\n\nclass DerivableCollectorRecipe(DerivableClassAssignmentRecipe):\n    detector_id = "derivable_collector"\n    assignment_name = "candidate_collector"\n',
+    )
+
+    assert not any(
+        finding.detector_id == "semantic_inheritance_family_ssot"
+        for finding in analyze_path(tmp_path)
+    )
+
+
 def test_ignores_semantic_inheritance_family_with_stable_key_axis_base(
     tmp_path: Path,
 ) -> None:
