@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Callable
 from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 import hashlib
+import os
 from pathlib import Path
 import pickle
 import sys
+from time import monotonic, sleep, time
+from types import TracebackType
 from typing import TypeAlias
 
 from .ast_tools import (
@@ -30,7 +34,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 8
+    version: int = 9
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -114,6 +118,33 @@ class AnalysisFindingSummaryLookup:
 
     status: AnalysisCacheStatus
     summary: AnalysisFindingSummary | None = None
+
+
+@dataclass(frozen=True)
+class AnalysisCacheRebuildLease:
+    """Singleflight lease for one exact analysis-cache rebuild identity."""
+
+    lock_path: Path | None
+    owns_rebuild: bool
+    release_lock: Callable[[Path], None] | None = None
+    cached_lookup: AnalysisCacheLookup | None = None
+
+    def __enter__(self) -> "AnalysisCacheRebuildLease":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        del exc_type, exc, traceback
+        if (
+            self.owns_rebuild
+            and self.lock_path is not None
+            and self.release_lock is not None
+        ):
+            self.release_lock(self.lock_path)
 
 
 @dataclass(frozen=True)
@@ -434,25 +465,47 @@ class ContextualGlobalAnalysisCacheIdentity(AnalysisCacheEntryContext):
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
+AnalysisCacheEntryIdentity: TypeAlias = (
+    AnalysisCacheIdentity
+    | PerModuleAnalysisCacheIdentity
+    | ContextualModuleAnalysisCacheIdentity
+    | ContextualGlobalAnalysisCacheIdentity
+)
+AnalysisCachePayloadValue: TypeAlias = (
+    AnalysisCacheEntryIdentity
+    | AnalysisCacheFamilyIdentity
+    | AnalysisFindingSummary
+    | list[RefactorFinding]
+)
+AnalysisCachePayload: TypeAlias = dict[str, AnalysisCachePayloadValue]
+AnalysisCacheLookupLoader: TypeAlias = Callable[[AnalysisCacheIdentity], AnalysisCacheLookup]
+
+
 @dataclass(frozen=True)
-class AnalysisFindingCache:
-    """Load and store detector findings for unchanged source/config identity."""
+class AnalysisCacheStorage:
+    """Filesystem storage authority for serialized analysis-cache payloads."""
 
-    storage_root: Path | None
+    storage_root: Path
 
-    def load(
-        self,
-        identity: (
-            AnalysisCacheIdentity
-            | PerModuleAnalysisCacheIdentity
-            | ContextualModuleAnalysisCacheIdentity
-            | ContextualGlobalAnalysisCacheIdentity
-        ),
-    ) -> AnalysisCacheLookup:
-        if self.storage_root is None:
-            return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
-        cache_path = self._entry_path(identity)
-        payload_available = True
+    def ensure_directory(self) -> None:
+        self.storage_root.mkdir(parents=True, exist_ok=True)
+
+    def entry_path(self, identity: AnalysisCacheEntryIdentity) -> Path:
+        return self.cache_file_path(f"{identity.cache_token}.pickle")
+
+    def latest_path(self, family_identity: AnalysisCacheFamilyIdentity) -> Path:
+        return self.cache_file_path(f"latest-{family_identity.cache_token}.pickle")
+
+    def summary_path(self, identity: AnalysisCacheIdentity) -> Path:
+        return self.cache_file_path(f"{identity.cache_token}.summary.pickle")
+
+    def rebuild_lock_path(self, identity: AnalysisCacheIdentity) -> Path:
+        return self.cache_file_path(f"{identity.cache_token}.lock")
+
+    def cache_file_path(self, file_name: str) -> Path:
+        return self.storage_root / file_name
+
+    def load_payload(self, cache_path: Path) -> AnalysisCachePayload | None:
         try:
             with cache_path.open("rb") as handle:
                 payload = pickle.load(handle)
@@ -466,11 +519,101 @@ class AnalysisFindingCache:
             AttributeError,
             ImportError,
         ):
-            payload_available = False
-            payload = {}
-        if not payload_available:
-            return analysis_cache_lookup(AnalysisCacheStatus.MISS)
+            return None
         if not isinstance(payload, dict):
+            return None
+        return payload
+
+    def store_payload_atomic(
+        self,
+        cache_path: Path,
+        payload: AnalysisCachePayload,
+    ) -> None:
+        self.ensure_directory()
+        started = monotonic()
+        temp_path = cache_path.with_name(
+            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
+        )
+        with temp_path.open("wb") as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, cache_path)
+
+
+@dataclass(frozen=True)
+class AnalysisCacheRebuildLockAuthority:
+    """Singleflight rebuild lock authority for exact analysis-cache misses."""
+
+    storage: AnalysisCacheStorage
+
+    def lease(
+        self,
+        identity: AnalysisCacheIdentity,
+        load_cache: AnalysisCacheLookupLoader,
+        *,
+        poll_interval_seconds: float,
+        stale_lock_seconds: float,
+    ) -> AnalysisCacheRebuildLease:
+        self.storage.ensure_directory()
+        lock_path = self.storage.rebuild_lock_path(identity)
+        while True:
+            cached_lookup = load_cache(identity)
+            if cached_lookup.status is AnalysisCacheStatus.HIT:
+                return AnalysisCacheRebuildLease(
+                    lock_path=None,
+                    owns_rebuild=False,
+                    cached_lookup=cached_lookup,
+                )
+            try:
+                descriptor = os.open(
+                    lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o644,
+                )
+            except FileExistsError:
+                if self.lock_is_stale(lock_path, stale_lock_seconds):
+                    self.release_lock(lock_path)
+                    continue
+                sleep(poll_interval_seconds)
+                continue
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(str(os.getpid()))
+                handle.flush()
+                os.fsync(handle.fileno())
+            return AnalysisCacheRebuildLease(
+                lock_path=lock_path,
+                owns_rebuild=True,
+                release_lock=self.release_lock,
+            )
+
+    def release_lock(self, lock_path: Path) -> None:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            return
+
+    @staticmethod
+    def lock_is_stale(lock_path: Path, stale_lock_seconds: float) -> bool:
+        try:
+            lock_age_seconds = time() - lock_path.stat().st_mtime
+        except FileNotFoundError:
+            return False
+        return lock_age_seconds > stale_lock_seconds
+
+
+@dataclass(frozen=True)
+class AnalysisFindingCache:
+    """Load and store detector findings for unchanged source/config identity."""
+
+    storage_root: Path | None
+
+    def load(self, identity: AnalysisCacheEntryIdentity) -> AnalysisCacheLookup:
+        storage = self.storage()
+        if storage is None:
+            return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
+        payload = storage.load_payload(storage.entry_path(identity))
+        if payload is None:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
         if payload.get("identity") != identity:
             return analysis_cache_lookup(AnalysisCacheStatus.MISS)
@@ -483,27 +626,22 @@ class AnalysisFindingCache:
 
     def store(
         self,
-        identity: (
-            AnalysisCacheIdentity
-            | PerModuleAnalysisCacheIdentity
-            | ContextualModuleAnalysisCacheIdentity
-            | ContextualGlobalAnalysisCacheIdentity
-        ),
+        identity: AnalysisCacheEntryIdentity,
         findings: list[RefactorFinding],
     ) -> None:
-        if self.storage_root is None:
+        storage = self.storage()
+        if storage is None:
             return
-        payload = {"identity": identity, "findings": findings}
+        payload: AnalysisCachePayload = {"identity": identity, "findings": findings}
         try:
-            self.storage_root.mkdir(parents=True, exist_ok=True)
-            with self._entry_path(identity).open("wb") as handle:
-                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            storage.store_payload_atomic(storage.entry_path(identity), payload)
             if isinstance(identity, AnalysisCacheIdentity):
                 self._store_summary(
                     identity,
                     AnalysisFindingSummary.from_findings(findings),
+                    storage,
                 )
-                self._store_latest(identity, findings)
+                self._store_latest(identity, findings, storage)
         except OSError:
             return
 
@@ -511,14 +649,11 @@ class AnalysisFindingCache:
         self,
         identity: AnalysisCacheIdentity,
     ) -> AnalysisFindingSummaryLookup:
-        if self.storage_root is None:
+        storage = self.storage()
+        if storage is None:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.DISABLED)
-        summary_path = self._summary_path(identity)
-        if not summary_path.is_file():
-            return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
-        with summary_path.open("rb") as handle:
-            payload = pickle.load(handle)
-        if not isinstance(payload, dict):
+        payload = storage.load_payload(storage.summary_path(identity))
+        if payload is None:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
         if payload.get("identity") != identity:
             return AnalysisFindingSummaryLookup(AnalysisCacheStatus.MISS)
@@ -531,14 +666,11 @@ class AnalysisFindingCache:
         self,
         family_identity: AnalysisCacheFamilyIdentity,
     ) -> tuple[AnalysisCacheIdentity, tuple[RefactorFinding, ...]] | None:
-        if self.storage_root is None:
+        storage = self.storage()
+        if storage is None:
             return None
-        latest_path = self._latest_path(family_identity)
-        if not latest_path.is_file():
-            return None
-        with latest_path.open("rb") as handle:
-            payload = pickle.load(handle)
-        if not isinstance(payload, dict):
+        payload = storage.load_payload(storage.latest_path(family_identity))
+        if payload is None:
             return None
         if payload.get("family_identity") != family_identity:
             return None
@@ -556,48 +688,46 @@ class AnalysisFindingCache:
         self,
         identity: AnalysisCacheIdentity,
         findings: list[RefactorFinding],
+        storage: AnalysisCacheStorage,
     ) -> None:
-        if self.storage_root is None:
-            return
         family_identity = AnalysisCacheFamilyIdentity.from_analysis_identity(identity)
-        payload = {
+        payload: AnalysisCachePayload = {
             "family_identity": family_identity,
             "identity": identity,
             "findings": findings,
         }
-        with self._latest_path(family_identity).open("wb") as handle:
-            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        storage.store_payload_atomic(storage.latest_path(family_identity), payload)
 
     def _store_summary(
         self,
         identity: AnalysisCacheIdentity,
         summary: AnalysisFindingSummary,
+        storage: AnalysisCacheStorage,
     ) -> None:
-        payload = {"identity": identity, "summary": summary}
-        with self._summary_path(identity).open("wb") as handle:
-            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        payload: AnalysisCachePayload = {"identity": identity, "summary": summary}
+        storage.store_payload_atomic(storage.summary_path(identity), payload)
 
-    def _entry_path(
+    def rebuild_lease(
         self,
-        identity: (
-            AnalysisCacheIdentity
-            | PerModuleAnalysisCacheIdentity
-            | ContextualModuleAnalysisCacheIdentity
-            | ContextualGlobalAnalysisCacheIdentity
-        ),
-    ) -> Path:
-        return self._cache_file_path(f"{identity.cache_token}.pickle")
+        identity: AnalysisCacheIdentity,
+        *,
+        poll_interval_seconds: float = 0.05,
+        stale_lock_seconds: float = 600.0,
+    ) -> AnalysisCacheRebuildLease:
+        storage = self.storage()
+        if storage is None:
+            return AnalysisCacheRebuildLease(lock_path=None, owns_rebuild=True)
+        return AnalysisCacheRebuildLockAuthority(storage).lease(
+            identity,
+            self.load,
+            poll_interval_seconds=poll_interval_seconds,
+            stale_lock_seconds=stale_lock_seconds,
+        )
 
-    def _latest_path(self, family_identity: AnalysisCacheFamilyIdentity) -> Path:
-        return self._cache_file_path(f"latest-{family_identity.cache_token}.pickle")
-
-    def _summary_path(self, identity: AnalysisCacheIdentity) -> Path:
-        return self._cache_file_path(f"{identity.cache_token}.summary.pickle")
-
-    def _cache_file_path(self, file_name: str) -> Path:
+    def storage(self) -> AnalysisCacheStorage | None:
         if self.storage_root is None:
-            raise ValueError("analysis cache directory is disabled")
-        return self.storage_root / file_name
+            return None
+        return AnalysisCacheStorage(self.storage_root)
 
 
 def detector_config_signature(

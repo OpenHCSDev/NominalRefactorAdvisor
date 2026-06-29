@@ -754,6 +754,7 @@ FactsByAuthorityId: TypeAlias = dict[str, tuple[SemanticFact, ...]]
 AuthorityIdsByName: TypeAlias = dict[str, tuple[str, ...]]
 FactRefsByToken: TypeAlias = dict[str, tuple[_FactTokenReference, ...]]
 FactMatchesByAuthority: TypeAlias = dict[str, dict[str, set[str]]]
+ConstructionAuthorityCacheKey: TypeAlias = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -1933,6 +1934,53 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             if self._policy_for_authority(authority).dataclass_authority_selected
         )
 
+    @cached_property
+    def dataclass_authority_ids(self) -> frozenset[str]:
+        return frozenset(
+            authority.authority_id for authority in self.dataclass_authorities
+        )
+
+    @cached_property
+    def ancestor_symbol_sets(self) -> dict[str, frozenset[str]]:
+        return {
+            symbol: frozenset(self.class_index.ancestor_symbols(symbol))
+            for symbol in self.class_index.classes_by_symbol
+        }
+
+    @cached_property
+    def projection_owner_class_symbols(self) -> dict[str, str | None]:
+        return {
+            projection.projection_id: self._resolve_projection_owner_class_symbol(
+                projection
+            )
+            for projection in self.projections
+        }
+
+    @cached_property
+    def dataclass_projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
+        return {
+            projection.projection_id: self._dataclass_projection_descent_authority_ids(
+                projection
+            )
+            for projection in self.projections
+        }
+
+    @cached_property
+    def construction_authority_class_cache(
+        self,
+    ) -> dict[ConstructionAuthorityCacheKey, bool]:
+        return {}
+
+    @cached_property
+    def construction_materializes_authority_cache(
+        self,
+    ) -> dict[ConstructionAuthorityCacheKey, bool]:
+        return {}
+
+    @cached_property
+    def projection_materializes_any_dataclass_authority_cache(self) -> dict[str, bool]:
+        return {}
+
     def edges(self) -> tuple[MirrorEdge, ...]:
         edges: list[MirrorEdge] = []
         for projection in self.projections:
@@ -2068,13 +2116,24 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         projection: PresentationProjection,
         authority: SemanticAuthority,
     ) -> bool:
+        return (
+            authority.authority_id
+            in self.dataclass_projection_descent_authority_ids[projection.projection_id]
+        )
+
+    def _dataclass_projection_descent_authority_ids(
+        self,
+        projection: PresentationProjection,
+    ) -> frozenset[str]:
         owner_class_symbol = self._projection_owner_class_symbol(projection)
         if owner_class_symbol is None:
-            return False
-        return (
-            owner_class_symbol == authority.authority_id
-            or authority.authority_id
-            in self.class_index.ancestor_symbols(owner_class_symbol)
+            return frozenset()
+        owner_ancestor_symbols = self.ancestor_symbol_sets[owner_class_symbol]
+        return frozenset(
+            authority_id
+            for authority_id in self.dataclass_authority_ids
+            if owner_class_symbol == authority_id
+            or authority_id in owner_ancestor_symbols
         )
 
     def projection_owner_constructs_dataclass_authority(
@@ -2104,13 +2163,25 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         construction: PresentationAuthorityConstruction,
         authority: SemanticAuthority,
     ) -> bool:
+        return self._construction_authority_cache_result(
+            self.construction_authority_class_cache,
+            construction,
+            authority,
+            self._construction_type_is_authority_class_uncached,
+        )
+
+    def _construction_type_is_authority_class_uncached(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
         if construction.type_name == authority.name:
             return True
-        for indexed_class in self.class_index.classes_by_symbol.values():
-            if indexed_class.simple_name != construction.type_name:
-                continue
+        for class_symbol in self.class_index.symbols_by_simple_name.get(
+            construction.type_name, ()
+        ):
             if authority.authority_id in self.class_index.ancestor_symbols(
-                indexed_class.symbol
+                class_symbol
             ):
                 return True
         return False
@@ -2120,10 +2191,39 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         construction: PresentationAuthorityConstruction,
         authority: SemanticAuthority,
     ) -> bool:
+        return self._construction_authority_cache_result(
+            self.construction_materializes_authority_cache,
+            construction,
+            authority,
+            self._construction_type_materializes_authority_uncached,
+        )
+
+    def _construction_authority_cache_result(
+        self,
+        cache: dict[ConstructionAuthorityCacheKey, bool],
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+        compute: ConstructionAuthorityPredicate,
+    ) -> bool:
+        cache_key = (construction.type_name, authority.authority_id)
+        if cache_key not in cache:
+            cache[cache_key] = compute(
+                construction,
+                authority,
+            )
+        return cache[cache_key]
+
+    def _construction_type_materializes_authority_uncached(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
         return any(
-            indexed_class.simple_name == construction.type_name
+            (indexed_class := self.class_index.class_for(class_symbol)) is not None
             and self._class_materializes_authority(indexed_class, authority)
-            for indexed_class in self.class_index.classes_by_symbol.values()
+            for class_symbol in self.class_index.symbols_by_simple_name.get(
+                construction.type_name, ()
+            )
         )
 
     def _class_materializes_authority(
@@ -2193,6 +2293,19 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         self,
         projection: PresentationProjection,
     ) -> bool:
+        cache = self.projection_materializes_any_dataclass_authority_cache
+        if projection.projection_id not in cache:
+            cache[
+                projection.projection_id
+            ] = self._projection_materializes_any_dataclass_authority_uncached(
+                projection,
+            )
+        return cache[projection.projection_id]
+
+    def _projection_materializes_any_dataclass_authority_uncached(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
         return any(
             self.projection_owner_materializes_dataclass_authority(
                 projection,
@@ -2248,18 +2361,20 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         owner_class_symbol = self._projection_owner_class_symbol(projection)
         if owner_class_symbol is None:
             return False
-        dataclass_authority_ids = frozenset(
-            dataclass_authority.authority_id
-            for dataclass_authority in self.dataclass_authorities
-        )
         shared_ancestors = (
-            set(self.class_index.ancestor_symbols(owner_class_symbol))
-            & set(self.class_index.ancestor_symbols(authority.authority_id))
-            & dataclass_authority_ids
+            self.ancestor_symbol_sets[owner_class_symbol]
+            & self.ancestor_symbol_sets[authority.authority_id]
+            & self.dataclass_authority_ids
         )
         return bool(shared_ancestors)
 
     def _projection_owner_class_symbol(
+        self,
+        projection: PresentationProjection,
+    ) -> str | None:
+        return self.projection_owner_class_symbols[projection.projection_id]
+
+    def _resolve_projection_owner_class_symbol(
         self,
         projection: PresentationProjection,
     ) -> str | None:

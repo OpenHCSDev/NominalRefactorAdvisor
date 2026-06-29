@@ -74,6 +74,8 @@ from .source_index import (
     AstTargetNodeKind,
     SourceIndex,
     build_source_index,
+    build_source_index_artifacts,
+    iter_statement_definition_nodes,
 )
 from .codemod_spacing import DestinationInsertionSpacing
 from .taxonomy import CertificationLevel
@@ -1373,18 +1375,18 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> "CodemodSourceSnapshot":
         module_tuple = tuple(modules)
         finding_tuple = tuple(findings)
-        source_index = build_source_index(module_tuple, finding_tuple)
+        source_index_artifacts = build_source_index_artifacts(
+            module_tuple,
+            finding_tuple,
+        )
         return cls(
-            source_index=source_index,
+            source_index=source_index_artifacts.source_index,
             sources_by_file_path={
                 str(module.path): module.source for module in module_tuple
             },
             class_family_index=build_class_family_index(module_tuple),
             ast_target_node_cache=(
-                AstTargetNodeIndex.nodes_by_target_identifier_from_modules(
-                    source_index,
-                    module_tuple,
-                )
+                source_index_artifacts.target_artifacts.node_cache.nodes_by_target_id
             ),
         )
 
@@ -17292,7 +17294,8 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
             )
         ] = node
         self.class_stack.append(node.name)
-        self.generic_visit(node)
+        for statement in iter_statement_definition_nodes(node.body):
+            self.visit(statement)
         self.class_stack.pop()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
@@ -17310,7 +17313,8 @@ class _AstTargetNodeIndexer(ast.NodeVisitor):
             )
         ] = node
         self.function_stack.append(node.name)
-        self.generic_visit(node)
+        for statement in iter_statement_definition_nodes(node.body):
+            self.visit(statement)
         self.function_stack.pop()
 
 

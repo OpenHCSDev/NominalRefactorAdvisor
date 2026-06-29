@@ -160,14 +160,18 @@ class DetectorAnalysisWorkerPlan:
     """Resolve detector-analysis process parallelism for one scan."""
 
     requested_worker_count: int
-    available_detector_type_count: int
+    work_item_count: int
     module_count: int
+    minimum_auto_work_items: int = 4
     max_auto_worker_count: int = 16
 
     @property
     def effective_worker_count(self) -> int:
         if self.requested_worker_count == 0:
-            if self.module_count < 2 or self.available_detector_type_count < 4:
+            if (
+                self.module_count < 2
+                or self.work_item_count < self.minimum_auto_work_items
+            ):
                 return 1
             cpu_count = os.cpu_count()
             if cpu_count is None:
@@ -175,7 +179,7 @@ class DetectorAnalysisWorkerPlan:
             return min(
                 self.max_auto_worker_count,
                 cpu_count,
-                self.available_detector_type_count,
+                self.work_item_count,
             )
         return max(1, self.requested_worker_count)
 
@@ -472,8 +476,9 @@ def analyze_detector_types(
 
     worker_plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=analysis_workers,
-        available_detector_type_count=len(detector_types),
+        work_item_count=len(detector_types),
         module_count=len(modules),
+        minimum_auto_work_items=64,
     )
     if worker_plan.uses_process_pool:
         state = DetectorAnalysisWorkerState(tuple(modules), config)
@@ -574,37 +579,44 @@ class AnalysisCacheResolutionAuthority:
             self._source_policy,
         ).cache_identity()
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
-        semantic_cache_identity = AnalysisCacheIdentity.from_modules(
-            self._roots,
-            tuple(self._modules),
-            self._config,
-        )
-        semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
-        if semantic_cache_lookup.status is AnalysisCacheStatus.HIT:
-            findings = list(semantic_cache_lookup.findings)
+        with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
+            if rebuild_lease.cached_lookup is not None:
+                return CachedAnalysisResult(
+                    list(rebuild_lease.cached_lookup.findings),
+                    AnalysisCacheStatus.HIT,
+                    cache_identity=cache_identity,
+                )
+            semantic_cache_identity = AnalysisCacheIdentity.from_modules(
+                self._roots,
+                tuple(self._modules),
+                self._config,
+            )
+            semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
+            if semantic_cache_lookup.status is AnalysisCacheStatus.HIT:
+                findings = list(semantic_cache_lookup.findings)
+                if semantic_cache_identity != cache_identity:
+                    analysis_cache.store(cache_identity, findings)
+                return CachedAnalysisResult(
+                    findings,
+                    AnalysisCacheStatus.HIT,
+                    cache_identity=cache_identity,
+                )
+            incremental_result = IncrementalAnalysisCacheResolver(
+                cache_identity=semantic_cache_identity,
+                modules=self._modules,
+                config=self._config,
+                analysis_cache=analysis_cache,
+                analysis_workers=self._analysis_workers,
+            ).result()
+            findings = incremental_result.findings
+            analysis_cache.store(cache_identity, findings)
             if semantic_cache_identity != cache_identity:
-                analysis_cache.store(cache_identity, findings)
+                analysis_cache.store(semantic_cache_identity, findings)
             return CachedAnalysisResult(
                 findings,
-                AnalysisCacheStatus.HIT,
+                incremental_result.cache_status,
                 cache_identity=cache_identity,
             )
-        incremental_result = IncrementalAnalysisCacheResolver(
-            cache_identity=semantic_cache_identity,
-            modules=self._modules,
-            config=self._config,
-            analysis_cache=analysis_cache,
-            analysis_workers=self._analysis_workers,
-        ).result()
-        findings = incremental_result.findings
-        analysis_cache.store(cache_identity, findings)
-        if semantic_cache_identity != cache_identity:
-            analysis_cache.store(semantic_cache_identity, findings)
-        return CachedAnalysisResult(
-            findings,
-            incremental_result.cache_status,
-            cache_identity=cache_identity,
-        )
 
 
 @dataclass(frozen=True)
@@ -711,7 +723,7 @@ class IncrementalAnalysisCacheResolver:
             return []
         worker_plan = DetectorAnalysisWorkerPlan(
             requested_worker_count=self._analysis_workers,
-            available_detector_type_count=len(missing_modules),
+            work_item_count=len(missing_modules),
             module_count=len(missing_modules),
         )
         if worker_plan.uses_process_pool:

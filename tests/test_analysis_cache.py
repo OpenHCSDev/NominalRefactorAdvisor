@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -9,7 +11,11 @@ from nominal_refactor_advisor.analysis import (
     analyze_modules_with_cache,
     analyze_path,
 )
-from nominal_refactor_advisor.analysis_cache import AnalysisCacheStatus
+from nominal_refactor_advisor.analysis_cache import (
+    AnalysisCacheIdentity,
+    AnalysisCacheStatus,
+    AnalysisFindingCache,
+)
 from nominal_refactor_advisor.ast_tools import (
     ExportDictShapeFamily,
     collect_family_items,
@@ -20,8 +26,13 @@ from nominal_refactor_advisor.cache_paths import (
     analysis_cache_sibling,
     semantic_descent_cache_sibling,
 )
-from nominal_refactor_advisor.detectors import DetectorConfig, IssueDetector
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.detectors import (
+    CrossModuleCandidateDetector,
+    DetectorConfig,
+    IssueDetector,
+)
+from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
+from nominal_refactor_advisor.patterns import PatternId
 
 
 class CountingSemanticCacheDetector(IssueDetector):
@@ -86,6 +97,105 @@ def test_analysis_cache_reuses_semantic_identity_after_comment_only_change(
 
     assert second_result.cache_status is AnalysisCacheStatus.HIT
     assert CountingSemanticCacheDetector.call_count == 1
+
+
+def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+
+    def wait_for_cached_lease() -> tuple[bool, AnalysisCacheStatus | None]:
+        with cache.rebuild_lease(identity, poll_interval_seconds=0.01) as lease:
+            cached_status = (
+                None if lease.cached_lookup is None else lease.cached_lookup.status
+            )
+            return lease.owns_rebuild, cached_status
+
+    with cache.rebuild_lease(identity) as first_lease:
+        assert first_lease.owns_rebuild
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(wait_for_cached_lease)
+            sleep(0.05)
+            assert not future.done()
+            cache.store(identity, [])
+
+    assert future.result(timeout=1.0) == (False, AnalysisCacheStatus.HIT)
+
+
+def test_cross_module_candidate_detector_reuses_contextual_global_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "a.py").write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    (package_root / "b.py").write_text("class Beta:\n    pass\n", encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "analysis"
+    candidate_calls = 0
+    finding_calls = 0
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Contextual cache",
+        why="contextual cache",
+        capability_gap="contextual cache",
+        relation_context="contextual cache",
+    )
+
+    class CountingCrossModuleDetector(CrossModuleCandidateDetector[str]):
+        detector_id = "counting_cross_module"
+
+        def _candidate_items(
+            self,
+            modules: list,
+            config: DetectorConfig,
+        ) -> tuple[str, ...]:
+            nonlocal candidate_calls, finding_calls
+            del config
+            candidate_calls += 1
+            return tuple(module.path.name for module in modules)
+
+        def _finding_for_candidate(self, candidate: str) -> RefactorFinding:
+            nonlocal finding_calls
+            finding_calls += 1
+            return finding_spec.build(
+                self.detector_id,
+                f"candidate {candidate}",
+                (SourceLocation(str(package_root / candidate), 1, candidate),),
+            )
+
+    for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+        if detector_type is CountingCrossModuleDetector:
+            del IssueDetector.__registry__[registry_key]
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+        lambda: (CountingCrossModuleDetector,),
+    )
+
+    first_result = analyze_modules_with_cache(
+        (package_root,),
+        parse_python_module_roots((package_root,)),
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+    (package_root / "b.py").write_text(
+        "class Beta:\n    pass\n\nclass Changed:\n    pass\n",
+        encoding="utf-8",
+    )
+    second_result = analyze_modules_with_cache(
+        (package_root,),
+        parse_python_module_roots((package_root,)),
+        DetectorConfig(),
+        analysis_cache_dir=cache_dir,
+    )
+
+    assert first_result.cache_status is AnalysisCacheStatus.MISS
+    assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert candidate_calls == 3
+    assert finding_calls == 2
 
 
 def test_collected_family_items_are_persisted_beside_parse_cache(tmp_path: Path) -> None:

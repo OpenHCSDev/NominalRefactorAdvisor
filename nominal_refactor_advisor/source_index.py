@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import Generic, Iterable, TypeVar
+from typing import Generic, Iterable, TypeAlias, TypeVar
 
 from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
 from .collection_algebra import sorted_tuple
@@ -16,6 +16,9 @@ from .models import RefactorFinding, SourceLocation, stable_source_location_id
 
 IndexKeyT = TypeVar("IndexKeyT")
 IndexValueT = TypeVar("IndexValueT")
+AstTargetNode: TypeAlias = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+AstTargetNodeMap: TypeAlias = dict[str, AstTargetNode]
+TupleIndexItems: TypeAlias = dict[IndexKeyT, tuple[IndexValueT, ...]]
 
 
 @dataclass(frozen=True)
@@ -153,7 +156,7 @@ class SourceTargetKey:
 class TupleIndex(Generic[IndexKeyT, IndexValueT]):
     """Deterministic tuple-valued lookup used by source-index authorities."""
 
-    items_by_key: dict[IndexKeyT, tuple[IndexValueT, ...]]
+    items_by_key: TupleIndexItems
 
     def __contains__(self, key: IndexKeyT) -> bool:
         return key in self.items_by_key
@@ -178,7 +181,7 @@ class TupleIndex(Generic[IndexKeyT, IndexValueT]):
             return ()
         return self.items_by_key[key]
 
-    def to_dict(self) -> dict[IndexKeyT, tuple[IndexValueT, ...]]:
+    def to_dict(self) -> TupleIndexItems:
         return dict(self.items_by_key)
 
 
@@ -404,12 +407,54 @@ class SourceIndex:
         }
 
 
+@dataclass(frozen=True)
+class AstTargetNodeCache:
+    """Parsed AST nodes addressed by source-index target identifiers."""
+
+    nodes_by_target_id: AstTargetNodeMap
+
+
+@dataclass(frozen=True)
+class AstTargetBuildArtifacts:
+    """AST target rows plus the parsed-node cache for those rows."""
+
+    targets: tuple[AstTargetDigest, ...]
+    node_cache: AstTargetNodeCache
+
+
+@dataclass(frozen=True)
+class SourceIndexBuildArtifacts:
+    """Complete source-index build output for codemod snapshot reuse."""
+
+    source_index: SourceIndex
+    target_artifacts: AstTargetBuildArtifacts
+
+
+def iter_statement_definition_nodes(
+    statements: Iterable[ast.stmt],
+) -> Iterable[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Yield nested class/function statements without visiting expression trees."""
+
+    for statement in statements:
+        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            yield statement
+            continue
+        for child in ast.iter_child_nodes(statement):
+            if isinstance(child, ast.stmt):
+                yield from iter_statement_definition_nodes((child,))
+
+
 class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
     def __init__(self, file_id: str, file_path: str) -> None:
         super().__init__()
         self.file_id = file_id
         self.file_path = file_path
         self.targets: list[AstTargetDigest] = []
+        self.target_node_cache: AstTargetNodeMap = {}
+
+    def traverse_statements(self, body: list[ast.stmt]) -> None:
+        for node in iter_statement_definition_nodes(body):
+            self.visit(node)
 
     def before_visit_class(self, node: ast.ClassDef) -> None:
         self._append_target(node, AstTargetNodeKind.CLASS)
@@ -418,6 +463,15 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
         self._append_target(node, self._function_node_kind())
+
+    def traverse_class_body(self, node: ast.ClassDef) -> None:
+        self.traverse_statements(node.body)
+
+    def traverse_function_body(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        self.traverse_statements(node.body)
 
     def _function_node_kind(self) -> AstTargetNodeKind:
         if self.class_stack:
@@ -441,15 +495,16 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
             base_names = _base_names(node.bases)
         else:
             base_names = ()
+        target_id = STABLE_ID_AUTHORITY.ast_target_id(
+            file_path=self.file_path,
+            node_kind=node_kind,
+            qualname=qualname,
+            line=line,
+            end_line=end_line,
+        )
         self.targets.append(
             AstTargetDigest(
-                target_id=STABLE_ID_AUTHORITY.ast_target_id(
-                    file_path=self.file_path,
-                    node_kind=node_kind,
-                    qualname=qualname,
-                    line=line,
-                    end_line=end_line,
-                ),
+                target_id=target_id,
                 file_id=self.file_id,
                 file_path=self.file_path,
                 node_type=node_kind.value,
@@ -462,6 +517,7 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
                 base_names=base_names,
             )
         )
+        self.target_node_cache[target_id] = node
 
     @staticmethod
     def _parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> tuple[str, ...]:
@@ -528,17 +584,20 @@ class FileDigestAuthority:
 class AstTargetDigestsAuthority:
     """Project parsed modules into module/class/function target digest rows."""
 
-    def digests(
+    def artifacts(
         self,
         module: ParsedModule,
         file_digest: SourceFileDigest,
-    ) -> tuple[AstTargetDigest, ...]:
+    ) -> AstTargetBuildArtifacts:
         visitor = _AstTargetDigestVisitor(
             file_digest.file_id,
             file_digest.file_path,
         )
         visitor.visit(module.module)
-        return (self.module_target_digest(module, file_digest), *visitor.targets)
+        return AstTargetBuildArtifacts(
+            targets=(self.module_target_digest(module, file_digest), *visitor.targets),
+            node_cache=AstTargetNodeCache(visitor.target_node_cache),
+        )
 
     def module_target_digest(
         self,
@@ -640,33 +699,44 @@ class SourceIndexBuildAuthority:
     findings: tuple[RefactorFinding, ...]
 
     def build(self) -> SourceIndex:
+        return self.build_artifacts().source_index
+
+    def build_artifacts(self) -> SourceIndexBuildArtifacts:
         files = self._file_digests()
-        ast_targets = self._ast_targets(files)
-        targets_by_file = TargetsByFileIndex.from_targets(ast_targets)
+        target_artifacts = self._target_artifacts(files)
+        targets_by_file = TargetsByFileIndex.from_targets(target_artifacts.targets)
         source_index = SourceIndex(
             files=files,
-            ast_targets=ast_targets,
+            ast_targets=target_artifacts.targets,
             evidence=EvidenceDigestsAuthority(
                 file_ids_by_path=self._file_ids_by_path(files),
                 targets_by_file=targets_by_file,
             ).digests(self.findings),
         )
         self._warm_lookup_indexes(source_index)
-        return source_index
+        return SourceIndexBuildArtifacts(
+            source_index=source_index,
+            target_artifacts=target_artifacts,
+        )
 
     def _file_digests(self) -> tuple[SourceFileDigest, ...]:
         authority = FileDigestAuthority()
         return tuple(authority.digest(module) for module in self.modules)
 
-    def _ast_targets(
+    def _target_artifacts(
         self,
         files: tuple[SourceFileDigest, ...],
-    ) -> tuple[AstTargetDigest, ...]:
+    ) -> AstTargetBuildArtifacts:
         authority = AstTargetDigestsAuthority()
-        return tuple(
-            target
-            for module, file_digest in zip(self.modules, files, strict=True)
-            for target in authority.digests(module, file_digest)
+        targets: list[AstTargetDigest] = []
+        target_node_cache: AstTargetNodeMap = {}
+        for module, file_digest in zip(self.modules, files, strict=True):
+            artifacts = authority.artifacts(module, file_digest)
+            targets.extend(artifacts.targets)
+            target_node_cache.update(artifacts.node_cache.nodes_by_target_id)
+        return AstTargetBuildArtifacts(
+            targets=tuple(targets),
+            node_cache=AstTargetNodeCache(target_node_cache),
         )
 
     @staticmethod
@@ -695,3 +765,14 @@ def build_source_index(
         modules=tuple(modules),
         findings=tuple(findings),
     ).build()
+
+
+def build_source_index_artifacts(
+    modules: Iterable[ParsedModule], findings: Iterable[RefactorFinding]
+) -> SourceIndexBuildArtifacts:
+    """Build a source index and parsed-node cache from one AST traversal."""
+
+    return SourceIndexBuildAuthority(
+        modules=tuple(modules),
+        findings=tuple(findings),
+    ).build_artifacts()

@@ -6293,13 +6293,13 @@ def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
 def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> None:
     plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=0,
-        available_detector_type_count=8,
+        work_item_count=8,
         module_count=4,
         max_auto_worker_count=4,
     )
     single_file_plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=0,
-        available_detector_type_count=8,
+        work_item_count=8,
         module_count=1,
         max_auto_worker_count=4,
     )
@@ -11564,6 +11564,42 @@ def test_codemod_fixpoint_scan_reuses_source_snapshot(
 
     assert first_snapshot is second_snapshot
     assert rebuild_count == 1
+
+
+def test_codemod_source_snapshot_reuses_source_index_target_nodes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass Alpha:\n" "    def run(self):\n" "        return 1\n",
+    )
+
+    def fail_reindex(*args: object, **kwargs: object) -> dict[str, ast.AST]:
+        raise AssertionError("CodemodSourceSnapshot rebuilt AST target nodes")
+
+    monkeypatch.setattr(
+        "nominal_refactor_advisor.codemod.AstTargetNodeIndex."
+        "nodes_by_target_identifier_from_modules",
+        fail_reindex,
+    )
+
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
+    target_ids_by_qualname = {
+        target.qualname: target.target_id for target in snapshot.source_index.ast_targets
+    }
+
+    assert "Alpha" in target_ids_by_qualname
+    assert "Alpha.run" in target_ids_by_qualname
+    assert isinstance(
+        snapshot.ast_target_nodes_by_id[target_ids_by_qualname["Alpha"]],
+        ast.ClassDef,
+    )
+    assert isinstance(
+        snapshot.ast_target_nodes_by_id[target_ids_by_qualname["Alpha.run"]],
+        ast.FunctionDef,
+    )
 
 
 def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(

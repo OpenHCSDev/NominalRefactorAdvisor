@@ -17,7 +17,7 @@ import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Hashable, MutableMapping
-from dataclasses import MISSING, dataclass, field, fields, replace
+from dataclasses import MISSING, dataclass, field, fields, is_dataclass, replace
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
@@ -1092,6 +1092,63 @@ _LINE_FAMILY_NAME_EVIDENCE = SourceLocationEvidenceProperty(
 )
 
 
+def _contextual_global_digest(value: str) -> str:
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
+
+
+def _stable_context_signature_text(value) -> str:
+    return repr(_stable_context_signature_payload(value))
+
+
+def _stable_context_signature_payload(value):
+    if isinstance(value, ast.AST):
+        return (type(value).__qualname__, ast.dump(value, include_attributes=True))
+    if is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value).__module__,
+            type(value).__qualname__,
+            tuple(
+                (
+                    dataclass_field.name,
+                    _stable_context_signature_payload(
+                        _attribute_projection(dataclass_field.name)(value)
+                    ),
+                )
+                for dataclass_field in fields(value)
+            ),
+        )
+    if isinstance(value, Path):
+        return value.as_posix()
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (
+                    _stable_context_signature_payload(key),
+                    _stable_context_signature_payload(item),
+                )
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return tuple(_stable_context_signature_payload(item) for item in value)
+    return value
+
+
+def _contextual_global_candidate_signature(
+    detector_type: type[IssueDetector],
+    candidates: Iterable,
+) -> str:
+    return _contextual_global_digest(
+        repr(
+            (
+                detector_type.__module__,
+                detector_type.__qualname__,
+                tuple(_stable_context_signature_text(candidate) for candidate in candidates),
+            )
+        )
+    )
+
+
 class RenderedFindingMixin(Generic[CandidateItemT]):
     finding_renderer: ClassVar[CandidateFindingRenderer[CandidateItemT] | None] = None
 
@@ -1244,12 +1301,22 @@ class ConfiguredModuleCollectorCandidateDetector(
 
 
 class CrossModuleCandidateDetector(
+    ContextualGlobalCacheContract,
     RenderedFindingMixin[CandidateItemT],
     IssueDetector,
     Generic[CandidateItemT],
     ABC,
 ):
     """Detector base for repository-wide candidate-to-finding pipelines."""
+
+    @classmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        return _contextual_global_candidate_signature(
+            cls,
+            cls()._candidate_items(list(modules), config),
+        )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1661,7 +1728,36 @@ ShapeT = TypeVar("ShapeT")
 GroupKeyT = TypeVar("GroupKeyT", bound=Hashable)
 
 
-class GroupedShapeIssueDetector(IssueDetector, Generic[ShapeT, GroupKeyT]):
+class GroupedShapeIssueDetector(
+    ContextualGlobalCacheContract,
+    IssueDetector,
+    Generic[ShapeT, GroupKeyT],
+):
+    @classmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        detector = cls()
+        return _contextual_global_digest(
+            repr(
+                (
+                    cls.__module__,
+                    cls.__qualname__,
+                    tuple(
+                        sorted(
+                            (
+                                _stable_context_signature_text(
+                                    detector._group_key(shape)
+                                ),
+                                _stable_context_signature_text(shape),
+                            )
+                            for shape in detector._collect_shapes(list(modules), config)
+                        )
+                    ),
+                )
+            )
+        )
+
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
@@ -1741,12 +1837,7 @@ class ContextualGlobalShapeSignature:
         return _contextual_global_digest(repr(self))
 
 
-def _contextual_global_digest(value: str) -> str:
-    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
-
-
 class ContextualGlobalFiberCollectedShapeIssueDetector(
-    ContextualGlobalCacheContract,
     FiberCollectedShapeIssueDetector[ShapeT, GroupKeyT],
     ABC,
     Generic[ShapeT, GroupKeyT],
