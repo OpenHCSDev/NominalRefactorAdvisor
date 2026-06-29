@@ -1026,9 +1026,6 @@ class SourceLocationEvidenceProperty:
 class SourceLocationZipEvidenceProperty(
     SourceLocationZipDescriptorShape, ABC, metaclass=AutoRegisterMeta
 ):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
 
     def __get__(
         self,

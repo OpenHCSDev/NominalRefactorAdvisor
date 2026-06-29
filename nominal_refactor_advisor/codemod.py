@@ -13078,29 +13078,56 @@ class HelperBackedObservationSpecFindingRecipeSynthesizer(
     detector_id = "helper_backed_observation_spec"
 
 
-class DerivableClassAssignmentFindingRecipeSynthesizer(FindingRecipeSynthesizer):
-    """Build assignment-deletion recipes for derivable detector declarations."""
+class RecipeMetadataAuthority:
+    """Class-level recipe identity metadata shared by recipe synthesizer families."""
 
-    assignment_name: ClassVar[str]
+    recipe_id_suffix: ClassVar[str]
+    recipe_reason: ClassVar[str]
+
+
+class ClassAssignmentDeletionFindingRecipeSynthesizer(
+    RecipeMetadataAuthority,
+    FindingRecipeSynthesizer,
+    ABC,
+):
+    """Build class-assignment deletion recipes from finding evidence."""
 
     def recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        del context
         action_keys = self.action_keys_for_finding(finding)
+        assignment_names = self.assignment_names_for_finding(finding)
         if len(action_keys) != 1:
             return None
+        if not assignment_names:
+            return None
         action_key = action_keys[0]
-        return RefactorRecipe(
-            recipe_id=f"{finding.stable_id}-delete-derivable-assignment",
-            reason="Delete class assignment derived by the detector base.",
-        ).delete_class_assignment(
-            action_key.subject_name,
-            self.assignment_name,
-            source_path=action_key.file_path,
+        if context is not None and not self.action_key_has_assignments(
+            context,
+            action_key,
+            assignment_names,
+        ):
+            return None
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+            reason=self.recipe_reason,
         )
+        for assignment_name in assignment_names:
+            recipe = recipe.delete_class_assignment(
+                action_key.subject_name,
+                assignment_name,
+                source_path=action_key.file_path,
+            )
+        return recipe
+
+    @abstractmethod
+    def assignment_names_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
 
     def action_keys_for_finding(
         self,
@@ -13113,6 +13140,60 @@ class DerivableClassAssignmentFindingRecipeSynthesizer(FindingRecipeSynthesizer)
             finding,
             ((evidence.file_path, evidence.symbol),),
         )
+
+    @staticmethod
+    def action_key_has_assignments(
+        context: CodemodSelectorContext,
+        action_key: FindingRecipeActionKey,
+        assignment_names: tuple[str, ...],
+    ) -> bool:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(action_key.file_path,),
+            qualnames=(action_key.subject_name,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return False
+        node = context.ast_target_nodes_by_id[target_ids[0]]
+        if not isinstance(node, ast.ClassDef):
+            return False
+        return set(assignment_names) <= set(
+            ClassAssignmentDeletionFindingRecipeSynthesizer.assigned_names(node)
+        )
+
+    @staticmethod
+    def assigned_names(node: ast.ClassDef) -> tuple[str, ...]:
+        names: list[str] = []
+        for statement in node.body:
+            if isinstance(statement, ast.Assign):
+                names.extend(
+                    target.id
+                    for target in statement.targets
+                    if isinstance(target, ast.Name)
+                )
+            if isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target,
+                ast.Name,
+            ):
+                names.append(statement.target.id)
+        return tuple(names)
+
+
+class DerivableClassAssignmentFindingRecipeSynthesizer(
+    ClassAssignmentDeletionFindingRecipeSynthesizer
+):
+    """Build assignment-deletion recipes for derivable detector declarations."""
+
+    assignment_name: ClassVar[str]
+    recipe_id_suffix = "delete-derivable-assignment"
+    recipe_reason = "Delete class assignment derived by the detector base."
+
+    def assignment_names_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[str, ...]:
+        del finding
+        return (self.assignment_name,)
 
 
 class DerivableDetectorIdFindingRecipeSynthesizer(
@@ -13133,14 +13214,31 @@ class DerivableCandidateCollectorFindingRecipeSynthesizer(
     assignment_name = CANDIDATE_COLLECTOR_FIELD_NAME
 
 
+class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
+    ClassAssignmentDeletionFindingRecipeSynthesizer
+):
+    """Delete AutoRegister protocol fields repeated from inherited bases."""
+
+    detector_id = "inherited_autoregister_config_boilerplate"
+    recipe_id_suffix = "delete-inherited-autoregister-config"
+    recipe_reason = (
+        "Delete AutoRegister registry protocol assignments already inherited "
+        "from a nominal base."
+    )
+
+    def assignment_names_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[str, ...]:
+        return finding.metrics.plan_field_names
+
+
 class ModuleAssignmentDeletionFindingRecipeSynthesizer(
+    RecipeMetadataAuthority,
     FindingRecipeSynthesizer,
     ABC,
 ):
     """Shared recipe shape for findings that delete module assignments."""
-
-    recipe_id_suffix: ClassVar[str]
-    recipe_reason: ClassVar[str]
 
     def recipe_for_finding(
         self,

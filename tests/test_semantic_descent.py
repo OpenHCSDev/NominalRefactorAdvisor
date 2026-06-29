@@ -10,6 +10,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
+    InheritedAutoRegisterConfigBoilerplateDetector,
     LocalRoleCaseLogicDetector,
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
@@ -372,6 +373,72 @@ def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
     assert record.action_keys
     assert "semantic mapping mirror has a stable DSL action key" in record.reason
     assert plan.document.recipes == ()
+
+
+def test_inherited_autoregister_config_synthesizes_assignment_deletions(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from abc import ABC, abstractmethod\n"
+        "from metaclass_registry import AutoRegisterMeta\n"
+        "\n"
+        "DEFAULT_REGISTRY_KEY_ATTRIBUTE = '__registry_key__'\n"
+        "\n"
+        "def class_name_registry_key(name, cls):\n"
+        "    return name.lower()\n"
+        "\n"
+        "class RegisteredEvidenceProperty(ABC):\n"
+        "    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE\n"
+        "    __key_extractor__ = class_name_registry_key\n"
+        "    __skip_if_no_key__ = True\n"
+        "\n"
+        "class SourceLocationZipEvidenceProperty(\n"
+        "    RegisteredEvidenceProperty, ABC, metaclass=AutoRegisterMeta\n"
+        "):\n"
+        "    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE\n"
+        "    __key_extractor__ = class_name_registry_key\n"
+        "    __skip_if_no_key__ = True\n"
+        "\n"
+        "    @abstractmethod\n"
+        "    def _source_locations(self, instance):\n"
+        "        raise NotImplementedError\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in InheritedAutoRegisterConfigBoilerplateDetector().detect(
+            modules,
+            DetectorConfig(),
+        )
+        if item.detector_id == "inherited_autoregister_config_boilerplate"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operations = tuple(
+        operation.to_dict() for operation in plan.document.recipes[0].operations
+    )
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer"
+    )
+    assert {operation["attribute_name"] for operation in operations} == {
+        "__key_extractor__",
+        "__registry_key__",
+        "__skip_if_no_key__",
+    }
+    assert all(
+        operation["operation"] == "delete_class_assignment" for operation in operations
+    )
+    assert rewritten.count("    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE") == 1
+    assert rewritten.count("    __key_extractor__ = class_name_registry_key") == 1
+    assert rewritten.count("    __skip_if_no_key__ = True") == 1
+    assert simulation.is_clean is True
 
 
 def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
