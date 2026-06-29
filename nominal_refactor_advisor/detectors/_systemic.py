@@ -6,16 +6,16 @@ axis authority, registration, and other repo-wide architectural smells.
 
 from __future__ import annotations
 
-from ..record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
+import ast
+from dataclasses import dataclass
+from functools import lru_cache
+
 from ..semantic_algebra import ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
+from ..ast_tools import fingerprint_function
 
 from ._base import *
 from ._helpers import *
@@ -39,6 +39,52 @@ def _closed_axis_conversion_matrix_compression_certificate(
             *(f"target:{item}" for item in candidate.target_axis_values),
         ),
     )
+
+
+@lru_cache(maxsize=None)
+def _inheritance_method_shapes(
+    module: ParsedModule,
+    min_statement_count: int,
+) -> tuple[MethodShape, ...]:
+    shapes: list[MethodShape] = []
+    class_stack: list[str] = []
+
+    class Visitor(ast.NodeVisitor):
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            class_stack.append(node.name)
+            for statement in node.body:
+                self.visit(statement)
+            class_stack.pop()
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            if not class_stack:
+                return
+            if len(node.body) < min_statement_count:
+                return
+            class_name = ".".join(class_stack)
+            shapes.append(
+                MethodShape(
+                    file_path=str(module.path),
+                    class_name=class_name,
+                    method_name=node.name,
+                    lineno=node.lineno,
+                    statement_count=len(node.body),
+                    is_private=_is_private_symbol_name(node.name),
+                    param_count=len(node.args.args),
+                    decorators=tuple(
+                        ast.unparse(decorator) for decorator in node.decorator_list
+                    ),
+                    fingerprint_value=fingerprint_function(node),
+                    statement_texts_value=tuple(
+                        ast.unparse(statement) for statement in node.body
+                    ),
+                )
+            )
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+    Visitor().visit(module.module)
+    return tuple(shapes)
 
 
 def _option_record_quotient_compression_certificate(
@@ -111,7 +157,7 @@ _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
 )
 
 
-class TypingProtocolContractDetector(IssueDetector):
+class TypingProtocolContractDetector(PerModuleIssueDetector):
     detector_priority = -20
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -123,78 +169,78 @@ class TypingProtocolContractDetector(IssueDetector):
         _CLASS_FAMILY_RUNTIME_MEMBERSHIP_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        findings: list[RefactorFinding] = []
+        del config
         typing_modules = frozenset({"typing", "typing_extensions"})
-        for module in modules:
-            protocol_aliases = _imported_name_aliases(
-                module.module, module_names=typing_modules, imported_name="Protocol"
-            )
-            runtime_checkable_aliases = _imported_name_aliases(
-                module.module,
-                module_names=typing_modules,
-                imported_name="runtime_checkable",
-            )
-            typing_aliases = _module_aliases(module.module, typing_modules)
-            evidence: list[SourceLocation] = []
-            protocol_class_names: list[str] = []
-            for node in _walk_nodes(module.module):
-                if not isinstance(node, ast.ClassDef):
-                    continue
-                inherits_protocol = any(
-                    (
-                        _is_imported_name(base, protocol_aliases)
-                        or _is_qualified_name(
-                            base, module_aliases=typing_aliases, attr_name="Protocol"
-                        )
-                        for base in node.bases
-                    )
-                )
-                runtime_checkable = any(
-                    (
-                        _is_imported_name(decorator, runtime_checkable_aliases)
-                        or _is_qualified_name(
-                            decorator,
-                            module_aliases=typing_aliases,
-                            attr_name="runtime_checkable",
-                        )
-                        for decorator in node.decorator_list
-                    )
-                )
-                if inherits_protocol:
-                    protocol_class_names.append(node.name)
-                    evidence.append(
-                        SourceLocation(str(module.path), node.lineno, node.name)
-                    )
-                elif runtime_checkable:
-                    evidence.append(
-                        SourceLocation(
-                            str(module.path),
-                            node.lineno,
-                            f"{node.name}.runtime_checkable",
-                        )
-                    )
-            if not evidence:
+        protocol_aliases = _imported_name_aliases(
+            module.module, module_names=typing_modules, imported_name="Protocol"
+        )
+        runtime_checkable_aliases = _imported_name_aliases(
+            module.module,
+            module_names=typing_modules,
+            imported_name="runtime_checkable",
+        )
+        typing_aliases = _module_aliases(module.module, typing_modules)
+        evidence: list[SourceLocation] = []
+        protocol_class_names: list[str] = []
+        for node in _walk_nodes(module.module):
+            if not isinstance(node, ast.ClassDef):
                 continue
-            class_summary = ", ".join(protocol_class_names) or "runtime-checkable class"
-            findings.append(
-                self.build_finding(
-                    (
-                        f"{module.path} declares structural typing interfaces "
-                        f"({class_summary}); replace them with ABC-backed nominal contracts."
-                    ),
-                    tuple(evidence[:8]),
-                    scaffold=(
-                        "from abc import ABC, abstractmethod\n\nclass ContractName(ABC):\n    @abstractmethod\n    def required_method(self, request): ...\n\n# Use direct subclassing for owned implementations, or `ContractName.register(ExternalType)` for explicit virtual membership."
-                    ),
+            inherits_protocol = any(
+                (
+                    _is_imported_name(base, protocol_aliases)
+                    or _is_qualified_name(
+                        base, module_aliases=typing_aliases, attr_name="Protocol"
+                    )
+                    for base in node.bases
                 )
             )
-        return findings
+            runtime_checkable = any(
+                (
+                    _is_imported_name(decorator, runtime_checkable_aliases)
+                    or _is_qualified_name(
+                        decorator,
+                        module_aliases=typing_aliases,
+                        attr_name="runtime_checkable",
+                    )
+                    for decorator in node.decorator_list
+                )
+            )
+            if inherits_protocol:
+                protocol_class_names.append(node.name)
+                evidence.append(
+                    SourceLocation(str(module.path), node.lineno, node.name)
+                )
+            elif runtime_checkable:
+                evidence.append(
+                    SourceLocation(
+                        str(module.path),
+                        node.lineno,
+                        f"{node.name}.runtime_checkable",
+                    )
+                )
+        if not evidence:
+            return []
+        class_summary = ", ".join(protocol_class_names) or "runtime-checkable class"
+        return [
+            self.build_finding(
+                (
+                    f"{module.path} declares structural typing interfaces "
+                    f"({class_summary}); replace them with ABC-backed nominal contracts."
+                ),
+                tuple(evidence[:8]),
+                scaffold=(
+                    "from abc import ABC, abstractmethod\n\nclass ContractName(ABC):\n    @abstractmethod\n    def required_method(self, request): ...\n\n# Use direct subclassing for owned implementations, or `ContractName.register(ExternalType)` for explicit virtual membership."
+                ),
+            )
+        ]
 
 
-class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
+class RepeatedPrivateMethodDetector(
+    FiberCollectedShapeIssueDetector[MethodShape, tuple[bool, int, str]]
+):
     detector_id = "repeated_private_methods"
     observation_kind = ObservationKind.METHOD_SHAPE
     finding_spec = high_confidence_certified_spec(
@@ -207,29 +253,23 @@ class RepeatedPrivateMethodDetector(FiberCollectedShapeIssueDetector):
         _NORMALIZED_AST_CLASS_FAMILY_METHOD_ROLE_OBSERVATION_TAGS,
     )
 
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
-        return tuple(
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                module, MethodShapeFamily, MethodShape
-            )
-        )
+    def _module_shapes(self, module: ParsedModule) -> tuple[MethodShape, ...]:
+        return _inheritance_method_shapes(module, 0)
 
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
-        method = _as_method_shape(shape)
+    def _include_shape(self, shape: MethodShape, config: DetectorConfig) -> bool:
         return bool(
-            method.class_name
-            and method.statement_count >= config.min_duplicate_statements
+            shape.class_name
+            and shape.statement_count >= config.min_duplicate_statements
         )
 
-    def _group_key(self, shape: object) -> object:
-        method = _as_method_shape(shape)
-        return (method.is_private, method.param_count, method.fingerprint)
+    def _group_key(self, shape: MethodShape) -> tuple[bool, int, str]:
+        return (shape.is_private, shape.param_count, shape.fingerprint)
 
     def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
+        self, shapes: tuple[MethodShape, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         methods = sorted_tuple(
-            (_as_method_shape(shape) for shape in shapes),
+            shapes,
             key=lambda item: (item.file_path, item.lineno),
         )
         class_names = {method.class_name for method in methods}
@@ -288,11 +328,10 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
             (
                 method
                 for module in modules
-                for method in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
-                    module, MethodShapeFamily, MethodShape
+                for method in _inheritance_method_shapes(
+                    module,
+                    config.min_duplicate_statements,
                 )
-                if method.class_name
-                and method.statement_count >= config.min_duplicate_statements
             )
         )
         graph = ObservationGraph(
@@ -310,10 +349,11 @@ class InheritanceHierarchyCandidateDetector(IssueDetector):
             groups = [
                 tuple(
                     (
-                        _as_method_shape(item)
+                        item
                         for item in SUPPORT_PROJECTION_AUTHORITY.materialize_observations(
                             fiber.observations, lookup
                         )
+                        if isinstance(item, MethodShape)
                     )
                 )
                 for fiber in cohort.fibers
@@ -363,7 +403,7 @@ class OrchestrationHubDetector(CandidateFindingDetector[FunctionProfile]):
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[FunctionProfile]:
         return tuple(
             (
                 profile
@@ -401,7 +441,7 @@ class BranchClusterUnderAbstractionDetector(CandidateFindingDetector[FunctionPro
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[FunctionProfile]:
         return tuple(
             (
                 profile
@@ -1532,7 +1572,7 @@ class ResidualClosedAxisIndirectionDetector(
         return self.build_finding(
             (
                 f"`{axis_candidate.qualname}` indexes `{axis_candidate.table_name}` by "
-                f"`{axis_candidate.axis_expression}` for `{axis_candidate.enum_name}` cases {table_cases}, "
+                f"`{axis_candidate.dispatch_axis_expression}` for `{axis_candidate.enum_name}` cases {table_cases}, "
                 f"but still branches on residual cases {residual_cases}."
             ),
             axis_candidate.evidence,
@@ -1540,8 +1580,8 @@ class ResidualClosedAxisIndirectionDetector(
                 f'from abc import ABC, abstractmethod\nfrom typing import ClassVar\nfrom metaclass_registry import AutoRegisterMeta\n\nclass AxisPolicy(ABC, metaclass=AutoRegisterMeta):\n    __registry_key__ = "axis_key"\n    __skip_if_no_key__ = True\n    axis_key: ClassVar[{axis_candidate.enum_name}]\n\n    @classmethod\n    def for_key(cls, key: {axis_candidate.enum_name}):\n        return cls.__registry__[key]()\n\n    @abstractmethod\n    def project(self, source): ...\n\n    @abstractmethod\n    def run(self, ctx): ...\n\n# Move the table projection and residual branch behavior into enum-keyed policy subclasses.\n# Derive table-like views from AxisPolicy.__registry__ only if callers still need them.'
             ),
             codemod_patch=(
-                f"# Replace `{axis_candidate.table_name}[{axis_candidate.axis_expression}]` plus residual "
-                f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.axis_expression})`.\n"
+                f"# Replace `{axis_candidate.table_name}[{axis_candidate.dispatch_axis_expression}]` plus residual "
+                f"`{axis_candidate.enum_name}` branching with `AxisPolicy.for_key({axis_candidate.dispatch_axis_expression})`.\n"
                 f"# Move projections ({value_summary}) and per-case behavior into registered `AxisPolicy` subclasses."
             ),
             metrics=DispatchCountMetrics.from_literal_family(
@@ -1608,12 +1648,12 @@ class InlineEnumSubsetGuardDetector(
         )
         return self.build_finding(
             (
-                f"`{guard_candidate.function_name}` checks `{guard_candidate.axis_expression} "
+                f"`{guard_candidate.function_name}` checks `{guard_candidate.dispatch_axis_expression} "
                 f"{guard_candidate.operator} {{{cases}}}`; move that subset into enum-owned typed policy."
             ),
             (guard_candidate.evidence,),
             scaffold=(
-                f"@dataclass(frozen=True)\nclass PolicyRow:\n    key: {guard_candidate.enum_name}\n    requires_policy: bool\n\ndef exhaustive_enum_lookup(enum_type, rows):\n    by_key = {{row.key: row for row in rows}}\n    if set(by_key) != set(enum_type):\n        raise TypeError('incomplete enum policy')\n    return by_key\n\nPOLICY_BY_KEY = exhaustive_enum_lookup(...)\nif POLICY_BY_KEY[{guard_candidate.axis_expression}].requires_policy:\n    ..."
+                f"@dataclass(frozen=True)\nclass PolicyRow:\n    key: {guard_candidate.enum_name}\n    requires_policy: bool\n\ndef exhaustive_enum_lookup(enum_type, rows):\n    by_key = {{row.key: row for row in rows}}\n    if set(by_key) != set(enum_type):\n        raise TypeError('incomplete enum policy')\n    return by_key\n\nPOLICY_BY_KEY = exhaustive_enum_lookup(...)\nif POLICY_BY_KEY[{guard_candidate.dispatch_axis_expression}].requires_policy:\n    ..."
             ),
             codemod_patch=(
                 f"# Replace inline subset {{{cases}}} with a policy owned by `{guard_candidate.enum_name}`.\n"
@@ -1924,6 +1964,15 @@ class ResidualClosedAxisBranchingDetector(
 class ParallelKeyedAxisFamilyDetector(
     CrossModuleCollectorCandidateDetector[ParallelKeyedAxisFamilyCandidate]
 ):
+    registry_normal_form_policy = RegistryNormalFormPolicy(
+        stage_order=50,
+        normal_form="auto_registered_abc",
+        stage_label="merge keyed families",
+        step_template=(
+            "Merge sibling keyed registry families in `{subsystem}` into one "
+            "shared ABC/mixin lattice over the common key axis."
+        ),
+    )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Parallel keyed families should collapse into one axis authority",
@@ -2000,12 +2049,31 @@ declare_candidate_rule_detector(
     ),
     detector_base=CrossModuleCollectorCandidateDetector,
     candidate_collector=_parallel_keyed_table_axis_candidates,
+    registry_normal_form_policy=RegistryNormalFormPolicy(
+        stage_order=40,
+        normal_form="generated_projection_surface",
+        stage_label="merge keyed projections",
+        step_template=(
+            "Merge parallel keyed tables in `{subsystem}` into one finite axis "
+            "catalog and derive each table surface from that catalog."
+        ),
+    ),
 )
 
 
 class ParallelKeyedTableAndFamilyDetector(
     CrossModuleCollectorCandidateDetector[ParallelKeyedTableAndFamilyCandidate]
 ):
+    registry_normal_form_policy = RegistryNormalFormPolicy(
+        stage_order=30,
+        normal_form="generated_projection_surface",
+        stage_label="choose authority and derive projection",
+        step_template=(
+            "Choose one injective registry authority in `{subsystem}` and derive "
+            "the parallel keyed table as a generated projection, or demote the "
+            "family if behavior is only metadata."
+        ),
+    )
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Keyed table and keyed family should collapse into one auto-registered axis family",
@@ -2047,7 +2115,6 @@ class ParallelKeyedTableAndFamilyDetector(
 
 
 class CallableMethodAxisRegistryDetector(IssueDetector):
-    detector_id = "callable_method_axis_registry"
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Callable method-axis registry should become an auto-registered strategy family",
@@ -2911,6 +2978,17 @@ declare_candidate_rule_detector(
     ),
     detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
     candidate_collector=_non_injective_type_registry_candidates,
+    registry_normal_form_policy=RegistryNormalFormPolicy(
+        stage_order=10,
+        normal_form="typed_record_table",
+        stage_label="repair injectivity",
+        step_template=(
+            "Repair `{subsystem}` registry injectivity first: give each concrete "
+            "implementation one canonical key and move semantic aliases into an "
+            "explicit alias projection."
+        ),
+        blocks_metaclass=True,
+    ),
 )
 
 
@@ -2947,6 +3025,16 @@ declare_candidate_rule_detector(
     ),
     detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
     candidate_collector=_injective_type_registry_candidates,
+    registry_normal_form_policy=RegistryNormalFormPolicy(
+        stage_order=60,
+        normal_form="auto_registered_abc",
+        stage_label="promote mature injective registry",
+        step_template=(
+            "Promote the mature injective registry in `{subsystem}` to "
+            "`AutoRegisterMeta`; implementation classes should retain only "
+            "canonical key attributes and behavior hooks."
+        ),
+    ),
 )
 
 
@@ -3105,6 +3193,17 @@ declare_candidate_rule_detector(
     metrics=_registry_maturity_fanout_metrics,
     detector_base=ConfiguredCrossModuleCollectorCandidateDetector,
     candidate_collector=_premature_registry_infrastructure_candidates,
+    registry_normal_form_policy=RegistryNormalFormPolicy(
+        stage_order=20,
+        normal_form="typed_record_table",
+        stage_label="demote premature registry",
+        step_template=(
+            "Demote unstable registry infrastructure in `{subsystem}` to a typed "
+            "table or local strategy map until key cases, lookup lifecycle, and "
+            "consumer fanout are all proven."
+        ),
+        blocks_metaclass=True,
+    ),
 )
 
 
@@ -3372,7 +3471,12 @@ class AllMissingAxisPredicateDetector(
         )
 
 
-class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
+class RepeatedValidateShapeGuardFamilyDetector(
+    ConfiguredCrossModuleCollectorCandidateDetector[
+        RepeatedValidateShapeGuardFamilyCandidate
+    ]
+):
+    candidate_collector = _repeated_validate_shape_guard_candidates_for_modules
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Repeated validate() shape guards should collapse into one validated-record authority",
@@ -3383,18 +3487,9 @@ class RepeatedValidateShapeGuardFamilyDetector(IssueDetector):
         _CLASS_FAMILY_METHOD_ROLE_NORMALIZED_AST_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        return [
-            self._finding_for_candidate(candidate)
-            for candidate in _repeated_validate_shape_guard_candidates_for_modules(
-                modules, config
-            )
-        ]
-
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        family_candidate = cast(RepeatedValidateShapeGuardFamilyCandidate, candidate)
+    def _finding_for_candidate(
+        self, family_candidate: RepeatedValidateShapeGuardFamilyCandidate
+    ) -> RefactorFinding:
         method_symbols = tuple(method.symbol for method in family_candidate.methods)
         method_summary = ", ".join(method_symbols[:6])
         shared_guard_count = len(family_candidate.shared_shape_guard_signatures)
@@ -4820,15 +4915,15 @@ declare_candidate_rule_detector(
 )
 
 
-def _bridge_axis_identifier(axis_expression: str) -> str:
-    cleaned = "".join((ch if ch.isalnum() else "_" for ch in axis_expression))
+def _bridge_axis_identifier(dispatch_axis_expression: str) -> str:
+    cleaned = "".join((ch if ch.isalnum() else "_" for ch in dispatch_axis_expression))
     return cleaned.strip("_") or "representation"
 
 
 def _bridge_axis_dispatch_scaffold(
     candidate: BridgeAxisDispatchFamilyCandidate,
 ) -> str:
-    axis_identifier = _bridge_axis_identifier(candidate.axis_expression)
+    axis_identifier = _bridge_axis_identifier(candidate.dispatch_axis_expression)
     return (
         "from abc import ABC, abstractmethod\n"
         "from metaclass_registry import AutoRegisterMeta\n\n"
@@ -4859,20 +4954,20 @@ declare_candidate_rule_detector(
         _DATAFLOW_ROOT_NORMALIZED_AST_OBSERVATION_TAGS,
     ),
     summary=lambda candidate: (
-        f"Operations {candidate.function_names} all dispatch `{candidate.axis_expression}` "
+        f"Operations {candidate.function_names} all dispatch `{candidate.dispatch_axis_expression}` "
         f"over cases {candidate.literal_cases}; factor the repeated axis into a bridge ABC "
         f"with hooks for {candidate.operation_names}."
     ),
     scaffold=_bridge_axis_dispatch_scaffold,
     codemod_patch=lambda candidate: (
-        f"# Replace repeated `{candidate.axis_expression}` branches in {candidate.function_names} "
+        f"# Replace repeated `{candidate.dispatch_axis_expression}` branches in {candidate.function_names} "
         "with one bridge lookup and operation hooks.\n"
         "# Keep backend-specific conversion/capability details on the bridge implementations; "
         "leave call sites responsible only for selecting the operation."
     ),
     metrics=lambda candidate: DispatchCountMetrics(
         dispatch_site_count=len(candidate.function_names),
-        dispatch_axis=candidate.axis_expression,
+        dispatch_axis=candidate.dispatch_axis_expression,
         literal_cases=candidate.literal_cases,
     ),
     compression_certificate=lambda candidate: candidate.compression_certificate,

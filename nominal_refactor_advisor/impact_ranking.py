@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TypeAlias, cast
+from typing import TypeAlias
 
 from .models import (
     ImpactDelta,
@@ -18,9 +18,12 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = (
     JsonScalar | tuple["JsonValue", ...] | list["JsonValue"] | dict[str, "JsonValue"]
 )
-JsonObject: TypeAlias = dict[str, JsonValue]
 ImpactKeyValue: TypeAlias = str | int | float | bool
 OpportunityGroups: TypeAlias = dict["RefactorImpactKey", list[RefactorFinding]]
+
+
+class JsonObject(dict[str, JsonValue]):
+    """Nominal JSON object payload for impact-ranking exports."""
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,7 @@ class RefactorImpactOpportunity(SemanticRecord):
         return self.finding_count
 
     def to_dict(self) -> JsonObject:
-        payload = cast(JsonObject, super().to_dict())
+        payload = JsonObject(super().to_dict())
         payload["finding_count"] = self.finding_count
         payload["detector_count"] = self.detector_count
         payload["file_count"] = self.file_count
@@ -105,7 +108,7 @@ class RefactorImpactRankingReport(SemanticRecord):
         return len(self.trajectories)
 
     def to_dict(self) -> JsonObject:
-        payload = cast(JsonObject, super().to_dict())
+        payload = JsonObject(super().to_dict())
         payload["opportunity_count"] = self.opportunity_count
         payload["trajectory_count"] = self.trajectory_count
         payload["opportunities"] = tuple(
@@ -145,7 +148,7 @@ class RefactorImpactTrajectoryStep(SemanticRecord):
         return self.blocked_opportunity_count + self.exposed_opportunity_count
 
     def to_dict(self) -> JsonObject:
-        payload = cast(JsonObject, super().to_dict())
+        payload = JsonObject(super().to_dict())
         payload["opportunity"] = self.opportunity.to_dict()
         payload["predicted_removed_finding_count"] = (
             self.predicted_removed_finding_count
@@ -215,7 +218,7 @@ class RefactorImpactTrajectory(SemanticRecord):
         return tuple(step.opportunity.key for step in self.steps)
 
     def to_dict(self) -> JsonObject:
-        payload = cast(JsonObject, super().to_dict())
+        payload = JsonObject(super().to_dict())
         payload["step_count"] = self.step_count
         payload["predicted_removed_finding_count"] = (
             self.predicted_removed_finding_count

@@ -268,15 +268,21 @@ class CodemodAuthoringBundleRecordStatus(CodemodAuthoringRecordReference):
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringBundleStatus:
-    """Current workflow status for an authoring bundle index."""
+class CodemodAuthoringBundleIndex:
+    """Filesystem identity for one codemod authoring bundle index."""
 
     bundle_index_path: Path
-    records: tuple[CodemodAuthoringBundleRecordStatus, ...]
 
     @property
     def bundle_root(self) -> Path:
         return self.bundle_index_path.parent
+
+
+@dataclass(frozen=True)
+class CodemodAuthoringBundleStatus(CodemodAuthoringBundleIndex):
+    """Current workflow status for an authoring bundle index."""
+
+    records: tuple[CodemodAuthoringBundleRecordStatus, ...]
 
     def to_dict(self) -> JsonObject:
         return {
@@ -287,10 +293,9 @@ class CodemodAuthoringBundleStatus:
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringBundleStatusReporter:
+class CodemodAuthoringBundleStatusReporter(CodemodAuthoringBundleIndex):
     """Recompute authoring bundle readiness from the current filesystem."""
 
-    bundle_index_path: Path
     bundle_index: Mapping[str, JsonValue]
 
     @classmethod
@@ -301,11 +306,7 @@ class CodemodAuthoringBundleStatusReporter:
         payload = json.loads(bundle_index_path.read_text(encoding="utf-8"))
         if not isinstance(payload, Mapping):
             raise TypeError("authoring bundle index JSON must be an object")
-        return cls(bundle_index_path, payload)
-
-    @property
-    def bundle_root(self) -> Path:
-        return self.bundle_index_path.parent
+        return cls(bundle_index_path=bundle_index_path, bundle_index=payload)
 
     def status(self) -> CodemodAuthoringBundleStatus:
         reader = CodemodAuthoringPayloadReader(self.bundle_index)
@@ -488,10 +489,11 @@ class CodemodAuthoringActionRunReport(CodemodAuthoringActionRunRequest):
 
 
 @dataclass(frozen=True)
-class CodemodAuthoringBundleActionRunner(CodemodAuthoringActionRunRequest):
+class CodemodAuthoringBundleActionRunner(
+    CodemodAuthoringBundleIndex,
+    CodemodAuthoringActionRunRequest,
+):
     """Execute one target action through the bundle workflow planner."""
-
-    bundle_index_path: Path
 
     def run(self) -> CodemodAuthoringActionRunReport:
         reporter = CodemodAuthoringBundleStatusReporter.from_index_path(

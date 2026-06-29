@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from ..collection_algebra import sorted_tuple
+from ..constructor_algebra import ConstructorParameterField
 from ..models import MappingMetrics
 from ..patterns import PatternId
+from ..semantic_identity import SemanticRoleIdentityToken
 from ..taxonomy import CapabilityTag, ObservationTag
 from ._base import (
     DetectorConfig,
@@ -29,7 +31,6 @@ from ._substrate_support import (
     _IGNORED_ANCESTOR_NAMES,
     _class_ancestor_name_map,
 )
-
 
 _MIN_AUTHORITY_ATOMS = 7
 _MIN_LOCAL_ATOMS = 6
@@ -73,12 +74,19 @@ _AUTHORITY_NAME_SUFFIXES = (
 _HIGH_SIGNAL_ATOM_PREFIXES = ("construct:", "method:", "signal:", "store:", "control:")
 _STRUCTURAL_ATOM_PREFIXES = ("construct:", "method:", "signal:", "store:", "control:")
 _IDENTITY_FIELD_TERMINALS = frozenset(
-    {"id", "ids", "key", "keys", "name", "names", "path", "paths", "root", "roots"}
+    (
+        *SemanticRoleIdentityToken.pluralized_string_identifier_values(),
+        "path",
+        "paths",
+        "root",
+        "roots",
+    )
 )
 _MIN_PARALLEL_PRIMITIVE_FIELDS = 3
 _MIN_PARALLEL_PRIMITIVE_RECORDS = 2
 _MIN_CARRIER_REUSE_FIELDS = 3
 _MIN_CARRIER_REUSE_ROLES = 3
+_MIN_CARRIER_SHARED_FIELD_MATCHES = 2
 _MIN_CARRIER_ROLE_OVERLAP = 3
 _MIN_CARRIER_AUTHORITY_COVERAGE = 0.50
 _MIN_CARRIER_LOCAL_COVERAGE = 0.50
@@ -158,9 +166,7 @@ class CapabilitySignature:
     @property
     def high_signal_atoms(self) -> frozenset[str]:
         return frozenset(
-            atom
-            for atom in self.atoms
-            if atom.startswith(_HIGH_SIGNAL_ATOM_PREFIXES)
+            atom for atom in self.atoms if atom.startswith(_HIGH_SIGNAL_ATOM_PREFIXES)
         )
 
 
@@ -320,6 +326,7 @@ def _constructor_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ..
         if statement.name != "__init__":
             continue
         annotations = _parameter_annotation_map(statement)
+        parameter_names = tuple(annotations)
         for inner in statement.body:
             assignment = _assigned_self_attribute(inner)
             if assignment is None:
@@ -327,15 +334,17 @@ def _constructor_field_type_map(node: ast.ClassDef) -> tuple[tuple[str, str], ..
             field_name, value = assignment
             if slots and field_name not in slots:
                 continue
-            if field_name in annotations:
-                typed_fields.setdefault(field_name, annotations[field_name])
+            constructor_field = ConstructorParameterField.from_assignment(
+                field_name=field_name,
+                parameter_names=parameter_names,
+                value_references=_expression_name_references(value),
+            )
+            if constructor_field is None:
                 continue
-            references = _expression_name_references(value)
-            for parameter_name, annotation_text in annotations.items():
-                if parameter_name == field_name or parameter_name not in references:
-                    continue
-                typed_fields.setdefault(field_name, annotation_text)
-                break
+            typed_fields.setdefault(
+                constructor_field.field_name,
+                annotations[constructor_field.source_name],
+            )
     return sorted_tuple(typed_fields.items())
 
 
@@ -415,10 +424,7 @@ def _carrier_surfaces_share_package(
         return True
     left_path_package = _package_root_name_for_path(left.file_path)
     right_path_package = _package_root_name_for_path(right.file_path)
-    return (
-        left_path_package is not None
-        and left_path_package == right_path_package
-    )
+    return left_path_package is not None and left_path_package == right_path_package
 
 
 def _carrier_surface_related(left: CarrierSurface, right: CarrierSurface) -> bool:
@@ -504,7 +510,10 @@ def _carrier_composition_retreat_candidates(
             if not carrier_type_names:
                 continue
             for carrier_type_name in carrier_type_names:
-                if carrier_type_name == node.name or carrier_type_name in inherited_names:
+                if (
+                    carrier_type_name == node.name
+                    or carrier_type_name in inherited_names
+                ):
                     continue
                 candidates.append(
                     CarrierCompositionRetreatCandidate(
@@ -515,9 +524,7 @@ def _carrier_composition_retreat_candidates(
                         field_name=field_name,
                         carrier_type_name=carrier_type_name,
                         base_names=base_names,
-                        nominal_ancestor_names=(
-                            ancestor_names_by_class[node.name]
-                        ),
+                        nominal_ancestor_names=(ancestor_names_by_class[node.name]),
                     )
                 )
     return sorted_tuple(
@@ -539,8 +546,7 @@ def _carrier_surfaces_share_nominal_ancestor(
     return bool(
         (
             set(local.nominal_ancestor_names)
-            & set(authority.nominal_ancestor_names)
-            - _IGNORED_ANCESTOR_NAMES
+            & set(authority.nominal_ancestor_names) - _IGNORED_ANCESTOR_NAMES
         )
     )
 
@@ -548,7 +554,10 @@ def _carrier_surfaces_share_nominal_ancestor(
 def _annotation_type_names(annotation_text: str) -> frozenset[str]:
     return frozenset(
         token
-        for token in annotation_text.replace(".", " ").replace("[", " ").replace("]", " ").split()
+        for token in annotation_text.replace(".", " ")
+        .replace("[", " ")
+        .replace("]", " ")
+        .split()
         if token.isidentifier()
     )
 
@@ -566,11 +575,13 @@ def _shared_carrier_field_names(
     local: CarrierSurface,
     authority: CarrierSurface,
 ) -> tuple[str, ...]:
-    authority_fields = set(authority.field_names)
+    authority_field_types = dict(authority.field_type_map)
+    local_field_types = dict(local.field_type_map)
     return tuple(
         field_name
         for field_name in local.field_names
-        if field_name in authority_fields
+        if field_name in authority_field_types
+        and local_field_types.get(field_name) == authority_field_types[field_name]
     )
 
 
@@ -630,7 +641,7 @@ def _carrier_reuse_candidate(
     if local_coverage < _MIN_CARRIER_LOCAL_COVERAGE:
         return None
     shared_field_names = _shared_carrier_field_names(local, authority)
-    if not shared_field_names and len(shared_roles) < (_MIN_CARRIER_ROLE_OVERLAP + 1):
+    if len(shared_field_names) < _MIN_CARRIER_SHARED_FIELD_MATCHES:
         return None
     return AvailableCarrierReuseCandidate(
         local=local,
@@ -661,9 +672,9 @@ def _available_carrier_reuse_candidates(
         for authority in authorities:
             candidate = _carrier_reuse_candidate(local, authority)
             if candidate is not None:
-                candidates_by_local[(local.file_path, local.line, local.class_name)].append(
-                    candidate
-                )
+                candidates_by_local[
+                    (local.file_path, local.line, local.class_name)
+                ].append(candidate)
 
     selected = []
     for candidates in candidates_by_local.values():
@@ -776,7 +787,11 @@ class _CapabilityAtomVisitor(ast.NodeVisitor):
         self.call_names: set[str] = set()
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs):
+        for argument in (
+            *node.args.posonlyargs,
+            *node.args.args,
+            *node.args.kwonlyargs,
+        ):
             self.atoms.add(f"param:{argument.arg}")
         if node.args.vararg is not None:
             self.atoms.add(f"param:{node.args.vararg.arg}")
@@ -955,7 +970,9 @@ def _imported_local_names(module: ParsedModule) -> tuple[str, ...]:
     names: list[str] = []
     for statement in module.module.body:
         if isinstance(statement, ast.Import):
-            names.extend(alias.asname or alias.name.split(".", 1)[0] for alias in statement.names)
+            names.extend(
+                alias.asname or alias.name.split(".", 1)[0] for alias in statement.names
+            )
         elif isinstance(statement, ast.ImportFrom):
             names.extend(
                 alias.asname or alias.name
@@ -965,7 +982,9 @@ def _imported_local_names(module: ParsedModule) -> tuple[str, ...]:
     return sorted_tuple(set(names))
 
 
-def _class_method_nodes(node: ast.ClassDef) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
+def _class_method_nodes(
+    node: ast.ClassDef,
+) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
     return tuple(
         statement
         for statement in node.body
@@ -983,7 +1002,9 @@ def _combined_class_signature(node: ast.ClassDef) -> CapabilitySignature:
     return CapabilitySignature(frozenset(atoms), frozenset(call_names))
 
 
-def _module_authorities(module: ParsedModule) -> tuple[AbstractionAuthoritySignature, ...]:
+def _module_authorities(
+    module: ParsedModule,
+) -> tuple[AbstractionAuthoritySignature, ...]:
     shared_path_authority = _is_shared_authority_location(module)
     authorities: list[AbstractionAuthoritySignature] = []
     for statement in module.module.body:
@@ -1084,7 +1105,9 @@ def _overlap_score(atoms: Sequence[str]) -> int:
 def _local_declares_authority_name(
     local: LocalImplementationSignature, authority: AbstractionAuthoritySignature
 ) -> bool:
-    return local.symbol == authority.name or local.symbol.startswith(f"{authority.name}.")
+    return local.symbol == authority.name or local.symbol.startswith(
+        f"{authority.name}."
+    )
 
 
 def _reimplements_authority(
@@ -1102,7 +1125,9 @@ def _reimplements_authority(
     overlap = local.signature.high_signal_atoms & authority.signature.high_signal_atoms
     if len(overlap) < _MIN_OVERLAP_ATOMS:
         return None
-    authority_coverage = len(overlap) / max(len(authority.signature.high_signal_atoms), 1)
+    authority_coverage = len(overlap) / max(
+        len(authority.signature.high_signal_atoms), 1
+    )
     if authority_coverage < _MIN_AUTHORITY_COVERAGE:
         return None
     local_coverage = len(overlap) / max(len(local.signature.high_signal_atoms), 1)
@@ -1112,13 +1137,16 @@ def _reimplements_authority(
     if len(structural_overlap) < _MIN_OVERLAP_ATOMS:
         return None
     if not any(atom.startswith("construct:") for atom in structural_overlap):
-        if len(
-            tuple(
-                atom
-                for atom in structural_overlap
-                if atom.startswith(("method:", "signal:", "store:"))
+        if (
+            len(
+                tuple(
+                    atom
+                    for atom in structural_overlap
+                    if atom.startswith(("method:", "signal:", "store:"))
+                )
             )
-        ) < 4:
+            < 4
+        ):
             return None
     score = _overlap_score(structural_overlap)
     if score < _MIN_OVERLAP_SCORE:
@@ -1147,9 +1175,9 @@ def _available_abstraction_reuse_candidates(
             for authority in authorities:
                 candidate = _reimplements_authority(local, authority)
                 if candidate is not None:
-                    candidates_by_local[(local.file_path, local.line, local.symbol)].append(
-                        candidate
-                    )
+                    candidates_by_local[
+                        (local.file_path, local.line, local.symbol)
+                    ].append(candidate)
     best_candidates = [
         sorted(
             candidates,
@@ -1360,7 +1388,7 @@ class CarrierCompositionRetreatDetector(IssueDetector):
 
 
 class ParallelPrimitiveCarrierDetector(IssueDetector):
-    detector_id = "parallel_primitive_carrier"
+    ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel primitive fields should become a nominal carrier",

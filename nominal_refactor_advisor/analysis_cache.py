@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from collections import Counter
 from dataclasses import asdict, dataclass
 from enum import StrEnum
@@ -29,7 +30,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 5
+    version: int = 8
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -133,6 +134,11 @@ class SourceFileSignature:
         )
 
 
+def semantic_module_hash(module: ParsedModule) -> str:
+    payload = ast.dump(module.module, include_attributes=True)
+    return hashlib.blake2s(payload.encode("utf-8"), digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True)
 class ModuleSourceSignature:
     """Parsed-module identity used for per-module detector-output shards."""
@@ -148,10 +154,7 @@ class ModuleSourceSignature:
             str(module.path.resolve()),
             module.module_name,
             module.is_package_init,
-            hashlib.blake2s(
-                module.source.encode("utf-8"),
-                digest_size=16,
-            ).hexdigest(),
+            semantic_module_hash(module),
         )
 
 
@@ -206,7 +209,7 @@ class DetectorRegistrySignature:
         registered_key = registered_key_by_type.get(detector_type)
         if registered_key is not None:
             return registered_key
-        detector_id = detector_type.detector_id
+        detector_id = detector_type.effective_detector_id()
         if detector_id is not None:
             return detector_id
         return detector_type.__qualname__
@@ -265,6 +268,27 @@ class AnalysisCacheIdentity(AnalysisCacheEntryContext):
             python_version=(sys.version_info.major, sys.version_info.minor),
             roots=tuple(str(root.resolve()) for root in roots),
             source_files=source_files,
+        )
+
+    @classmethod
+    def from_modules(
+        cls,
+        roots: tuple[Path, ...],
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> "AnalysisCacheIdentity":
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.current(),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            roots=tuple(str(root.resolve()) for root in roots),
+            source_files=tuple(
+                SourceFileSignature(
+                    path=str(module.path.resolve()),
+                    source_hash=semantic_module_hash(module),
+                )
+                for module in modules
+            ),
         )
 
     @property
@@ -351,6 +375,65 @@ class PerModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
+@dataclass(frozen=True, kw_only=True)
+class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
+    """Invalidation identity for one context-dependent module detector shard."""
+
+    source_file: ModuleSourceSignature
+    context_signature: str
+
+    @classmethod
+    def from_module_context(
+        cls,
+        module: ParsedModule,
+        config: DetectorConfig,
+        detector_type: type[IssueDetector],
+        context_signature: str,
+    ) -> "ContextualModuleAnalysisCacheIdentity":
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.from_detector_types(
+                (detector_type,)
+            ),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            source_file=ModuleSourceSignature.from_module(module),
+            context_signature=context_signature,
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContextualGlobalAnalysisCacheIdentity(AnalysisCacheEntryContext):
+    """Invalidation identity for one global detector keyed by semantic context."""
+
+    context_signature: str
+
+    @classmethod
+    def from_global_context(
+        cls,
+        config: DetectorConfig,
+        detector_type: type[IssueDetector],
+        context_signature: str,
+    ) -> "ContextualGlobalAnalysisCacheIdentity":
+        return cls(
+            config=detector_config_signature(config),
+            detector_registry=DetectorRegistrySignature.from_detector_types(
+                (detector_type,)
+            ),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            context_signature=context_signature,
+        )
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
 @dataclass(frozen=True)
 class AnalysisFindingCache:
     """Load and store detector findings for unchanged source/config identity."""
@@ -359,7 +442,12 @@ class AnalysisFindingCache:
 
     def load(
         self,
-        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+        identity: (
+            AnalysisCacheIdentity
+            | PerModuleAnalysisCacheIdentity
+            | ContextualModuleAnalysisCacheIdentity
+            | ContextualGlobalAnalysisCacheIdentity
+        ),
     ) -> AnalysisCacheLookup:
         if self.storage_root is None:
             return analysis_cache_lookup(AnalysisCacheStatus.DISABLED)
@@ -395,7 +483,12 @@ class AnalysisFindingCache:
 
     def store(
         self,
-        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+        identity: (
+            AnalysisCacheIdentity
+            | PerModuleAnalysisCacheIdentity
+            | ContextualModuleAnalysisCacheIdentity
+            | ContextualGlobalAnalysisCacheIdentity
+        ),
         findings: list[RefactorFinding],
     ) -> None:
         if self.storage_root is None:
@@ -440,20 +533,11 @@ class AnalysisFindingCache:
     ) -> tuple[AnalysisCacheIdentity, tuple[RefactorFinding, ...]] | None:
         if self.storage_root is None:
             return None
-        try:
-            with self._latest_path(family_identity).open("rb") as handle:
-                payload = pickle.load(handle)
-        except (
-            FileNotFoundError,
-            OSError,
-            pickle.PickleError,
-            EOFError,
-            TypeError,
-            ValueError,
-            AttributeError,
-            ImportError,
-        ):
+        latest_path = self._latest_path(family_identity)
+        if not latest_path.is_file():
             return None
+        with latest_path.open("rb") as handle:
+            payload = pickle.load(handle)
         if not isinstance(payload, dict):
             return None
         if payload.get("family_identity") != family_identity:
@@ -495,21 +579,25 @@ class AnalysisFindingCache:
 
     def _entry_path(
         self,
-        identity: AnalysisCacheIdentity | PerModuleAnalysisCacheIdentity,
+        identity: (
+            AnalysisCacheIdentity
+            | PerModuleAnalysisCacheIdentity
+            | ContextualModuleAnalysisCacheIdentity
+            | ContextualGlobalAnalysisCacheIdentity
+        ),
     ) -> Path:
-        if self.storage_root is None:
-            raise ValueError("analysis cache directory is disabled")
-        return self.storage_root / f"{identity.cache_token}.pickle"
+        return self._cache_file_path(f"{identity.cache_token}.pickle")
 
     def _latest_path(self, family_identity: AnalysisCacheFamilyIdentity) -> Path:
-        if self.storage_root is None:
-            raise ValueError("analysis cache directory is disabled")
-        return self.storage_root / f"latest-{family_identity.cache_token}.pickle"
+        return self._cache_file_path(f"latest-{family_identity.cache_token}.pickle")
 
     def _summary_path(self, identity: AnalysisCacheIdentity) -> Path:
+        return self._cache_file_path(f"{identity.cache_token}.summary.pickle")
+
+    def _cache_file_path(self, file_name: str) -> Path:
         if self.storage_root is None:
             raise ValueError("analysis cache directory is disabled")
-        return self.storage_root / f"{identity.cache_token}.summary.pickle"
+        return self.storage_root / file_name
 
 
 def detector_config_signature(

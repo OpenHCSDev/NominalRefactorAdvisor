@@ -6,12 +6,6 @@ pattern-aware plans suitable for long-running maintenance work.
 
 from __future__ import annotations
 
-from .record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
-
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -19,11 +13,13 @@ import hashlib
 from itertools import combinations
 from operator import attrgetter
 from pathlib import Path
-from typing import Callable, Hashable, Sequence, TypeVar
+from typing import Callable, ClassVar, Generic, Hashable, Sequence, TypeVar
 
 from .collection_algebra import sorted_tuple
+from .detectors import IssueDetector
 from .factorization import RefactorMove, RefactorPhase, RefactorTrajectorySearch
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from .registry_normal_form import RegistryNormalFormPolicy
 from .models import (
     CERTIFIED,
     ImpactDelta,
@@ -32,6 +28,8 @@ from .models import (
     RefactorAction,
     SemanticRecord,
     RefactorFinding,
+    RefactorPatternSequence,
+    RefactorPatternSequenceCarrier,
     RefactorPlan,
     RefactorTrajectorySummary,
     SourceLocation,
@@ -49,11 +47,18 @@ from .taxonomy import (
     ObservationTag,
 )
 
-# fmt: off
-materialize_product_record(product_record_spec('_FindingCluster', 'subsystem: str; findings: tuple[RefactorFinding, ...]; evidence: tuple[SourceLocation, ...]'))
-materialize_product_record(product_record_spec('_PatternTrajectoryPolicy', 'pattern_id: PatternId; phase: RefactorPhase'))
-materialize_product_record(product_record_spec('_RegistryNormalFormPolicy', 'detector_id: str; stage_order: int; normal_form: str; stage_label: str; step_template: str; blocks_metaclass: bool', defaults={'blocks_metaclass': False}))
-# fmt: on
+
+@dataclass(frozen=True)
+class _FindingCluster:
+    subsystem: str
+    findings: tuple[RefactorFinding, ...]
+    evidence: tuple[SourceLocation, ...]
+
+
+@dataclass(frozen=True)
+class _PatternTrajectoryPolicy:
+    pattern_id: PatternId
+    phase: RefactorPhase
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,7 @@ class RefactorExecutionEdge(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class RefactorExecutionClassSurface(SemanticRecord):
+class RefactorExecutionClassSurface(RefactorPatternSequenceCarrier):
     """Shared graph-connected execution-class surface."""
 
     class_id: str
@@ -81,8 +86,6 @@ class RefactorExecutionClassSurface(SemanticRecord):
     internal_edge_weight: int
     graph_density: float
     batch_priority: int
-    primary_pattern_id: PatternId
-    application_order: tuple[PatternId, ...]
     first_batch_move: str
     first_codemod_hint: str
     supporting_findings: tuple[str, ...]
@@ -169,87 +172,25 @@ _PATTERN_TRAJECTORY_POLICY_CATALOG = ExhaustivePolicyCatalog.for_enum(
 )
 
 
-_REGISTRY_NORMAL_FORM_POLICIES = (
-    _RegistryNormalFormPolicy(
-        detector_id="non_injective_type_registry",
-        stage_order=10,
-        normal_form="typed_record_table",
-        stage_label="repair injectivity",
-        step_template=(
-            "Repair `{subsystem}` registry injectivity first: give each concrete "
-            "implementation one canonical key and move semantic aliases into an "
-            "explicit alias projection."
-        ),
-        blocks_metaclass=True,
-    ),
-    _RegistryNormalFormPolicy(
-        detector_id="premature_registry_infrastructure",
-        stage_order=20,
-        normal_form="typed_record_table",
-        stage_label="demote premature registry",
-        step_template=(
-            "Demote unstable registry infrastructure in `{subsystem}` to a typed "
-            "table or local strategy map until key cases, lookup lifecycle, and "
-            "consumer fanout are all proven."
-        ),
-        blocks_metaclass=True,
-    ),
-    _RegistryNormalFormPolicy(
-        detector_id="parallel_keyed_table_and_family",
-        stage_order=30,
-        normal_form="generated_projection_surface",
-        stage_label="choose authority and derive projection",
-        step_template=(
-            "Choose one injective registry authority in `{subsystem}` and derive "
-            "the parallel keyed table as a generated projection, or demote the "
-            "family if behavior is only metadata."
-        ),
-    ),
-    _RegistryNormalFormPolicy(
-        detector_id="parallel_keyed_table_axis",
-        stage_order=40,
-        normal_form="generated_projection_surface",
-        stage_label="merge keyed projections",
-        step_template=(
-            "Merge parallel keyed tables in `{subsystem}` into one finite axis "
-            "catalog and derive each table surface from that catalog."
-        ),
-    ),
-    _RegistryNormalFormPolicy(
-        detector_id="parallel_keyed_axis_family",
-        stage_order=50,
-        normal_form="auto_registered_abc",
-        stage_label="merge keyed families",
-        step_template=(
-            "Merge sibling keyed registry families in `{subsystem}` into one "
-            "shared ABC/mixin lattice over the common key axis."
-        ),
-    ),
-    _RegistryNormalFormPolicy(
-        detector_id="injective_type_registry",
-        stage_order=60,
-        normal_form="auto_registered_abc",
-        stage_label="promote mature injective registry",
-        step_template=(
-            "Promote the mature injective registry in `{subsystem}` to "
-            "`AutoRegisterMeta`; implementation classes should retain only "
-            "canonical key attributes and behavior hooks."
-        ),
-    ),
-)
-
-
 @dataclass(frozen=True)
 class RegistryNormalFormPolicyCatalog:
-    policies: tuple[_RegistryNormalFormPolicy, ...]
+    policies_by_detector_id: dict[str, RegistryNormalFormPolicy]
 
-    @property
-    def policies_by_detector_id(self) -> dict[str, _RegistryNormalFormPolicy]:
-        return {policy.detector_id: policy for policy in self.policies}
+    @classmethod
+    def from_registered_detectors(cls) -> "RegistryNormalFormPolicyCatalog":
+        return cls(
+            {
+                detector_id: policy
+                for detector_type in IssueDetector.registered_detector_types()
+                for detector_id in (detector_type.effective_detector_id(),)
+                if detector_id is not None
+                and (policy := detector_type.registry_normal_form_policy) is not None
+            }
+        )
 
     def policies_for_findings(
         self, findings: tuple[RefactorFinding, ...]
-    ) -> tuple[_RegistryNormalFormPolicy, ...]:
+    ) -> tuple[RegistryNormalFormPolicy, ...]:
         policies_by_detector_id = self.policies_by_detector_id
         policies = {
             policy
@@ -259,12 +200,36 @@ class RegistryNormalFormPolicyCatalog:
         return sorted_tuple(policies, key=lambda policy: policy.stage_order)
 
 
-_REGISTRY_NORMAL_FORM_POLICY_CATALOG = RegistryNormalFormPolicyCatalog(
-    _REGISTRY_NORMAL_FORM_POLICIES
+_REGISTRY_NORMAL_FORM_POLICY_CATALOG = (
+    RegistryNormalFormPolicyCatalog.from_registered_detectors()
 )
 
 
-class PatternPlanStepBuilder(ABC, metaclass=AutoRegisterMeta):
+_RegistryKeyT = TypeVar("_RegistryKeyT", bound=Hashable)
+_RegisteredBuilderT = TypeVar("_RegisteredBuilderT", bound="RegisteredBuilderFamily")
+
+
+class RegisteredBuilderFamily(Generic[_RegistryKeyT]):
+    __registry__: dict[Hashable, type]
+    __registry_key__: str
+
+    @classmethod
+    def instances_by_registry_key(
+        cls: type[_RegisteredBuilderT], key_type: type[_RegistryKeyT]
+    ) -> dict[_RegistryKeyT, _RegisteredBuilderT]:
+        key_attribute = cls.__registry_key__
+        return {
+            registered_type.__dict__[key_attribute]: registered_type()
+            for registered_type in cls.__registry__.values()
+            if key_attribute in registered_type.__dict__
+            if isinstance(registered_type.__dict__[key_attribute], key_type)
+        }
+
+
+class PatternPlanStepBuilder(
+    RegisteredBuilderFamily[PlanStepBuilderId], ABC, metaclass=AutoRegisterMeta
+):
+    __registry__ = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
@@ -293,6 +258,8 @@ class GenericPatternPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
+    registry_key = PlanStepBuilderId.TEMPLATE_METHOD
+
     def build(
         self,
         subsystem: str,
@@ -311,6 +278,8 @@ class TemplateMethodPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
+    registry_key = PlanStepBuilderId.AUTO_REGISTER
+
     def build(
         self,
         subsystem: str,
@@ -322,6 +291,8 @@ class AutoRegisterPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
+    registry_key = PlanStepBuilderId.AUTHORITATIVE_MAPPING
+
     def build(
         self,
         subsystem: str,
@@ -333,6 +304,8 @@ class AuthoritativeMappingPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
+    registry_key = PlanStepBuilderId.CLOSED_FAMILY_DISPATCH
+
     def build(
         self,
         subsystem: str,
@@ -344,6 +317,8 @@ class ClosedFamilyDispatchPlanStepBuilder(PatternPlanStepBuilder):
 
 
 class BidirectionalRegistryPlanStepBuilder(PatternPlanStepBuilder):
+    registry_key = PlanStepBuilderId.BIDIRECTIONAL_REGISTRY
+
     def build(
         self,
         subsystem: str,
@@ -499,7 +474,10 @@ class FindingProjection:
 _FINDING_PROJECTION = FindingProjection()
 
 
-class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
+class PatternActionBuilder(
+    RegisteredBuilderFamily[ActionBuilderId], ABC, metaclass=AutoRegisterMeta
+):
+    __registry__ = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
@@ -511,36 +489,7 @@ class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
         templates: tuple[ActionTemplate, ...],
     ) -> tuple[RefactorAction, ...]:
         context = self._build_action_context(subsystem, findings)
-        return tuple(
-            (
-                RefactorAction(
-                    kind=template.kind,
-                    description=template.description.format(**context.__dict__),
-                    target=subsystem,
-                    create_symbol=(
-                        template.create_symbol.format(**context.__dict__)
-                        if template.create_symbol is not None
-                        else None
-                    ),
-                    replace_with=(
-                        template.replace_with.format(**context.__dict__)
-                        if template.replace_with is not None
-                        else None
-                    ),
-                    symbols=context.symbols,
-                    remove_symbols=(
-                        context.symbols if template.remove_symbols_from_evidence else ()
-                    ),
-                    evidence=context.evidence,
-                    statement_operation=template.statement_operation,
-                    statement_sites=(
-                        context.evidence if template.statement_operation else ()
-                    ),
-                    confidence=template.confidence,
-                )
-                for template in templates
-            )
-        )
+        return tuple(template.to_refactor_action(context) for template in templates)
 
     def _build_action_context(
         self, subsystem: str, findings: tuple[RefactorFinding, ...]
@@ -605,12 +554,71 @@ class PatternActionBuilder(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('ActionTemplate', 'kind: str; description: str; confidence: ConfidenceLevel; create_symbol: str | None; replace_with: str | None; remove_symbols_from_evidence: bool; statement_operation: str | None', defaults={'create_symbol': None, 'replace_with': None, 'remove_symbols_from_evidence': False, 'statement_operation': None}),
-    product_record_spec('ActionContext', 'subsystem: str; evidence: tuple[SourceLocation, ...]; symbols: tuple[str, ...]; base_name: str; template_method_name: str; statement_sequence: str; registry_name: str; registry_hook_examples: str; class_list: str; mapping_symbol: str; mapping_call: str; mapping_problem: str; field_list: str; identity_field_list: str; field_execution_level: str; dispatch_symbol: str; dispatch_axis: str; dispatch_cases: str; statement_count: int'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class ActionTemplate:
+    kind: str
+    description: str
+    confidence: ConfidenceLevel
+    create_symbol: str | None = None
+    replace_with: str | None = None
+    remove_symbols_from_evidence: bool = False
+    statement_operation: str | None = None
+
+    def to_refactor_action(self, context: ActionContext) -> RefactorAction:
+        return RefactorAction(
+            kind=self.kind,
+            description=self.description.format(**context.__dict__),
+            target=context.subsystem,
+            create_symbol=(
+                self.create_symbol.format(**context.__dict__)
+                if self.create_symbol is not None
+                else None
+            ),
+            replace_with=(
+                self.replace_with.format(**context.__dict__)
+                if self.replace_with is not None
+                else None
+            ),
+            symbols=context.symbols,
+            remove_symbols=self.remove_symbols_for(context),
+            evidence=context.evidence,
+            statement_operation=self.statement_operation,
+            statement_sites=self.statement_sites_for(context),
+            confidence=self.confidence,
+        )
+
+    def remove_symbols_for(self, context: ActionContext) -> tuple[str, ...]:
+        if self.remove_symbols_from_evidence:
+            return context.symbols
+        return ()
+
+    def statement_sites_for(self, context: ActionContext) -> tuple[SourceLocation, ...]:
+        if self.statement_operation is None:
+            return ()
+        return context.evidence
+
+
+@dataclass(frozen=True)
+class ActionContext:
+    subsystem: str
+    evidence: tuple[SourceLocation, ...]
+    symbols: tuple[str, ...]
+    base_name: str
+    template_method_name: str
+    statement_sequence: str
+    registry_name: str
+    registry_hook_examples: str
+    class_list: str
+    mapping_symbol: str
+    mapping_call: str
+    mapping_problem: str
+    field_list: str
+    identity_field_list: str
+    field_execution_level: str
+    dispatch_symbol: str
+    dispatch_axis: str
+    dispatch_cases: str
+    statement_count: int
 
 
 _ABC_FIELD_ACTION_TEMPLATES = (
@@ -672,8 +680,7 @@ class GenericPatternActionBuilder(PatternActionBuilder):
 
 
 class TemplatedPatternActionBuilder(PatternActionBuilder):
-    def __init__(self, templates: tuple[ActionTemplate, ...]) -> None:
-        self.templates = templates
+    templates: ClassVar[tuple[ActionTemplate, ...]]
 
     def build(
         self,
@@ -685,6 +692,8 @@ class TemplatedPatternActionBuilder(PatternActionBuilder):
 
 
 class AbcFamilyActionBuilder(PatternActionBuilder):
+    registry_key = ActionBuilderId.ABC_FAMILY
+
     def build(
         self,
         subsystem: str,
@@ -700,10 +709,9 @@ class AbcFamilyActionBuilder(PatternActionBuilder):
         return self._build_from_templates(subsystem, findings, templates)
 
 
-_GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
-_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
-_CLOSED_FAMILY_DISPATCH_ACTION_BUILDER = TemplatedPatternActionBuilder(
-    (
+class ClosedFamilyDispatchActionBuilder(TemplatedPatternActionBuilder):
+    registry_key = ActionBuilderId.CLOSED_FAMILY_DISPATCH
+    templates = (
         ActionTemplate(
             kind="create_dispatch_authority",
             description="Create `{dispatch_symbol}` in `{subsystem}` for `{dispatch_axis}` over cases {dispatch_cases}.",
@@ -718,9 +726,11 @@ _CLOSED_FAMILY_DISPATCH_ACTION_BUILDER = TemplatedPatternActionBuilder(
             statement_operation="replace",
         ),
     )
-)
-_AUTO_REGISTER_ACTION_BUILDER = TemplatedPatternActionBuilder(
-    (
+
+
+class AutoRegisterActionBuilder(TemplatedPatternActionBuilder):
+    registry_key = ActionBuilderId.AUTO_REGISTER
+    templates = (
         ActionTemplate(
             kind="create_metaclass",
             description="Create `AutoRegisterMeta` for `{registry_name}` in `{subsystem}`.",
@@ -740,9 +750,11 @@ _AUTO_REGISTER_ACTION_BUILDER = TemplatedPatternActionBuilder(
             statement_operation="delete",
         ),
     )
-)
-_BIDIRECTIONAL_LOOKUP_ACTION_BUILDER = TemplatedPatternActionBuilder(
-    (
+
+
+class BidirectionalLookupActionBuilder(TemplatedPatternActionBuilder):
+    registry_key = ActionBuilderId.BIDIRECTIONAL_LOOKUP
+    templates = (
         ActionTemplate(
             kind="create_bidirectional_registry",
             description="Create `{registry_name}BidirectionalRegistry` in `{subsystem}` as the authoritative forward/reverse registry.",
@@ -757,9 +769,11 @@ _BIDIRECTIONAL_LOOKUP_ACTION_BUILDER = TemplatedPatternActionBuilder(
             statement_operation="delete",
         ),
     )
-)
-_AUTHORITATIVE_SCHEMA_ACTION_BUILDER = TemplatedPatternActionBuilder(
-    (
+
+
+class AuthoritativeSchemaActionBuilder(TemplatedPatternActionBuilder):
+    registry_key = ActionBuilderId.AUTHORITATIVE_SCHEMA
+    templates = (
         ActionTemplate(
             kind="create_authoritative_schema",
             description="Create `{mapping_symbol}` in `{subsystem}` to collapse the repeated {mapping_problem}.",
@@ -774,23 +788,18 @@ _AUTHORITATIVE_SCHEMA_ACTION_BUILDER = TemplatedPatternActionBuilder(
             statement_operation="replace",
         ),
     )
+
+
+_GENERIC_PATTERN_PLAN_STEP_BUILDER = GenericPatternPlanStepBuilder()
+_GENERIC_PATTERN_ACTION_BUILDER = GenericPatternActionBuilder()
+
+_PATTERN_PLAN_STEP_BUILDERS: dict[PlanStepBuilderId, PatternPlanStepBuilder] = (
+    PatternPlanStepBuilder.instances_by_registry_key(PlanStepBuilderId)
 )
 
-_PATTERN_PLAN_STEP_BUILDERS: dict[PlanStepBuilderId, PatternPlanStepBuilder] = {
-    PlanStepBuilderId.TEMPLATE_METHOD: TemplateMethodPlanStepBuilder(),
-    PlanStepBuilderId.AUTO_REGISTER: AutoRegisterPlanStepBuilder(),
-    PlanStepBuilderId.AUTHORITATIVE_MAPPING: AuthoritativeMappingPlanStepBuilder(),
-    PlanStepBuilderId.CLOSED_FAMILY_DISPATCH: ClosedFamilyDispatchPlanStepBuilder(),
-    PlanStepBuilderId.BIDIRECTIONAL_REGISTRY: BidirectionalRegistryPlanStepBuilder(),
-}
-
-_PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = {
-    ActionBuilderId.ABC_FAMILY: AbcFamilyActionBuilder(),
-    ActionBuilderId.AUTO_REGISTER: _AUTO_REGISTER_ACTION_BUILDER,
-    ActionBuilderId.BIDIRECTIONAL_LOOKUP: _BIDIRECTIONAL_LOOKUP_ACTION_BUILDER,
-    ActionBuilderId.CLOSED_FAMILY_DISPATCH: _CLOSED_FAMILY_DISPATCH_ACTION_BUILDER,
-    ActionBuilderId.AUTHORITATIVE_SCHEMA: _AUTHORITATIVE_SCHEMA_ACTION_BUILDER,
-}
+_PATTERN_ACTION_BUILDERS: dict[ActionBuilderId, PatternActionBuilder] = (
+    PatternActionBuilder.instances_by_registry_key(ActionBuilderId)
+)
 
 
 @dataclass(frozen=True)
@@ -873,7 +882,7 @@ def build_refactor_plans(
         key=lambda plan: (
             -plan.outcome.description_length_savings,
             plan.subsystem,
-            plan.primary_pattern_id,
+            plan.pattern_sequence.primary_pattern_id,
         ),
     )
 
@@ -1027,7 +1036,9 @@ class ExecutionPartitionPlanner(SemanticRecord):
             key=lambda cluster: (cluster.subsystem, len(cluster.findings)),
         )
 
-    def partition_cluster(self, cluster: _FindingCluster) -> tuple[_FindingCluster, ...]:
+    def partition_cluster(
+        self, cluster: _FindingCluster
+    ) -> tuple[_FindingCluster, ...]:
         grouped: dict[ExecutionPartitionAxis, list[RefactorFinding]] = defaultdict(list)
         for finding in cluster.findings:
             grouped[self.axis_for(finding)].append(finding)
@@ -1232,8 +1243,7 @@ def _execution_class_input(
         internal_edge_weight=internal_edge_weight,
         graph_density=graph_density,
         batch_priority=batch_priority,
-        primary_pattern_id=plan.primary_pattern_id,
-        application_order=plan.application_order,
+        pattern_sequence=plan.pattern_sequence,
         first_batch_move=_first_batch_move(plan),
         first_codemod_hint=_first_codemod_hint(plan),
         supporting_findings=plan.supporting_findings,
@@ -1319,8 +1329,7 @@ def _execution_class_from_input(
         graph_density=row.graph_density,
         batch_priority=row.batch_priority,
         parallel_group=parallel_group,
-        primary_pattern_id=row.primary_pattern_id,
-        application_order=row.application_order,
+        pattern_sequence=row.pattern_sequence,
         first_batch_move=row.first_batch_move,
         first_codemod_hint=row.first_codemod_hint,
         supporting_findings=row.supporting_findings,
@@ -1331,7 +1340,7 @@ def _execution_class_from_input(
 def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     selected_patterns = _select_pattern_cover(cluster.findings)
     ordered_patterns = _order_patterns(selected_patterns, cluster.findings)
-    primary_pattern_id = ordered_patterns[0]
+    pattern_sequence = RefactorPatternSequence(tuple(ordered_patterns))
     outcome = _estimate_outcome(cluster.findings, ordered_patterns)
     capabilities = _unique_capabilities(cluster.findings)
     missing_capabilities = _render_tag_values(capabilities, attrgetter("label"))
@@ -1358,9 +1367,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
         collapsed_distinctions=collapsed_distinctions,
         missing_capabilities=missing_capabilities,
         certification=_aggregate_certification(cluster.findings),
-        primary_pattern_id=primary_pattern_id,
-        secondary_pattern_ids=tuple(ordered_patterns[1:]),
-        application_order=tuple(ordered_patterns),
+        pattern_sequence=pattern_sequence,
         canonical_normal_form=canonical_normal_form,
         plan_steps=plan_steps,
         supporting_findings=supporting_findings,

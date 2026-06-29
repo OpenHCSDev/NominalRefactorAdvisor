@@ -24,6 +24,8 @@ from .constructor_algebra import (
 from .descriptor_algebra import AliasProperty
 from .export_tools import PublicExportPolicy, derive_public_exports
 
+from .semantic_algebra import DispatchAxisExpression
+
 from .observation_graph import (
     ObservationKind,
     StructuralExecutionLevel,
@@ -309,13 +311,13 @@ class LiteralDispatchObservation(
     ExecutionLevelObservationMixin,
     LineObservationMixin,
     SymbolOwnerMixin,
+    DispatchAxisExpression,
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.LITERAL_DISPATCH
     line: int
     symbol: str
     axis_fingerprint: str
-    axis_expression: str
     literal_cases: tuple[str, ...]
     literal_kind: LiteralKind
     execution_level: StructuralExecutionLevel
@@ -326,7 +328,9 @@ class LiteralDispatchObservation(
     def nominal_witness(self) -> str:
         return self.scope_owner or self.symbol
 
-    observed_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_expression")
+    observed_name: ClassVar[AliasProperty[str]] = AliasProperty(
+        "dispatch_axis_expression"
+    )
 
     @property
     def fiber_key(self) -> str:
@@ -549,6 +553,8 @@ class MethodShape(
     is_private: bool
     param_count: int
     decorators: tuple[str, ...]
+    fingerprint_value: str | None = None
+    statement_texts_value: tuple[str, ...] | None = None
     function_node: ast.FunctionDef | ast.AsyncFunctionDef | None = field(
         default=None, compare=False, repr=False
     )
@@ -571,6 +577,8 @@ class MethodShape(
 
     @property
     def fingerprint(self) -> str:
+        if self.fingerprint_value is not None:
+            return self.fingerprint_value
         if self.function_node is None:
             return ""
         from .ast_tools import fingerprint_function
@@ -579,6 +587,8 @@ class MethodShape(
 
     @property
     def statement_texts(self) -> tuple[str, ...]:
+        if self.statement_texts_value is not None:
+            return self.statement_texts_value
         return _method_statement_texts(self.function_node)
 
 
@@ -599,62 +609,6 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
         return f"{self.callee_name}:{self.field_names}:{self.value_fingerprint}"
 
 
-_REGISTRATION_SHAPE_CONSTRUCTORS = ConstructorVariantCatalog(
-    (
-        ConstructorVariantSpec(
-            "from_registration_call",
-            (
-                "parsed_module",
-                "node",
-                "registry_name",
-                "registered_class",
-                "key_fingerprint",
-            ),
-            parameter_fields=(
-                "registry_name",
-                "registered_class",
-                "key_fingerprint",
-            ),
-            derived_fields=(
-                ConstructorDerivedField(
-                    "file_path", lambda bound: str(bound["parsed_module"].path)
-                ),
-                ConstructorDerivedField("lineno", lambda bound: bound["node"].lineno),
-                ConstructorDerivedField(
-                    "key_expression",
-                    lambda bound: ast.unparse(
-                        bound["node"].args[1]
-                        if len(bound["node"].args) >= 2
-                        else bound["node"].args[0]
-                    ),
-                ),
-            ),
-            constants=(ConstructorConstant("registration_style", "registration_call"),),
-        ),
-        ConstructorVariantSpec(
-            "from_decorator",
-            ("parsed_module", "node", "registry_name", "key_fingerprint"),
-            parameter_fields=("registry_name", "key_fingerprint"),
-            derived_fields=(
-                ConstructorDerivedField(
-                    "file_path", lambda bound: str(bound["parsed_module"].path)
-                ),
-                ConstructorDerivedField("lineno", lambda bound: bound["node"].lineno),
-                ConstructorDerivedField(
-                    "registered_class", lambda bound: bound["node"].name
-                ),
-                ConstructorDerivedField(
-                    "key_expression", lambda bound: bound["node"].name
-                ),
-            ),
-            constants=(
-                ConstructorConstant("registration_style", "decorator_registration"),
-            ),
-        ),
-    )
-)
-
-
 @dataclass(frozen=True)
 class RegistrationShape:
     """Normalized record for one recovered manual registration site."""
@@ -666,6 +620,66 @@ class RegistrationShape:
     key_fingerprint: str
     key_expression: str
     registration_style: str
+    constructors: ClassVar[ConstructorVariantCatalog] = ConstructorVariantCatalog(
+        (
+            ConstructorVariantSpec(
+                "from_registration_call",
+                (
+                    "parsed_module",
+                    "node",
+                    "registry_name",
+                    "registered_class",
+                    "key_fingerprint",
+                ),
+                parameter_fields=(
+                    "registry_name",
+                    "registered_class",
+                    "key_fingerprint",
+                ),
+                derived_fields=(
+                    ConstructorDerivedField(
+                        "file_path", lambda bound: str(bound["parsed_module"].path)
+                    ),
+                    ConstructorDerivedField(
+                        "lineno", lambda bound: bound["node"].lineno
+                    ),
+                    ConstructorDerivedField(
+                        "key_expression",
+                        lambda bound: ast.unparse(
+                            bound["node"].args[1]
+                            if len(bound["node"].args) >= 2
+                            else bound["node"].args[0]
+                        ),
+                    ),
+                ),
+                constants=(
+                    ConstructorConstant("registration_style", "registration_call"),
+                ),
+            ),
+            ConstructorVariantSpec(
+                "from_decorator",
+                ("parsed_module", "node", "registry_name", "key_fingerprint"),
+                parameter_fields=("registry_name", "key_fingerprint"),
+                derived_fields=(
+                    ConstructorDerivedField(
+                        "file_path", lambda bound: str(bound["parsed_module"].path)
+                    ),
+                    ConstructorDerivedField(
+                        "lineno", lambda bound: bound["node"].lineno
+                    ),
+                    ConstructorDerivedField(
+                        "registered_class", lambda bound: bound["node"].name
+                    ),
+                    ConstructorDerivedField(
+                        "key_expression", lambda bound: bound["node"].name
+                    ),
+                ),
+                constants=(
+                    ConstructorConstant("registration_style", "decorator_registration"),
+                ),
+            ),
+        )
+    )
 
     @classmethod
     def from_assignment(
@@ -691,9 +705,7 @@ class RegistrationShape:
             registration_style="subscript_assignment",
         )
 
-    from_registration_call, from_decorator = (
-        _REGISTRATION_SHAPE_CONSTRUCTORS.derived_methods()
-    )
+    from_registration_call, from_decorator = constructors.derived_methods()
 
     @property
     def symbol(self) -> str:

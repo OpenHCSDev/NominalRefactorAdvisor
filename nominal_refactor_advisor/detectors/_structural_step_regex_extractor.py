@@ -4,17 +4,12 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass
 from typing import Generic, TypeVar, cast
 
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..collection_algebra import sorted_tuple
-from ..record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
 from ..semantic_match import (
     AstTypedEffectStep,
     GuardedEffectStep,
@@ -43,16 +38,48 @@ from ._substrate_support import (
     _trim_docstring_body,
 )
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('ConstructorVariantFamilyCandidate', 'callee_name: str; coordinate_count: int; varying_coordinate_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
-    product_record_spec('AccumulatorFoldFamilyCandidate', 'accumulator_type_name: str; result_method_name: str; source_parameter_names: tuple[str, ...]; step_method_names: tuple[str, ...]', 'ClassMethodFamilyCandidate'),
-    product_record_spec('RegexGroupExtractorFamilyCandidate', 'pattern_attribute_names: tuple[str, ...]; matcher_names: tuple[str, ...]; group_index: int', 'ClassMethodFamilyCandidate'),
-    product_record_spec('_ConstructorCallContext', 'call: ast.Call; callee_name: str'),
-    product_record_spec('_AccumulatorFoldStatements', 'assign: ast.stmt; loop: ast.For; returned: ast.Return'),
-    product_record_spec('_AccumulatorFoldContext', 'statements: _AccumulatorFoldStatements; accumulator_name: str; accumulator_type_name: str; step_call: ast.Call'),
-))
-# fmt: on
+
+@dataclass(frozen=True)
+class ConstructorVariantFamilyCandidate(ClassMethodFamilyCandidate):
+    callee_name: str
+    coordinate_count: int
+    varying_coordinate_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AccumulatorFoldFamilyCandidate(ClassMethodFamilyCandidate):
+    accumulator_type_name: str
+    result_method_name: str
+    source_parameter_names: tuple[str, ...]
+    step_method_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegexGroupExtractorFamilyCandidate(ClassMethodFamilyCandidate):
+    pattern_attribute_names: tuple[str, ...]
+    matcher_names: tuple[str, ...]
+    group_index: int
+
+
+@dataclass(frozen=True)
+class _ConstructorCallContext:
+    call: ast.Call
+    callee_name: str
+
+
+@dataclass(frozen=True)
+class _AccumulatorFoldStatements:
+    assign: ast.stmt
+    loop: ast.For
+    returned: ast.Return
+
+
+@dataclass(frozen=True)
+class _AccumulatorFoldContext:
+    statements: _AccumulatorFoldStatements
+    accumulator_name: str
+    accumulator_type_name: str
+    step_call: ast.Call
 
 
 @dataclass(frozen=True)
@@ -180,12 +207,13 @@ def _varying_coordinate_names(
 
 
 _ParsedFamilyMethod = TypeVar("_ParsedFamilyMethod")
+_ShapeKey = TypeVar("_ShapeKey", bound=Hashable)
 
 
 @dataclass(frozen=True)
-class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod]):
+class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
     method_parser: Callable[[ast.FunctionDef], _ParsedFamilyMethod | None]
-    shape_key: Callable[[_ParsedFamilyMethod], object]
+    shape_key: Callable[[_ParsedFamilyMethod], _ShapeKey]
 
     def project(
         self, module: ParsedModule
@@ -196,7 +224,7 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod]):
             for node in _walk_nodes(module.module)
             if isinstance(node, ast.ClassDef)
         ):
-            grouped: dict[object, list[_ParsedFamilyMethod]] = defaultdict(list)
+            grouped: dict[_ShapeKey, list[_ParsedFamilyMethod]] = defaultdict(list)
             for statement in class_node.body:
                 if not isinstance(statement, ast.FunctionDef):
                     continue
@@ -394,24 +422,50 @@ def _accumulator_fold_family_candidates(
     )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_RegexGroupExtractorMethod', 'method_name: str; line: int; pattern_attribute_name: str; matcher_name: str; group_index: int'))
-# fmt: on
+@dataclass(frozen=True)
+class _RegexGroupExtractorMethod:
+    method_name: str
+    line: int
+    pattern_attribute_name: str
+    matcher_name: str
+    group_index: int
 
 
 _REGEX_MATCHER_NAMES = frozenset({"search", "match", "fullmatch"})
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('_RegexExtractorBody', 'method: ast.FunctionDef; assign: ast.Assign; returned: ast.Return'),
-    product_record_spec('_RegexExtractorMethodContext', 'method: ast.FunctionDef; match_name: str'),
-    product_record_spec('_RegexExtractorReturnedContext', 'returned: ast.Return', '_RegexExtractorMethodContext'),
-    product_record_spec('_RegexExtractorAssignment', 'call: ast.Call', '_RegexExtractorReturnedContext'),
-    product_record_spec('_RegexExtractorMatcherCall', 'pattern_attribute_name: str; matcher_name: str', '_RegexExtractorReturnedContext'),
-    product_record_spec('_RegexExtractorConditionalReturn', 'group_call: ast.Call', '_RegexExtractorMatcherCall'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _RegexExtractorBody:
+    method: ast.FunctionDef
+    assign: ast.Assign
+    returned: ast.Return
+
+
+@dataclass(frozen=True)
+class _RegexExtractorMethodContext:
+    method: ast.FunctionDef
+    match_name: str
+
+
+@dataclass(frozen=True)
+class _RegexExtractorReturnedContext(_RegexExtractorMethodContext):
+    returned: ast.Return
+
+
+@dataclass(frozen=True)
+class _RegexExtractorAssignment(_RegexExtractorReturnedContext):
+    call: ast.Call
+
+
+@dataclass(frozen=True)
+class _RegexExtractorMatcherCall(_RegexExtractorReturnedContext):
+    pattern_attribute_name: str
+    matcher_name: str
+
+
+@dataclass(frozen=True)
+class _RegexExtractorConditionalReturn(_RegexExtractorMatcherCall):
+    group_call: ast.Call
 
 
 class _RegexGroupExtractorStep(RegisteredEffectStep):

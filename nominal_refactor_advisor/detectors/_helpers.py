@@ -12,28 +12,33 @@ from ..factorization import (
     InheritanceDesignSearch,
     InheritanceMethodSpec,
     InheritanceResidueProfile,
+    ResidueHookNamesCarrier,
     factorization_axis_catalog_certificate,
 )
-from ..record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
+from ..product_record_schema import (
+    ProductRecordDeclaredNameExtractor,
+    ProductRecordSchemaCallKind,
 )
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
+from ..semantic_identity import SemanticRoleIdentityToken
+from ..impact_ranking import RefactorImpactKey
 
 import io
 import re
 import tokenize
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable, ClassVar, TypeAlias, TypeVar
 
 from ._base import *
 from ._substrate_support import *
 from ._substrate_support import _class_ancestor_name_map
+from ..taxonomy import LabeledStrEnum
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 ExternalCallsitesByTarget: TypeAlias = dict[str, tuple[ResolvedExternalCallsite, ...]]
@@ -58,6 +63,7 @@ ProductRecordDataclassShape: TypeAlias = tuple[
 ]
 TopLevelDeclaration: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
 TopLevelDeclarationMap: TypeAlias = dict[str, TopLevelDeclaration]
+ReferenceSitesBySymbol: TypeAlias = dict[str, frozenset[SourceLocation]]
 
 
 @dataclass(frozen=True)
@@ -118,27 +124,8 @@ def _is_class_namespace_mapping_key(
     )
 
 
-class _BuiltinCollectionName(StrEnum):
-    TUPLE = "tuple"
-    LIST = "list"
-    SET = "set"
-    DICT = "dict"
-
-
-_SEQUENCE_WRAPPER_CALL_NAMES = frozenset(
-    {
-        _BuiltinCollectionName.TUPLE,
-        _BuiltinCollectionName.LIST,
-        _BuiltinCollectionName.SET,
-    }
-)
-_RETURN_COLLECTION_KIND_NAMES = frozenset(
-    {
-        _BuiltinCollectionName.TUPLE,
-        _BuiltinCollectionName.LIST,
-        _BuiltinCollectionName.DICT,
-    }
-)
+_SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
+_RETURN_COLLECTION_KIND_NAMES = BuiltinCallName.return_collection_kind_names()
 _OPTIONAL_VARIANT_TYPE_SUFFIXES = frozenset(
     {
         "Adapter",
@@ -619,9 +606,9 @@ class HelperSupportProjectionAuthority:
     def source_segment(self, module: ParsedModule, node: ast.expr) -> str:
         key = SourceSegmentProjectionKey.from_module_node(module, node)
         if key not in self._source_segments_by_key:
-            self._source_segments_by_key[key] = (
-                ast.get_source_segment(module.source, node) or ast.unparse(node)
-            )
+            self._source_segments_by_key[key] = ast.get_source_segment(
+                module.source, node
+            ) or ast.unparse(node)
         return self._source_segments_by_key[key]
 
     def exact_schema_match(
@@ -928,33 +915,19 @@ class HelperSupportProjectionAuthority:
         self, module: ParsedModule
     ) -> NamedStringSequenceSpecs:
         assignments: MutableNamedStringSequenceSpecs = []
-        for statement in _trim_docstring_body(module.module.body):
-            target_name: str | None = None
-            value: ast.AST | None = None
-            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-                target = statement.targets[0]
-                if isinstance(target, ast.Name):
-                    target_name = target.id
-                    value = statement.value
-            elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                target_name = statement.target.id
-                value = statement.value
-            if target_name is None or value is None:
-                continue
-            if not isinstance(value, (ast.Tuple, ast.List)):
+        for binding in SUPPORT_PROJECTION_AUTHORITY.module_named_value_bindings(module):
+            if not isinstance(binding.value, (ast.Tuple, ast.List)):
                 continue
             string_items = tuple(
                 (
                     item.value
-                    for item in value.elts
+                    for item in binding.value.elts
                     if isinstance(item, ast.Constant) and isinstance(item.value, str)
                 )
             )
-            if len(string_items) != len(value.elts) or len(string_items) < 3:
+            if len(string_items) != len(binding.value.elts) or len(string_items) < 3:
                 continue
-            assignments.append((target_name, statement.lineno, string_items))
+            assignments.append((binding.name, binding.line, string_items))
         return tuple(assignments)
 
     def queue_pop_target_name(self, statement: ast.stmt, queue_name: str) -> str | None:
@@ -1161,7 +1134,7 @@ def _infer_field_type_name(key_name: str, node: ast.AST | None) -> str:
     if isinstance(node, ast.Compare):
         return "bool"
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id in {"len", "sum", "max", "min"}:
+        if node.func.id in BuiltinCallName.integer_result_call_names():
             return "int"
     if isinstance(node, ast.Tuple):
         return "tuple[object, ...]"
@@ -1525,38 +1498,28 @@ def _fragmented_family_authority_candidates(
     module: ParsedModule,
 ) -> tuple[FragmentedFamilyAuthorityCandidate, ...]:
     family_maps: NamedStringSequenceSpecsByName = defaultdict(list)
-    for statement in _trim_docstring_body(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                target_name = target.id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None or value is None or (not isinstance(value, ast.Dict)):
+    for binding in SUPPORT_PROJECTION_AUTHORITY.module_named_value_bindings(module):
+        if not isinstance(binding.value, ast.Dict):
             continue
         key_pairs = tuple(
             (
                 key_pair
                 for key_pair in (
-                    _enum_key_family(key) for key in value.keys if key is not None
+                    _enum_key_family(key)
+                    for key in binding.value.keys
+                    if key is not None
                 )
                 if key_pair is not None
             )
         )
-        if len(key_pairs) < 2 or len(key_pairs) != len(value.keys):
+        if len(key_pairs) < 2 or len(key_pairs) != len(binding.value.keys):
             continue
         family_names = {family_name for family_name, _ in key_pairs}
         if len(family_names) != 1:
             continue
         family_name = next(iter(family_names))
         key_names = sorted_tuple((member_name for _, member_name in key_pairs))
-        family_maps[family_name].append((target_name, statement.lineno, key_names))
+        family_maps[family_name].append((binding.name, binding.line, key_names))
 
     candidates: list[FragmentedFamilyAuthorityCandidate] = []
     for family_name, entries in family_maps.items():
@@ -1585,21 +1548,12 @@ def _fragmented_family_authority_candidates(
     return tuple(candidates)
 
 
-_DETECTOR_BASE_NAMES = {
-    "IssueDetector",
-    "PerModuleIssueDetector",
-    "EvidenceOnlyPerModuleDetector",
-    "StaticModulePatternDetector",
-    "GroupedShapeIssueDetector",
-    "FiberCollectedShapeIssueDetector",
-}
-
-
 def _is_detectorish_class(node: ast.ClassDef) -> bool:
     if node.name.endswith("Detector"):
         return True
     return bool(
-        _DETECTOR_BASE_NAMES & set(CLASS_NODE_AUTHORITY.declared_base_names(node))
+        IssueDetector.detector_family_base_names()
+        & set(CLASS_NODE_AUTHORITY.declared_base_names(node))
     )
 
 
@@ -1755,31 +1709,11 @@ def _delegate_name_from_return(node: ast.AST) -> str | None:
 
 
 def _guard_role_name(node: ast.AST) -> str:
-    text = ast.unparse(node)
-    if "observation.class_name is not None" in text:
-        return "module_only_guard"
-    if "observation.class_name is None" in text:
-        return "class_only_guard"
-    if "observation.function_name is None" in text:
-        return "module_scope_guard"
-    if "observation.function_name is not None" in text:
-        return "function_scope_guard"
-    if "isinstance" in text:
-        return "node_type_guard"
-    return "guarded_delegate"
+    return ScopedAstObservation.guard_role_name_from_text(ast.unparse(node))
 
 
 def _scope_role_name(node: ast.AST) -> str:
-    text = ast.unparse(node)
-    if "class_name" in text and "function_name" in text:
-        return "scope_filtered"
-    if "class_name" in text:
-        return "class_scope"
-    if "function_name" in text:
-        return "function_scope"
-    if "isinstance" in text:
-        return "node_type"
-    return "generic_scope"
+    return ScopedAstObservation.scope_role_name_from_text(ast.unparse(node))
 
 
 def _guarded_delegator_candidates_for_class(
@@ -3155,25 +3089,7 @@ _HELPER_BACKED_METHOD_NAMES = frozenset(
     }
 )
 
-_NON_HELPER_CALL_NAMES = frozenset(
-    {
-        "all",
-        "any",
-        "bool",
-        "dict",
-        "frozenset",
-        "int",
-        "len",
-        _BuiltinCollectionName.LIST,
-        "max",
-        "min",
-        "set",
-        "sorted",
-        "str",
-        "sum",
-        "tuple",
-    }
-)
+_NON_HELPER_CALL_NAMES = BuiltinCallName.non_helper_call_names()
 
 
 class HelperBackedWrapperShapeAuthority:
@@ -3181,7 +3097,7 @@ class HelperBackedWrapperShapeAuthority:
 
     def helper_call_from_returned_value(self, node: ast.AST) -> tuple[str, bool] | None:
         tuple_wrapped_call = single_named_call_argument(
-            node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
+            node, call_name=BuiltinCallName.TUPLE, argument_type=ast.Call
         )
         helper_call = tuple_wrapped_call or as_ast(node, ast.Call)
         helper_name = (
@@ -3201,7 +3117,7 @@ class HelperBackedWrapperShapeAuthority:
 
     def returned_call(self, node: ast.AST) -> ast.Call | None:
         tuple_wrapped_call = single_named_call_argument(
-            node, call_name=_BuiltinCollectionName.TUPLE, argument_type=ast.Call
+            node, call_name=BuiltinCallName.TUPLE, argument_type=ast.Call
         )
         return tuple_wrapped_call or as_ast(node, ast.Call)
 
@@ -3820,20 +3736,11 @@ def _manual_concrete_subclass_roster_candidates(
     return tuple(candidates)
 
 
-_SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES = frozenset(
-    {"id", "key", "kind", "name", "token", "type"}
+_SEMANTIC_INHERITANCE_IDENTITY_ATTR_SUFFIXES = (
+    SemanticRoleIdentityToken.inheritance_identity_attr_suffixes()
 )
-_SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES = frozenset(
-    {
-        "family",
-        "format",
-        "kind",
-        "mode",
-        "name",
-        "role",
-        "step_id",
-        "type",
-    }
+_SEMANTIC_INHERITANCE_IDENTITY_ATTR_NAMES = (
+    SemanticRoleIdentityToken.inheritance_identity_attr_names()
 )
 
 
@@ -4100,12 +4007,15 @@ def _semantic_inheritance_family_ssot_candidates(
     return tuple(candidates)
 
 
-materialize_product_record(
-    product_record_spec(
-        "_LatentRosterObservation",
-        "file_path: str; roster_name: str; line: int; roster_kind: str; projection_role: str; member_names: tuple[str, ...]; line_count: int",
-    )
-)
+@dataclass(frozen=True)
+class _LatentRosterObservation:
+    file_path: str
+    roster_name: str
+    line: int
+    roster_kind: str
+    projection_role: str
+    member_names: tuple[str, ...]
+    line_count: int
 
 
 _LATENT_ROSTER_POLICY_TOKENS = frozenset(
@@ -4427,25 +4337,9 @@ def _latent_implementation_roster_candidates(
 
 def _module_string_constant_assignments(module: ParsedModule) -> dict[str, str]:
     constants: dict[str, str] = {}
-    for statement in _trim_docstring_body(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-        ):
-            target_name = statement.targets[0].id
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None or value is None:
-            continue
-        if (string_value := _constant_string(value)) is not None:
-            constants[target_name] = string_value
+    for binding in SUPPORT_PROJECTION_AUTHORITY.module_named_value_bindings(module):
+        if (string_value := _constant_string(binding.value)) is not None:
+            constants[binding.name] = string_value
     return constants
 
 
@@ -4728,13 +4622,11 @@ def _node_mentions_any_symbol(node: ast.AST, symbol_names: frozenset[str]) -> bo
 
 
 @dataclass(frozen=True)
-class AutoRegisterFunctionReference:
+class AutoRegisterFunctionReference(ReceiverAttributeReference):
     """Precomputed function-level facts used by AutoRegister rent analysis."""
 
-    qualname: str
     referenced_symbols: frozenset[str]
     calls_autoregister_meta: bool
-    receiver_attribute_refs: tuple[tuple[str, str], ...]
 
 
 def _autoregister_function_references(
@@ -4947,7 +4839,7 @@ def _autoregister_meta_rent_candidates(
                 node
             )
         )
-        consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols(
+        consumer_symbols = REGISTRY_CONSUMER_SYMBOL_PROJECTION.symbols_from_references(
             function_references,
             family_name=family_name,
             lookup_method_names=registry_projection_names,
@@ -5126,9 +5018,10 @@ def _is_selected_match_subscript(node: ast.AST, match_var_name: str) -> bool:
     )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_SelectionGuardContext', 'node: ast.AST; match_var_name: str'))
-# fmt: on
+@dataclass(frozen=True)
+class _SelectionGuardContext:
+    node: ast.AST
+    match_var_name: str
 
 
 class _SelectionGuardKindStep(RegisteredEffectStep):
@@ -6271,75 +6164,6 @@ class ManualPublicApiSurfaceBuilder:
 MANUAL_PUBLIC_API_SURFACE_BUILDER = ManualPublicApiSurfaceBuilder()
 
 
-class ProductRecordDeclaredNameExtractor(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = "call_name"
-    __skip_if_no_key__ = True
-
-    call_name: ClassVar[str | None] = None
-
-    @classmethod
-    def declared_names_for(cls, node: ast.AST) -> tuple[str, ...]:
-        call = as_ast(node, ast.Call)
-        if call is None:
-            return ()
-        extractor_type = cls.__registry__.get(_call_name(call.func))
-        if extractor_type is None:
-            return ()
-        return extractor_type().declared_names(call)
-
-    @abstractmethod
-    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
-        raise NotImplementedError
-
-
-class FirstArgumentProductRecordNameExtractor(ProductRecordDeclaredNameExtractor):
-    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
-        declared_name = _constant_string(call.args[0] if call.args else None)
-        return () if declared_name is None else (declared_name,)
-
-
-class ProductRecordNameExtractor(FirstArgumentProductRecordNameExtractor):
-    call_name = "product_record"
-
-
-class ProductRecordSpecNameExtractor(FirstArgumentProductRecordNameExtractor):
-    call_name = "product_record_spec"
-
-
-class MaterializeProductRecordNameExtractor(ProductRecordDeclaredNameExtractor):
-    call_name = "materialize_product_record"
-
-    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
-        return tuple(
-            declared_name
-            for argument in call.args
-            for declared_name in ProductRecordDeclaredNameExtractor.declared_names_for(
-                argument
-            )
-        )
-
-
-class MaterializeProductRecordsNameExtractor(ProductRecordDeclaredNameExtractor):
-    call_name = "materialize_product_records"
-
-    def declared_names(self, call: ast.Call) -> tuple[str, ...]:
-        tuple_node = as_ast(call.args[0] if call.args else None, ast.Tuple)
-        if tuple_node is None:
-            return ()
-        return tuple(
-            declared_name
-            for item in tuple_node.elts
-            for declared_name in ProductRecordDeclaredNameExtractor.declared_names_for(
-                item
-            )
-        )
-
-
-_PRODUCT_RECORD_SCHEMA_CALL_NAMES = frozenset(
-    ProductRecordDeclaredNameExtractor.__registry__
-)
-
-
 def _runtime_product_record_schema_candidates(
     module: ParsedModule,
 ) -> tuple[RuntimeProductRecordSchemaCandidate, ...]:
@@ -6347,13 +6171,13 @@ def _runtime_product_record_schema_candidates(
 
     class Visitor(ClassFunctionStackNodeVisitor):
         def visit_Call(self, node: ast.Call) -> None:
-            call_name = _call_name(node.func)
-            if call_name in _PRODUCT_RECORD_SCHEMA_CALL_NAMES:
+            call_kind = ProductRecordSchemaCallKind.from_call(node)
+            if call_kind in ProductRecordDeclaredNameExtractor.registered_call_kinds():
                 candidates.append(
                     RuntimeProductRecordSchemaCandidate(
                         file_path=str(module.path),
                         line=node.lineno,
-                        callee_name=call_name,
+                        callee_name=call_kind.value,
                         declared_names=ProductRecordDeclaredNameExtractor.declared_names_for(
                             node
                         ),
@@ -7283,40 +7107,50 @@ _METRIC_BAG_SCHEMAS = metric_semantic_bag_descriptors()
 _IMPACT_BAG_SCHEMA = impact_delta_semantic_bag_descriptor()
 
 _SEMANTIC_STRING_RE = re.compile(r"[A-Za-z][A-Za-z0-9_-]{2,}")
-_SEMANTIC_KEYWORD_NAMES = {
-    "backend",
-    "capability_gap",
-    "capability_tags",
-    "certification",
-    "confidence",
-    "key",
-    "kind",
-    "label",
-    "mode",
-    _NAME_LITERAL,
-    "observation_tags",
-    "pattern_id",
-    "registry_key",
-    "relation_context",
-    "status",
-    "title",
-    _TYPE_NAME_LITERAL,
-}
-_SEMANTIC_NAME_SUFFIXES = (
-    "_backend",
-    "_certification",
-    "_family",
-    "_id",
-    "_key",
-    "_kind",
-    "_label",
-    "_mode",
-    "_name",
-    "_pattern",
-    "_role",
-    "_status",
-    "_type",
+_SEMANTIC_KEYWORD_RECORD_TYPES = (
+    FindingSemantics,
+    FindingSpecSemanticDefaults,
+    RefactorImpactKey,
 )
+_SEMANTIC_KEYWORD_ENUM_TYPES = (FindingSpecSemanticField,)
+_SEMANTIC_EXTRA_KEYWORD_NAMES = frozenset(
+    (
+        "backend",
+        "registry_key",
+        "status",
+        *SemanticRoleIdentityToken.semantic_extra_keyword_values(),
+    )
+)
+_SEMANTIC_SUFFIX_ONLY_NAMES = frozenset(
+    ("pattern", *SemanticRoleIdentityToken.semantic_suffix_only_values())
+)
+
+
+@lru_cache(maxsize=1)
+def _semantic_keyword_names() -> frozenset[str]:
+    return frozenset(
+        (
+            *(
+                field_item.name
+                for record_type in _SEMANTIC_KEYWORD_RECORD_TYPES
+                for field_item in fields(record_type)
+            ),
+            *(
+                member.value
+                for enum_type in _SEMANTIC_KEYWORD_ENUM_TYPES
+                for member in enum_type
+            ),
+            *_SEMANTIC_EXTRA_KEYWORD_NAMES,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
+def _semantic_name_suffixes() -> tuple[str, ...]:
+    return tuple(
+        f"_{name}"
+        for name in sorted((*_semantic_keyword_names(), *_SEMANTIC_SUFFIX_ONLY_NAMES))
+    )
 
 
 def _semantic_string_literal_sites(
@@ -7398,7 +7232,7 @@ def _is_semantic_string(value: str) -> bool:
 
 
 def _is_semantic_keyword_name(name: str) -> bool:
-    return name in _SEMANTIC_KEYWORD_NAMES or name.endswith(_SEMANTIC_NAME_SUFFIXES)
+    return name in _semantic_keyword_names() or name.endswith(_semantic_name_suffixes())
 
 
 def _compare_subject_is_semantic(node: ast.Compare) -> bool:
@@ -7513,17 +7347,64 @@ _ABCOptimizerClassDeclarationSignaturesByFamily: TypeAlias = dict[
 ]
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('_ABCOptimizerSharedMethodGroup', 'methods: _ABCOptimizerMethods; shared_statement_count: int; class_count: int'),
-    product_record_spec('_ABCOptimizerProfileResidueContext', 'group: _ABCOptimizerSharedMethodGroup; varying_coordinates: tuple[_SemanticCoordinate, ...]; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]'),
-    product_record_spec('_ABCOptimizerMethodGroupProfile', 'methods: _ABCOptimizerMethods; shared_statement_count: int; varying_coordinates: tuple[_SemanticCoordinate, ...]; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; compression_certificate: CompressionCertificate'),
-    product_record_spec('_ABCOptimizerMethodPlan', 'base_symbol: str; base_name: str; method_name: str; class_methods: _ABCOptimizerClassMethods; profile: _ABCOptimizerMethodGroupProfile; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int'),
-    product_record_spec('_ABCOptimizerResiduePlacement', 'abc_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; residue_count: int; shared_to_residue_ratio: float'),
-    product_record_spec('_ABCOptimizerFamilyPlan', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; subclass_residue_count: int; shared_to_residue_ratio: float; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int'),
-    product_record_spec('_ABCOptimizerClassLevelDeclaration', 'name: str; signature: str; source: str; line: int; line_count: int'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _ABCOptimizerSharedMethodGroup:
+    methods: _ABCOptimizerMethods
+    shared_statement_count: int
+    class_count: int
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerProfileResidueContext(ResidueHookNamesCarrier):
+    group: _ABCOptimizerSharedMethodGroup
+    varying_coordinates: tuple[_SemanticCoordinate, ...]
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerMethodGroupProfile(ResidueHookNamesCarrier):
+    methods: _ABCOptimizerMethods
+    shared_statement_count: int
+    varying_coordinates: tuple[_SemanticCoordinate, ...]
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerMethodPlan(ClassFamilyWitnessCarrier):
+    base_symbol: str
+    method_name: str
+    class_methods: _ABCOptimizerClassMethods
+    profile: _ABCOptimizerMethodGroupProfile
+    line_numbers: tuple[int, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerResiduePlacement(ResidueHookNamesCarrier):
+    abc_method_names: tuple[str, ...]
+    leaf_residue_names: tuple[str, ...]
+    residue_count: int
+    shared_to_residue_ratio: float
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerFamilyPlan(
+    ResidueHookNamesCarrier,
+    ABCOptimizerAxisDesignCarrier,
+    ABCOptimizerHierarchyMetricsCarrier,
+    ABCOptimizerResiduePlacementCarrier,
+):
+    base_name: str
+    class_names: tuple[str, ...]
+    method_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ABCOptimizerClassLevelDeclaration:
+    name: str
+    signature: str
+    source: str
+    line: int
+    line_count: int
 
 
 _ABCOptimizerFamilyCandidateT = TypeVar("_ABCOptimizerFamilyCandidateT")
@@ -7531,9 +7412,14 @@ _ABCOptimizerFamilyCandidateBuilder: TypeAlias = Callable[
     [tuple[_ABCOptimizerMethodPlan, ...], _ABCOptimizerFamilyPlan],
     _ABCOptimizerFamilyCandidateT | None,
 ]
-_ABCOptimizerFamilyCandidateSortKey: TypeAlias = Callable[
-    [_ABCOptimizerFamilyCandidateT], tuple[object, ...]
-]
+
+
+@dataclass(frozen=True, order=True)
+class _ABCOptimizerFamilyCandidateOrder:
+    file_path: str
+    line: int
+    base_name: str
+    method_names: tuple[str, ...]
 
 
 class _ABCSemanticSkeletonNormalizer(ast.NodeTransformer):
@@ -7868,7 +7754,9 @@ class ABCOptimizerAuthority:
         self,
         modules: Sequence[ParsedModule],
         builder: _ABCOptimizerFamilyCandidateBuilder[_ABCOptimizerFamilyCandidateT],
-        sort_key: _ABCOptimizerFamilyCandidateSortKey[_ABCOptimizerFamilyCandidateT],
+        sort_key: Callable[
+            [_ABCOptimizerFamilyCandidateT], _ABCOptimizerFamilyCandidateOrder
+        ],
     ) -> tuple[_ABCOptimizerFamilyCandidateT, ...]:
         return _abc_optimizer_candidates_from_family_plans(modules, builder, sort_key)
 
@@ -7878,12 +7766,12 @@ class ABCOptimizerAuthority:
             SemanticOverlapABCFamilyOptimizationCandidate
             | SemanticOverlapABCResidueAxisCatalogCandidate
         ),
-    ) -> tuple[object, ...]:
-        return (
-            candidate.file_path,
-            candidate.line,
-            candidate.base_name,
-            candidate.method_names,
+    ) -> _ABCOptimizerFamilyCandidateOrder:
+        return _ABCOptimizerFamilyCandidateOrder(
+            file_path=candidate.file_path,
+            line=candidate.line,
+            base_name=candidate.base_name,
+            method_names=candidate.method_names,
         )
 
     def class_level_declaration_candidates(
@@ -8407,7 +8295,7 @@ def _abc_optimizer_family_candidate(
         ),
         residue_count=residue_count,
         abc_concrete_method_names=family_plan.abc_concrete_method_names,
-        classvar_hook_names=family_plan.classvar_hook_names,
+        classvar_names=family_plan.classvar_names,
         property_hook_names=family_plan.property_hook_names,
         behavior_hook_names=family_plan.behavior_hook_names,
         leaf_residue_names=family_plan.leaf_residue_names,
@@ -8741,7 +8629,7 @@ def _abc_optimizer_residue_placement(
     if best_design is not None:
         return _ABCOptimizerResiduePlacement(
             abc_method_names=best_design.abc_method_names,
-            classvar_hook_names=best_design.classvar_names,
+            classvar_names=best_design.classvar_names,
             property_hook_names=sorted_tuple(
                 (
                     name
@@ -8792,7 +8680,7 @@ def _abc_optimizer_residue_placement(
                 if method_name not in (*subset_method_names, *overlap_method_names)
             )
         ),
-        classvar_hook_names=classvars,
+        classvar_names=classvars,
         property_hook_names=properties,
         behavior_hook_names=behaviors,
         leaf_residue_names=sorted_tuple((*classvars, *properties, *behaviors)),
@@ -8876,7 +8764,7 @@ def _abc_optimizer_family_plan(
         class_names=class_names,
         method_names=method_names,
         abc_concrete_method_names=placement.abc_method_names,
-        classvar_hook_names=placement.classvar_hook_names,
+        classvar_names=placement.classvar_names,
         property_hook_names=placement.property_hook_names,
         behavior_hook_names=placement.behavior_hook_names,
         leaf_residue_names=placement.leaf_residue_names,
@@ -9091,7 +8979,9 @@ def _abc_optimizer_family_method_plans(
 def _abc_optimizer_candidates_from_family_plans(
     modules: Sequence[ParsedModule],
     builder: _ABCOptimizerFamilyCandidateBuilder[_ABCOptimizerFamilyCandidateT],
-    sort_key: _ABCOptimizerFamilyCandidateSortKey[_ABCOptimizerFamilyCandidateT],
+    sort_key: Callable[
+        [_ABCOptimizerFamilyCandidateT], _ABCOptimizerFamilyCandidateOrder
+    ],
 ) -> tuple[_ABCOptimizerFamilyCandidateT, ...]:
     specific_method_plans = ABC_OPTIMIZER_AUTHORITY.specific_method_plans(modules)
     family_plans = ABC_OPTIMIZER_AUTHORITY.family_plans(specific_method_plans)
@@ -10215,14 +10105,34 @@ def _nominal_policy_surface_family_candidates(
     )
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('_NominalPolicySurfaceContext', 'method_header: tuple[str, str]; chain: tuple[ast.Call, ...]; transported_values: tuple[ast.AST, ...]'),
-    product_record_spec('_FunctionWrapperContext', 'module: ParsedModule; qualname: str; function: ast.FunctionDef | ast.AsyncFunctionDef; body: list[ast.stmt]; class_name: str | None; allowed_roots: set[str]'),
-    product_record_spec('_ProjectionDelegateContext', 'projection: _ProjectionWrapperCall; delegate_symbol: str'),
-    product_record_spec('_ProjectionWrapperCall', 'bound_name: str; delegate_call: ast.Call; returned_value: ast.AST'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _NominalPolicySurfaceContext:
+    method_header: tuple[str, str]
+    chain: tuple[ast.Call, ...]
+    transported_values: tuple[ast.AST, ...]
+
+
+@dataclass(frozen=True)
+class _FunctionWrapperContext:
+    module: ParsedModule
+    qualname: str
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+    body: list[ast.stmt]
+    class_name: str | None
+    allowed_roots: set[str]
+
+
+@dataclass(frozen=True)
+class _ProjectionDelegateContext:
+    projection: _ProjectionWrapperCall
+    delegate_symbol: str
+
+
+@dataclass(frozen=True)
+class _ProjectionWrapperCall:
+    bound_name: str
+    delegate_call: ast.Call
+    returned_value: ast.AST
 
 
 class _FunctionWrapperStep(RegisteredEffectStep):
@@ -10432,9 +10342,11 @@ def _pipeline_body_stages(
     return tuple(stages)
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_PipelineStageSource', 'kind: str; call: ast.Call; output_arity: int'))
-# fmt: on
+@dataclass(frozen=True)
+class _PipelineStageSource:
+    kind: str
+    call: ast.Call
+    output_arity: int
 
 
 def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
@@ -10485,11 +10397,11 @@ class ReturnStatementAuthority:
             call_name = _call_display_name(value)
             return call_name or "call"
         if isinstance(value, ast.Tuple):
-            return "tuple"
+            return BuiltinCallName.TUPLE
         if isinstance(value, ast.List):
-            return _BuiltinCollectionName.LIST
+            return BuiltinCallName.LIST
         if isinstance(value, ast.Dict):
-            return "dict"
+            return BuiltinCallName.DICT
         if isinstance(value, ast.Name):
             return "name"
         if isinstance(value, ast.Attribute):
@@ -10626,12 +10538,12 @@ def _effect_pipeline_normal_form(
     return "typed_effect_carrier"
 
 
-materialize_product_record(
-    product_record_spec(
-        "FailSoftPipelineFamilyRule",
-        "normal_form: str; pipeline_family: str; recommended_owner: str; refactor_action: str",
-    )
-)
+@dataclass(frozen=True)
+class FailSoftPipelineFamilyRule:
+    normal_form: str
+    pipeline_family: str
+    recommended_owner: str
+    refactor_action: str
 
 
 _FAIL_SOFT_NORMAL_FORM_FAMILY_RULES = (
@@ -11173,39 +11085,49 @@ def _declares_effect_infrastructure(declarations: TopLevelDeclarationMap) -> boo
     )
 
 
+@lru_cache(maxsize=8)
+def _local_symbol_reference_sites(
+    modules: tuple[ParsedModule, ...],
+) -> ReferenceSitesBySymbol:
+    references: dict[str, set[SourceLocation]] = defaultdict(set)
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self, module: ParsedModule) -> None:
+            self.module = module
+            self.stack: list[str] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            self.stack.append(node.name)
+            self.generic_visit(node)
+            self.stack.pop()
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+        visit_ClassDef = visit_FunctionDef
+
+        def visit_Name(self, node: ast.Name) -> None:
+            references[node.id].add(self._site(node.lineno))
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:
+            references[node.attr].add(self._site(node.lineno))
+            self.generic_visit(node)
+
+        def _site(self, line: int) -> SourceLocation:
+            symbol = ".".join(self.stack) if self.stack else "<module>"
+            return SourceLocation(str(self.module.path), line, symbol)
+
+    for module in modules:
+        Visitor(module).visit(module.module)
+    return {
+        symbol: frozenset(sites)
+        for symbol, sites in sorted(references.items(), key=lambda item: item[0])
+    }
+
+
 class LocalSymbolReferenceSitesAuthority:
     def reference_sites(
         self, modules: Sequence[ParsedModule]
-    ) -> dict[str, set[SourceLocation]]:
-        references: dict[str, set[SourceLocation]] = defaultdict(set)
-
-        class Visitor(ast.NodeVisitor):
-            def __init__(self, module: ParsedModule) -> None:
-                self.module = module
-                self.stack: list[str] = []
-
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                self.stack.append(node.name)
-                self.generic_visit(node)
-                self.stack.pop()
-
-            visit_AsyncFunctionDef = visit_FunctionDef
-            visit_ClassDef = visit_FunctionDef
-
-            def visit_Name(self, node: ast.Name) -> None:
-                references[node.id].add(self._site(node.lineno))
-
-            def visit_Attribute(self, node: ast.Attribute) -> None:
-                references[node.attr].add(self._site(node.lineno))
-                self.generic_visit(node)
-
-            def _site(self, line: int) -> SourceLocation:
-                symbol = ".".join(self.stack) if self.stack else "<module>"
-                return SourceLocation(str(self.module.path), line, symbol)
-
-        for module in modules:
-            Visitor(module).visit(module.module)
-        return references
+    ) -> ReferenceSitesBySymbol:
+        return _local_symbol_reference_sites(tuple(modules))
 
 
 LOCAL_SYMBOL_REFERENCE_SITES = LocalSymbolReferenceSitesAuthority()
@@ -11690,15 +11612,7 @@ def _collection_authority_stream_algebra_candidates(
 
 
 _CANDIDATE_COLLECTOR_METHOD_NAME = "_candidate_items"
-_CANDIDATE_COLLECTOR_BASE_BY_SHAPE = {
-    ("module", False): "ModuleCollectorCandidateDetector",
-    ("module", True): "ConfiguredModuleCollectorCandidateDetector",
-    ("cross_module", False): "CrossModuleCollectorCandidateDetector",
-    ("cross_module", True): "ConfiguredCrossModuleCollectorCandidateDetector",
-}
-_DECLARATIVE_DETECTOR_BASE_NAMES = frozenset(
-    _CANDIDATE_COLLECTOR_BASE_BY_SHAPE.values()
-)
+_DECLARATIVE_DETECTOR_BASE_NAMES = DerivedCandidateCollectorMixin.collector_base_names()
 
 
 def _subscript_base_parts(base: ast.AST) -> tuple[str, str] | None:
@@ -11754,10 +11668,9 @@ def _declarative_detector_class_candidates(
             )
         )
         assignment_names = _class_assignment_names(node)
-        if (
-            base_part is None
-            or "finding_spec" not in assignment_names
-            or "finding_renderer" not in assignment_names
+        required_assignment_names = DetectorDeclaration.required_namespace_field_names()
+        if base_part is None or not set(required_assignment_names).issubset(
+            assignment_names
         ):
             continue
         candidates.append(
@@ -12430,7 +12343,7 @@ class _ConstructorEmptyListAccumulatorValueStep(
     def project(self, value: NamedValueBinding) -> str | None:
         call = cast(ast.Call, value.value)
         is_empty_list = (
-            _call_name(call.func) == _BuiltinCollectionName.LIST
+            _call_name(call.func) == BuiltinCallName.LIST
             and not call.args
             and not call.keywords
         )
@@ -12588,7 +12501,9 @@ def _ast_stream_collector_boilerplate_candidates(
     return tuple(stream_collectors)
 
 
-def _candidate_detector_scope_kind(node: ast.ClassDef) -> str | None:
+def _candidate_detector_scope_kind(
+    node: ast.ClassDef,
+) -> CandidateCollectorScope | None:
     if not any(
         (
             isinstance(statement, ast.Assign)
@@ -12599,15 +12514,15 @@ def _candidate_detector_scope_kind(node: ast.ClassDef) -> str | None:
         return None
     base_names = set(HELPER_SYNTAX_PROJECTION_AUTHORITY.class_base_names(node))
     if "CandidateFindingDetector" in base_names:
-        return "module"
+        return CandidateCollectorScope.MODULE
     if "CrossModuleCandidateDetector" in base_names:
-        return "cross_module"
+        return CandidateCollectorScope.CROSS_MODULE
     return None
 
 
 def _candidate_collector_method_call(
     method: ast.FunctionDef,
-    scope_kind: str,
+    scope_kind: CandidateCollectorScope,
 ) -> tuple[str, bool] | None:
     body = tuple(
         (
@@ -12623,7 +12538,9 @@ def _candidate_collector_method_call(
     collector_name = _call_name(returned_call.func) if returned_call else None
     if collector_name is None:
         return None
-    expected_first_arg = "modules" if scope_kind == "cross_module" else "module"
+    expected_first_arg = (
+        "modules" if scope_kind is CandidateCollectorScope.CROSS_MODULE else "module"
+    )
     arg_names = tuple(name_id(argument) for argument in returned_call.args)
     if arg_names == (expected_first_arg,):
         return (collector_name, False)
@@ -12664,25 +12581,18 @@ def _candidate_collector_boilerplate_candidates(
                 class_name=node.name,
                 method_name=method.name,
                 collector_name=collector_name,
-                scope_kind=scope_kind,
+                scope_kind=scope_kind.value,
                 uses_config=uses_config,
-                recommended_base_name=_CANDIDATE_COLLECTOR_BASE_BY_SHAPE[
-                    scope_kind, uses_config
-                ],
+                recommended_base_name=DerivedCandidateCollectorMixin.collector_base_name_for_shape(
+                    CandidateCollectorBaseShape(scope_kind, uses_config)
+                ),
             )
         )
     return tuple(candidates)
 
 
-_TYPED_CANDIDATE_DETECTOR_BASE_NAMES = frozenset(
-    {
-        "CandidateFindingDetector",
-        "ModuleCollectorCandidateDetector",
-        "ConfiguredModuleCollectorCandidateDetector",
-        "CrossModuleCandidateDetector",
-        "CrossModuleCollectorCandidateDetector",
-        "ConfiguredCrossModuleCollectorCandidateDetector",
-    }
+_TYPED_CANDIDATE_DETECTOR_BASE_NAMES = (
+    DerivedCandidateCollectorMixin.collector_base_names()
 )
 
 
@@ -12777,62 +12687,104 @@ def _typed_candidate_cast_boilerplate_candidates(
     return tuple(candidates)
 
 
-_FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR = {
-    "FindingSpec": ("MEDIUM_CONFIDENCE", "STRONG_HEURISTIC"),
-    "HighConfidenceFindingSpec": ("HIGH_CONFIDENCE", "STRONG_HEURISTIC"),
-    "CertifiedFindingSpec": ("MEDIUM_CONFIDENCE", "CERTIFIED"),
-    "HighConfidenceCertifiedFindingSpec": ("HIGH_CONFIDENCE", "CERTIFIED"),
-}
-_FINDING_SPEC_CONSTRUCTOR_BY_DEFAULTS = {
-    defaults: constructor
-    for constructor, defaults in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR.items()
-}
-_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX = {"confidence": 0, "certification": 1}
-
-
 def _keyword_value_name(keyword: ast.keyword | None) -> str | None:
     return _call_name(keyword.value) if keyword is not None else None
 
 
+def _keyword_semantic_value(
+    keyword: ast.keyword | None,
+) -> FindingSpecSemanticValue | None:
+    value_name = _keyword_value_name(keyword)
+    if value_name is None:
+        return None
+    return finding_spec_semantic_value_from_import_name(value_name)
+
+
+def _semantic_keyword_field(
+    keyword_name: str | None,
+) -> FindingSpecSemanticField | None:
+    if keyword_name is None:
+        return None
+    try:
+        return FindingSpecSemanticField(keyword_name)
+    except ValueError:
+        return None
+
+
+def _finding_spec_semantic_keywords(
+    keywords: Sequence[ast.keyword],
+) -> dict[FindingSpecSemanticField, ast.keyword]:
+    semantic_keywords: dict[FindingSpecSemanticField, ast.keyword] = {}
+    for keyword in keywords:
+        field_name = _semantic_keyword_field(keyword.arg)
+        if field_name is not None:
+            semantic_keywords[field_name] = keyword
+    return semantic_keywords
+
+
 def _recommended_finding_spec_constructor(
-    constructor_name: str, semantic_keywords: dict[str, ast.keyword]
+    constructor_name: str,
+    semantic_keywords: dict[FindingSpecSemanticField, ast.keyword],
 ) -> str:
-    defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[constructor_name]
-    confidence_name = _keyword_value_name(semantic_keywords.get("confidence"))
-    certification_name = _keyword_value_name(semantic_keywords.get("certification"))
-    target_defaults = (
-        confidence_name or defaults[0],
-        certification_name or defaults[1],
+    factory = finding_spec_factory_for_constructor_name(constructor_name)
+    if factory is None:
+        return constructor_name
+    target_defaults = FindingSpecSemanticDefaults(
+        confidence=cast(
+            ConfidenceLevel,
+            _keyword_semantic_value(
+                semantic_keywords.get(FindingSpecSemanticField.CONFIDENCE)
+            )
+            or factory.semantic_defaults.confidence,
+        ),
+        certification=cast(
+            CertificationLevel,
+            _keyword_semantic_value(
+                semantic_keywords.get(FindingSpecSemanticField.CERTIFICATION)
+            )
+            or factory.semantic_defaults.certification,
+        ),
     )
-    return _FINDING_SPEC_CONSTRUCTOR_BY_DEFAULTS.get(target_defaults, constructor_name)
+    recommended_factory = finding_spec_factory_for_defaults(target_defaults)
+    return (
+        recommended_factory.constructor_name
+        if recommended_factory is not None
+        else constructor_name
+    )
 
 
 def _finding_spec_default_field_candidate(
     module: ParsedModule, node: ast.Call
 ) -> tuple[FindingSpecDefaultFieldCandidate, ...]:
     constructor_name = _call_name(node.func)
-    if constructor_name not in _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR:
+    factory = (
+        finding_spec_factory_for_constructor_name(constructor_name)
+        if constructor_name is not None
+        else None
+    )
+    if factory is None:
         return ()
-    semantic_keywords = {
-        keyword.arg: keyword
-        for keyword in node.keywords
-        if keyword.arg in _FINDING_SPEC_SEMANTIC_KEYWORD_INDEX
-    }
+    semantic_keywords = _finding_spec_semantic_keywords(node.keywords)
     if not semantic_keywords:
         return ()
     recommended_constructor_name = _recommended_finding_spec_constructor(
         constructor_name, semantic_keywords
     )
-    recommended_defaults = _FINDING_SPEC_DEFAULTS_BY_CONSTRUCTOR[
+    recommended_factory = finding_spec_factory_for_constructor_name(
         recommended_constructor_name
-    ]
+    )
+    if recommended_factory is None:
+        return ()
+    recommended_defaults = recommended_factory.semantic_defaults
     redundant_keywords = tuple(
         (
-            (name, value_name)
-            for name, keyword in semantic_keywords.items()
+            (field_name, value_name)
+            for field_name, keyword in semantic_keywords.items()
+            for value in (_keyword_semantic_value(keyword),)
             for value_name in (_keyword_value_name(keyword),)
-            if value_name
-            == recommended_defaults[_FINDING_SPEC_SEMANTIC_KEYWORD_INDEX[name]]
+            if value is not None
+            if value == recommended_defaults.value_for_field(field_name)
+            if value_name is not None
         )
     )
     if not redundant_keywords:
@@ -12843,7 +12795,9 @@ def _finding_spec_default_field_candidate(
             line=node.lineno,
             constructor_name=constructor_name,
             recommended_constructor_name=recommended_constructor_name,
-            redundant_keyword_names=tuple((name for name, _ in redundant_keywords)),
+            redundant_keyword_names=tuple(
+                (name.value for name, _ in redundant_keywords)
+            ),
             redundant_keyword_values=tuple((value for _, value in redundant_keywords)),
         ),
     )
@@ -13050,21 +13004,15 @@ def _derivable_candidate_collector_candidates(
     )
 
 
-_FINDING_SPEC_BUILDER_BY_CONSTRUCTOR = {
-    "FindingSpec": "finding_spec_template",
-    "HighConfidenceFindingSpec": "high_confidence_spec",
-    "CertifiedFindingSpec": "certified_spec",
-    "HighConfidenceCertifiedFindingSpec": "high_confidence_certified_spec",
-}
-_CANONICAL_FINDING_SPEC_FIELD_NAMES = (
-    "pattern_id",
-    "title",
-    "why",
-    "capability_gap",
-    "relation_context",
-    "capability_tags",
-    "observation_tags",
-)
+@lru_cache(maxsize=1)
+def _canonical_finding_spec_field_names() -> tuple[str, ...]:
+    signature = inspect.signature(FindingSpecFactory.__call__)
+    return tuple(
+        name
+        for name, parameter in signature.parameters.items()
+        if name != "self"
+        if parameter.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+    )
 
 
 def _canonical_finding_spec_builder_candidates(
@@ -13085,12 +13033,19 @@ def _canonical_finding_spec_builder_candidates(
             if call is None or call.args:
                 continue
             constructor_name = name_id(call.func)
-            if constructor_name not in _FINDING_SPEC_BUILDER_BY_CONSTRUCTOR:
+            factory = (
+                finding_spec_factory_for_constructor_name(constructor_name)
+                if constructor_name is not None
+                else None
+            )
+            if factory is None:
                 continue
             keyword_names = tuple(
                 keyword.arg for keyword in call.keywords if keyword.arg
             )
-            if not set(_CANONICAL_FINDING_SPEC_FIELD_NAMES[:5]).issubset(keyword_names):
+            if not set(_canonical_finding_spec_field_names()[:5]).issubset(
+                keyword_names
+            ):
                 continue
             candidates.append(
                 CanonicalFindingSpecBuilderCandidate(
@@ -13098,7 +13053,7 @@ def _canonical_finding_spec_builder_candidates(
                     line=statement.lineno,
                     class_name=node.name,
                     constructor_name=constructor_name,
-                    builder_name=_FINDING_SPEC_BUILDER_BY_CONSTRUCTOR[constructor_name],
+                    builder_name=factory.builder_name,
                     keyword_names=keyword_names,
                 )
             )
@@ -13154,9 +13109,10 @@ def _single_self_parameter_name(node: ast.FunctionDef) -> str | None:
     return None if parameter is None else parameter.arg
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_PropertyMethodReturn', 'method_name: str; returned: ast.AST'))
-# fmt: on
+@dataclass(frozen=True)
+class _PropertyMethodReturn:
+    method_name: str
+    returned: ast.AST
 
 
 class _SimplePropertyAliasPairStep(RegisteredEffectStep):
@@ -13523,7 +13479,7 @@ class HelperSyntaxProjectionAuthority:
 
     def subclasses_root_expression(self, node: ast.AST) -> str | None:
         subclasses_call = single_named_call_argument(
-            node, call_name=_BuiltinCollectionName.LIST, argument_type=ast.Call
+            node, call_name=BuiltinCallName.LIST, argument_type=ast.Call
         ) or as_ast(node, ast.Call)
         if subclasses_call is None:
             return None
@@ -13662,7 +13618,14 @@ class _SourceLocationEvidenceShapeStep(RegisteredEffectStep):
     pass
 
 
+class SharedProjectMixin:
+    def project(
+        self, value: ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> ast.Return | None:
+        return as_ast(single_item(_trim_docstring_body(value.body)), ast.Return)
+
 class _EvidencePropertyReturnStep(
+    SharedProjectMixin,
     _SourceLocationEvidenceShapeStep,
     GuardedEffectStep[ast.FunctionDef | ast.AsyncFunctionDef, ast.Return],
 ):
@@ -13677,10 +13640,6 @@ class _EvidencePropertyReturnStep(
             )
         )
 
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> ast.Return | None:
-        return as_ast(single_item(_trim_docstring_body(value.body)), ast.Return)
 
 
 class _SourceLocationReturnCallStep(
@@ -13763,12 +13722,18 @@ def _source_location_evidence_property_candidates(
     )
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('_ZippedSourceLocationGeneratorCall', 'source_location_call: ast.Call; generator: ast.GeneratorExp'),
-    product_record_spec('_ZippedSourceLocationVariableArgs', 'file_attribute_name: str; line_variable_name: str; symbol_variable_name: str; generator: ast.GeneratorExp'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _ZippedSourceLocationGeneratorCall:
+    source_location_call: ast.Call
+    generator: ast.GeneratorExp
+
+
+@dataclass(frozen=True)
+class _ZippedSourceLocationVariableArgs:
+    file_attribute_name: str
+    line_variable_name: str
+    symbol_variable_name: str
+    generator: ast.GeneratorExp
 
 
 class _ZippedSourceLocationEvidenceShapeStep(RegisteredEffectStep):
@@ -13776,6 +13741,7 @@ class _ZippedSourceLocationEvidenceShapeStep(RegisteredEffectStep):
 
 
 class _ZippedEvidencePropertyReturnStep(
+    SharedProjectMixin,
     _ZippedSourceLocationEvidenceShapeStep,
     GuardedEffectStep[ast.FunctionDef | ast.AsyncFunctionDef, ast.Return],
 ):
@@ -13790,10 +13756,6 @@ class _ZippedEvidencePropertyReturnStep(
             )
         )
 
-    def project(
-        self, value: ast.FunctionDef | ast.AsyncFunctionDef
-    ) -> ast.Return | None:
-        return as_ast(single_item(_trim_docstring_body(value.body)), ast.Return)
 
 
 class _ZippedTupleGeneratorReturnStep(
@@ -14318,19 +14280,17 @@ def _option_record_quotient_candidates(
     )
 
 
-_STRUCTURAL_ALIAS_ROOTS = frozenset(
+_STRUCTURAL_ALIAS_TYPING_ROOTS = frozenset(
     {
         "Callable",
         "Mapping",
         "Sequence",
-        "dict",
-        "frozenset",
-        "list",
-        "set",
-        "tuple",
     }
 )
-_STRUCTURAL_ALIAS_LEAF_NAMES = frozenset(
+_STRUCTURAL_ALIAS_ROOTS = (
+    _STRUCTURAL_ALIAS_TYPING_ROOTS | BuiltinCallName.structural_alias_root_names()
+)
+_STRUCTURAL_ALIAS_TYPING_LEAF_NAMES = frozenset(
     {
         "Any",
         "Callable",
@@ -14347,17 +14307,10 @@ _STRUCTURAL_ALIAS_LEAF_NAMES = frozenset(
         "TypeAlias",
         "TypeVar",
         "Union",
-        "bool",
-        "bytes",
-        "dict",
-        "float",
-        "frozenset",
-        "int",
-        "list",
-        "set",
-        "str",
-        "tuple",
     }
+)
+_STRUCTURAL_ALIAS_LEAF_NAMES = (
+    _STRUCTURAL_ALIAS_TYPING_LEAF_NAMES | BuiltinCallName.structural_alias_leaf_names()
 )
 
 
@@ -15227,7 +15180,7 @@ def _semantic_tag_tuple_boilerplate_candidates(
 
 
 _SEMANTIC_TAG_CONSTANT_SUFFIXES = tuple(_SEMANTIC_TAG_CONSTANT_SUFFIX.values())
-_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset({"CapabilityTag", "ObservationTag"})
+_SEMANTIC_TAG_ASSIGNMENT_OWNER_NAMES = frozenset(member_type.__name__ for member_type in LabeledStrEnum.__subclasses__())
 
 
 def _semantic_tag_constant_member_names(target_name: str | None) -> tuple[str, ...]:
@@ -15308,16 +15261,6 @@ def _derivable_semantic_tag_constant_candidates(
     )
 
 
-_DERIVED_COUNT_METRIC_SHAPES = {
-    "MappingMetrics": ("from_field_names", (("field_count", "field_names"),)),
-    "DispatchCountMetrics": (
-        "from_literal_family",
-        (("dispatch_site_count", "literal_cases"),),
-    ),
-    "RegistrationMetrics": ("from_class_names", (("class_count", "class_names"),)),
-}
-
-
 def _ast_expression_equal(left: ast.AST, right: ast.AST) -> bool:
     return ast.dump(left, include_attributes=False) == ast.dump(
         right, include_attributes=False
@@ -15329,6 +15272,14 @@ def _len_call_argument(node: ast.AST) -> ast.AST | None:
     if call is None or _call_name(call.func) != "len" or len(call.args) != 1:
         return None
     return call.args[0]
+
+
+@lru_cache(maxsize=1)
+def _derived_count_metric_shapes_by_name() -> dict[str, DerivedCountMetricShape]:
+    return {
+        shape.metric_class_name: shape
+        for shape in FindingMetrics.derived_count_metric_shapes()
+    }
 
 
 def _derived_metric_count_pairs(
@@ -15354,11 +15305,10 @@ def _derived_metric_count_boilerplate_candidate(
     module: ParsedModule, node: ast.Call
 ) -> tuple[DerivedMetricCountBoilerplateCandidate, ...]:
     metric_class_name = _call_name(node.func)
-    metric_shape = _DERIVED_COUNT_METRIC_SHAPES.get(metric_class_name or "")
+    metric_shape = _derived_count_metric_shapes_by_name().get(metric_class_name or "")
     if metric_shape is None:
         return ()
-    constructor_name, pair_shapes = metric_shape
-    derived_pairs = _derived_metric_count_pairs(node, pair_shapes)
+    derived_pairs = _derived_metric_count_pairs(node, metric_shape.field_pairs)
     if not derived_pairs:
         return ()
     return (
@@ -15366,7 +15316,7 @@ def _derived_metric_count_boilerplate_candidate(
             file_path=str(module.path),
             line=node.lineno,
             metric_class_name=cast(str, metric_class_name),
-            recommended_constructor_name=constructor_name,
+            recommended_constructor_name=metric_shape.constructor_name,
             count_keyword_names=tuple((pair[0] for pair in derived_pairs)),
             collection_keyword_names=tuple((pair[1] for pair in derived_pairs)),
         ),
@@ -15838,7 +15788,7 @@ def _call_targets_nominal_owner(node: ast.AST) -> bool:
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
 _SCHEMA_ACCESSOR_RUNTIME_GUARD_CALL_NAMES = frozenset({"isinstance"})
 _SCHEMA_ACCESSOR_MIN_METHODS = 4
-_SCHEMA_ACCESSOR_COPY_CALL_NAMES = frozenset({"dict", "list", "set", "tuple"})
+_SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
 
 
@@ -16235,20 +16185,14 @@ def _dataclass_field_projection_boilerplate_candidates(
 def _schema_registry_assignment(
     statement: ast.stmt,
 ) -> tuple[str, ast.AST, int, int] | None:
-    target_name: str | None = None
-    value: ast.AST | None = None
-    if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-        target_name = name_id(statement.targets[0])
-        value = statement.value
-    elif isinstance(statement, ast.AnnAssign):
-        target_name = name_id(statement.target)
-        value = statement.value
-    if target_name is None or value is None:
+    binding = named_value_binding(statement)
+    if binding is None or binding.value is None:
         return None
     line_count = max(
-        1, (statement.end_lineno or statement.lineno) - statement.lineno + 1
+        1,
+        (statement.end_lineno or statement.lineno) - statement.lineno + 1,
     )
-    return target_name, value, statement.lineno, line_count
+    return binding.name, binding.value, binding.line, line_count
 
 
 def _normalized_schema_axis_name(name: str | None) -> str | None:

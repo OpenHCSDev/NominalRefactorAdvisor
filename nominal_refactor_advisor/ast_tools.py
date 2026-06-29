@@ -8,29 +8,25 @@ directly.
 
 from __future__ import annotations
 
-from .record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
-
 import ast
 import copy
 import os
 import hashlib
 import pickle
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
+from enum import StrEnum
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import sys
-from typing import Any, Callable, ClassVar, TypeAlias, TypeVar, cast
+from types import EllipsisType
+from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
-from .cache_paths import default_parse_cache_dir
+from .cache_paths import ParseCacheDirectory, default_parse_cache_dir
 from .collection_algebra import sorted_tuple
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_match import (
@@ -122,17 +118,74 @@ class AstCachePayloadUnavailable:
     """Sentinel for unreadable or incompatible persisted AST cache payloads."""
 
 
+@dataclass(frozen=True)
+class AstParseCachePayload:
+    """Persisted AST parse-cache entry for one source file signature."""
+
+    version: int
+    path: str
+    mtime_ns: int
+    size: int
+    source_signature: str
+    python_version: tuple[int, int]
+    module: ast.Module
+
+    def matches(
+        self,
+        path: Path,
+        path_stat: os.stat_result,
+        source_signature: str,
+    ) -> bool:
+        return (
+            self.version == ast_parse_cache_schema.version
+            and self.path == str(path.resolve())
+            and self.source_signature == source_signature
+            and self.mtime_ns == path_stat.st_mtime_ns
+            and self.size == path_stat.st_size
+            and self.python_version == (sys.version_info.major, sys.version_info.minor)
+        )
+
+
 ast_parse_cache_schema = AstParseCacheSchema()
 ast_cache_payload_unavailable = AstCachePayloadUnavailable()
 
 
+@dataclass(frozen=True)
+class CollectedFamilyCacheSchema:
+    """Schema identity for persisted collected-family item projections."""
+
+    version: int = 2
+    max_payload_bytes: int = 100_000
+
+
+@dataclass(frozen=True)
+class CollectedFamilyCacheIdentity:
+    """Invalidation identity for one collected family in one parsed module."""
+
+    path: str
+    module_name: str
+    source_signature: str
+    family_module: str
+    family_qualname: str
+    item_type_module: str
+    item_type_qualname: str
+    python_version: tuple[int, int]
+    schema: CollectedFamilyCacheSchema
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+collected_family_cache_schema = CollectedFamilyCacheSchema()
+
+
 @dataclass(frozen=True, kw_only=True)
-class PythonModuleParseContext:
+class PythonModuleParseContext(ParseCacheDirectory):
     """Parse-time context shared by sequential and concurrent module loading."""
 
     analysis_root: Path
-    cache_dir: Path | None = None
-    use_parse_cache: bool = True
 
 
 def _module_name_for_path(path: Path, analysis_root: Path) -> tuple[str, bool]:
@@ -172,7 +225,7 @@ def _load_cached_ast(
     cache_path = _cache_entry_path(cache_dir, path)
     try:
         with cache_path.open("rb") as handle:
-            payload = cast(object, pickle.load(handle))
+            payload = pickle.load(handle)
     except (
         FileNotFoundError,
         OSError,
@@ -184,28 +237,11 @@ def _load_cached_ast(
         ImportError,
     ):
         payload = ast_cache_payload_unavailable
-    if not isinstance(payload, dict):
+    if not isinstance(payload, AstParseCachePayload):
         return None
-    if payload.get("version") != ast_parse_cache_schema.version:
+    if not payload.matches(path, path_stat, source_signature):
         return None
-    if payload.get("path") != str(path.resolve()):
-        return None
-    if payload.get("source_signature") != source_signature:
-        return None
-    if payload.get("mtime_ns") != path_stat.st_mtime_ns:
-        return None
-    if payload.get("size") != path_stat.st_size:
-        return None
-    py_version = payload.get("python_version")
-    if not isinstance(py_version, tuple) or py_version != (
-        sys.version_info.major,
-        sys.version_info.minor,
-    ):
-        return None
-    module = payload.get("module")
-    if not isinstance(module, ast.AST):
-        return None
-    return cast(ast.Module, module)
+    return payload.module
 
 
 def _write_cached_ast(
@@ -222,15 +258,15 @@ def _write_cached_ast(
     except OSError:
         return
     cache_entry = _cache_entry_path(cache_dir, path)
-    payload = {
-        "version": ast_parse_cache_schema.version,
-        "path": str(path.resolve()),
-        "mtime_ns": path_stat.st_mtime_ns,
-        "size": path_stat.st_size,
-        "source_signature": source_signature,
-        "python_version": (sys.version_info.major, sys.version_info.minor),
-        "module": module,
-    }
+    payload = AstParseCachePayload(
+        version=ast_parse_cache_schema.version,
+        path=str(path.resolve()),
+        mtime_ns=path_stat.st_mtime_ns,
+        size=path_stat.st_size,
+        source_signature=source_signature,
+        python_version=(sys.version_info.major, sys.version_info.minor),
+        module=module,
+    )
     try:
         cache_dir.mkdir(parents=True, exist_ok=True)
         with cache_entry.open("wb") as handle:
@@ -247,7 +283,7 @@ def _parse_source_module(
     source = path.read_text(encoding="utf-8")
     source_signature = _source_signature(source)
     module = (
-        _load_cached_ast(path, source_signature, cache_dir=context.cache_dir)
+        _load_cached_ast(path, source_signature, cache_dir=context.parse_cache_dir)
         if context.use_parse_cache
         else None
     )
@@ -258,7 +294,7 @@ def _parse_source_module(
                 path,
                 module,
                 source_signature,
-                cache_dir=context.cache_dir,
+                cache_dir=context.parse_cache_dir,
             )
     module_name, is_package_init = _module_name_for_path(
         path,
@@ -270,6 +306,7 @@ def _parse_source_module(
         is_package_init=is_package_init,
         module=module,
         source=source,
+        family_cache_dir=context.collected_family_cache_dir,
     )
 
 
@@ -282,29 +319,339 @@ def _effective_parse_workers(parse_workers: int) -> int:
     return max(1, parse_workers)
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('ParsedModule', 'path: Path; module_name: str; is_package_init: bool; module: ast.Module; source: str', doc='Parsed Python module together with its source text and path.'),
-    product_record_spec('AstNameFamily', 'names: frozenset[str]'),
-    product_record_spec('AstCallObservation', 'call: ast.Call; matched_name: str'),
-    product_record_spec('_BuilderCallContext', 'call: ast.Call; callee_name: str; field_pairs: tuple[tuple[str, ast.AST], ...]'),
-    product_record_spec('_ExportDictContext', 'dict_node: ast.Dict; key_pairs: tuple[tuple[str, ast.AST], ...]'),
-    product_record_spec('_ScopedShapeSpecCall', 'spec_name: str; call: ast.Call'),
-    product_record_spec('_ScopedShapeSpecKeywords', 'function_name: str; node_types: tuple[str, ...]'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class ParsedModule:
+    """Parsed Python module together with its source text and path."""
+
+    path: Path
+    module_name: str
+    is_package_init: bool
+    module: ast.Module
+    source: str
+    family_cache_dir: Path | None = None
+
+
+@dataclass(frozen=True)
+class AstNameFamily:
+    names: frozenset[str]
+
+
+class BuiltinCallName(StrEnum):
+    """Built-in call names that detector and AST helpers treat semantically."""
+
+    ABS = "abs"
+    ALL = "all"
+    ANY = "any"
+    BOOL = "bool"
+    BYTEARRAY = "bytearray"
+    BYTES = "bytes"
+    DICT = "dict"
+    ENUMERATE = "enumerate"
+    FLOAT = "float"
+    FROZENSET = "frozenset"
+    INT = "int"
+    ISINSTANCE = "isinstance"
+    ITER = "iter"
+    LEN = "len"
+    LIST = "list"
+    MAP = "map"
+    MAX = "max"
+    MEMORYVIEW = "memoryview"
+    MIN = "min"
+    NEXT = "next"
+    OBJECT = "object"
+    OPEN = "open"
+    PRINT = "print"
+    RANGE = "range"
+    SET = "set"
+    SORTED = "sorted"
+    STR = "str"
+    SUM = "sum"
+    TUPLE = "tuple"
+    TYPE = "type"
+    ZIP = "zip"
+
+    @classmethod
+    def sequence_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.TUPLE, cls.LIST, cls.SET))
+
+    @classmethod
+    def collection_factory_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.TUPLE, cls.LIST, cls.SET, cls.FROZENSET))
+
+    @classmethod
+    def return_collection_kind_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.TUPLE, cls.LIST, cls.DICT))
+
+    @classmethod
+    def self_attribute_wrapper_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.BOOL,
+                cls.FROZENSET,
+                cls.INT,
+                cls.LEN,
+                cls.LIST,
+                cls.SET,
+                cls.SORTED,
+                cls.STR,
+                cls.TUPLE,
+            )
+        )
+
+    @classmethod
+    def non_helper_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.ALL,
+                cls.ANY,
+                cls.BOOL,
+                cls.DICT,
+                cls.FROZENSET,
+                cls.INT,
+                cls.LEN,
+                cls.LIST,
+                cls.MAX,
+                cls.MIN,
+                cls.SET,
+                cls.SORTED,
+                cls.STR,
+                cls.SUM,
+                cls.TUPLE,
+            )
+        )
+
+    @classmethod
+    def integer_result_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.LEN, cls.MAX, cls.MIN, cls.SUM))
+
+    @classmethod
+    def structural_alias_root_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.DICT, cls.FROZENSET, cls.LIST, cls.SET, cls.TUPLE))
+
+    @classmethod
+    def structural_alias_leaf_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.BOOL,
+                cls.BYTES,
+                cls.DICT,
+                cls.FLOAT,
+                cls.FROZENSET,
+                cls.INT,
+                cls.LIST,
+                cls.SET,
+                cls.STR,
+                cls.TUPLE,
+            )
+        )
+
+    @classmethod
+    def schema_accessor_copy_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.DICT, cls.LIST, cls.SET, cls.TUPLE))
+
+    @classmethod
+    def role_surface_iteration_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.ALL,
+                cls.ANY,
+                cls.DICT,
+                cls.ENUMERATE,
+                cls.LEN,
+                cls.LIST,
+                cls.MAX,
+                cls.MIN,
+                cls.SET,
+                cls.SUM,
+                cls.TUPLE,
+                cls.ZIP,
+            )
+        )
+
+    @classmethod
+    def non_lifecycle_stage_call_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.ANY,
+                cls.DICT,
+                cls.FROZENSET,
+                cls.ISINSTANCE,
+                cls.ITER,
+                cls.LEN,
+                cls.LIST,
+                cls.NEXT,
+                cls.SET,
+                cls.TUPLE,
+                cls.TYPE,
+            )
+        )
+
+    @classmethod
+    def formula_builtin_callee_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.ABS, cls.ALL, cls.ANY, cls.MAX, cls.MIN, cls.SUM))
+
+    @classmethod
+    def smelly_type_alias_builtin_tokens(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset((cls.DICT, cls.LIST, cls.MAP, cls.SET, cls.TUPLE))
+
+    @classmethod
+    def isinstance_scatter_builtin_type_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.BYTEARRAY,
+                cls.BOOL,
+                cls.BYTES,
+                cls.DICT,
+                cls.FLOAT,
+                cls.FROZENSET,
+                cls.INT,
+                cls.LIST,
+                cls.MEMORYVIEW,
+                cls.OBJECT,
+                cls.SET,
+                cls.STR,
+                cls.TUPLE,
+                cls.TYPE,
+            )
+        )
+
+    @classmethod
+    def normalized_template_stable_builtin_names(cls) -> frozenset["BuiltinCallName"]:
+        return frozenset(
+            (
+                cls.DICT,
+                cls.ENUMERATE,
+                cls.FLOAT,
+                cls.INT,
+                cls.LEN,
+                cls.LIST,
+                cls.MAX,
+                cls.MIN,
+                cls.OPEN,
+                cls.PRINT,
+                cls.RANGE,
+                cls.SET,
+                cls.SORTED,
+                cls.STR,
+                cls.SUM,
+                cls.TUPLE,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class AstCallObservation:
+    call: ast.Call
+    matched_name: str
+
+
+@dataclass(frozen=True)
+class _BuilderCallContext:
+    call: ast.Call
+    callee_name: str
+    field_pairs: tuple[tuple[str, ast.AST], ...]
+
+
+@dataclass(frozen=True)
+class _ExportDictContext:
+    dict_node: ast.Dict
+    key_pairs: tuple[tuple[str, ast.AST], ...]
+
+
+@dataclass(frozen=True)
+class _ScopedShapeSpecCall:
+    spec_name: str
+    call: ast.Call
+
+
+@dataclass(frozen=True)
+class _ScopedShapeSpecKeywords:
+    function_name: str
+    node_types: tuple[str, ...]
 
 
 AstScopedNode: TypeAlias = ast.AST
 CollectedFamilyTypes: TypeAlias = tuple[type["CollectedFamily"], ...]
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('ScopedAstObservation', 'node: AstScopedNode; class_name: str | None; function_name: str | None'),
-    product_record_spec('ClassAstObservation', 'node: ast.ClassDef; is_dataclass_family: bool'),
-))
-# fmt: on
+class ScopedAstObservationRole(StrEnum):
+    """Semantic scope roles owned by ScopedAstObservation's field schema."""
+
+    SCOPE_FILTERED = "scope_filtered"
+    CLASS_SCOPE = "class_scope"
+    FUNCTION_SCOPE = "function_scope"
+    NODE_TYPE = "node_type"
+    GENERIC_SCOPE = "generic_scope"
+    MODULE_ONLY_GUARD = "module_only_guard"
+    CLASS_ONLY_GUARD = "class_only_guard"
+    MODULE_SCOPE_GUARD = "module_scope_guard"
+    FUNCTION_SCOPE_GUARD = "function_scope_guard"
+    NODE_TYPE_GUARD = "node_type_guard"
+    GUARDED_DELEGATE = "guarded_delegate"
+
+
+@dataclass(frozen=True)
+class ScopedAstObservation:
+    node: AstScopedNode
+    class_name: str | None
+    function_name: str | None
+
+    @classmethod
+    def class_scope_field_name(cls) -> str:
+        return single_item(
+            tuple(
+                field.name for field in fields(cls) if field.name.startswith("class_")
+            )
+        )
+
+    @classmethod
+    def function_scope_field_name(cls) -> str:
+        return single_item(
+            tuple(
+                field.name
+                for field in fields(cls)
+                if field.name.startswith("function_")
+            )
+        )
+
+    @classmethod
+    def scope_role_name_from_text(cls, text: str) -> str:
+        class_field_name = cls.class_scope_field_name()
+        function_field_name = cls.function_scope_field_name()
+        mentions_class = class_field_name in text
+        mentions_function = function_field_name in text
+        if mentions_class and mentions_function:
+            return ScopedAstObservationRole.SCOPE_FILTERED.value
+        if mentions_class:
+            return ScopedAstObservationRole.CLASS_SCOPE.value
+        if mentions_function:
+            return ScopedAstObservationRole.FUNCTION_SCOPE.value
+        if "isinstance" in text:
+            return ScopedAstObservationRole.NODE_TYPE.value
+        return ScopedAstObservationRole.GENERIC_SCOPE.value
+
+    @classmethod
+    def guard_role_name_from_text(cls, text: str) -> str:
+        class_ref = f"observation.{cls.class_scope_field_name()}"
+        function_ref = f"observation.{cls.function_scope_field_name()}"
+        if f"{class_ref} is not None" in text:
+            return ScopedAstObservationRole.MODULE_ONLY_GUARD.value
+        if f"{class_ref} is None" in text:
+            return ScopedAstObservationRole.CLASS_ONLY_GUARD.value
+        if f"{function_ref} is None" in text:
+            return ScopedAstObservationRole.MODULE_SCOPE_GUARD.value
+        if f"{function_ref} is not None" in text:
+            return ScopedAstObservationRole.FUNCTION_SCOPE_GUARD.value
+        if "isinstance" in text:
+            return ScopedAstObservationRole.NODE_TYPE_GUARD.value
+        return ScopedAstObservationRole.GUARDED_DELEGATE.value
+
+
+@dataclass(frozen=True)
+class ClassAstObservation:
+    node: ast.ClassDef
+    is_dataclass_family: bool
 
 
 class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
@@ -381,10 +728,24 @@ class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
 
 
 _TRegistered = TypeVar("_TRegistered")
-_TRegisteredType = TypeVar("_TRegisteredType", bound=type[object])
+_TRegisteredType = TypeVar("_TRegisteredType")
+ShapeItemT = TypeVar("ShapeItemT")
+FlattenedItemT = TypeVar("FlattenedItemT")
+ShapeEmission: TypeAlias = ShapeItemT | tuple[ShapeItemT, ...]
+ContextShapeHelperArg: TypeAlias = ast.AST | str | None
+LiteralDispatchScalar: TypeAlias = str | int
+LiteralConstantValue: TypeAlias = str | int | float | complex | bool | bytes | None
 
 
-def _registry_member_key(registered_type: type[object]) -> tuple[str, int, str]:
+@dataclass(frozen=True)
+class CollectedFamilyCachePayload(Generic[ShapeItemT]):
+    """Persisted items collected for one module/family pair."""
+
+    identity: CollectedFamilyCacheIdentity
+    items: tuple[ShapeItemT, ...]
+
+
+def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
     return (
         registered_type.__module__,
         cast(int, registered_type.__dict__.get("__firstlineno__", 0)),
@@ -392,17 +753,17 @@ def _registry_member_key(registered_type: type[object]) -> tuple[str, int, str]:
     )
 
 
-def _registered_type_token(_name: str, cls: type[object]) -> str | None:
+def _registered_type_token(_name: str, cls: type[_TRegistered]) -> str | None:
     if cls.__dict__.get("_registry_skip", False):
         return None
     return f"{cls.__module__}:{cls.__qualname__}"
 
 
 def _is_direct_registered_descendant(
-    candidate: type[object],
-    root: type[object],
+    candidate: type[_TRegistered],
+    root: type[_TRegisteredType],
     *,
-    registry_base: type[object],
+    registry_base: type,
 ) -> bool:
     if not issubclass(candidate, root):
         return False
@@ -419,9 +780,11 @@ def _is_direct_registered_descendant(
 
 
 class RegisteredTypeLineage:
-    def descendant_types(self, root: type[object]) -> tuple[type[object], ...]:
-        seen: set[type[object]] = set()
-        ordered: list[type[object]] = []
+    def descendant_types(
+        self, root: type[_TRegistered]
+    ) -> tuple[type[_TRegistered], ...]:
+        seen: set[type] = set()
+        ordered: list[type[_TRegistered]] = []
         queue = list(root.__subclasses__())
         while queue:
             current = queue.pop(0)
@@ -429,7 +792,7 @@ class RegisteredTypeLineage:
             if current in seen:
                 continue
             seen.add(current)
-            ordered.append(current)
+            ordered.append(cast(type[_TRegistered], current))
         return tuple(ordered)
 
     def ordered_registered_types(
@@ -437,11 +800,11 @@ class RegisteredTypeLineage:
         root: type[_TRegisteredType],
     ) -> tuple[type[_TRegisteredType], ...]:
         registry = root.__registry__
-        seen: set[type[object]] = set()
+        seen: set[type[_TRegisteredType]] = set()
         ordered: list[type[_TRegisteredType]] = []
         for registered_type in sorted(
             registry.values(),
-            key=lambda candidate: _registry_member_key(cast(type[object], candidate)),
+            key=_registry_member_key,
         ):
             registered_class = cast(type[_TRegisteredType], registered_type)
             if registered_class in seen or not issubclass(registered_class, root):
@@ -451,7 +814,7 @@ class RegisteredTypeLineage:
         return tuple(ordered)
 
     def direct_registered_types(
-        self, root: type[_TRegisteredType], *, registry_base: type[object]
+        self, root: type[_TRegisteredType], *, registry_base: type
     ) -> tuple[type[_TRegisteredType], ...]:
         return tuple(
             (
@@ -467,22 +830,30 @@ class RegisteredTypeLineage:
 REGISTERED_TYPE_LINEAGE = RegisteredTypeLineage()
 
 
-class ModuleShapeSpec(ABC):
+class ModuleShapeSpec(Generic[ShapeItemT], ABC):
     """Abstract collector that emits semantic items from one parsed module."""
 
     @abstractmethod
-    def collect(self, parsed_module: ParsedModule) -> list[object]:
+    def collect(self, parsed_module: ParsedModule) -> list[ShapeEmission[ShapeItemT]]:
         raise NotImplementedError
 
 
-class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
+class SharedRegistryRootBase:
+    __registry_key__ = "__registry_token__"
+    __key_extractor__ = _registered_type_token
+    _registry_root: ClassVar[bool] = False
+
+class AutoRegisteredModuleShapeSpec(
+    SharedRegistryRootBase,
+    ModuleShapeSpec[ShapeItemT],
+    Generic[ShapeItemT],
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
     """Module shape spec family whose concrete subclasses self-register."""
 
     __registry__: ClassVar[dict[str, type["AutoRegisteredModuleShapeSpec"]]] = {}
-    __registry_key__ = "__registry_token__"
-    __key_extractor__ = _registered_type_token
     __skip_if_no_key__ = True
-    _registry_root: ClassVar[bool] = False
 
     @classmethod
     def registered_specs(cls) -> tuple["AutoRegisteredModuleShapeSpec", ...]:
@@ -507,15 +878,17 @@ class AutoRegisteredModuleShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegister
         )
 
 
-class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
+class CollectedFamily(
+    SharedRegistryRootBase,
+    Generic[ShapeItemT],
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
     """Registered family of collected items keyed by a runtime item type."""
 
     __registry__: ClassVar[dict[str, type["CollectedFamily"]]] = {}
-    __registry_key__ = "__registry_token__"
-    __key_extractor__ = _registered_type_token
     __skip_if_no_key__ = True
-    _registry_root: ClassVar[bool] = False
-    item_type: ClassVar[type[object]]
+    item_type: ClassVar[type[ShapeItemT]]
 
     @classmethod
     def registered_families(cls) -> CollectedFamilyTypes:
@@ -531,52 +904,136 @@ class CollectedFamily(ABC, metaclass=AutoRegisterMeta):
 
     @classmethod
     @abstractmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+    def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
         raise NotImplementedError
+
+
+def _collected_family_cache_identity(
+    parsed_module: ParsedModule,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> CollectedFamilyCacheIdentity:
+    item_type = family.item_type
+    return CollectedFamilyCacheIdentity(
+        path=str(parsed_module.path.resolve()),
+        module_name=parsed_module.module_name,
+        source_signature=_source_signature(parsed_module.source),
+        family_module=family.__module__,
+        family_qualname=family.__qualname__,
+        item_type_module=item_type.__module__,
+        item_type_qualname=item_type.__qualname__,
+        python_version=(sys.version_info.major, sys.version_info.minor),
+        schema=collected_family_cache_schema,
+    )
+
+
+def _collected_family_cache_path(
+    cache_dir: Path,
+    identity: CollectedFamilyCacheIdentity,
+) -> Path:
+    return cache_dir / f"{identity.cache_token}.pickle"
+
+
+def _load_cached_collected_family_items(
+    parsed_module: ParsedModule,
+    family: type[CollectedFamily[ShapeItemT]],
+) -> tuple[ShapeItemT, ...] | None:
+    cache_dir = parsed_module.family_cache_dir
+    if cache_dir is None:
+        return None
+    identity = _collected_family_cache_identity(parsed_module, family)
+    try:
+        with _collected_family_cache_path(cache_dir, identity).open("rb") as handle:
+            payload = pickle.load(handle)
+    except (
+        FileNotFoundError,
+        OSError,
+        pickle.PickleError,
+        EOFError,
+        TypeError,
+        ValueError,
+        AttributeError,
+        ImportError,
+    ):
+        return None
+    if not isinstance(payload, CollectedFamilyCachePayload):
+        return None
+    if payload.identity != identity:
+        return None
+    if not all(isinstance(item, family.item_type) for item in payload.items):
+        return None
+    return cast(tuple[ShapeItemT, ...], payload.items)
+
+
+def _store_cached_collected_family_items(
+    parsed_module: ParsedModule,
+    family: type[CollectedFamily[ShapeItemT]],
+    items: tuple[ShapeItemT, ...],
+) -> None:
+    cache_dir = parsed_module.family_cache_dir
+    if cache_dir is None:
+        return
+    identity = _collected_family_cache_identity(parsed_module, family)
+    payload = CollectedFamilyCachePayload(identity=identity, items=items)
+    try:
+        payload_bytes = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+        if len(payload_bytes) > identity.schema.max_payload_bytes:
+            return
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        with _collected_family_cache_path(cache_dir, identity).open("wb") as handle:
+            handle.write(payload_bytes)
+    except (OSError, pickle.PickleError, TypeError, AttributeError):
+        return
 
 
 @lru_cache(maxsize=None)
 def _collect_family_items_cached(
-    parsed_module: ParsedModule, family: type[CollectedFamily]
-) -> tuple[object, ...]:
-    return tuple(
+    parsed_module: ParsedModule, family: type[CollectedFamily[ShapeItemT]]
+) -> tuple[ShapeItemT, ...]:
+    cached_items = _load_cached_collected_family_items(parsed_module, family)
+    if cached_items is not None:
+        return cached_items
+    items = tuple(
         (
             item
             for item in COLLECTED_ITEM_PROJECTION.flatten(family.collect(parsed_module))
             if isinstance(item, family.item_type)
         )
     )
+    _store_cached_collected_family_items(parsed_module, family, items)
+    return items
 
 
 def collect_family_items(
     parsed_module: ParsedModule,
-    family: type[CollectedFamily],
-) -> list[object]:
+    family: type[CollectedFamily[ShapeItemT]],
+) -> list[ShapeItemT]:
     """Collect and flatten items from one registered family."""
     return list(_collect_family_items_cached(parsed_module, family))
 
 
-class RegisteredSpecCollectedFamily(CollectedFamily, ABC):
+class RegisteredSpecCollectedFamily(
+    CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC
+):
     """Collected family driven by an auto-registered spec root."""
 
     _registry_skip = True
     spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec]]
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+    def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
         return COLLECTED_ITEM_PROJECTION.from_spec_root(
             cls.spec_root, parsed_module, cls.item_type
         )
 
 
-class SingleSpecCollectedFamily(CollectedFamily, ABC):
+class SingleSpecCollectedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC):
     """Collected family driven by one explicit spec instance."""
 
     _registry_skip = True
-    spec: ClassVar[ModuleShapeSpec]
+    spec: ClassVar[ModuleShapeSpec[ShapeItemT]]
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[object]:
+    def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
         return [
             item
             for item in COLLECTED_ITEM_PROJECTION.flatten(
@@ -586,7 +1043,9 @@ class SingleSpecCollectedFamily(CollectedFamily, ABC):
         ]
 
 
-class ScopedShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
+class ScopedShapeSpec(
+    ModuleShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC, metaclass=AutoRegisterMeta
+):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
@@ -596,8 +1055,8 @@ class ScopedShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
     def node_types(self) -> tuple[type[ast.AST], ...]:
         raise NotImplementedError
 
-    def collect(self, parsed_module: ParsedModule) -> list[object]:
-        shapes: list[object] = []
+    def collect(self, parsed_module: ParsedModule) -> list[ShapeEmission[ShapeItemT]]:
+        shapes: list[ShapeEmission[ShapeItemT]] = []
         for observation in collect_scoped_observations(parsed_module, self.node_types):
             shape = self.build_shape(parsed_module, observation)
             if shape is not None:
@@ -607,14 +1066,14 @@ class ScopedShapeSpec(ModuleShapeSpec, ABC, metaclass=AutoRegisterMeta):
     @abstractmethod
     def build_shape(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         raise NotImplementedError
 
 
-class ObservationShapeSpec(ScopedShapeSpec, ABC):
+class ObservationShapeSpec(ScopedShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC):
     def build_shape(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         if not isinstance(observation.node, self.node_types):
             return None
         return self.build_from_observation(parsed_module, observation)
@@ -622,11 +1081,13 @@ class ObservationShapeSpec(ScopedShapeSpec, ABC):
     @abstractmethod
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         raise NotImplementedError
 
 
-class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
+class ContextForwardingShapeSpec(
+    ObservationShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC
+):
     node_type: ClassVar[type[ast.AST]]
 
     @property
@@ -635,17 +1096,14 @@ class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
 
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         node = observation.node
         assert isinstance(node, type(self).node_type)
-        helper = getattr(type(self), "shape_helper", None)
-        if helper is not None:
-            return helper(parsed_module, *self.shape_helper_args(node, observation))
         return self.build_from_context(parsed_module, node, observation)
 
     def shape_helper_args(
         self, node: ast.AST, observation: ScopedAstObservation
-    ) -> tuple[object, ...]:
+    ) -> tuple[ContextShapeHelperArg, ...]:
         raise NotImplementedError
 
     def build_from_context(
@@ -653,29 +1111,47 @@ class ContextForwardingShapeSpec(ObservationShapeSpec, ABC):
         parsed_module: ParsedModule,
         node: ast.AST,
         observation: ScopedAstObservation,
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         raise NotImplementedError
 
 
-class ContextHelperShapeSpec(ContextForwardingShapeSpec, ABC):
+class ContextHelperShapeSpec(
+    ContextForwardingShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC
+):
     shape_helper: ClassVar[
-        Callable[[ParsedModule, ast.AST, str | None, str | None], object | None]
+        Callable[
+            [ParsedModule, ast.AST, str | None, str | None],
+            ShapeEmission[ShapeItemT] | None,
+        ]
     ]
 
     def shape_helper_args(
         self, node: ast.AST, observation: ScopedAstObservation
-    ) -> tuple[object, ...]:
+    ) -> tuple[ast.AST, str | None, str | None]:
         return (node, observation.class_name, observation.function_name)
 
+    def build_from_context(
+        self,
+        parsed_module: ParsedModule,
+        node: ast.AST,
+        observation: ScopedAstObservation,
+    ) -> ShapeEmission[ShapeItemT] | None:
+        return type(self).shape_helper(
+            parsed_module,
+            *self.shape_helper_args(node, observation),
+        )
 
-class FunctionObservationSpec(ObservationShapeSpec, ABC):
+
+class FunctionObservationSpec(
+    ObservationShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC
+):
     @property
     def node_types(self) -> tuple[type[ast.AST], ...]:
         return (ast.FunctionDef, ast.AsyncFunctionDef)
 
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         node = observation.node
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return None
@@ -687,18 +1163,18 @@ class FunctionObservationSpec(ObservationShapeSpec, ABC):
         parsed_module: ParsedModule,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         observation: ScopedAstObservation,
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         raise NotImplementedError
 
 
-class AssignObservationSpec(ObservationShapeSpec, ABC):
+class AssignObservationSpec(ObservationShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC):
     @property
     def node_types(self) -> tuple[type[ast.AST], ...]:
         return (ast.Assign,)
 
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         node = observation.node
         if not isinstance(node, ast.Assign):
             return None
@@ -710,7 +1186,7 @@ class AssignObservationSpec(ObservationShapeSpec, ABC):
         parsed_module: ParsedModule,
         node: ast.Assign,
         observation: ScopedAstObservation,
-    ) -> object | None:
+    ) -> ShapeEmission[ShapeItemT] | None:
         raise NotImplementedError
 
 
@@ -769,8 +1245,7 @@ class PythonSourcePathPolicy:
             return True
         file_name = path.name.lower()
         return any(
-            fnmatchcase(file_name, pattern)
-            for pattern in ("test_*.py", "*_test.py")
+            fnmatchcase(file_name, pattern) for pattern in ("test_*.py", "*_test.py")
         )
 
 
@@ -853,7 +1328,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         return cls(
             root=root,
             analysis_root=root.parent if root.is_file() else root,
-            cache_dir=resolved_cache_dir,
+            parse_cache_dir=resolved_cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
             source_policy=active_source_policy,
@@ -888,10 +1363,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
             for path in paths
             if path.is_file() and self.source_policy.allows_file_path(path)
         )
-        if (
-            _effective_parse_workers(self.parse_workers) <= 1
-            or len(allowed_paths) <= 1
-        ):
+        if _effective_parse_workers(self.parse_workers) <= 1 or len(allowed_paths) <= 1:
             return _parse_module_roots(self, allowed_paths)
         return _parse_module_roots_concurrently(self, allowed_paths)
 
@@ -942,19 +1414,32 @@ def parse_python_module_roots(
     return modules
 
 
-def _normalized_constant(value: object) -> object:
+AstConstantValue: TypeAlias = (
+    str | int | float | complex | bool | bytes | None | EllipsisType
+)
+AstFingerprintInput: TypeAlias = (
+    ast.AST
+    | list["AstFingerprintInput"]
+    | tuple["AstFingerprintInput", ...]
+    | AstConstantValue
+)
+AstFingerprintAtom: TypeAlias = str | int | bool | None
+AstFingerprintKey: TypeAlias = AstFingerprintAtom | tuple["AstFingerprintKey", ...]
+
+
+def _normalized_constant(value: AstConstantValue) -> AstFingerprintAtom:
     if isinstance(value, str):
         return "STR"
+    if isinstance(value, bool):
+        return True
     if isinstance(value, (int, float, complex)):
         return 0
     if value is None:
         return None
-    if isinstance(value, bool):
-        return True
     return "CONST"
 
 
-def _normalized_ast_key(node: object) -> object:
+def _normalized_ast_key(node: AstFingerprintInput) -> AstFingerprintKey:
     if isinstance(node, ast.FunctionDef):
         return (
             "FunctionDef",
@@ -1004,6 +1489,26 @@ def _normalized_ast_key(node: object) -> object:
 @lru_cache(maxsize=None)
 def fingerprint_function(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return repr(_normalized_ast_key(node))
+
+
+def _builder_value_key(node: AstFingerprintInput) -> str:
+    if isinstance(node, ast.Name):
+        return f"Name(id='ROOT', ctx={node.ctx.__class__.__name__}())"
+    if isinstance(node, ast.Constant):
+        return f"Constant(value={_normalized_constant(node.value)!r})"
+    if isinstance(node, ast.AST):
+        fields_text = ", ".join(
+            (
+                f"{field_name}={_builder_value_key(value)}"
+                for field_name, value in ast.iter_fields(node)
+            )
+        )
+        return f"{node.__class__.__name__}({fields_text})"
+    if isinstance(node, list):
+        return "[" + ", ".join(_builder_value_key(item) for item in node) + "]"
+    if isinstance(node, tuple):
+        return "(" + ", ".join(_builder_value_key(item) for item in node) + ")"
+    return repr(node)
 
 
 def _terminal_name(node: ast.AST) -> str | None:
@@ -1107,7 +1612,7 @@ def _collect_all_scoped_observations(
 
     class Visitor(ClassFunctionStackNodeVisitor):
         def _record(self, node: ast.AST) -> None:
-            if getattr(node, "lineno", None) is None:
+            if "lineno" not in node._attributes:
                 return
             observations.append(
                 ScopedAstObservation(
@@ -1150,14 +1655,17 @@ def collect_scoped_observations(
 
 
 def collect_scoped_shapes(
-    parsed_module: ParsedModule, spec: ScopedShapeSpec
-) -> list[object]:
+    parsed_module: ParsedModule, spec: ScopedShapeSpec[ShapeItemT]
+) -> list[ShapeEmission[ShapeItemT]]:
     return spec.collect(parsed_module)
 
 
 class CollectedItemProjection:
-    def flatten(self, items: list[object]) -> tuple[object, ...]:
-        flattened: list[object] = []
+    def flatten(
+        self,
+        items: list[FlattenedItemT | tuple[FlattenedItemT, ...]],
+    ) -> tuple[FlattenedItemT, ...]:
+        flattened: list[FlattenedItemT] = []
         for item in items:
             if isinstance(item, tuple):
                 flattened.extend(item)
@@ -1169,9 +1677,9 @@ class CollectedItemProjection:
         self,
         spec_root: type[AutoRegisteredModuleShapeSpec],
         parsed_module: ParsedModule,
-        item_type: type[object],
-    ) -> list[object]:
-        items: list[object] = []
+        item_type: type[FlattenedItemT],
+    ) -> list[FlattenedItemT]:
+        items: list[FlattenedItemT] = []
         for spec in spec_root.registered_specs():
             items.extend(
                 (
@@ -1215,10 +1723,13 @@ class ClassObservationProjection:
 CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
 
 
+@lru_cache(maxsize=None)
+def _class_nodes(root: ast.AST) -> tuple[ast.ClassDef, ...]:
+    return tuple(node for node in ast.walk(root) if isinstance(node, ast.ClassDef))
+
+
 def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
-    return _name_family(
-        {item.node.name for item in CLASS_OBSERVATION_PROJECTION.project(parsed_module)}
-    )
+    return _name_family({node.name for node in _class_nodes(parsed_module.module)})
 
 
 def _class_body_field_observation(
@@ -1364,7 +1875,7 @@ SCOPE_PARENTAGE = ScopeParentage()
 
 class LiteralDispatchCaseMatcher:
     def match(
-        self, test: ast.AST, literal_type: type[object]
+        self, test: ast.AST, literal_type: type[LiteralDispatchScalar]
     ) -> tuple[str, str, str] | None:
         return (
             Maybe.of(test)
@@ -1377,9 +1888,10 @@ class LiteralDispatchCaseMatcher:
 LITERAL_DISPATCH_CASE_MATCHER = LiteralDispatchCaseMatcher()
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_LiteralDispatchCompare', 'left: ast.AST; right: ast.AST'))
-# fmt: on
+@dataclass(frozen=True)
+class _LiteralDispatchCompare:
+    left: ast.AST
+    right: ast.AST
 
 
 class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompare]):
@@ -1394,7 +1906,7 @@ class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompar
 class _LiteralDispatchCaseStep(
     GuardedEffectStep[_LiteralDispatchCompare, tuple[str, str, str]]
 ):
-    literal_type: type[object]
+    literal_type: type[LiteralDispatchScalar]
     step_id = "literal_dispatch_case"
 
     def project(self, value: _LiteralDispatchCompare) -> tuple[str, str, str] | None:
@@ -1404,7 +1916,7 @@ class _LiteralDispatchCaseStep(
 
 
 def _literal_dispatch_side(
-    axis: ast.AST, literal: ast.AST, literal_type: type[object]
+    axis: ast.AST, literal: ast.AST, literal_type: type[LiteralDispatchScalar]
 ) -> tuple[str, str, str] | None:
     if not isinstance(literal, ast.Constant) or not isinstance(
         literal.value, literal_type
@@ -1420,14 +1932,14 @@ def _literal_dispatch_side(
 def _literal_dispatch_observation_from_if(
     parsed_module: ParsedModule,
     node: ast.If,
-    literal_type: type[object],
+    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
     parent_map: dict[ast.AST, ast.AST],
 ) -> LiteralDispatchObservation | None:
     literal_cases: list[str] = []
     branch_lines: list[int] = []
     axis_fingerprint: str | None = None
-    axis_expression: str | None = None
+    dispatch_axis_expression: str | None = None
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
         case = LITERAL_DISPATCH_CASE_MATCHER.match(current.test, literal_type)
@@ -1436,13 +1948,17 @@ def _literal_dispatch_observation_from_if(
         current_fingerprint, current_expression, literal_case = case
         if axis_fingerprint is None:
             axis_fingerprint = current_fingerprint
-            axis_expression = current_expression
+            dispatch_axis_expression = current_expression
         elif axis_fingerprint != current_fingerprint:
             return None
         literal_cases.append(literal_case)
         branch_lines.append(current.lineno)
         current = current.orelse[0] if len(current.orelse) == 1 else None
-    if axis_fingerprint is None or axis_expression is None or len(literal_cases) < 2:
+    if (
+        axis_fingerprint is None
+        or dispatch_axis_expression is None
+        or len(literal_cases) < 2
+    ):
         return None
     function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
     return LiteralDispatchObservation(
@@ -1450,7 +1966,7 @@ def _literal_dispatch_observation_from_if(
         line=node.lineno,
         symbol=(function_name or "<module>") + ":literal-dispatch",
         axis_fingerprint=axis_fingerprint,
-        axis_expression=axis_expression,
+        dispatch_axis_expression=dispatch_axis_expression,
         literal_cases=tuple(literal_cases),
         literal_kind=literal_kind,
         execution_level=_execution_level_for_scope(function_name),
@@ -1459,7 +1975,9 @@ def _literal_dispatch_observation_from_if(
     )
 
 
-def _literal_match_case(pattern: ast.pattern, literal_type: type[object]) -> str | None:
+def _literal_match_case(
+    pattern: ast.pattern, literal_type: type[LiteralDispatchScalar]
+) -> str | None:
     if not isinstance(pattern, ast.MatchValue):
         return None
     value = pattern.value
@@ -1471,7 +1989,7 @@ def _literal_match_case(pattern: ast.pattern, literal_type: type[object]) -> str
 def _literal_dispatch_observation_from_match(
     parsed_module: ParsedModule,
     node: ast.Match,
-    literal_type: type[object],
+    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
     parent_map: dict[ast.AST, ast.AST],
 ) -> LiteralDispatchObservation | None:
@@ -1486,13 +2004,13 @@ def _literal_dispatch_observation_from_match(
     if len(literal_cases) < 2:
         return None
     function_name = SCOPE_PARENTAGE.enclosing_function_name(node, parent_map)
-    axis_expression = ast.unparse(node.subject)
+    dispatch_axis_expression = ast.unparse(node.subject)
     return LiteralDispatchObservation(
         file_path=str(parsed_module.path),
         line=node.lineno,
         symbol=(function_name or "<module>") + ":literal-dispatch",
         axis_fingerprint=ast.dump(node.subject, include_attributes=False),
-        axis_expression=axis_expression,
+        dispatch_axis_expression=dispatch_axis_expression,
         literal_cases=literal_cases,
         literal_kind=literal_kind,
         execution_level=_execution_level_for_scope(function_name),
@@ -1515,7 +2033,7 @@ def _inline_literal_dispatch_groups(
     parsed_module: ParsedModule,
     owner_name: str | None,
     block: list[ast.stmt],
-    literal_type: type[object],
+    literal_type: type[LiteralDispatchScalar],
     literal_kind: LiteralKind,
 ) -> tuple[LiteralDispatchObservation, ...]:
     groups: dict[str, list[tuple[int, str, str]]] = {}
@@ -1525,9 +2043,9 @@ def _inline_literal_dispatch_groups(
         case = LITERAL_DISPATCH_CASE_MATCHER.match(stmt.test, literal_type)
         if case is None:
             continue
-        axis_fingerprint, axis_expression, literal_case = case
+        axis_fingerprint, dispatch_axis_expression, literal_case = case
         groups.setdefault(axis_fingerprint, []).append(
-            (stmt.lineno, axis_expression, literal_case)
+            (stmt.lineno, dispatch_axis_expression, literal_case)
         )
     observations: list[LiteralDispatchObservation] = []
     for axis_fingerprint, items in groups.items():
@@ -1542,7 +2060,7 @@ def _inline_literal_dispatch_groups(
                 line=min((line for line, _, _ in items)),
                 symbol=(owner_name or "<module>") + ":inline-literal-dispatch",
                 axis_fingerprint=axis_fingerprint,
-                axis_expression=items[0][1],
+                dispatch_axis_expression=items[0][1],
                 literal_cases=literal_cases,
                 literal_kind=literal_kind,
                 execution_level=_execution_level_for_scope(owner_name),
@@ -1553,7 +2071,7 @@ def _inline_literal_dispatch_groups(
     return sorted_tuple(observations, key=lambda item: item.line)
 
 
-_LITERAL_DISPATCH_KINDS: tuple[tuple[type[object], LiteralKind], ...] = (
+_LITERAL_DISPATCH_KINDS: tuple[tuple[type[LiteralDispatchScalar], LiteralKind], ...] = (
     (str, LiteralKind.STRING),
     (int, LiteralKind.NUMERIC),
 )
@@ -1670,7 +2188,7 @@ class _TerminalCalleeFamilyStep(
 ):
     step_id = "terminal_callee_family"
     registration_order = 30
-    terminal_names = frozenset({"tuple", "list", "set"})
+    terminal_names = BuiltinCallName.sequence_wrapper_names()
 
     def project(self, value: ast.Call) -> ast.Call | None:
         return value if _terminal_name(value.func) in self.terminal_names else None
@@ -1700,9 +2218,10 @@ def _projection_outer_inner_calls(
     )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_ProjectionGeneratorMatch', 'node: ast.GeneratorExp; comprehension: ast.comprehension'))
-# fmt: on
+@dataclass(frozen=True)
+class _ProjectionGeneratorMatch:
+    node: ast.GeneratorExp
+    comprehension: ast.comprehension
 
 
 class _ProjectionGeneratorAttributeStep(RegisteredEffectStep):
@@ -2020,17 +2539,7 @@ def _is_self_attribute_expression(node: ast.AST) -> bool:
 
 
 def _wrapped_self_attribute_expression(node: ast.AST) -> tuple[str, str] | None:
-    wrapper_names = {
-        "tuple",
-        "list",
-        "set",
-        "frozenset",
-        "str",
-        "int",
-        "bool",
-        "len",
-        "sorted",
-    }
+    wrapper_names = BuiltinCallName.self_attribute_wrapper_names()
     return (
         Maybe.of(as_ast(node, ast.Call))
         .filter(
@@ -2452,7 +2961,7 @@ class ConfigSubjectProjection:
 CONFIG_SUBJECT_PROJECTION = ConfigSubjectProjection()
 
 
-def _literal_dispatch_value(node: ast.AST) -> object | None:
+def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, bool)):
         return node.value
     return None
@@ -2608,26 +3117,8 @@ def _source_roots_for_value_pairs(
     return source_roots or None
 
 
-class _BuilderValueNormalizer(ast.NodeTransformer):
-    def visit_Name(self, node: ast.Name) -> ast.AST:
-        return ast.copy_location(ast.Name(id="ROOT", ctx=node.ctx), node)
-
-    def visit_Constant(self, node: ast.Constant) -> ast.AST:
-        if isinstance(node.value, str):
-            return ast.copy_location(ast.Constant(value="STR"), node)
-        if isinstance(node.value, (int, float, complex)):
-            return ast.copy_location(ast.Constant(value=0), node)
-        if isinstance(node.value, bool):
-            return ast.copy_location(ast.Constant(value=True), node)
-        if node.value is None:
-            return ast.copy_location(ast.Constant(value=None), node)
-        return ast.copy_location(ast.Constant(value="CONST"), node)
-
-
 def _fingerprint_builder_value(node: ast.AST) -> str:
-    normalized = _BuilderValueNormalizer().visit(copy.deepcopy(node))
-    ast.fix_missing_locations(normalized)
-    return ast.dump(normalized, include_attributes=False)
+    return _builder_value_key(node)
 
 
 class RootNameProjection:

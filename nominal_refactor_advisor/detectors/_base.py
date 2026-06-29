@@ -7,23 +7,21 @@ detector implementations.
 
 from __future__ import annotations
 
-from ..record_algebra import (
-    materialize_product_record as _materialize_product_record,
-    materialize_product_records as _materialize_product_records,
-    product_record_spec as _product_record_spec,
-)
-
+import argparse
 import ast
+import hashlib
 import inspect
 from pathlib import Path
 import re
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
+from collections.abc import Hashable, MutableMapping
 from dataclasses import MISSING, dataclass, field, fields, replace
 from enum import StrEnum
 from functools import lru_cache
 from itertools import combinations
+from operator import attrgetter
 from typing import (
     Any,
     Callable,
@@ -51,6 +49,8 @@ from ..constructor_algebra import (
 from ..descriptor_algebra import AliasProperty, CollectionAttributeProjection
 from ..observation_shapes import LineSymbolObservationMixin
 from ..registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
+from ..registry_normal_form import RegistryNormalFormPolicy
+from ..semantic_identity import SemanticRoleIdentityToken
 from ..semantic_match import (
     AstTypedEffectStep,
     AstPredicateGrammar,
@@ -86,7 +86,8 @@ from ..semantic_match import (
     single_return_value,
 )
 from ..semantic_description_length import CompressionCertificate
-from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
+from ..factorization import ResidueHookNamesCarrier
 from ..semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
 )
@@ -97,6 +98,7 @@ from ..ast_tools import (
     AttributeProbeObservationFamily,
     BuilderCallShape,
     BuilderCallShapeFamily,
+    BuiltinCallName,
     ClassMarkerObservation,
     ClassMarkerObservationFamily,
     ClassFunctionStackNodeVisitor,
@@ -125,6 +127,7 @@ from ..ast_tools import (
     RegistrationShapeFamily,
     RuntimeTypeGenerationObservation,
     RuntimeTypeGenerationObservationFamily,
+    ScopedAstObservation,
     ScopedShapeWrapperFunction,
     ScopedShapeWrapperFunctionFamily,
     ScopedShapeWrapperSpec,
@@ -150,10 +153,13 @@ from ..models import (
     SPECULATIVE,
     STRONG_HEURISTIC,
     BranchCountMetrics,
+    CallSiteCountMetric,
     CertifiedFindingSpec,
+    DerivedCountMetricShape,
     DispatchCountMetrics,
     FieldFamilyMetrics,
     FindingMetrics,
+    FindingSemantics,
     FindingSpec,
     HighConfidenceCertifiedFindingSpec,
     HighConfidenceFindingSpec,
@@ -169,7 +175,9 @@ from ..models import (
     ResolutionAxisMetrics,
     SemanticBagDescriptor,
     SentinelSimulationMetrics,
+    SourceLineReference,
     SourceLocation,
+    SourceLocationZipDescriptorShape,
     WitnessCarrierMetrics,
     impact_delta_semantic_bag_descriptor,
     metric_semantic_bag_descriptors,
@@ -189,6 +197,7 @@ from ..taxonomy import (
     CertificationLevel,
     ConfidenceLevel,
     ObservationTag,
+    LabeledStrEnum,
 )
 from ._substrate_support import *
 
@@ -208,15 +217,7 @@ SemanticTagEnum = type[CapabilityTag] | type[ObservationTag]
 _SEMANTIC_TAG_CONSTANT_NAME_RE = re.compile(
     r"_[A-Z0-9_]+_(?:CAPABILITY|OBSERVATION)_TAGS"
 )
-_SEMANTIC_TAG_ENUMS: tuple[SemanticTagEnum, ...] = (CapabilityTag, ObservationTag)
-_SEMANTIC_TAG_NAME_ALIASES: dict[SemanticTagEnum, dict[str, str]] = {
-    CapabilityTag: {"AUTHORITATIVE": "AUTHORITATIVE_MAPPING"},
-    ObservationTag: {
-        "EXPORT": "EXPORT_MAPPING",
-        "KEYWORD": "KEYWORD_MAPPING",
-        "LINEAGE": "LINEAGE_MAPPING",
-    },
-}
+_SEMANTIC_TAG_ENUMS: tuple[SemanticTagEnum, ...] = tuple(LabeledStrEnum.__subclasses__())
 
 
 def _semantic_tag_constant_suffix_for_enum(tag_enum: SemanticTagEnum) -> str:
@@ -234,9 +235,7 @@ def _semantic_tag_token_matchers(
         ),
         *(
             (tuple(alias.split("_")), tag_enum[member_name])
-            for alias, member_name in _SEMANTIC_TAG_NAME_ALIASES.get(
-                tag_enum, {}
-            ).items()
+            for alias, member_name in tag_enum.name_aliases().items()
         ),
     )
     return sorted_tuple(rows, key=lambda row: (-len(row[0]), row[0]))
@@ -330,11 +329,59 @@ def _derive_candidate_collector(cls: type[object]) -> None:
 
 
 FindingSpecT = TypeVar("FindingSpecT", bound=FindingSpec)
+FindingSpecSemanticValue: TypeAlias = ConfidenceLevel | CertificationLevel
+
+
+class FindingSpecSemanticField(StrEnum):
+    CONFIDENCE = "confidence"
+    CERTIFICATION = "certification"
+
+
+def finding_spec_semantic_value_import_name(value: FindingSpecSemanticValue) -> str:
+    if isinstance(value, ConfidenceLevel):
+        return f"{value.name}_CONFIDENCE"
+    return value.name
+
+
+def finding_spec_semantic_value_from_import_name(
+    import_name: str,
+) -> FindingSpecSemanticValue | None:
+    return next(
+        (
+            value
+            for value in (*ConfidenceLevel, *CertificationLevel)
+            if finding_spec_semantic_value_import_name(value) == import_name
+        ),
+        None,
+    )
+
+
+@dataclass(frozen=True)
+class FindingSpecSemanticDefaults:
+    confidence: ConfidenceLevel
+    certification: CertificationLevel
+
+    def field_values(
+        self,
+    ) -> tuple[tuple[FindingSpecSemanticField, FindingSpecSemanticValue], ...]:
+        return (
+            (FindingSpecSemanticField.CONFIDENCE, self.confidence),
+            (FindingSpecSemanticField.CERTIFICATION, self.certification),
+        )
+
+    def value_for_field(
+        self, field_name: FindingSpecSemanticField
+    ) -> FindingSpecSemanticValue:
+        for candidate_name, value in self.field_values():
+            if candidate_name is field_name:
+                return value
+        raise KeyError(field_name)
 
 
 @dataclass(frozen=True)
 class FindingSpecFactory(Generic[FindingSpecT]):
     spec_type: type[FindingSpecT]
+    builder_name: str
 
     def __call__(
         self,
@@ -357,6 +404,22 @@ class FindingSpecFactory(Generic[FindingSpecT]):
             capability_tags=capability_tags,
             observation_tags=observation_tags,
             scaffold_template=scaffold_template,
+        )
+
+    @property
+    def constructor_name(self) -> str:
+        return self.spec_type.__name__
+
+    @property
+    def semantic_defaults(self) -> FindingSpecSemanticDefaults:
+        field_by_name = {
+            field_item.name: field_item for field_item in fields(self.spec_type)
+        }
+        return FindingSpecSemanticDefaults(
+            confidence=field_by_name[FindingSpecSemanticField.CONFIDENCE.value].default,
+            certification=field_by_name[
+                FindingSpecSemanticField.CERTIFICATION.value
+            ].default,
         )
 
 
@@ -389,11 +452,40 @@ class CertifiedLevelFindingSpecFactory:
         )
 
 
-finding_spec_template = FindingSpecFactory(FindingSpec)
-high_confidence_spec = FindingSpecFactory(HighConfidenceFindingSpec)
-certified_spec = FindingSpecFactory(CertifiedFindingSpec)
-high_confidence_certified_spec = FindingSpecFactory(HighConfidenceCertifiedFindingSpec)
+finding_spec_template = FindingSpecFactory(FindingSpec, "finding_spec_template")
+high_confidence_spec = FindingSpecFactory(
+    HighConfidenceFindingSpec, "high_confidence_spec"
+)
+certified_spec = FindingSpecFactory(CertifiedFindingSpec, "certified_spec")
+high_confidence_certified_spec = FindingSpecFactory(
+    HighConfidenceCertifiedFindingSpec, "high_confidence_certified_spec"
+)
 speculative_finding_spec = CertifiedLevelFindingSpecFactory(SPECULATIVE)
+FINDING_SPEC_FACTORIES = (
+    finding_spec_template,
+    high_confidence_spec,
+    certified_spec,
+    high_confidence_certified_spec,
+)
+
+
+def finding_spec_factory_by_constructor_name() -> dict[str, FindingSpecFactory]:
+    return {factory.constructor_name: factory for factory in FINDING_SPEC_FACTORIES}
+
+
+def finding_spec_factory_for_constructor_name(
+    constructor_name: str,
+) -> FindingSpecFactory | None:
+    return finding_spec_factory_by_constructor_name().get(constructor_name)
+
+
+def finding_spec_factory_for_defaults(
+    defaults: FindingSpecSemanticDefaults,
+) -> FindingSpecFactory | None:
+    for factory in FINDING_SPEC_FACTORIES:
+        if factory.semantic_defaults == defaults:
+            return factory
+    return None
 
 
 def detector_config_option(default: object, help_text: str) -> object:
@@ -512,7 +604,7 @@ class DetectorConfig:
     excluded_pattern_ids: tuple = ()
 
     @classmethod
-    def from_namespace(cls, namespace: Any) -> "DetectorConfig":
+    def from_namespace(cls, namespace: argparse.Namespace) -> "DetectorConfig":
         namespace_values = vars(namespace)
         config_values: dict[str, object] = {}
         for config_field in fields(cls):
@@ -536,6 +628,8 @@ class DetectorCacheGranularity(StrEnum):
 
     GLOBAL = "global"
     PER_MODULE = "per_module"
+    CONTEXTUAL_MODULE = "contextual_module"
+    CONTEXTUAL_GLOBAL = "contextual_global"
 
 
 class IssueDetector(ABC, metaclass=AutoRegisterMeta):
@@ -548,6 +642,9 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     finding_spec: ClassVar[FindingSpec]
     genericity: ClassVar[str] = "generic"
     detector_priority: ClassVar[int] = 0
+    ssot_authority_boundary: ClassVar[bool] = False
+    semantic_mirror_role: ClassVar[bool] = False
+    registry_normal_form_policy: ClassVar[RegistryNormalFormPolicy | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -564,6 +661,43 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
                 item.__qualname__,
             ),
         )
+
+    @classmethod
+    def detector_family_base_names(cls) -> frozenset[str]:
+        return frozenset(
+            detector_type.__name__
+            for detector_type in (cls, *_issue_detector_subclasses(cls))
+        )
+
+    @classmethod
+    def ssot_authority_detector_ids(cls) -> frozenset[str]:
+        return cls._detector_ids_for_role(
+            lambda detector_type: detector_type.ssot_authority_boundary
+        )
+
+    @classmethod
+    def semantic_mirror_detector_ids(cls) -> frozenset[str]:
+        return cls._detector_ids_for_role(
+            lambda detector_type: detector_type.semantic_mirror_role
+        )
+
+    @classmethod
+    def _detector_ids_for_role(
+        cls,
+        role_predicate: Callable[[type["IssueDetector"]], bool],
+    ) -> frozenset[str]:
+        return frozenset(
+            detector_id
+            for detector_type in cls.registered_detector_types()
+            for detector_id in (detector_type.effective_detector_id(),)
+            if detector_id is not None and role_predicate(detector_type)
+        )
+
+    @classmethod
+    def effective_detector_id(cls) -> str | None:
+        if cls.detector_id is not None:
+            return cls.detector_id
+        return _detector_id_from_class_name(cls.__name__, cls)
 
     def detect(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -586,7 +720,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         context: "FindingBuildContext | None" = None,
         **overrides: Unpack[FindingBuildContextKwargs],
     ) -> RefactorFinding:
-        detector_id = self.detector_id
+        detector_id = type(self).effective_detector_id()
         if detector_id is None:
             raise TypeError(f"{type(self).__name__} has no detector_id")
         context = FindingBuildContext.merge(context, **overrides)
@@ -637,8 +771,67 @@ class PerModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
+class ContextualModuleIssueDetector(IssueDetector):
+    """Detector base for per-module findings that need repo-level context."""
+
+    cache_granularity: ClassVar[DetectorCacheGranularity] = (
+        DetectorCacheGranularity.CONTEXTUAL_MODULE
+    )
+
+    def _collect_findings(
+        self, modules: list[ParsedModule], config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        module_context = tuple(modules)
+        findings: list[RefactorFinding] = []
+        for module in modules:
+            findings.extend(
+                self.findings_for_module_context(module, module_context, config)
+            )
+        return findings
+
+    @classmethod
+    @abstractmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        raise NotImplementedError
+
+    def findings_for_module_context(
+        self,
+        module: ParsedModule,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return self._findings_for_module_context(module, modules, config)
+
+    @abstractmethod
+    def _findings_for_module_context(
+        self,
+        module: ParsedModule,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
+class ContextualGlobalCacheContract(ABC):
+    """Nominal cache contract for global detectors keyed by semantic context."""
+
+    cache_granularity: ClassVar[DetectorCacheGranularity] = (
+        DetectorCacheGranularity.CONTEXTUAL_GLOBAL
+    )
+
+    @classmethod
+    @abstractmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        raise NotImplementedError
+
+
 CandidateItemT = TypeVar("CandidateItemT")
 FindingValueT = TypeVar("FindingValueT")
+AttributeValueT = TypeVar("AttributeValueT")
 CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
 CandidateEvidenceRenderer: TypeAlias = Callable[
     [CandidateItemT], tuple[SourceLocation, ...]
@@ -661,6 +854,10 @@ ManualRecordConstructorFieldPartition: TypeAlias = tuple[
 ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
 ProductAxisPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
+
+
+def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeValueT]:
+    return cast(Callable[[object], AttributeValueT], attrgetter(attribute_name))
 ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SelfCastAliasPartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
 SemanticRoleNameOptions: TypeAlias = tuple[tuple[str, tuple[str, ...]], ...]
@@ -713,12 +910,19 @@ class FindingBuildContext:
 
 @dataclass(frozen=True)
 class CandidateFindingRenderer(Generic[CandidateItemT]):
+    target_finding_type: ClassVar[type[RefactorFinding]] = RefactorFinding
     summary: CandidateSummaryRenderer[CandidateItemT]
     evidence: CandidateEvidenceRenderer[CandidateItemT]
     scaffold: OptionalCandidateTextRenderer[CandidateItemT] = None
     codemod_patch: OptionalCandidateTextRenderer[CandidateItemT] = None
     compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
+
+    @classmethod
+    def presentation_context_tokens(cls) -> frozenset[str]:
+        return frozenset(
+            token for field_item in fields(cls) for token in field_item.name.split("_")
+        )
 
     def _optional_value(
         self,
@@ -747,8 +951,15 @@ class CandidateFindingRenderer(Generic[CandidateItemT]):
         )
 
 
-def single_candidate_evidence(candidate: object) -> tuple[SourceLocation, ...]:
-    return (cast(SourceLocation, getattr(candidate, "evidence")),)
+@dataclass(frozen=True)
+class SourceLocationEvidenceCarrier:
+    evidence: SourceLocation
+
+
+def single_candidate_evidence(
+    candidate: SourceLocationEvidenceCarrier,
+) -> tuple[SourceLocation, ...]:
+    return (candidate.evidence,)
 
 
 _DEFAULT_FILE_PATH_ATTRIBUTE = "file_path"
@@ -773,20 +984,19 @@ class SourceLocationEvidenceProperty:
         if instance is None:
             return self
         return SourceLocation(
-            getattr(instance, self.file_attribute_name),
-            getattr(instance, self.line_attribute_name),
-            getattr(instance, self.symbol_attribute_name),
+            _attribute_projection(self.file_attribute_name)(instance),
+            _attribute_projection(self.line_attribute_name)(instance),
+            _attribute_projection(self.symbol_attribute_name)(instance),
         )
 
 
 @dataclass(frozen=True)
-class SourceLocationZipEvidenceProperty(ABC, metaclass=AutoRegisterMeta):
+class SourceLocationZipEvidenceProperty(
+    SourceLocationZipDescriptorShape, ABC, metaclass=AutoRegisterMeta
+):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
-
-    line_numbers_attribute_name: str
-    symbol_names_attribute_name: str
 
     def __get__(
         self,
@@ -809,10 +1019,14 @@ class ZippedSourceLocationEvidenceProperty(SourceLocationZipEvidenceProperty):
 
     def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
         return (
-            SourceLocation(getattr(instance, self.file_attribute_name), line, symbol)
+            SourceLocation(
+                _attribute_projection(self.file_attribute_name)(instance),
+                line,
+                symbol,
+            )
             for line, symbol in zip(
-                getattr(instance, self.line_numbers_attribute_name),
-                getattr(instance, self.symbol_names_attribute_name),
+                _attribute_projection(self.line_numbers_attribute_name)(instance),
+                _attribute_projection(self.symbol_names_attribute_name)(instance),
                 strict=True,
             )
         )
@@ -826,9 +1040,9 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
         return (
             SourceLocation(file_path, line, symbol)
             for file_path, line, symbol in zip(
-                getattr(instance, self.file_paths_attribute_name),
-                getattr(instance, self.line_numbers_attribute_name),
-                getattr(instance, self.symbol_names_attribute_name),
+                _attribute_projection(self.file_paths_attribute_name)(instance),
+                _attribute_projection(self.line_numbers_attribute_name)(instance),
+                _attribute_projection(self.symbol_names_attribute_name)(instance),
                 strict=True,
             )
         )
@@ -850,15 +1064,13 @@ _LINE_FAMILY_NAME_EVIDENCE = SourceLocationEvidenceProperty(
 
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
-    finding_renderer: ClassVar[CandidateFindingRenderer[Any] | None] = None
+    finding_renderer: ClassVar[CandidateFindingRenderer[CandidateItemT] | None] = None
 
     def _finding_for_candidate(self, candidate: CandidateItemT) -> RefactorFinding:
         renderer = type(self).finding_renderer
         if renderer is None:
             raise NotImplementedError
-        return cast(CandidateFindingRenderer[CandidateItemT], renderer).build(
-            cast(IssueDetector, self), candidate
-        )
+        return renderer.build(cast(IssueDetector, self), candidate)
 
 
 class CandidateFindingDetector(
@@ -894,24 +1106,85 @@ CrossModuleCandidateCollector = Callable[
 ConfiguredCrossModuleCandidateCollector = Callable[
     [Sequence[ParsedModule], DetectorConfig], Sequence[CandidateItemT]
 ]
+DetectorCollector: TypeAlias = (
+    ModuleCandidateCollector[CandidateItemT]
+    | ConfiguredModuleCandidateCollector[CandidateItemT]
+    | CrossModuleCandidateCollector[CandidateItemT]
+    | ConfiguredCrossModuleCandidateCollector[CandidateItemT]
+)
 
 
-class DerivedCandidateCollectorMixin:
-    candidate_collector: ClassVar[Callable[..., Sequence[Any]]]
+class CandidateCollectorScope(StrEnum):
+    MODULE = "module"
+    CROSS_MODULE = "cross_module"
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:
-        super().__init_subclass__(**kwargs)
+
+@dataclass(frozen=True)
+class CandidateCollectorBaseShape:
+    scope: CandidateCollectorScope
+    uses_config: bool
+
+
+class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
+    candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
+    collector_scope: ClassVar[CandidateCollectorScope | None] = None
+    collector_uses_config: ClassVar[bool] = False
+
+    def __init_subclass__(cls) -> None:
+        super().__init_subclass__()
         _derive_candidate_collector(cls)
+
+    @classmethod
+    def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
+        if cls.collector_scope is None:
+            return None
+        return CandidateCollectorBaseShape(
+            scope=cls.collector_scope,
+            uses_config=cls.collector_uses_config,
+        )
+
+    @classmethod
+    def registered_collector_base_types(
+        cls,
+    ) -> tuple[type["DerivedCandidateCollectorMixin"], ...]:
+        return sorted_tuple(
+            (
+                collector_base
+                for collector_base in cls.__subclasses__()
+                if collector_base.collector_base_shape() is not None
+            ),
+            key=lambda item: item.__name__,
+        )
+
+    @classmethod
+    def collector_base_names(cls) -> frozenset[str]:
+        return frozenset(
+            collector_base.__name__
+            for collector_base in cls.registered_collector_base_types()
+        )
+
+    @classmethod
+    def collector_base_name_for_shape(
+        cls,
+        shape: CandidateCollectorBaseShape,
+    ) -> str:
+        for collector_base in cls.registered_collector_base_types():
+            if collector_base.collector_base_shape() == shape:
+                return collector_base.__name__
+        raise KeyError(shape)
 
 
 class ModuleCollectorCandidateDetector(
-    DerivedCandidateCollectorMixin,
+    DerivedCandidateCollectorMixin[CandidateItemT],
     CandidateFindingDetector[CandidateItemT],
     Generic[CandidateItemT],
     ABC,
 ):
     """Candidate detector whose collector is a typed class-level strategy."""
 
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.MODULE
+    )
     candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
@@ -922,13 +1195,17 @@ class ModuleCollectorCandidateDetector(
 
 
 class ConfiguredModuleCollectorCandidateDetector(
-    DerivedCandidateCollectorMixin,
+    DerivedCandidateCollectorMixin[CandidateItemT],
     CandidateFindingDetector[CandidateItemT],
     Generic[CandidateItemT],
     ABC,
 ):
     """Candidate detector whose collector depends on detector configuration."""
 
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.MODULE
+    )
+    collector_uses_config: ClassVar[bool] = True
     candidate_collector: ClassVar[ConfiguredModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
@@ -961,13 +1238,16 @@ class CrossModuleCandidateDetector(
 
 
 class CrossModuleCollectorCandidateDetector(
-    DerivedCandidateCollectorMixin,
+    DerivedCandidateCollectorMixin[CandidateItemT],
     CrossModuleCandidateDetector[CandidateItemT],
     Generic[CandidateItemT],
     ABC,
 ):
     """Cross-module candidate detector backed by a typed class-level strategy."""
 
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.CROSS_MODULE
+    )
     candidate_collector: ClassVar[CrossModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
@@ -978,13 +1258,17 @@ class CrossModuleCollectorCandidateDetector(
 
 
 class ConfiguredCrossModuleCollectorCandidateDetector(
-    DerivedCandidateCollectorMixin,
+    DerivedCandidateCollectorMixin[CandidateItemT],
     CrossModuleCandidateDetector[CandidateItemT],
     Generic[CandidateItemT],
     ABC,
 ):
     """Cross-module candidate detector whose collector needs configuration."""
 
+    collector_scope: ClassVar[CandidateCollectorScope | None] = (
+        CandidateCollectorScope.CROSS_MODULE
+    )
+    collector_uses_config: ClassVar[bool] = True
     candidate_collector: ClassVar[
         ConfiguredCrossModuleCandidateCollector[CandidateItemT]
     ]
@@ -1000,14 +1284,17 @@ def _detector_name_from_candidate_type(candidate_type: type[object]) -> str:
 
 
 @dataclass(frozen=True)
-class DetectorDeclarationOptions:
+class DetectorDeclarationOptions(Generic[CandidateItemT]):
     detector_name: str | None = None
     detector_base: type[IssueDetector] = ModuleCollectorCandidateDetector
-    candidate_collector: Callable[..., Sequence[Any]] | None = None
+    candidate_collector: DetectorCollector[CandidateItemT] | None = None
     detector_priority: int | None = None
+    registry_normal_form_policy: RegistryNormalFormPolicy | None = None
 
     @classmethod
-    def from_kwargs(cls, options: dict[str, Any]) -> DetectorDeclarationOptions:
+    def from_kwargs(
+        cls, options: "DetectorDeclarationOptionKwargs[CandidateItemT]"
+    ) -> DetectorDeclarationOptions[CandidateItemT]:
         option_names = set(cls.__dataclass_fields__)
         unknown_names = set(options) - option_names
         if unknown_names:
@@ -1020,12 +1307,52 @@ class DetectorDeclarationOptions:
 _DEFAULT_DETECTOR_DECLARATION_OPTIONS = DetectorDeclarationOptions()
 
 
+class DetectorDeclarationOptionKwargs(
+    TypedDict, Generic[CandidateItemT], total=False
+):
+    detector_name: str | None
+    detector_base: type[IssueDetector]
+    candidate_collector: DetectorCollector[CandidateItemT]
+    detector_priority: int | None
+    registry_normal_form_policy: RegistryNormalFormPolicy | None
+
+
+DetectorNamespaceValue: TypeAlias = (
+    str
+    | int
+    | FindingSpec
+    | CandidateFindingRenderer[CandidateItemT]
+    | DetectorCollector[CandidateItemT]
+    | RegistryNormalFormPolicy
+    | type[IssueDetector]
+)
+
+
 @dataclass(frozen=True)
-class DetectorDeclaration:
-    candidate_type: type[object]
+class DetectorModuleNamespace(Generic[CandidateItemT]):
+    values: MutableMapping[str, DetectorNamespaceValue[CandidateItemT]]
+
+    @property
+    def module_name(self) -> str:
+        module_name = self.values["__name__"]
+        if not isinstance(module_name, str):
+            raise TypeError("detector module namespace requires string __name__")
+        return module_name
+
+    def install_detector(
+        self, class_name: str, detector_type: type[IssueDetector]
+    ) -> None:
+        self.values[class_name] = detector_type
+
+
+@dataclass(frozen=True)
+class DetectorDeclaration(Generic[CandidateItemT]):
+    candidate_type: type[CandidateItemT]
     finding_spec: FindingSpec
-    finding_renderer: CandidateFindingRenderer[Any]
-    options: DetectorDeclarationOptions = _DEFAULT_DETECTOR_DECLARATION_OPTIONS
+    finding_renderer: CandidateFindingRenderer[CandidateItemT]
+    options: DetectorDeclarationOptions[CandidateItemT] = (
+        _DEFAULT_DETECTOR_DECLARATION_OPTIONS
+    )
 
     @property
     def class_name(self) -> str:
@@ -1033,8 +1360,28 @@ class DetectorDeclaration:
             self.candidate_type
         )
 
-    def namespace(self, module_name: str, firstlineno: int) -> dict[str, object]:
-        namespace: dict[str, object] = {
+    @classmethod
+    def required_namespace_field_names(cls) -> tuple[str, ...]:
+        return ("finding_spec", "finding_renderer")
+
+    def namespace(self, module_name: str, firstlineno: int) -> dict[
+        str,
+        str
+        | int
+        | FindingSpec
+        | CandidateFindingRenderer[CandidateItemT]
+        | DetectorCollector[CandidateItemT]
+        | RegistryNormalFormPolicy,
+    ]:
+        namespace: dict[
+            str,
+            str
+            | int
+            | FindingSpec
+            | CandidateFindingRenderer[CandidateItemT]
+            | DetectorCollector[CandidateItemT]
+            | RegistryNormalFormPolicy,
+        ] = {
             "__module__": module_name,
             "__firstlineno__": firstlineno,
             "finding_spec": self.finding_spec,
@@ -1044,49 +1391,55 @@ class DetectorDeclaration:
             namespace["candidate_collector"] = self.options.candidate_collector
         if self.options.detector_priority is not None:
             namespace["detector_priority"] = self.options.detector_priority
+        if self.options.registry_normal_form_policy is not None:
+            namespace["registry_normal_form_policy"] = (
+                self.options.registry_normal_form_policy
+            )
         return namespace
 
     def install(
-        self, caller_globals: dict[str, Any], firstlineno: int
+        self,
+        caller_globals: DetectorModuleNamespace[CandidateItemT],
+        firstlineno: int,
     ) -> type[IssueDetector]:
         detector_type = cast(
             type[IssueDetector],
             type(
                 self.class_name,
                 (self.options.detector_base,),
-                self.namespace(caller_globals["__name__"], firstlineno),
+                self.namespace(caller_globals.module_name, firstlineno),
             ),
         )
-        caller_globals[self.class_name] = detector_type
+        caller_globals.install_detector(self.class_name, detector_type)
         return detector_type
 
 
 def _declare_module_detector_in(
-    caller_globals: dict[str, Any],
+    caller_globals: DetectorModuleNamespace[CandidateItemT],
     firstlineno: int,
-    declaration: DetectorDeclaration,
+    declaration: DetectorDeclaration[CandidateItemT],
 ) -> type[IssueDetector]:
     return declaration.install(caller_globals, firstlineno)
 
 
 def declare_module_detector(
-    candidate_type: type[object],
+    candidate_type: type[CandidateItemT],
     finding_spec: FindingSpec,
-    finding_renderer: CandidateFindingRenderer[Any],
-    **detector_options: Any,
+    finding_renderer: CandidateFindingRenderer[CandidateItemT],
+    **detector_options: Unpack[DetectorDeclarationOptionKwargs[CandidateItemT]],
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
     caller = None if frame is None else frame.f_back
     if caller is None:
         raise RuntimeError("declare_module_detector() requires a caller frame")
     return _declare_module_detector_in(
-        caller.f_globals,
+        DetectorModuleNamespace(caller.f_globals),
         caller.f_lineno,
         DetectorDeclaration(
             candidate_type,
             finding_spec,
             finding_renderer,
-            DetectorDeclarationOptions.from_kwargs(detector_options),
+            DetectorDeclarationOptions[CandidateItemT].from_kwargs(detector_options),
         ),
     )
 
@@ -1103,7 +1456,7 @@ def declare_candidate_rule_detector(
         CandidateItemT
     ] = None,
     metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None,
-    **detector_options: Any,
+    **detector_options: Unpack[DetectorDeclarationOptionKwargs[CandidateItemT]],
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
     helper_frame = None if frame is None else frame.f_back
@@ -1119,13 +1472,15 @@ def declare_candidate_rule_detector(
     )
     try:
         return _declare_module_detector_in(
-            helper_frame.f_globals,
+            DetectorModuleNamespace(helper_frame.f_globals),
             helper_frame.f_lineno,
             DetectorDeclaration(
                 candidate_type,
                 finding_spec,
                 renderer,
-                DetectorDeclarationOptions.from_kwargs(detector_options),
+                DetectorDeclarationOptions[CandidateItemT].from_kwargs(
+                    detector_options
+                ),
             ),
         )
     finally:
@@ -1273,11 +1628,15 @@ def declare_typed_observation_detector(
     return detector_type
 
 
-class GroupedShapeIssueDetector(IssueDetector):
+ShapeT = TypeVar("ShapeT")
+GroupKeyT = TypeVar("GroupKeyT", bound=Hashable)
+
+
+class GroupedShapeIssueDetector(IssueDetector, Generic[ShapeT, GroupKeyT]):
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
     ) -> list[RefactorFinding]:
-        groups: dict[object, list[object]] = defaultdict(list)
+        groups: dict[GroupKeyT, list[ShapeT]] = defaultdict(list)
         for shape in self._collect_shapes(modules, config):
             groups[self._group_key(shape)].append(shape)
 
@@ -1291,27 +1650,29 @@ class GroupedShapeIssueDetector(IssueDetector):
     @abstractmethod
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
+    ) -> list[ShapeT]:
         raise NotImplementedError
 
     @abstractmethod
-    def _group_key(self, shape: object) -> object:
+    def _group_key(self, shape: ShapeT) -> GroupKeyT:
         raise NotImplementedError
 
     @abstractmethod
     def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
+        self, shapes: tuple[ShapeT, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         raise NotImplementedError
 
 
-class FiberCollectedShapeIssueDetector(GroupedShapeIssueDetector, ABC):
+class FiberCollectedShapeIssueDetector(
+    GroupedShapeIssueDetector[ShapeT, GroupKeyT], ABC
+):
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
+    ) -> list[ShapeT]:
         shapes = tuple(
             (
                 shape
@@ -1326,12 +1687,95 @@ class FiberCollectedShapeIssueDetector(GroupedShapeIssueDetector, ABC):
         return [shape for group in groups for shape in group]
 
     @abstractmethod
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+    def _module_shapes(self, module: ParsedModule) -> tuple[ShapeT, ...]:
         raise NotImplementedError
 
     @abstractmethod
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
+    def _include_shape(self, shape: ShapeT, config: DetectorConfig) -> bool:
         raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ContextualGlobalShapeSignatureRow:
+    shape_type_name: str
+    structural_observation: StructuralObservation
+    group_key_digest: str
+    shape_digest: str
+
+
+@dataclass(frozen=True)
+class ContextualGlobalShapeSignature:
+    rows: tuple[ContextualGlobalShapeSignatureRow, ...]
+
+    @property
+    def token(self) -> str:
+        return _contextual_global_digest(repr(self))
+
+
+def _contextual_global_digest(value: str) -> str:
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
+
+
+class ContextualGlobalFiberCollectedShapeIssueDetector(
+    ContextualGlobalCacheContract,
+    FiberCollectedShapeIssueDetector[ShapeT, GroupKeyT],
+    ABC,
+    Generic[ShapeT, GroupKeyT],
+):
+    """Global fiber detector whose findings cache by collected shape semantics."""
+
+    @classmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        detector = cls()
+        rows: list[ContextualGlobalShapeSignatureRow] = []
+        for module in modules:
+            for shape in detector._module_shapes(module):
+                if not detector._include_shape(shape, config):
+                    continue
+                if not isinstance(shape, StructuralObservationCarrier):
+                    continue
+                rows.append(
+                    ContextualGlobalShapeSignatureRow(
+                        shape_type_name=type(shape).__qualname__,
+                        structural_observation=shape.structural_observation,
+                        group_key_digest=_contextual_global_digest(
+                            repr(detector._group_key(shape))
+                        ),
+                        shape_digest=detector._shape_signature_digest(shape),
+                    )
+                )
+        return ContextualGlobalShapeSignature(
+            tuple(
+                sorted(
+                    rows,
+                    key=lambda row: (
+                        row.structural_observation.file_path,
+                        row.structural_observation.line,
+                        row.structural_observation.owner_symbol,
+                        row.shape_type_name,
+                    ),
+                )
+            )
+        ).token
+
+    def _shape_signature_digest(self, shape: ShapeT) -> str:
+        return _contextual_global_digest(repr(shape))
+
+
+def _issue_detector_subclasses(
+    detector_type: type[IssueDetector],
+) -> tuple[type[IssueDetector], ...]:
+    children = tuple(detector_type.__subclasses__())
+    return (
+        *children,
+        *(
+            descendant
+            for child in children
+            for descendant in _issue_detector_subclasses(child)
+        ),
+    )
 
 
 CollectedItemT = TypeVar("CollectedItemT")
@@ -2077,6 +2521,13 @@ def _role_helper_control_shape(
     return tuple(_top_level_control_shape(statement) for statement in body)
 
 
+@dataclass(frozen=True)
+class SiblingRoleHelperSymmetryKey:
+    owner_name: str
+    shared_tokens: tuple[str, ...]
+    control_shape: tuple[str, ...]
+
+
 def _sibling_role_parameters_align(
     methods: tuple[SiblingRoleHelperMethod, ...],
 ) -> bool:
@@ -2095,12 +2546,9 @@ def _sibling_role_parameters_align(
 def _sibling_role_helper_symmetry_candidates(
     module: ParsedModule,
 ) -> tuple[SiblingRoleHelperSymmetryCandidate, ...]:
-    grouped: dict[
-        (
-            tuple[str, tuple[str, ...], tuple[str, ...]],
-            dict[str, SiblingRoleHelperMethod],
-        )
-    ] = defaultdict(dict)
+    grouped: dict[SiblingRoleHelperSymmetryKey, dict[str, SiblingRoleHelperMethod]] = (
+        defaultdict(dict)
+    )
     for qualname, function in _iter_named_functions(module):
         method_name = qualname.rsplit(".", 1)[-1]
         if not method_name.startswith("_") or method_name.startswith("__"):
@@ -2119,7 +2567,11 @@ def _sibling_role_helper_symmetry_candidates(
             function
         )
         for role_token, shared_tokens in _sibling_role_name_key_options(method_name):
-            key = (owner_name, shared_tokens, control_shape)
+            key = SiblingRoleHelperSymmetryKey(
+                owner_name=owner_name,
+                shared_tokens=shared_tokens,
+                control_shape=control_shape,
+            )
             grouped[key][qualname] = SiblingRoleHelperMethod(
                 file_path=str(module.path),
                 line=function.lineno,
@@ -2134,7 +2586,7 @@ def _sibling_role_helper_symmetry_candidates(
             )
 
     candidates: list[SiblingRoleHelperSymmetryCandidate] = []
-    for (owner_name, shared_tokens, _), methods_by_qualname in grouped.items():
+    for key, methods_by_qualname in grouped.items():
         methods = sorted_tuple(
             methods_by_qualname.values(),
             key=lambda item: (item.file_path, item.line, item.qualname),
@@ -2147,8 +2599,8 @@ def _sibling_role_helper_symmetry_candidates(
         candidates.append(
             SiblingRoleHelperSymmetryCandidate(
                 file_path=str(module.path),
-                owner_name=owner_name,
-                shared_tokens=shared_tokens,
+                owner_name=key.owner_name,
+                shared_tokens=key.shared_tokens,
                 methods=methods,
             )
         )
@@ -2283,7 +2735,7 @@ def _residual_enum_branch_cases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     enum_name: str,
-    axis_expression: str,
+    dispatch_axis_expression: str,
 ) -> tuple[str, ...]:
     case_names: set[str] = set()
     for node in _walk_nodes(function):
@@ -2292,7 +2744,7 @@ def _residual_enum_branch_cases(
         left_expr = ast.unparse(node.left)
         comparators = tuple(ast.unparse(comparator) for comparator in node.comparators)
         operands = (left_expr, *comparators)
-        if axis_expression not in operands:
+        if dispatch_axis_expression not in operands:
             continue
         for operand in operands:
             if operand.startswith(f"{enum_name}."):
@@ -2309,14 +2761,16 @@ def _residual_closed_axis_indirection_candidates_for_function(
     axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
     for node in _walk_nodes(function):
         for table_name in table_by_name:
-            axis_expression = _subscript_axis_expr_for_table(node, table_name)
-            if axis_expression is not None:
-                axis_expressions_by_table[table_name].add(axis_expression)
+            dispatch_axis_expression = _subscript_axis_expr_for_table(node, table_name)
+            if dispatch_axis_expression is not None:
+                axis_expressions_by_table[table_name].add(dispatch_axis_expression)
     for table_name, axis_expressions in axis_expressions_by_table.items():
         table = table_by_name[table_name]
-        for axis_expression in sorted(axis_expressions):
+        for dispatch_axis_expression in sorted(axis_expressions):
             residual_cases = _residual_enum_branch_cases(
-                function, enum_name=table.enum_name, axis_expression=axis_expression
+                function,
+                enum_name=table.enum_name,
+                dispatch_axis_expression=dispatch_axis_expression,
             )
             shared_cases = tuple(
                 case_name
@@ -2332,7 +2786,7 @@ def _residual_closed_axis_indirection_candidates_for_function(
                 table_name=table.table_name,
                 table_line=table.line,
                 enum_name=table.enum_name,
-                axis_expression=axis_expression,
+                dispatch_axis_expression=dispatch_axis_expression,
                 table_case_names=table.case_names,
                 residual_case_names=shared_cases,
                 table_value_summaries=table.value_summaries,
@@ -2387,7 +2841,11 @@ def _iter_named_functions(
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
-NamedFunctionSortKey: TypeAlias = Callable[[NamedFunctionCandidateT], Any] | None
+CandidateSortKeyPart: TypeAlias = str | int | float | bool | None
+CandidateSortKey: TypeAlias = CandidateSortKeyPart | tuple[CandidateSortKeyPart, ...]
+NamedFunctionSortKey: TypeAlias = (
+    Callable[[NamedFunctionCandidateT], CandidateSortKey] | None
+)
 NamedFunctionProjector: TypeAlias = Callable[
     Concatenate[ParsedModule, str, NamedFunctionNode, NamedFunctionProjectorP],
     Iterable[NamedFunctionCandidateT],
@@ -2493,7 +2951,7 @@ def _typed_ast_nodes(root: ast.AST, node_type: type[AstNodeT]) -> tuple[AstNodeT
 @dataclass(frozen=True)
 class CandidateStream(Generic[CandidateStreamItemT]):
     items: Iterable[CandidateStreamItemT]
-    sort_key: Callable[[CandidateStreamItemT], Any] | None = None
+    sort_key: Callable[[CandidateStreamItemT], CandidateSortKey] | None = None
 
     def materialized(self) -> tuple[CandidateStreamItemT, ...]:
         if self.sort_key is None:
@@ -2545,7 +3003,7 @@ class CandidateCollectionAuthority:
         ],
         *projector_args: AstNodeProjectorP.args,
         traversal: AstTraversal = _walk_nodes,
-        sort_key: Callable[[AstNodeCandidateT], Any] | None = None,
+        sort_key: Callable[[AstNodeCandidateT], CandidateSortKey] | None = None,
         **projector_kwargs: AstNodeProjectorP.kwargs,
     ) -> tuple[AstNodeCandidateT, ...]:
         nodes = (
@@ -3265,7 +3723,7 @@ def _inline_enum_subset_guard_candidates_for_function(
         guard = _enum_subset_guard_from_compare(node)
         if guard is None:
             continue
-        axis_expression, enum_name, case_names, operator = guard
+        dispatch_axis_expression, enum_name, case_names, operator = guard
         key = (qualname, node.lineno, enum_name, case_names)
         if key in seen:
             continue
@@ -3274,7 +3732,7 @@ def _inline_enum_subset_guard_candidates_for_function(
             file_path=str(module.path),
             line=node.lineno,
             function_name=qualname,
-            axis_expression=axis_expression,
+            dispatch_axis_expression=dispatch_axis_expression,
             enum_name=enum_name,
             case_names=case_names,
             operator=operator,
@@ -3354,22 +3812,76 @@ def _repeated_enum_strategy_dispatch_candidates(
     )
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('_TransportShellAssignmentShape', 'intermediate_var_name: str; selector_attr_name: str; source_param_name: str; constructor_name: str; kwargs_helper_name: str | None'),
-    _product_record_spec('_TransportShellTailShape', 'inner_hook_name: str; outcome_method_name: str'),
-    _product_record_spec('_TransportShellTemplateContext', 'body_shape: tuple[ast.Assign, ast.Return]; assignment_shape: _TransportShellAssignmentShape'),
-    _product_record_spec('_TransportShellOutcomeContext', 'outcome_call: ast.Call; outcome_method_name: str'),
-    _product_record_spec('_TransportShellInnerContext', 'inner_call: ast.Call; outcome_method_name: str'),
-    _product_record_spec('_LineCaseSpec', 'line: int; case_names: tuple[str, ...]', 'ABC'),
-    _product_record_spec('_SelectorCaseSpec', 'selector_method_name: str', '_LineCaseSpec'),
-    _product_record_spec('_StrategySelectorSpec', 'root_name: str; mapping_name: str', '_SelectorCaseSpec'),
-    _product_record_spec('_GenericDispatchSpec', 'function_name: str', '_LineCaseSpec'),
-    _product_record_spec('_AxisExpressionSite', 'axis_expression: str; line: int', 'ABC'),
-    _product_record_spec('_SelectorAssignment', 'variable_name: str; selector_spec: _StrategySelectorSpec', '_AxisExpressionSite'),
-    _product_record_spec('_NestedGenericUsage', 'callback_name: str; generic_spec: _GenericDispatchSpec', '_AxisExpressionSite'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _TransportShellAssignmentShape:
+    intermediate_var_name: str
+    selector_attr_name: str
+    source_param_name: str
+    constructor_name: str
+    kwargs_helper_name: str | None
+
+
+@dataclass(frozen=True)
+class _TransportShellTailShape:
+    inner_hook_name: str
+    outcome_method_name: str
+
+
+@dataclass(frozen=True)
+class _TransportShellTemplateContext:
+    body_shape: tuple[ast.Assign, ast.Return]
+    assignment_shape: _TransportShellAssignmentShape
+
+
+@dataclass(frozen=True)
+class _TransportShellOutcomeContext:
+    outcome_call: ast.Call
+    outcome_method_name: str
+
+
+@dataclass(frozen=True)
+class _TransportShellInnerContext:
+    inner_call: ast.Call
+    outcome_method_name: str
+
+
+@dataclass(frozen=True)
+class _LineCaseSpec(ABC):
+    line: int
+    case_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _SelectorCaseSpec(_LineCaseSpec):
+    selector_method_name: str
+
+
+@dataclass(frozen=True)
+class _StrategySelectorSpec(_SelectorCaseSpec):
+    root_name: str
+    mapping_name: str
+
+
+@dataclass(frozen=True)
+class _GenericDispatchSpec(_LineCaseSpec):
+    function_name: str
+
+
+@dataclass(frozen=True)
+class _DispatchAxisExpressionSite(DispatchAxisExpression, ABC):
+    line: int
+
+
+@dataclass(frozen=True)
+class _SelectorAssignment(_DispatchAxisExpressionSite):
+    variable_name: str
+    selector_spec: _StrategySelectorSpec
+
+
+@dataclass(frozen=True)
+class _NestedGenericUsage(_DispatchAxisExpressionSite):
+    callback_name: str
+    generic_spec: _GenericDispatchSpec
 
 
 @dataclass(frozen=True)
@@ -3388,15 +3900,36 @@ class _GuardedReturnCase:
         )
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('_SelectedConstantReturnShape', 'constant_name: str; wrapper_name: str | None; template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]'),
-    _product_record_spec('_ModuleConstantBinding', 'line: int; constructor_name: str | None'),
-    _product_record_spec('_SelectionDictCompContext', 'returned: ast.DictComp; generator: ast.comprehension'),
-    _product_record_spec('_SelectionHelperShape', 'function_name: str; selected_field_name: str; line: int'),
-    _product_record_spec('_SelectionLookupShape', 'function_name: str; line: int'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _SelectedConstantReturnShape:
+    constant_name: str
+    wrapper_name: str | None
+    template_key: tuple[str, tuple[str, ...], tuple[tuple[str, str], ...]]
+
+
+@dataclass(frozen=True)
+class _ModuleConstantBinding:
+    line: int
+    constructor_name: str | None
+
+
+@dataclass(frozen=True)
+class _SelectionDictCompContext:
+    returned: ast.DictComp
+    generator: ast.comprehension
+
+
+@dataclass(frozen=True)
+class _SelectionHelperShape:
+    function_name: str
+    selected_field_name: str
+    line: int
+
+
+@dataclass(frozen=True)
+class _SelectionLookupShape:
+    function_name: str
+    line: int
 
 
 def _module_level_dict_literals(
@@ -3440,10 +3973,10 @@ def _mapping_selector_shape(
         mapping_name = subnode.value.id
         if mapping_name not in known_mapping_names:
             continue
-        axis_expression = ast.unparse(subnode.slice)
-        if axis_expression not in method_parameter_names:
+        dispatch_axis_expression = ast.unparse(subnode.slice)
+        if dispatch_axis_expression not in method_parameter_names:
             continue
-        return (mapping_name, axis_expression)
+        return (mapping_name, dispatch_axis_expression)
     return None
 
 
@@ -3546,22 +4079,22 @@ def _selector_assignments_for_function(
         )
         if selector_spec is None:
             continue
-        axis_expression = None
+        dispatch_axis_expression = None
         if value.args:
-            axis_expression = ast.unparse(value.args[0])
+            dispatch_axis_expression = ast.unparse(value.args[0])
         elif value.keywords:
             for keyword in value.keywords:
                 if keyword.arg is None:
                     continue
-                axis_expression = ast.unparse(keyword.value)
+                dispatch_axis_expression = ast.unparse(keyword.value)
                 break
-        if axis_expression is None:
+        if dispatch_axis_expression is None:
             continue
         assignments.append(
             _SelectorAssignment(
                 variable_name=target.id,
                 selector_spec=selector_spec,
-                axis_expression=axis_expression,
+                dispatch_axis_expression=dispatch_axis_expression,
                 line=value.lineno,
             )
         )
@@ -3589,7 +4122,7 @@ def _nested_generic_usages_for_function(
                 _NestedGenericUsage(
                     callback_name=statement.name,
                     generic_spec=generic_spec,
-                    axis_expression=ast.unparse(subnode.args[0]),
+                    dispatch_axis_expression=ast.unparse(subnode.args[0]),
                     line=subnode.lineno,
                 )
             )
@@ -3673,11 +4206,11 @@ def _split_dispatch_authority_candidates_for_function(
                     line=function.lineno,
                     strategy_root_name=selector_assignment.selector_spec.root_name,
                     selector_method_name=selector_assignment.selector_spec.selector_method_name,
-                    strategy_axis_expression=selector_assignment.axis_expression,
+                    strategy_axis_expression=selector_assignment.dispatch_axis_expression,
                     strategy_case_names=selector_assignment.selector_spec.case_names,
                     strategy_call_method_name=strategy_call_method_name,
                     generic_function_name=generic_usage.generic_spec.function_name,
-                    generic_axis_expression=generic_usage.axis_expression,
+                    generic_axis_expression=generic_usage.dispatch_axis_expression,
                     generic_case_names=generic_usage.generic_spec.case_names,
                     bridge_callback_name=callback_name,
                     selector_line=selector_assignment.line,
@@ -3756,6 +4289,18 @@ def _bipartition_product_axes(
     return (left_axis, right_axis)
 
 
+@dataclass(frozen=True)
+class ProductAxisLeafKey:
+    left_axis_base_name: str
+    right_axis_base_name: str
+
+
+@dataclass(frozen=True)
+class ProductAxisLeafSite:
+    class_name: str
+    line: int
+
+
 def _empty_leaf_product_family_candidates(
     module: ParsedModule,
 ) -> tuple[EmptyLeafProductFamilyCandidate, ...]:
@@ -3818,7 +4363,7 @@ def _empty_leaf_product_family_candidates(
         left_axis, right_axis = axes
         if len(component_edges) != len(left_axis) * len(right_axis):
             continue
-        leaf_map: dict[tuple[str, str], tuple[str, int]] = {}
+        leaf_map: dict[ProductAxisLeafKey, ProductAxisLeafSite] = {}
         for class_name, line, base_names in leaves:
             if set(base_names) - component_nodes:
                 continue
@@ -3827,16 +4372,24 @@ def _empty_leaf_product_family_candidates(
                 left_name, right_name = (right_name, left_name)
             if left_name not in left_axis or right_name not in right_axis:
                 break
-            key = (left_name, right_name)
+            key = ProductAxisLeafKey(
+                left_axis_base_name=left_name,
+                right_axis_base_name=right_name,
+            )
             if key in leaf_map:
                 break
-            leaf_map[key] = (class_name, line)
+            leaf_map[key] = ProductAxisLeafSite(class_name=class_name, line=line)
         else:
             if len(leaf_map) != len(left_axis) * len(right_axis):
                 continue
             ordered_leaves = tuple(
                 (
-                    leaf_map[left_name, right_name]
+                    leaf_map[
+                        ProductAxisLeafKey(
+                            left_axis_base_name=left_name,
+                            right_axis_base_name=right_name,
+                        )
+                    ]
                     for left_name in left_axis
                     for right_name in right_axis
                 )
@@ -3847,9 +4400,9 @@ def _empty_leaf_product_family_candidates(
                     left_axis_base_names=left_axis,
                     right_axis_base_names=right_axis,
                     leaf_class_names=tuple(
-                        (class_name for class_name, _ in ordered_leaves)
+                        (leaf.class_name for leaf in ordered_leaves)
                     ),
-                    leaf_lines=tuple((line for _, line in ordered_leaves)),
+                    leaf_lines=tuple((leaf.line for leaf in ordered_leaves)),
                 )
             )
     return tuple(candidates)
@@ -4136,37 +4689,27 @@ _EVAL_PARSE_MODE = "eval"
 
 
 _IDENTITY_AXIS_KEYWORDS = frozenset(
-    {
+    (
+        *SemanticRoleIdentityToken.identity_axis_values(),
         "artifact",
         "artifact_cls",
         "backend",
         "cls",
         "class",
         "component",
-        "family",
-        "kind",
-        "key",
-        "mode",
-        _NAME_LITERAL,
         "request_type",
-        "role",
         "stage",
         "strategy",
-        _TYPE_NAME_LITERAL,
-    }
+    )
 )
-_IDENTITY_AXIS_SUFFIXES = (
-    "_cls",
-    "_class",
-    "_family",
-    "_kind",
-    "_key",
-    "_mode",
-    "_name",
-    "_role",
-    "_stage",
-    "_strategy",
-    "_type",
+_IDENTITY_AXIS_SUFFIX_EXCLUDED_KEYWORDS = frozenset(
+    (
+        "artifact",
+        "artifact_cls",
+        "backend",
+        "component",
+        "request_type",
+    )
 )
 _EXECUTABLE_AXIS_KEYWORDS = frozenset(
     {
@@ -4185,20 +4728,16 @@ _EXECUTABLE_AXIS_KEYWORDS = frozenset(
         "runner",
     }
 )
-_EXECUTABLE_AXIS_SUFFIXES = (
-    "_builder",
-    "_callback",
-    "_executor",
-    "_factory",
-    "_func",
-    "_function",
-    "_handler",
-    "_hook",
-    "_operation",
-    "_packager",
-    "_processor",
-    "_runner",
-)
+_EXECUTABLE_AXIS_SUFFIX_EXCLUDED_KEYWORDS = frozenset(("callable",))
+
+
+def _axis_keyword_suffixes(
+    keyword_names: frozenset[str], excluded_keyword_names: frozenset[str]
+) -> tuple[str, ...]:
+    return tuple(
+        f"_{keyword_name}"
+        for keyword_name in sorted(keyword_names - excluded_keyword_names)
+    )
 
 
 def _looks_like_type_or_nominal_key(value: str) -> bool:
@@ -4271,13 +4810,17 @@ _AXIS_KEYWORD_POLICIES = AxisKeywordPolicyCatalog(
         AxisKeywordPolicySpec(
             AxisKeywordRole.IDENTITY,
             _IDENTITY_AXIS_KEYWORDS,
-            _IDENTITY_AXIS_SUFFIXES,
+            _axis_keyword_suffixes(
+                _IDENTITY_AXIS_KEYWORDS, _IDENTITY_AXIS_SUFFIX_EXCLUDED_KEYWORDS
+            ),
             _looks_like_type_or_nominal_key,
         ),
         AxisKeywordPolicySpec(
             AxisKeywordRole.EXECUTABLE,
             _EXECUTABLE_AXIS_KEYWORDS,
-            _EXECUTABLE_AXIS_SUFFIXES,
+            _axis_keyword_suffixes(
+                _EXECUTABLE_AXIS_KEYWORDS, _EXECUTABLE_AXIS_SUFFIX_EXCLUDED_KEYWORDS
+            ),
             _looks_like_callable_value,
         ),
     )
@@ -4303,14 +4846,35 @@ def _axis_keyword_names(
     return sorted_tuple(names)
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('_SpecAxisEntry', 'constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]'),
-    _product_record_spec('_SpecAxisCallContext', 'call: ast.Call; constructor_name: str; keyword_map: dict[str, ast.AST]'),
-    _product_record_spec('_SpecAxisBinding', 'family_name: str; line: int; value: ast.AST'),
-    _product_record_spec('_SpecAxisSource', 'family_name: str; line: int; constructor_name: str; axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]; extra_keyword_names: tuple[str, ...]; is_standalone: bool'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _SpecAxisEntry:
+    constructor_name: str
+    axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]
+    extra_keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _SpecAxisCallContext:
+    call: ast.Call
+    constructor_name: str
+    keyword_map: dict[str, ast.AST]
+
+
+@dataclass(frozen=True)
+class _SpecAxisBinding:
+    family_name: str
+    line: int
+    value: ast.AST
+
+
+@dataclass(frozen=True)
+class _SpecAxisSource:
+    family_name: str
+    line: int
+    constructor_name: str
+    axis_pairs: tuple[tuple[tuple[str, str], tuple[str, str]], ...]
+    extra_keyword_names: tuple[str, ...]
+    is_standalone: bool
 
 
 def _call_keyword_map(call: ast.Call) -> dict[str, ast.AST]:
@@ -4579,26 +5143,7 @@ _AstValueT = TypeVar("_AstValueT", bound=ast.AST)
 def _module_level_named_values(
     module: ParsedModule,
 ) -> dict[str, tuple[int, ast.AST]]:
-    values: dict[str, tuple[int, ast.AST]] = {}
-    for statement in _trim_docstring_body(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if (
-            isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
-        ):
-            target_name = statement.targets[0].id
-            value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None or value is None:
-            continue
-        values[target_name] = (statement.lineno, value)
-    return values
+    return SUPPORT_PROJECTION_AUTHORITY.module_level_named_values(module)
 
 
 def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.Call]]:
@@ -5214,6 +5759,11 @@ def _manual_companion_dataclass_surface_candidates(
     )
 
 
+_BRIDGE_AXIS_SOURCE_TOKENS = frozenset(
+    ("backend", *SemanticRoleIdentityToken.bridge_axis_source_values())
+)
+
+
 def _literal_bridge_axis_cases(
     observation: LiteralDispatchObservation,
 ) -> tuple[str, tuple[str, ...]] | None:
@@ -5221,15 +5771,13 @@ def _literal_bridge_axis_cases(
         return None
     if not any(
         (
-            token in CLASS_NAME_ALGEBRA.ordered_tokens(observation.axis_expression)
-            for token in ("backend", "kind", "type", "format", "mode")
+            token
+            in CLASS_NAME_ALGEBRA.ordered_tokens(observation.dispatch_axis_expression)
+            for token in _BRIDGE_AXIS_SOURCE_TOKENS
         )
     ):
         return None
-    return observation.axis_expression, sorted_tuple(observation.literal_cases)
-
-
-_BRIDGE_AXIS_SOURCE_TOKENS = frozenset({"backend", "kind", "type", "format", "mode"})
+    return observation.dispatch_axis_expression, sorted_tuple(observation.literal_cases)
 
 
 def _bridge_operation_name(symbol: str) -> str:
@@ -5270,7 +5818,7 @@ def _bridge_axis_dispatch_family_candidates(
             if axis_cases is not None:
                 grouped[axis_cases].append(observation)
     candidates: list[BridgeAxisDispatchFamilyCandidate] = []
-    for (axis_expression, literal_cases), observations in grouped.items():
+    for (dispatch_axis_expression, literal_cases), observations in grouped.items():
         symbols = tuple(
             dict.fromkeys(
                 (_bridge_operation_name(item.symbol) for item in observations)
@@ -5289,7 +5837,7 @@ def _bridge_axis_dispatch_family_candidates(
             function_count=len(symbols),
             case_count=len(literal_cases),
             semantic_axes=(
-                ("axis", axis_expression),
+                ("axis", dispatch_axis_expression),
                 ("cases", literal_cases),
                 ("operations", operation_names),
             ),
@@ -5300,7 +5848,7 @@ def _bridge_axis_dispatch_family_candidates(
             BridgeAxisDispatchFamilyCandidate(
                 file_path=str(module.path),
                 line=line_numbers[0],
-                axis_expression=axis_expression,
+                dispatch_axis_expression=dispatch_axis_expression,
                 literal_cases=literal_cases,
                 function_names=symbols,
                 operation_names=operation_names,
@@ -5310,7 +5858,8 @@ def _bridge_axis_dispatch_family_candidates(
             )
         )
     return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.axis_expression)
+        candidates,
+        key=lambda item: (item.file_path, item.line, item.dispatch_axis_expression),
     )
 
 
@@ -5434,30 +5983,23 @@ def _array_protocol_probe_bridge_candidates(
     )
 
 
-_NON_LIFECYCLE_STAGE_CALL_NAMES = frozenset(
+_NON_LIFECYCLE_STAGE_DOMAIN_CALL_NAMES = frozenset(
     {
         "Any",
         "TypeError",
         "Visitor",
         "_walk_nodes",
-        "any",
         "bind_all",
         "cast",
-        "dict",
-        "frozenset",
-        "isinstance",
-        "iter",
-        "len",
-        "list",
-        "next",
         "of",
         "registered_effect_steps",
-        "set",
-        "tuple",
-        "type",
         "unwrap_or_none",
         "visit",
     }
+)
+_NON_LIFECYCLE_STAGE_CALL_NAMES = (
+    _NON_LIFECYCLE_STAGE_DOMAIN_CALL_NAMES
+    | BuiltinCallName.non_lifecycle_stage_call_names()
 )
 
 
@@ -5727,16 +6269,43 @@ def _module_keyed_selection_helper_candidates(
     )
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('_FileAxisCaseSpec', 'file_path: str; key_type_name: str', '_LineCaseSpec'),
-    _product_record_spec('_FamilyAxisSpec', 'family_name: str', '_FileAxisCaseSpec'),
-    _product_record_spec('_KeyedFamilyAxisSpec', 'family_label: str | None; registry_key_attr_name: str', '_FamilyAxisSpec'),
-    _product_record_spec('_ManualSelectorAxisSpec', 'selector_method_name: str', '_FamilyAxisSpec'),
-    _product_record_spec('_KeyedTableAxisSpec', 'table_name: str; value_shape_name: str | None', '_FileAxisCaseSpec'),
-    _product_record_spec('_ClassAssignedEnumAxisSpec', 'file_path: str; line: int; class_name: str; key_attr_name: str; key_type_name: str; case_name: str'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _FileAxisCaseSpec(_LineCaseSpec):
+    file_path: str
+    key_type_name: str
+
+
+@dataclass(frozen=True)
+class _FamilyAxisSpec(_FileAxisCaseSpec):
+    family_name: str
+
+
+@dataclass(frozen=True)
+class _KeyedFamilyAxisSpec(_FamilyAxisSpec):
+    family_label: str | None
+    registry_key_attr_name: str
+
+
+@dataclass(frozen=True)
+class _ManualSelectorAxisSpec(_FamilyAxisSpec):
+    selector_method_name: str
+
+
+@dataclass(frozen=True)
+class _KeyedTableAxisSpec(_FileAxisCaseSpec):
+    table_name: str
+    value_shape_name: str | None
+
+
+@dataclass(frozen=True)
+class _ClassAssignedEnumAxisSpec:
+    file_path: str
+    line: int
+    class_name: str
+    key_attr_name: str
+    key_type_name: str
+    case_name: str
+
 
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
 
@@ -6194,13 +6763,20 @@ def _closed_axis_branch_refs_for_function(
     return branch_site_count, case_names_by_key
 
 
+@dataclass(frozen=True)
+class ResidualClosedAxisBranchingIdentity:
+    file_path: str
+    qualname: str
+    key_type_name: str
+
+
 def _residual_closed_axis_branching_candidates_for_function(
     module: ParsedModule,
     qualname: str,
     function: NamedFunctionNode,
     authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey,
     key_type_names: frozenset[str],
-    seen: set[tuple[str, str, str]],
+    seen: set[ResidualClosedAxisBranchingIdentity],
 ) -> Iterable[ResidualClosedAxisBranchingCandidate]:
     file_path = str(module.path)
     branch_site_count, case_names_by_key = _closed_axis_branch_refs_for_function(
@@ -6222,10 +6798,14 @@ def _residual_closed_axis_branching_candidates_for_function(
         )
         if not shared_case_names:
             continue
-        key = (file_path, qualname, key_type_name)
-        if key in seen:
+        identity = ResidualClosedAxisBranchingIdentity(
+            file_path=file_path,
+            qualname=qualname,
+            key_type_name=key_type_name,
+        )
+        if identity in seen:
             continue
-        seen.add(key)
+        seen.add(identity)
         authoritative_families = sorted_tuple(
             ((spec.family_name, spec.file_path, spec.line) for spec in specs)
         )
@@ -6250,7 +6830,7 @@ def _residual_closed_axis_branching_candidates(
         return ()
     key_type_names = frozenset(authoritative_specs_by_key)
     candidates: list[ResidualClosedAxisBranchingCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[ResidualClosedAxisBranchingIdentity] = set()
     for module in modules:
         file_path = str(module.path)
         if "/tests/" in file_path:
@@ -6369,15 +6949,38 @@ def _raise_exception_type_name(node: ast.Raise) -> str | None:
     return _call_name(node.exc)
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('RegistryLookupShape', 'key_expr: str; error_type_name: str | None; style: str'),
-    _product_record_spec('_TryRegistryLookupBody', 'returned: ast.Return; handler: ast.ExceptHandler'),
-    _product_record_spec('_GuardedRegistryLookupBody', 'guard: ast.If; returned: ast.Return; key_expr: str'),
-    _product_record_spec('_GuardValidatorContext', 'subject_param_name: str; alias_source_attr: str | None; body: list[ast.stmt]; root_names: set[str]'),
-    _product_record_spec('_GuardValidatorAccessProfile', 'guard_count: int; accessed_attr_names: tuple[str, ...]'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class RegistryLookupShape:
+    key_expr: str
+    error_type_name: str | None
+    style: str
+
+
+@dataclass(frozen=True)
+class _TryRegistryLookupBody:
+    returned: ast.Return
+    handler: ast.ExceptHandler
+
+
+@dataclass(frozen=True)
+class _GuardedRegistryLookupBody:
+    guard: ast.If
+    returned: ast.Return
+    key_expr: str
+
+
+@dataclass(frozen=True)
+class _GuardValidatorContext:
+    subject_param_name: str
+    alias_source_attr: str | None
+    body: list[ast.stmt]
+    root_names: set[str]
+
+
+@dataclass(frozen=True)
+class _GuardValidatorAccessProfile:
+    guard_count: int
+    accessed_attr_names: tuple[str, ...]
 
 
 class _RegistryLookupShapeStep(RegisteredEffectStep):
@@ -6688,45 +7291,70 @@ def _keyed_type_registry_injectivity_proof(
     )
 
 
+@dataclass(frozen=True)
+class ReceiverAttributeReference:
+    """Precomputed receiver.attr references for one function-like scope."""
+
+    qualname: str
+    receiver_attribute_refs: tuple[tuple[str, str], ...]
+
+
 class RegistryConsumerSymbolProjection:
-    def symbols(
+    def symbols_from_modules(
         self,
-        modules_or_references: Sequence[object],
+        modules: Sequence[ParsedModule],
         *,
         family_name: str,
         lookup_method_names: tuple[str, ...],
     ) -> tuple[str, ...]:
         lookup_method_name_set = set(lookup_method_names)
         consumer_symbols: set[str] = set()
-        if modules_or_references and hasattr(modules_or_references[0], "module"):
-            for module in modules_or_references:
-                file_path = str(getattr(module, "path"))
-                if file_path.startswith("tests/") or "/tests/" in file_path:
-                    continue
-                for qualname, function in _iter_named_functions(module):
-                    if qualname.startswith(f"{family_name}."):
-                        continue
-                    for node in _walk_nodes(function):
-                        attribute = as_ast(node, ast.Attribute)
-                        if (
-                            attribute is None
-                            or attribute.attr not in lookup_method_name_set
-                        ):
-                            continue
-                        if name_id(attribute.value) == family_name:
-                            consumer_symbols.add(qualname)
-        else:
-            for reference in modules_or_references:
-                qualname = getattr(reference, "qualname")
+        for module in modules:
+            file_path = str(module.path)
+            if file_path.startswith("tests/") or "/tests/" in file_path:
+                continue
+            for qualname, function in _iter_named_functions(module):
                 if qualname.startswith(f"{family_name}."):
                     continue
-                receiver_attribute_refs = getattr(reference, "receiver_attribute_refs")
-                if any(
-                    receiver_name == family_name and attr_name in lookup_method_name_set
-                    for receiver_name, attr_name in receiver_attribute_refs
-                ):
-                    consumer_symbols.add(qualname)
+                for node in _walk_nodes(function):
+                    attribute = as_ast(node, ast.Attribute)
+                    if attribute is None or attribute.attr not in lookup_method_name_set:
+                        continue
+                    if name_id(attribute.value) == family_name:
+                        consumer_symbols.add(qualname)
         return sorted_tuple(consumer_symbols)
+
+    def symbols_from_references(
+        self,
+        references: Sequence[ReceiverAttributeReference],
+        *,
+        family_name: str,
+        lookup_method_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        lookup_method_name_set = set(lookup_method_names)
+        consumer_symbols: set[str] = set()
+        for reference in references:
+            if reference.qualname.startswith(f"{family_name}."):
+                continue
+            if any(
+                receiver_name == family_name and attr_name in lookup_method_name_set
+                for receiver_name, attr_name in reference.receiver_attribute_refs
+            ):
+                consumer_symbols.add(reference.qualname)
+        return sorted_tuple(consumer_symbols)
+
+    def symbols(
+        self,
+        modules: Sequence[ParsedModule],
+        *,
+        family_name: str,
+        lookup_method_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return self.symbols_from_modules(
+            modules,
+            family_name=family_name,
+            lookup_method_names=lookup_method_names,
+        )
 
 
 REGISTRY_CONSUMER_SYMBOL_PROJECTION = RegistryConsumerSymbolProjection()
@@ -8613,7 +9241,7 @@ def _assigned_self_attrs(
 
 def _string_dispatch_cases_from_body(
     body: list[ast.stmt],
-    axis_expression: str,
+    dispatch_axis_expression: str,
 ) -> tuple[str, ...]:
     cases: list[str] = []
     if not body:
@@ -8626,7 +9254,7 @@ def _string_dispatch_cases_from_body(
         if dispatch_case is None:
             return ()
         current_axis, case_name = dispatch_case
-        if current_axis != axis_expression:
+        if current_axis != dispatch_axis_expression:
             return ()
         if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
             return ()
@@ -9275,9 +9903,10 @@ _WITNESS_MIXIN_ROLE_NAMES = (
 )
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('WitnessMixinRoleSpec', 'mixin_name: str; scaffold: str'))
-# fmt: on
+@dataclass(frozen=True)
+class WitnessMixinRoleSpec:
+    mixin_name: str
+    scaffold: str
 
 
 _WITNESS_MIXIN_ROLE_SPECS = {
@@ -9400,18 +10029,6 @@ def _as_method_shape(shape: object) -> MethodShape:
 def _as_builder_shape(shape: object) -> BuilderCallShape:
     if not isinstance(shape, BuilderCallShape):
         raise TypeError(f"Expected BuilderCallShape, got {type(shape)!r}")
-    return shape
-
-
-def _as_registration_shape(shape: object) -> RegistrationShape:
-    if not isinstance(shape, RegistrationShape):
-        raise TypeError(f"Expected RegistrationShape, got {type(shape)!r}")
-    return shape
-
-
-def _as_export_shape(shape: object) -> ExportDictShape:
-    if not isinstance(shape, ExportDictShape):
-        raise TypeError(f"Expected ExportDictShape, got {type(shape)!r}")
     return shape
 
 
@@ -9543,36 +10160,38 @@ class SupportProjectionAuthority:
             return None
         return (enum_expression, node.attr)
 
+    def module_named_value_bindings(
+        self, module: ParsedModule
+    ) -> tuple[NamedValueBinding, ...]:
+        return tuple(
+            binding
+            for statement in _trim_docstring_body(module.module.body)
+            if (binding := named_value_binding(statement)) is not None
+        )
+
+    def module_level_named_values(
+        self, module: ParsedModule
+    ) -> dict[str, tuple[int, ast.AST]]:
+        values: dict[str, tuple[int, ast.AST]] = {}
+        for binding in self.module_named_value_bindings(module):
+            if binding.value is not None:
+                values[binding.name] = (binding.line, binding.value)
+        return values
+
     def module_constant_bindings(
         self, module: ParsedModule
     ) -> dict[str, _ModuleConstantBinding]:
         bindings: dict[str, _ModuleConstantBinding] = {}
-        for statement in module.module.body:
-            target_name: str | None = None
-            value: ast.AST | None = None
-            if (
-                isinstance(statement, ast.Assign)
-                and len(statement.targets) == 1
-                and isinstance(statement.targets[0], ast.Name)
-            ):
-                target_name = statement.targets[0].id
-                value = statement.value
-            elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                target_name = statement.target.id
-                value = statement.value
-            if (
-                target_name is None
-                or value is None
-                or (not _is_upper_snake_identifier(target_name))
-            ):
+        for binding in self.module_named_value_bindings(module):
+            if binding.value is None or not _is_upper_snake_identifier(binding.name):
                 continue
             constructor_name = (
-                ast.unparse(value.func) if isinstance(value, ast.Call) else None
+                ast.unparse(binding.value.func)
+                if isinstance(binding.value, ast.Call)
+                else None
             )
-            bindings[target_name] = _ModuleConstantBinding(
-                line=statement.lineno, constructor_name=constructor_name
+            bindings[binding.name] = _ModuleConstantBinding(
+                line=binding.line, constructor_name=constructor_name
             )
         return bindings
 
@@ -9580,24 +10199,10 @@ class SupportProjectionAuthority:
         self, module: ParsedModule
     ) -> ModuleNamedSequenceMap:
         sequences: ModuleNamedSequenceMap = {}
-        for statement in _trim_docstring_body(module.module.body):
-            target_name: str | None = None
-            value: ast.AST | None = None
-            if (
-                isinstance(statement, ast.Assign)
-                and len(statement.targets) == 1
-                and isinstance(statement.targets[0], ast.Name)
-            ):
-                target_name = statement.targets[0].id
-                value = statement.value
-            elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                target_name = statement.target.id
-                value = statement.value
-            if target_name is None or not isinstance(value, (ast.Tuple, ast.List)):
+        for binding in self.module_named_value_bindings(module):
+            if not isinstance(binding.value, (ast.Tuple, ast.List)):
                 continue
-            sequences[target_name] = (statement.lineno, tuple(value.elts))
+            sequences[binding.name] = (binding.line, tuple(binding.value.elts))
         return sequences
 
     def module_level_named_instances(
@@ -9605,7 +10210,7 @@ class SupportProjectionAuthority:
     ) -> dict[str, tuple[int, _AstValueT]]:
         return {
             name: (line, cast(_AstValueT, value))
-            for name, (line, value) in _module_level_named_values(module).items()
+            for name, (line, value) in self.module_level_named_values(module).items()
             if isinstance(value, value_type)
         }
 
@@ -9649,12 +10254,12 @@ class SupportProjectionAuthority:
         )
 
     def normalize_semantic_field_roles(self, field_name: str) -> tuple[str, ...]:
-        roles: list[str] = []
-        if field_name == _DEFAULT_FILE_PATH_ATTRIBUTE or field_name.endswith("_path"):
-            roles.append("source_path")
-        if field_name in {"line", "lineno"} or field_name.endswith("_line"):
-            roles.append("source_line")
-        if field_name in {_SUBJECT_NAME_FIELD, "class_name", "function_name"}:
+        roles: list[str] = list(SourceLocation.semantic_field_role_names(field_name))
+        scope_field_names = {
+            ScopedAstObservation.class_scope_field_name(),
+            ScopedAstObservation.function_scope_field_name(),
+        }
+        if field_name in {_SUBJECT_NAME_FIELD, *scope_field_names}:
             roles.append(_SUBJECT_NAME_FIELD)
         if field_name in {
             "observed_name",
@@ -9671,8 +10276,6 @@ class SupportProjectionAuthority:
             roles.append("name_payload")
         if field_name == _NAME_FAMILY_FIELD or field_name.endswith("_names"):
             roles.append(_NAME_FAMILY_FIELD)
-        if field_name in {"owner_symbol", "symbol"} or field_name.endswith("_symbol"):
-            roles.append("owner_symbol")
         return tuple(dict.fromkeys(roles))
 
     def materialize_observations(
@@ -9704,9 +10307,7 @@ class SupportProjectionAuthority:
                 (
                     shape.structural_observation
                     for shape in shapes
-                    if isinstance(
-                        shape, (MethodShape, BuilderCallShape, ExportDictShape)
-                    )
+                    if isinstance(shape, StructuralObservationCarrier)
                 )
             )
         )
@@ -9757,22 +10358,30 @@ class SemanticDataclassRecommendation:
     ).derived_methods()
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('SemanticDictBagCandidate', 'line: int; symbol: str; key_names: tuple[str, ...]; context_kind: str; recommendation: SemanticDataclassRecommendation'),
-    _product_record_spec('FieldFamilyCandidate', 'class_names: tuple[str, ...]; field_names: tuple[str, ...]; execution_level: StructuralExecutionLevel; observations: tuple[FieldObservation, ...]; dataclass_count: int; field_type_map: tuple[tuple[str, str], ...]', defaults={'field_type_map': ()}),
-))
-# fmt: on
+@dataclass(frozen=True)
+class SemanticDictBagCandidate:
+    line: int
+    symbol: str
+    key_names: tuple[str, ...]
+    context_kind: str
+    recommendation: SemanticDataclassRecommendation
 
 
 @dataclass(frozen=True)
-class LineWitnessCandidate(ABC, metaclass=AutoRegisterMeta):
+class FieldFamilyCandidate:
+    class_names: tuple[str, ...]
+    field_names: tuple[str, ...]
+    execution_level: StructuralExecutionLevel
+    observations: tuple[FieldObservation, ...]
+    dataclass_count: int
+    field_type_map: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class LineWitnessCandidate(SourceLineReference, ABC, metaclass=AutoRegisterMeta):
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = class_name_registry_key
     __skip_if_no_key__ = True
-
-    file_path: str
-    line: int
 
     @property
     def witness_name(self) -> str:
@@ -9801,9 +10410,10 @@ class QualnameWitnessNameMixin(WitnessNameAliasMixin):
     witness_name = AliasProperty[str]("qualname")
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('EnumCaseFamilyMixin', 'enum_name: str; case_names: tuple[str, ...]', 'ABC'))
-# fmt: on
+@dataclass(frozen=True)
+class EnumCaseFamilyMixin(ABC):
+    enum_name: str
+    case_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -9812,17 +10422,27 @@ class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('FunctionEvidenceLocationsCandidate', 'function_names: tuple[str, ...]; line_numbers: tuple[int, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty('line_numbers', 'function_names')}),
-    _product_record_spec('MethodEvidenceLocationsCandidate', 'method_names: tuple[str, ...]; line_numbers: tuple[int, ...]; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty('line_numbers', 'method_names')}),
-))
-# fmt: on
+@dataclass(frozen=True)
+class FunctionEvidenceLocationsCandidate(LineWitnessCandidate):
+    function_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('ClassLineWitnessCandidate', 'class_name: str', 'ClassNameWitnessNameMixin LineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class MethodEvidenceLocationsCandidate(LineWitnessCandidate):
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
+    )
+
+
+@dataclass(frozen=True)
+class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate):
+    class_name: str
 
 
 @dataclass(frozen=True)
@@ -9876,15 +10496,71 @@ class PrefixedRoleFieldBundleCandidate(ClassLineWitnessCandidate):
         )
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('NominalAuthorityShape', 'file_path: str; class_name: str; line: int; declared_base_names: tuple[str, ...]; ancestor_names: tuple[str, ...]; field_names: tuple[str, ...]; field_type_map: tuple[tuple[str, str], ...]; method_names: tuple[str, ...]; is_abstract: bool; is_dataclass_family: bool'),
-    _product_record_spec('ManualFamilyRosterCandidate', 'owner_name: str; member_names: tuple[str, ...]; family_base_name: str; constructor_style: str', 'LineWitnessCandidate'),
-    _product_record_spec('SemanticInheritanceFamilySSOTCandidate', 'concrete_class_names: tuple[str, ...]; semantic_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; key_attr_names: tuple[str, ...]; suggested_key_attr_name: str; membership_object_count: int; derived_projection_count: int; rent_margin: int; line_count: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
-    _product_record_spec('AutoRegisterMetaRentCandidate', 'concrete_class_names: tuple[str, ...]; dynamic_factory_symbols: tuple[str, ...]; registry_key_attr_name: str | None; key_extractor_name: str | None; behavior_method_names: tuple[str, ...]; abstract_method_names: tuple[str, ...]; registry_projection_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_rent_signals: tuple[str, ...]; membership_object_count: int; derived_projection_count: int; rent_margin: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
-    _product_record_spec('LatentImplementationRosterCandidate', 'roster_name: str; roster_kind: str; roster_member_names: tuple[str, ...]; concrete_class_names: tuple[str, ...]; key_attr_name: str | None; projection_role: str; projection_policy_hint: str | None; coverage_ratio: float; missing_member_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class NominalAuthorityShape:
+    file_path: str
+    class_name: str
+    line: int
+    declared_base_names: tuple[str, ...]
+    ancestor_names: tuple[str, ...]
+    field_names: tuple[str, ...]
+    field_type_map: tuple[tuple[str, str], ...]
+    method_names: tuple[str, ...]
+    is_abstract: bool
+    is_dataclass_family: bool
+
+
+@dataclass(frozen=True)
+class ManualFamilyRosterCandidate(LineWitnessCandidate):
+    owner_name: str
+    member_names: tuple[str, ...]
+    family_base_name: str
+    constructor_style: str
+
+
+@dataclass(frozen=True)
+class SemanticInheritanceFamilySSOTCandidate(ClassLineWitnessCandidate):
+    concrete_class_names: tuple[str, ...]
+    semantic_method_names: tuple[str, ...]
+    abstract_method_names: tuple[str, ...]
+    key_attr_names: tuple[str, ...]
+    suggested_key_attr_name: str
+    membership_object_count: int
+    derived_projection_count: int
+    rent_margin: int
+    line_count: int
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class AutoRegisterMetaRentCandidate(ClassLineWitnessCandidate):
+    concrete_class_names: tuple[str, ...]
+    dynamic_factory_symbols: tuple[str, ...]
+    registry_key_attr_name: str | None
+    key_extractor_name: str | None
+    behavior_method_names: tuple[str, ...]
+    abstract_method_names: tuple[str, ...]
+    registry_projection_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    missing_rent_signals: tuple[str, ...]
+    membership_object_count: int
+    derived_projection_count: int
+    rent_margin: int
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class LatentImplementationRosterCandidate(ClassLineWitnessCandidate):
+    roster_name: str
+    roster_kind: str
+    roster_member_names: tuple[str, ...]
+    concrete_class_names: tuple[str, ...]
+    key_attr_name: str | None
+    projection_role: str
+    projection_policy_hint: str | None
+    coverage_ratio: float
+    missing_member_names: tuple[str, ...]
+    line_count: int
 
 
 @dataclass(frozen=True)
@@ -9906,9 +10582,12 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
         return tuple((location.symbol for location in self.consumer_locations))
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('PredicateSelectedConcreteFamilyCandidate', 'selector_method_name: str; predicate_method_name: str; context_param_name: str; concrete_class_names: tuple[str, ...]', 'ClassLineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
+    selector_method_name: str
+    predicate_method_name: str
+    context_param_name: str
+    concrete_class_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -9935,9 +10614,14 @@ class ParallelMirroredLeafFamilyCandidate:
         )
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('FragmentedFamilyAuthorityCandidate', 'file_path: str; mapping_names: tuple[str, ...]; line_numbers: tuple[int, ...]; key_family_name: str; shared_keys: tuple[str, ...]; total_keys: tuple[str, ...]'))
-# fmt: on
+@dataclass(frozen=True)
+class FragmentedFamilyAuthorityCandidate:
+    file_path: str
+    mapping_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    key_family_name: str
+    shared_keys: tuple[str, ...]
+    total_keys: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -10005,13 +10689,30 @@ class PassThroughNominalWrapperCandidate(WitnessCarrierCandidate):
     forwarded_member_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('FindingAssemblyPipelineCandidate', 'method_name: str; candidate_source_name: str; metrics_type_name: str | None; scaffold_helper_name: str | None; patch_helper_name: str | None', 'WitnessCarrierCandidate'),
-    _product_record_spec('GuardedDelegatorCandidate', 'method_name: str; guard_role: str; delegate_name: str; scope_role: str', 'WitnessCarrierCandidate'),
-    _product_record_spec('StructuralObservationPropertyCandidate', 'property_name: str; constructor_name: str; keyword_names: ClassVar[AliasProperty[tuple[str, ...]]]', 'WitnessCarrierCandidate', defaults={'keyword_names': AliasProperty('name_family')}),
-))
-# fmt: on
+@dataclass(frozen=True)
+class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
+    method_name: str
+    candidate_source_name: str
+    metrics_type_name: str | None
+    scaffold_helper_name: str | None
+    patch_helper_name: str | None
+
+
+@dataclass(frozen=True)
+class GuardedDelegatorCandidate(WitnessCarrierCandidate):
+    method_name: str
+    guard_role: str
+    delegate_name: str
+    scope_role: str
+
+
+@dataclass(frozen=True)
+class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
+    property_name: str
+    constructor_name: str
+    keyword_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
+        "name_family"
+    )
 
 
 @dataclass(frozen=True)
@@ -10095,31 +10796,157 @@ class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
         )
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('PropertyHookGroup', 'base_name: str; property_name: str', 'ClassLineNumbersGroup'),
-    _product_record_spec('PropertyAliasHookGroup', 'returned_attribute: str', 'PropertyHookGroup'),
-    _product_record_spec('ConstantPropertyHookGroup', 'return_expressions: tuple[str, ...]', 'PropertyHookGroup'),
-    _product_record_spec('ConstantPropertyDefaultBundleCandidate', 'property_names: tuple[str, ...]; return_expressions: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('HelperBackedObservationSpecCandidate', 'base_names: tuple[str, ...]; method_name: str; helper_name: str; wrapper_kind: str; parameter_names: tuple[str, ...]', 'WitnessCarrierCandidate'),
-    _product_record_spec('HelperBackedObservationSpecGroup', 'base_names: tuple[str, ...]; method_names: tuple[str, ...]; helper_names: tuple[str, ...]; wrapper_kinds: tuple[str, ...]', 'ClassLineNumbersGroup'),
-    _product_record_spec('GuardedWrapperSpecPair', 'file_path: str; spec_name: str; spec_line: int; function_name: str; function_line: int; constructor_name: str; node_types: tuple[str, ...]'),
-    _product_record_spec('DeclarativeFamilyLeafCandidate', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', 'WitnessCarrierCandidate'),
-    _product_record_spec('DeclarativeFamilyBoilerplateGroup', 'base_names: tuple[str, ...]; assigned_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
-    _product_record_spec('MetadataOnlyClassFamilyCandidate', 'family_suffix: str; base_name_families: tuple[tuple[str, ...], ...]; assigned_names: tuple[str, ...]; line_count: int', 'ClassLineNumbersGroup'),
-    _product_record_spec('SelfNamingBuilderCatalogCandidate', 'builder_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]; line_count: int', 'ClassLineNumbersGroup'),
-    _product_record_spec('RepeatedBaseBundleCandidate', 'base_names: tuple[str, ...]; bundle_width: int; class_count: int; line_count: int', 'ClassLineNumbersGroup'),
-    _product_record_spec('TypeIndexedDefinitionBoilerplateGroup', 'file_path: str; base_names: tuple[str, ...]; definition_class_names: tuple[str, ...]; alias_names: tuple[str, ...]; line_numbers: tuple[int, ...]; assigned_names: tuple[str, ...]'),
-    _product_record_spec('ExportSurfaceCandidate', 'export_symbol: str; exported_names: tuple[str, ...]', 'LineWitnessCandidate'),
-    _product_record_spec('DerivedExportSurfaceCandidate', 'derivable_root_names: tuple[str, ...]', 'ExportSurfaceCandidate'),
-    _product_record_spec('ManualPublicApiSurfaceCandidate', 'source_name_count: int', 'ExportSurfaceCandidate'),
-    _product_record_spec('DerivedIndexedSurfaceCandidate', 'surface_name: str; key_kind: str; value_names: tuple[str, ...]; derivable_root_names: tuple[str, ...]', 'LineWitnessCandidate'),
-    _product_record_spec('RegisteredUnionSurfaceCandidate', 'owner_name: str; accessor_name: str; root_names: tuple[str, ...]', 'LineWitnessCandidate'),
-    _product_record_spec('ConcreteTypeUnionContractCandidate', 'function_name: str; parameter_name: str; member_type_names: tuple[str, ...]; observed_attribute_names: tuple[str, ...]; suggested_contract_name: str; common_base_names: tuple[str, ...]', 'LineWitnessCandidate'),
-    _product_record_spec('ExportPolicyPredicateCandidate', 'role_names: tuple[str, ...]; root_type_names: tuple[str, ...]', 'WitnessCarrierCandidate SubjectNameFunctionNameMixin'),
-    _product_record_spec('RegistryTraversalGroup', 'method_names: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class PropertyHookGroup(ClassLineNumbersGroup):
+    base_name: str
+    property_name: str
+
+
+@dataclass(frozen=True)
+class PropertyAliasHookGroup(PropertyHookGroup):
+    returned_attribute: str
+
+
+@dataclass(frozen=True)
+class ConstantPropertyHookGroup(PropertyHookGroup):
+    return_expressions: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConstantPropertyDefaultBundleCandidate(ClassLineWitnessCandidate):
+    property_names: tuple[str, ...]
+    return_expressions: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class HelperBackedObservationSpecCandidate(WitnessCarrierCandidate):
+    base_names: tuple[str, ...]
+    method_name: str
+    helper_name: str
+    wrapper_kind: str
+    parameter_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HelperBackedObservationSpecGroup(ClassLineNumbersGroup):
+    base_names: tuple[str, ...]
+    method_names: tuple[str, ...]
+    helper_names: tuple[str, ...]
+    wrapper_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class GuardedWrapperSpecPair:
+    file_path: str
+    spec_name: str
+    spec_line: int
+    function_name: str
+    function_line: int
+    constructor_name: str
+    node_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DeclarativeFamilyLeafCandidate(WitnessCarrierCandidate):
+    base_names: tuple[str, ...]
+    assigned_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DeclarativeFamilyBoilerplateGroup(ClassLineNumbersGroup):
+    base_names: tuple[str, ...]
+    assigned_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MetadataOnlyClassFamilyCandidate(ClassLineNumbersGroup):
+    family_suffix: str
+    base_name_families: tuple[tuple[str, ...], ...]
+    assigned_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SelfNamingBuilderCatalogCandidate(ClassLineNumbersGroup):
+    builder_name: str
+    positional_arg_count: int
+    keyword_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class RepeatedBaseBundleCandidate(ClassLineNumbersGroup):
+    base_names: tuple[str, ...]
+    bundle_width: int
+    class_count: int
+    line_count: int
+
+
+@dataclass(frozen=True)
+class TypeIndexedDefinitionBoilerplateGroup:
+    file_path: str
+    base_names: tuple[str, ...]
+    definition_class_names: tuple[str, ...]
+    alias_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    assigned_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportSurfaceCandidate(LineWitnessCandidate):
+    export_symbol: str
+    exported_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DerivedExportSurfaceCandidate(ExportSurfaceCandidate):
+    derivable_root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualPublicApiSurfaceCandidate(ExportSurfaceCandidate):
+    source_name_count: int
+
+
+@dataclass(frozen=True)
+class DerivedIndexedSurfaceCandidate(LineWitnessCandidate):
+    surface_name: str
+    key_kind: str
+    value_names: tuple[str, ...]
+    derivable_root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegisteredUnionSurfaceCandidate(LineWitnessCandidate):
+    owner_name: str
+    accessor_name: str
+    root_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConcreteTypeUnionContractCandidate(LineWitnessCandidate):
+    function_name: str
+    parameter_name: str
+    member_type_names: tuple[str, ...]
+    observed_attribute_names: tuple[str, ...]
+    suggested_contract_name: str
+    common_base_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ExportPolicyPredicateCandidate(
+    WitnessCarrierCandidate, SubjectNameFunctionNameMixin
+):
+    role_names: tuple[str, ...]
+    root_type_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RegistryTraversalGroup(ClassLineNumbersGroup):
+    method_names: tuple[str, ...]
+    materialization_kinds: tuple[str, ...]
+    registry_attribute_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -10135,19 +10962,72 @@ class SubclassTraversalSite:
     evidence = _LINE_SYMBOL_EVIDENCE
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('SubclassTraversalGroup', 'symbols: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; root_expressions: tuple[str, ...]; materialization_kinds: tuple[str, ...]; registry_attribute_names: tuple[str, ...]; filter_names: tuple[str, ...]'),
-    _product_record_spec('AlternateConstructorFamilyGroup', 'source_type_names: tuple[str, ...]', 'KeywordMethodFamilyCandidate'),
-    _product_record_spec('SelfReflectiveBuiltinCandidate', 'method_name: str; reflective_builtin: str', 'WitnessCarrierCandidate'),
-    _product_record_spec('ReflectiveSelfAttributeCandidate', 'attribute_name: str', 'SelfReflectiveBuiltinCandidate'),
-    _product_record_spec('DynamicSelfFieldSelectionCandidate', 'selector_expression: str', 'SelfReflectiveBuiltinCandidate'),
-    _product_record_spec('StringBackedReflectiveNominalLookupCandidate', 'method_name: str; selector_attr_name: str; lookup_kind: str; receiver_expression: str; concrete_class_names: tuple[str, ...]; selector_values: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('ConcreteConfigFieldProbeCandidate', 'method_name: str; config_attr_name: str; config_type_name: str; missing_field_names: tuple[str, ...]; probe_builtin_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('_ManualSubclassRegistrationSite', 'registry_name: str; guard_summary: str | None; selector_attr_name: str | None; requires_concrete_subclass: bool', defaults={'selector_attr_name': None, 'requires_concrete_subclass': False}),
-    _product_record_spec('IndexedFamilyWrapperCandidate', 'function_name: str; lineno: int; collector_name: str; spec_root_name: str; item_type_name: str'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class SubclassTraversalGroup:
+    symbols: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    root_expressions: tuple[str, ...]
+    materialization_kinds: tuple[str, ...]
+    registry_attribute_names: tuple[str, ...]
+    filter_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class AlternateConstructorFamilyGroup(KeywordMethodFamilyCandidate):
+    source_type_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
+    method_name: str
+    reflective_builtin: str
+
+
+@dataclass(frozen=True)
+class ReflectiveSelfAttributeCandidate(SelfReflectiveBuiltinCandidate):
+    attribute_name: str
+
+
+@dataclass(frozen=True)
+class DynamicSelfFieldSelectionCandidate(SelfReflectiveBuiltinCandidate):
+    selector_expression: str
+
+
+@dataclass(frozen=True)
+class StringBackedReflectiveNominalLookupCandidate(ClassLineWitnessCandidate):
+    method_name: str
+    selector_attr_name: str
+    lookup_kind: str
+    receiver_expression: str
+    concrete_class_names: tuple[str, ...]
+    selector_values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
+    method_name: str
+    config_attr_name: str
+    config_type_name: str
+    missing_field_names: tuple[str, ...]
+    probe_builtin_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ManualSubclassRegistrationSite:
+    registry_name: str
+    guard_summary: str | None
+    selector_attr_name: str | None = None
+    requires_concrete_subclass: bool = False
+
+
+@dataclass(frozen=True)
+class IndexedFamilyWrapperCandidate:
+    function_name: str
+    lineno: int
+    collector_name: str
+    spec_root_name: str
+    item_type_name: str
 
 
 @dataclass(frozen=True)
@@ -10186,13 +11066,24 @@ class FunctionProfile:
     evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('QualnameLineWitnessCandidate', 'qualname: str', 'QualnameWitnessNameMixin LineWitnessCandidate'),
-    _product_record_spec('ParameterThreadFamilyCandidate', 'shared_parameter_names: tuple[str, ...]; functions: tuple[FunctionProfile, ...]'),
-    _product_record_spec('SuffixAxisSurfaceMethod', 'owner_name: str; operation_name: str; axis_name: str; parameter_names: tuple[str, ...]; statement_count: int', 'QualnameLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
+    qualname: str
+
+
+@dataclass(frozen=True)
+class ParameterThreadFamilyCandidate:
+    shared_parameter_names: tuple[str, ...]
+    functions: tuple[FunctionProfile, ...]
+
+
+@dataclass(frozen=True)
+class SuffixAxisSurfaceMethod(QualnameLineWitnessCandidate):
+    owner_name: str
+    operation_name: str
+    axis_name: str
+    parameter_names: tuple[str, ...]
+    statement_count: int
 
 
 @dataclass(frozen=True)
@@ -10208,9 +11099,15 @@ class SuffixAxisSurfaceCandidate:
         return tuple((method.evidence for method in self.methods[:8]))
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('SiblingRoleHelperMethod', 'owner_name: str; method_name: str; role_token: str; shared_tokens: tuple[str, ...]; parameter_names: tuple[str, ...]; control_shape: tuple[str, ...]; line_count: int', 'QualnameLineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class SiblingRoleHelperMethod(QualnameLineWitnessCandidate):
+    owner_name: str
+    method_name: str
+    role_token: str
+    shared_tokens: tuple[str, ...]
+    parameter_names: tuple[str, ...]
+    control_shape: tuple[str, ...]
+    line_count: int
 
 
 @dataclass(frozen=True)
@@ -10235,12 +11132,13 @@ class EnumProjectionTableCandidate(EnumCaseFamilyMixin, LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ResidualClosedAxisIndirectionCandidate(LineWitnessCandidate):
+class ResidualClosedAxisIndirectionCandidate(
+    DispatchAxisExpression, LineWitnessCandidate
+):
     qualname: str
     table_name: str
     table_line: int
     enum_name: str
-    axis_expression: str
     table_case_names: tuple[str, ...]
     residual_case_names: tuple[str, ...]
     table_value_summaries: tuple[str, ...]
@@ -10294,12 +11192,18 @@ class EnumStrategyDispatchCandidate:
     evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('RepeatedEnumStrategyDispatchCandidate', 'file_path: str; enum_family: str; shared_case_names: tuple[str, ...]; functions: tuple[EnumStrategyDispatchCandidate, ...]'),
-    _product_record_spec('InlineEnumSubsetGuardCandidate', 'axis_expression: str; operator: str', 'EnumCaseFamilyMixin FunctionLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class RepeatedEnumStrategyDispatchCandidate:
+    file_path: str
+    enum_family: str
+    shared_case_names: tuple[str, ...]
+    functions: tuple[EnumStrategyDispatchCandidate, ...]
+
+
+@dataclass(frozen=True)
+class InlineEnumSubsetGuardCandidate(EnumCaseFamilyMixin, FunctionLineWitnessCandidate):
+    dispatch_axis_expression: str
+    operator: str
 
 
 @dataclass(frozen=True)
@@ -10373,9 +11277,9 @@ class AxisFamilySite(LineWitnessCandidate):
     witness_name = AliasProperty[str]("family_name")
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('KeyedAxisFamilySite', 'family_label: str | None', 'AxisFamilySite'))
-# fmt: on
+@dataclass(frozen=True)
+class KeyedAxisFamilySite(AxisFamilySite):
+    family_label: str | None
 
 
 @dataclass(frozen=True)
@@ -10529,12 +11433,24 @@ class RuntimeAdapterShellCandidate(FunctionLineWitnessCandidate):
     evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('KeywordBagAdapterCandidate', 'source_name: str; key_names: tuple[str, ...]; source_field_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('TransportShellTemplateCandidate', 'driver_method_name: str; selector_attr_name: str; selector_value_names: tuple[str, ...]; concrete_class_names: tuple[str, ...]; source_param_name: str; constructor_name: str; kwargs_helper_name: str | None; inner_hook_name: str; outer_hook_name: str', 'ClassLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class KeywordBagAdapterCandidate(FunctionLineWitnessCandidate):
+    source_name: str
+    key_names: tuple[str, ...]
+    source_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TransportShellTemplateCandidate(ClassLineWitnessCandidate):
+    driver_method_name: str
+    selector_attr_name: str
+    selector_value_names: tuple[str, ...]
+    concrete_class_names: tuple[str, ...]
+    source_param_name: str
+    constructor_name: str
+    kwargs_helper_name: str | None
+    inner_hook_name: str
+    outer_hook_name: str
 
 
 @dataclass(frozen=True)
@@ -10550,9 +11466,11 @@ class SpecAxisFamily:
     evidence = _LINE_FAMILY_NAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('CrossModuleSpecAxisAuthorityCandidate', 'axis_field_names: tuple[str, str]; shared_axis_pairs: tuple[tuple[str, str], ...]; families: tuple[SpecAxisFamily, ...]'))
-# fmt: on
+@dataclass(frozen=True)
+class CrossModuleSpecAxisAuthorityCandidate:
+    axis_field_names: tuple[str, str]
+    shared_axis_pairs: tuple[tuple[str, str], ...]
+    families: tuple[SpecAxisFamily, ...]
 
 
 @dataclass(frozen=True)
@@ -10568,24 +11486,158 @@ class RegisteredCatalogProjectionCandidate(LineWitnessCandidate):
     evidence = _LINE_QUALNAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('ParallelRegistryProjectionFamilyCandidate', 'file_path: str; collector_name: str; registry_accessor_name: str; return_keyword_names: tuple[str, ...]; functions: tuple[RegisteredCatalogProjectionCandidate, ...]'),
-    _product_record_spec('KeyedFamilyRootCandidate', 'family_base_name: str; registry_key_attr_name: str; lookup_method_name: str; lookup_style: str; error_type_name: str | None; abstract_hook_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('RepeatedKeyedFamilyCandidate', 'family_base_name: str; lookup_style: str; roots: tuple[KeyedFamilyRootCandidate, ...]'),
-    _product_record_spec('KeyedRegistryAxisFact', 'file_path: str; line: int; class_name: str; key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_maturity_signals: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof'),
-    _product_record_spec('PrematureRegistryInfrastructureCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; missing_maturity_signals: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('InjectiveTypeRegistryCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof', 'ClassLineWitnessCandidate'),
-    _product_record_spec('NonInjectiveTypeRegistryCandidate', 'key_type_name: str; registry_key_attr_name: str; lookup_method_names: tuple[str, ...]; registered_case_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; duplicate_key_names: tuple[str, ...]; duplicate_type_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; injectivity_proof: InjectiveTypeRegistryProof', 'ClassLineWitnessCandidate'),
-    _product_record_spec('RegistryProjectionSurfaceCandidate', 'registry_class_name: str; key_type_name: str; surface_name: str; surface_kind: str; projection_role: str; projection_policy_name: str; projection_target_name: str; materialization_rule: str; decompression_key: str; projected_names: tuple[str, ...]; shared_key_names: tuple[str, ...]; shared_type_names: tuple[str, ...]; registry_key_count: int; registry_type_count: int; projection_coverage_ratio: float; missing_key_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; subset_policy_hint: str | None; injectivity_proof: InjectiveTypeRegistryProof', 'LineWitnessCandidate'),
-    _product_record_spec('RegistryProjectionPolicyAuthorityCandidate', 'registry_class_name: str; key_type_name: str; policy_hint: str; surface_names: tuple[str, ...]; surface_roles: tuple[str, ...]; projection_target_names: tuple[str, ...]; materialization_rules: tuple[str, ...]; decompression_keys: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; missing_key_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name="surface_names")}),
-    _product_record_spec('_ManualRecordRegistrationKeyContext', 'body: list[ast.stmt]; key_expr: str'),
-    _product_record_spec('_ManualRecordRegistrationConstructorContext', 'constructor_field_names: tuple[str, ...]; key_field_names: tuple[str, ...]'),
-    _product_record_spec('ManualRecordRegistrationShape', 'key_expr: str; key_field_name: str; constructor_field_names: tuple[str, ...]'),
-    _product_record_spec('ManualKeyedRecordTableClassCandidate', 'register_method_name: str; lookup_method_name: str; lookup_style: str; key_field_name: str; key_expr: str; constructor_field_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('ManualKeyedRecordTableGroupCandidate', 'file_path: str; classes: tuple[ManualKeyedRecordTableClassCandidate, ...]'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class ParallelRegistryProjectionFamilyCandidate:
+    file_path: str
+    collector_name: str
+    registry_accessor_name: str
+    return_keyword_names: tuple[str, ...]
+    functions: tuple[RegisteredCatalogProjectionCandidate, ...]
+
+
+@dataclass(frozen=True)
+class KeyedFamilyRootCandidate(ClassLineWitnessCandidate):
+    family_base_name: str
+    registry_key_attr_name: str
+    lookup_method_name: str
+    lookup_style: str
+    error_type_name: str | None
+    abstract_hook_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RepeatedKeyedFamilyCandidate:
+    family_base_name: str
+    lookup_style: str
+    roots: tuple[KeyedFamilyRootCandidate, ...]
+
+
+@dataclass(frozen=True)
+class KeyedRegistryAxisFact:
+    file_path: str
+    line: int
+    class_name: str
+    key_type_name: str
+    registry_key_attr_name: str
+    lookup_method_names: tuple[str, ...]
+    registered_case_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    missing_maturity_signals: tuple[str, ...]
+    injectivity_proof: InjectiveTypeRegistryProof
+
+
+@dataclass(frozen=True)
+class PrematureRegistryInfrastructureCandidate(ClassLineWitnessCandidate):
+    key_type_name: str
+    registry_key_attr_name: str
+    lookup_method_names: tuple[str, ...]
+    registered_case_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    missing_maturity_signals: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InjectiveTypeRegistryCandidate(ClassLineWitnessCandidate):
+    key_type_name: str
+    registry_key_attr_name: str
+    lookup_method_names: tuple[str, ...]
+    registered_case_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    injectivity_proof: InjectiveTypeRegistryProof
+
+
+@dataclass(frozen=True)
+class NonInjectiveTypeRegistryCandidate(ClassLineWitnessCandidate):
+    key_type_name: str
+    registry_key_attr_name: str
+    lookup_method_names: tuple[str, ...]
+    registered_case_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    duplicate_key_names: tuple[str, ...]
+    duplicate_type_names: tuple[str, ...]
+    missing_type_names: tuple[str, ...]
+    injectivity_proof: InjectiveTypeRegistryProof
+
+
+@dataclass(frozen=True)
+class RegistryProjectionSurfaceCandidate(LineWitnessCandidate):
+    registry_class_name: str
+    key_type_name: str
+    surface_name: str
+    surface_kind: str
+    projection_role: str
+    projection_policy_name: str
+    projection_target_name: str
+    materialization_rule: str
+    decompression_key: str
+    projected_names: tuple[str, ...]
+    shared_key_names: tuple[str, ...]
+    shared_type_names: tuple[str, ...]
+    registry_key_count: int
+    registry_type_count: int
+    projection_coverage_ratio: float
+    missing_key_names: tuple[str, ...]
+    missing_type_names: tuple[str, ...]
+    subset_policy_hint: str | None
+    injectivity_proof: InjectiveTypeRegistryProof
+
+
+@dataclass(frozen=True)
+class RegistryProjectionPolicyAuthorityCandidate(LineWitnessCandidate):
+    registry_class_name: str
+    key_type_name: str
+    policy_hint: str
+    surface_names: tuple[str, ...]
+    surface_roles: tuple[str, ...]
+    projection_target_names: tuple[str, ...]
+    materialization_rules: tuple[str, ...]
+    decompression_keys: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    missing_key_names: tuple[str, ...]
+    missing_type_names: tuple[str, ...]
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name="surface_names",
+        )
+    )
+
+
+@dataclass(frozen=True)
+class _ManualRecordRegistrationKeyContext:
+    body: list[ast.stmt]
+    key_expr: str
+
+
+@dataclass(frozen=True)
+class _ManualRecordRegistrationConstructorContext:
+    constructor_field_names: tuple[str, ...]
+    key_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualRecordRegistrationShape:
+    key_expr: str
+    key_field_name: str
+    constructor_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
+    register_method_name: str
+    lookup_method_name: str
+    lookup_style: str
+    key_field_name: str
+    key_expr: str
+    constructor_field_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ManualKeyedRecordTableGroupCandidate:
+    file_path: str
+    classes: tuple[ManualKeyedRecordTableClassCandidate, ...]
 
 
 @dataclass(frozen=True)
@@ -10639,9 +11691,14 @@ class ManualStructuralRecordMechanicsGroupCandidate:
         )
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('ConcreteTypeCaseFunctionCandidate', 'subject_expression: str; subject_role: str; concrete_class_names: tuple[str, ...]; abstract_class_names: tuple[str, ...]; union_alias_names: tuple[str, ...]; case_site_count: int', 'FunctionLineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class ConcreteTypeCaseFunctionCandidate(FunctionLineWitnessCandidate):
+    subject_expression: str
+    subject_role: str
+    concrete_class_names: tuple[str, ...]
+    abstract_class_names: tuple[str, ...]
+    union_alias_names: tuple[str, ...]
+    case_site_count: int
 
 
 @dataclass(frozen=True)
@@ -10679,9 +11736,13 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
         return tuple((function.evidence for function in self.functions[:6]))
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('GuardValidatorFunctionCandidate', 'subject_param_name: str; alias_source_attr: str | None; guard_count: int; accessed_attr_names: tuple[str, ...]; helper_call_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class GuardValidatorFunctionCandidate(FunctionLineWitnessCandidate):
+    subject_param_name: str
+    alias_source_attr: str | None
+    guard_count: int
+    accessed_attr_names: tuple[str, ...]
+    helper_call_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -10698,9 +11759,11 @@ class RepeatedGuardValidatorFamilyCandidate:
         return tuple((function.evidence for function in self.functions[:6]))
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('ValidateShapeGuardMethodCandidate', 'guard_count: int; shape_guard_count: int; shape_guard_signatures: tuple[str, ...]', 'ClassMethodLineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class ValidateShapeGuardMethodCandidate(ClassMethodLineWitnessCandidate):
+    guard_count: int
+    shape_guard_count: int
+    shape_guard_signatures: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -10777,9 +11840,10 @@ class TrivialForwardingWrapperCandidate(LineWitnessCandidate):
     evidence = _LINE_QUALNAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('ResolvedExternalCallsite', 'module_name: str; location: SourceLocation'))
-# fmt: on
+@dataclass(frozen=True)
+class ResolvedExternalCallsite:
+    module_name: str
+    location: SourceLocation
 
 
 @dataclass(frozen=True)
@@ -10886,9 +11950,11 @@ class NominalPolicySurfaceFamilyCandidate:
         return tuple((method.evidence for method in self.methods[:6]))
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('WrapperChainCandidate', 'file_path: str; wrappers: tuple[FunctionWrapperCandidate, ...]; leaf_delegate_symbol: str'))
-# fmt: on
+@dataclass(frozen=True)
+class WrapperChainCandidate:
+    file_path: str
+    wrappers: tuple[FunctionWrapperCandidate, ...]
+    leaf_delegate_symbol: str
 
 
 @dataclass(frozen=True)
@@ -10920,14 +11986,52 @@ class ResultAssemblyPipelineFunction:
     evidence = _LINENO_QUALNAME_EVIDENCE
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('RepeatedResultAssemblyPipelineCandidate', 'file_path: str; shared_tail: tuple[PipelineAssemblyStage, ...]; functions: tuple[ResultAssemblyPipelineFunction, ...]'),
-    _product_record_spec('FailSoftEffectPipelineCandidate', 'line_count: int; guard_count: int; normal_form: str; guarded_binding_names: tuple[str, ...]; stage_kinds: tuple[str, ...]; success_return_kind: str; helper_call_names: tuple[str, ...]; pipeline_family: str; recommended_owner: str; refactor_action: str', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('EffectStepAmortizationCandidate', 'line_count: int; payoff_score: int; none_return_count: int; ast_type_guard_count: int; cardinality_guard_count: int; semantic_helper_count: int; ast_type_names: tuple[str, ...]; semantic_helper_names: tuple[str, ...]; normal_form: str; estimated_step_count: int; generated_object_budget: int; net_object_savings: int; description_length_before: int; description_length_after: int; description_length_savings: int; compression_certificate: CompressionCertificate', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('EffectStepImplementationLeakCandidate', 'none_return_count: int; raw_guard_count: int; suggested_base_name: str', 'ClassMethodLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class RepeatedResultAssemblyPipelineCandidate:
+    file_path: str
+    shared_tail: tuple[PipelineAssemblyStage, ...]
+    functions: tuple[ResultAssemblyPipelineFunction, ...]
+
+
+@dataclass(frozen=True)
+class FailSoftEffectPipelineCandidate(FunctionLineWitnessCandidate):
+    line_count: int
+    guard_count: int
+    normal_form: str
+    guarded_binding_names: tuple[str, ...]
+    stage_kinds: tuple[str, ...]
+    success_return_kind: str
+    helper_call_names: tuple[str, ...]
+    pipeline_family: str
+    recommended_owner: str
+    refactor_action: str
+
+
+@dataclass(frozen=True)
+class EffectStepAmortizationCandidate(FunctionLineWitnessCandidate):
+    line_count: int
+    payoff_score: int
+    none_return_count: int
+    ast_type_guard_count: int
+    cardinality_guard_count: int
+    semantic_helper_count: int
+    ast_type_names: tuple[str, ...]
+    semantic_helper_names: tuple[str, ...]
+    normal_form: str
+    estimated_step_count: int
+    generated_object_budget: int
+    net_object_savings: int
+    description_length_before: int
+    description_length_after: int
+    description_length_savings: int
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class EffectStepImplementationLeakCandidate(ClassMethodLineWitnessCandidate):
+    none_return_count: int
+    raw_guard_count: int
+    suggested_base_name: str
 
 
 @dataclass(frozen=True)
@@ -10954,12 +12058,20 @@ class PublicBareSupportFunctionCandidate(LineWitnessCandidate):
         return ", ".join(self.function_names[:4])
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('CandidateCollectorBoilerplateCandidate', 'collector_name: str; scope_kind: str; uses_config: bool; recommended_base_name: str', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('TypedCandidateCastBoilerplateCandidate', 'parameter_name: str; local_name: str; candidate_type_name: str; detector_base_name: str', 'ClassMethodLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class CandidateCollectorBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+    collector_name: str
+    scope_kind: str
+    uses_config: bool
+    recommended_base_name: str
+
+
+@dataclass(frozen=True)
+class TypedCandidateCastBoilerplateCandidate(ClassMethodLineWitnessCandidate):
+    parameter_name: str
+    local_name: str
+    candidate_type_name: str
+    detector_base_name: str
 
 
 @dataclass(frozen=True)
@@ -10971,58 +12083,540 @@ class FindingSpecDefaultFieldCandidate(LineWitnessCandidate):
     witness_name = AliasProperty[str]("constructor_name")
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('DirectBuildFindingRendererCandidate', 'base_name: str; positional_arg_count: int; keyword_names: tuple[str, ...]', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('DerivableDetectorIdCandidate', 'detector_id_value: str', 'ClassLineWitnessCandidate'),
-    _product_record_spec('DerivableCandidateCollectorCandidate', 'collector_name: str', 'ClassLineWitnessCandidate'),
-    _product_record_spec('CanonicalFindingSpecBuilderCandidate', 'constructor_name: str; builder_name: str; keyword_names: tuple[str, ...]', 'ClassLineWitnessCandidate'),
-    _product_record_spec('DetectorBackendPayoffGuardCandidate', 'candidate_type_name: str; abstraction_terms: tuple[str, ...]; missing_guard_names: tuple[str, ...]; declaration_line_count: int', 'QualnameLineWitnessCandidate'),
-    _product_record_spec('DeclarativeDetectorClassCandidate', 'base_name: str; candidate_type_name: str; assignment_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('StaticTypedObservationDetectorCandidate', 'observation_family_name: str; observation_type_name: str; minimum_evidence_count: int; summary_expression: str; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('InlineCandidateRendererDeclarationCandidate', 'candidate_type_name: str; renderer_keyword_names: tuple[str, ...]; detector_keyword_names: tuple[str, ...]; has_single_candidate_evidence: bool; line_count: int', 'QualnameLineWitnessCandidate'),
-    _product_record_spec('FacadeOnlyNominalAuthorityCandidate', 'method_names: tuple[str, ...]; delegate_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('AliasOnlyNominalAuthorityCandidate', 'alias_names: tuple[str, ...]; delegate_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('ModuleAuthorityReexportCatalogCandidate', 'authority_name: str; alias_names: tuple[str, ...]; delegate_names: tuple[str, ...]; line_count: int', 'LineWitnessCandidate'),
-    _product_record_spec('CollectionAuthorityStreamAlgebraCandidate', 'method_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('InlineAstPredicateGrammarCandidate', 'ast_type_names: tuple[str, ...]; predicate_count: int; traversal_count: int; line_count: int', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('NamedFunctionCollectorBoilerplateCandidate', 'candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('AstStreamCollectorBoilerplateCandidate', 'accumulator_name: str; stream_call_names: tuple[str, ...]; candidate_type_names: tuple[str, ...]; append_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('SimplePropertyAliasClassCandidate', 'alias_pairs: tuple[tuple[str, str], ...]; declared_field_names: tuple[str, ...]; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('SimplePropertyAliasMethodCandidate', 'source_name: str; return_annotation: str | None', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('CollectionProjectionPropertyFamilyCandidate', 'property_names: tuple[str, ...]; line_numbers: tuple[int, ...]; collection_name: str; projected_attribute_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'ClassLineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")}),
-    _product_record_spec('SourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_attribute_name: str; symbol_attribute_name: str', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('ZippedSourceLocationEvidencePropertyCandidate', 'file_attribute_name: str; line_numbers_attribute_name: str; symbol_names_attribute_name: str; line_count: int', 'ClassMethodLineWitnessCandidate'),
-    _product_record_spec('PrivateHelperShadowCandidate', 'private_name: str; public_name: str; public_file_path: str; public_line: int', 'EvidenceLocationsWitnessCandidate'),
-    _product_record_spec('FieldOnlyFrozenDataclassCandidate', 'base_names: tuple[str, ...]; field_specs: tuple[tuple[str, str], ...]; default_specs: tuple[tuple[str, str], ...]; docstring: str | None; kw_only: bool; line_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('SemanticTypeAliasCandidate', 'annotation_text: str; occurrence_count: int; owner_symbols: tuple[str, ...]; suggested_alias_name: str', 'EvidenceLocationsWitnessCandidate'),
-    _product_record_spec('NodeVisitorStackBoilerplateCandidate', 'stack_names: tuple[str, ...]; transition_method_names: tuple[str, ...]; line_count: int', 'QualnameLineWitnessCandidate'),
-    _product_record_spec('DuplicateVisitorMethodBodyCandidate', 'method_names: tuple[str, ...]; statement_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('EnumMetadataTableCandidate', 'table_name: str; property_names: tuple[str, ...]; case_count: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('ReadabilityCompressedLineCandidate', 'char_count: int; reason: str; statement_count: int', 'LineWitnessCandidate'),
-    _product_record_spec('TupleIndexSemanticOpacityCandidate', 'function_name: str; index_expressions: tuple[str, ...]; nested_index_count: int; carrier_call_names: tuple[str, ...]', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('DataclassNamespaceCliMirrorCandidate', 'argument_spec_name: str; field_names: tuple[str, ...]; cli_field_names: tuple[str, ...]; from_namespace_line: int; argument_spec_file_path: str; argument_spec_line: int', 'ClassLineWitnessCandidate'),
-    _product_record_spec('ClosedAxisConversionMatrixCandidate', 'function_names: tuple[str, ...]; source_axis_values: tuple[str, ...]; target_axis_values: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('OptionRecordQuotientCandidate', 'class_names: tuple[str, ...]; line_numbers: tuple[int, ...]; field_names: tuple[str, ...]; default_names: tuple[str, ...]; common_base_names: tuple[str, ...]; line_count: int; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "class_names")}),
-    _product_record_spec('IdentityKeywordForwardingShellCandidate', 'callee_name: str; forwarded_keyword_names: tuple[str, ...]; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('OptionalKeywordBagAssemblyCandidate', 'bag_name: str; parameter_names: tuple[str, ...]; target_keyword_names: tuple[str, ...]; call_name: str; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('SchemaAccessorFamilyCandidate', 'enum_name: str; method_names: tuple[str, ...]; field_names: tuple[str, ...]; requirement_modes: tuple[str, ...]; coercion_kinds: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'ClassLineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")}),
-    _product_record_spec('DataclassSchemaRegistryMirrorCandidate', 'schema_name: str; dataclass_name: str; schema_constructor_names: tuple[str, ...]; mirrored_field_names: tuple[str, ...]; schema_field_names: tuple[str, ...]; schema_line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate', 'ClassLineWitnessCandidate'),
-    _product_record_spec('DataclassFieldProjectionBoilerplateCandidate', 'field_names: tuple[str, ...]; helper_names: tuple[str, ...]; projection_argument_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'ClassLineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "field_names")}),
-    _product_record_spec('OptionalParameterBranchCandidate', 'parameter_name: str; annotation_text: str; observed_attribute_names: tuple[str, ...]; none_check_count: int; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('AllMissingAxisPredicateCandidate', 'predicate_names: tuple[str, ...]; append_target_name: str; signal_name: str; line_count: int', 'FunctionLineWitnessCandidate'),
-    _product_record_spec('BridgeAxisDispatchFamilyCandidate', 'axis_expression: str; literal_cases: tuple[str, ...]; function_names: tuple[str, ...]; operation_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('ArrayProtocolProbeBridgeCandidate', 'function_names: tuple[str, ...]; attribute_names: tuple[str, ...]; line_numbers: tuple[int, ...]; probe_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('LifecycleStageSequenceCandidate', 'function_names: tuple[str, ...]; stage_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('LatentNominalFunctionFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_call_names: tuple[str, ...]; function_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('BareFunctionMethodFamilyCandidate', 'owner_parameter_name: str; owner_attribute_names: tuple[str, ...]; shared_axis_name: str; shared_axis_value: str; function_names: tuple[str, ...]; line_numbers: tuple[int, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")}),
-    _product_record_spec('SemanticOverlapABCOptimizationCandidate', 'base_name: str; method_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; shared_statement_count: int; varying_coordinate_count: int; classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; family_method_names: tuple[str, ...]; abc_concrete_method_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; subclass_residue_count: int; shared_to_residue_ratio: float; mixin_axis_names: tuple[str, ...]; overlap_axis_names: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
-    _product_record_spec('SemanticOverlapABCFamilyOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; abc_concrete_method_names: tuple[str, ...]; classvar_hook_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]; leaf_residue_names: tuple[str, ...]; shared_to_residue_ratio: float; hierarchy_normal_form: str; optimizer_score: int; abc_layer_count: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
-    _product_record_spec('GlobalInheritanceOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; family_specs: tuple[str, ...]; mixin_axis_specs: tuple[str, ...]; overlap_axis_specs: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; shared_statement_count: int; residue_count: int; leaf_residue_names: tuple[str, ...]; optimizer_score: int; lattice_node_count: int; lattice_edge_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
-    _product_record_spec('SemanticOverlapABCResidueAxisCatalogCandidate', 'base_name: str; class_names: tuple[str, ...]; method_names: tuple[str, ...]; residue_kind_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; method_symbols: tuple[str, ...]; residue_site_count: int; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE)}),
-    _product_record_spec('ClassLevelInheritanceOptimizationCandidate', 'base_name: str; class_names: tuple[str, ...]; file_paths: tuple[str, ...]; line_numbers: tuple[int, ...]; declaration_names: tuple[str, ...]; declaration_signatures: tuple[str, ...]; declaration_sources: tuple[str, ...]; line_count: int; compression_certificate: CompressionCertificate; evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty]', 'LineWitnessCandidate', defaults={'evidence_locations': MultiFileZippedSourceLocationEvidenceProperty(file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE, line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE, symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE)}),
-))
-# fmt: on
+@dataclass(frozen=True)
+class DirectBuildFindingRendererCandidate(ClassMethodLineWitnessCandidate):
+    base_name: str
+    positional_arg_count: int
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DerivableDetectorIdCandidate(ClassLineWitnessCandidate):
+    detector_id_value: str
+
+
+@dataclass(frozen=True)
+class DerivableCandidateCollectorCandidate(ClassLineWitnessCandidate):
+    collector_name: str
+
+
+@dataclass(frozen=True)
+class CanonicalFindingSpecBuilderCandidate(ClassLineWitnessCandidate):
+    constructor_name: str
+    builder_name: str
+    keyword_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DetectorBackendPayoffGuardCandidate(QualnameLineWitnessCandidate):
+    candidate_type_name: str
+    abstraction_terms: tuple[str, ...]
+    missing_guard_names: tuple[str, ...]
+    declaration_line_count: int
+
+
+@dataclass(frozen=True)
+class DeclarativeDetectorClassCandidate(ClassLineWitnessCandidate):
+    base_name: str
+    candidate_type_name: str
+    assignment_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class StaticTypedObservationDetectorCandidate(ClassLineWitnessCandidate):
+    observation_family_name: str
+    observation_type_name: str
+    minimum_evidence_count: int
+    summary_expression: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class InlineCandidateRendererDeclarationCandidate(QualnameLineWitnessCandidate):
+    candidate_type_name: str
+    renderer_keyword_names: tuple[str, ...]
+    detector_keyword_names: tuple[str, ...]
+    has_single_candidate_evidence: bool
+    line_count: int
+
+
+@dataclass(frozen=True)
+class FacadeOnlyNominalAuthorityCandidate(ClassLineWitnessCandidate):
+    method_names: tuple[str, ...]
+    delegate_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class AliasOnlyNominalAuthorityCandidate(ClassLineWitnessCandidate):
+    alias_names: tuple[str, ...]
+    delegate_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class ModuleAuthorityReexportCatalogCandidate(LineWitnessCandidate):
+    authority_name: str
+    alias_names: tuple[str, ...]
+    delegate_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class CollectionAuthorityStreamAlgebraCandidate(ClassLineWitnessCandidate):
+    method_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class InlineAstPredicateGrammarCandidate(ClassMethodLineWitnessCandidate):
+    ast_type_names: tuple[str, ...]
+    predicate_count: int
+    traversal_count: int
+    line_count: int
+
+
+@dataclass(frozen=True)
+class NamedFunctionCollectorBoilerplateCandidate(FunctionLineWitnessCandidate):
+    candidate_type_names: tuple[str, ...]
+    append_count: int
+    line_count: int
+
+
+@dataclass(frozen=True)
+class AstStreamCollectorBoilerplateCandidate(FunctionLineWitnessCandidate):
+    accumulator_name: str
+    stream_call_names: tuple[str, ...]
+    candidate_type_names: tuple[str, ...]
+    append_count: int
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SimplePropertyAliasClassCandidate(ClassLineWitnessCandidate):
+    alias_pairs: tuple[tuple[str, str], ...]
+    declared_field_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SimplePropertyAliasMethodCandidate(ClassMethodLineWitnessCandidate):
+    source_name: str
+    return_annotation: str | None
+
+
+@dataclass(frozen=True)
+class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
+    property_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    collection_name: str
+    projected_attribute_names: tuple[str, ...]
+    line_count: int
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
+    )
+
+
+@dataclass(frozen=True)
+class SourceLocationEvidencePropertyCandidate(ClassMethodLineWitnessCandidate):
+    file_attribute_name: str
+    line_attribute_name: str
+    symbol_attribute_name: str
+
+
+@dataclass(frozen=True)
+class ZippedSourceLocationEvidencePropertyCandidate(ClassMethodLineWitnessCandidate):
+    file_attribute_name: str
+    line_numbers_attribute_name: str
+    symbol_names_attribute_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class PrivateHelperShadowCandidate(EvidenceLocationsWitnessCandidate):
+    private_name: str
+    public_name: str
+    public_file_path: str
+    public_line: int
+
+
+@dataclass(frozen=True)
+class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
+    base_names: tuple[str, ...]
+    field_specs: tuple[tuple[str, str], ...]
+    default_specs: tuple[tuple[str, str], ...]
+    docstring: str | None
+    kw_only: bool
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SemanticTypeAliasCandidate(EvidenceLocationsWitnessCandidate):
+    annotation_text: str
+    occurrence_count: int
+    owner_symbols: tuple[str, ...]
+    suggested_alias_name: str
+
+
+@dataclass(frozen=True)
+class NodeVisitorStackBoilerplateCandidate(QualnameLineWitnessCandidate):
+    stack_names: tuple[str, ...]
+    transition_method_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class DuplicateVisitorMethodBodyCandidate(ClassLineWitnessCandidate):
+    method_names: tuple[str, ...]
+    statement_count: int
+
+
+@dataclass(frozen=True)
+class EnumMetadataTableCandidate(ClassLineWitnessCandidate):
+    table_name: str
+    property_names: tuple[str, ...]
+    case_count: int
+
+
+@dataclass(frozen=True)
+class ReadabilityCompressedLineCandidate(LineWitnessCandidate):
+    char_count: int
+    reason: str
+    statement_count: int
+
+
+@dataclass(frozen=True)
+class TupleIndexSemanticOpacityCandidate(FunctionLineWitnessCandidate):
+    function_name: str
+    index_expressions: tuple[str, ...]
+    nested_index_count: int
+    carrier_call_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
+    argument_spec_name: str
+    field_names: tuple[str, ...]
+    cli_field_names: tuple[str, ...]
+    from_namespace_line: int
+    argument_spec_file_path: str
+    argument_spec_line: int
+
+
+@dataclass(frozen=True)
+class ClosedAxisConversionMatrixCandidate(LineWitnessCandidate):
+    function_names: tuple[str, ...]
+    source_axis_values: tuple[str, ...]
+    target_axis_values: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class OptionRecordQuotientCandidate(ClassNameLineNumbersGroup, LineWitnessCandidate):
+    field_names: tuple[str, ...]
+    default_names: tuple[str, ...]
+    common_base_names: tuple[str, ...]
+    line_count: int
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return self.evidence_for_file(self.file_path)
+
+
+@dataclass(frozen=True)
+class IdentityKeywordForwardingShellCandidate(FunctionLineWitnessCandidate):
+    callee_name: str
+    forwarded_keyword_names: tuple[str, ...]
+    line_count: int
+
+
+@dataclass(frozen=True)
+class OptionalKeywordBagAssemblyCandidate(FunctionLineWitnessCandidate):
+    bag_name: str
+    parameter_names: tuple[str, ...]
+    target_keyword_names: tuple[str, ...]
+    call_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class SchemaAccessorFamilyCandidate(ClassLineWitnessCandidate):
+    enum_name: str
+    method_names: tuple[str, ...]
+    field_names: tuple[str, ...]
+    requirement_modes: tuple[str, ...]
+    coercion_kinds: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
+    )
+
+
+@dataclass(frozen=True)
+class DataclassSchemaRegistryMirrorCandidate(ClassLineWitnessCandidate):
+    schema_name: str
+    dataclass_name: str
+    schema_constructor_names: tuple[str, ...]
+    mirrored_field_names: tuple[str, ...]
+    schema_field_names: tuple[str, ...]
+    schema_line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+
+
+@dataclass(frozen=True)
+class DataclassFieldProjectionBoilerplateCandidate(ClassLineWitnessCandidate):
+    field_names: tuple[str, ...]
+    helper_names: tuple[str, ...]
+    projection_argument_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "field_names")
+    )
+
+
+@dataclass(frozen=True)
+class OptionalParameterBranchCandidate(FunctionLineWitnessCandidate):
+    parameter_name: str
+    annotation_text: str
+    observed_attribute_names: tuple[str, ...]
+    none_check_count: int
+    line_count: int
+
+
+@dataclass(frozen=True)
+class AllMissingAxisPredicateCandidate(FunctionLineWitnessCandidate):
+    predicate_names: tuple[str, ...]
+    append_target_name: str
+    signal_name: str
+    line_count: int
+
+
+@dataclass(frozen=True)
+class BridgeAxisDispatchFamilyCandidate(LineWitnessCandidate):
+    dispatch_axis_expression: str
+    literal_cases: tuple[str, ...]
+    function_names: tuple[str, ...]
+    operation_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class ArrayProtocolProbeBridgeCandidate(LineWitnessCandidate):
+    function_names: tuple[str, ...]
+    attribute_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    probe_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class LifecycleStageSequenceCandidate(LineWitnessCandidate):
+    function_names: tuple[str, ...]
+    stage_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class LatentNominalFunctionFamilyCandidate(LineWitnessCandidate):
+    owner_parameter_name: str
+    owner_attribute_names: tuple[str, ...]
+    shared_call_names: tuple[str, ...]
+    function_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class BareFunctionMethodFamilyCandidate(LineWitnessCandidate):
+    owner_parameter_name: str
+    owner_attribute_names: tuple[str, ...]
+    shared_axis_name: str
+    shared_axis_value: str
+    function_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    )
+
+
+@dataclass(frozen=True)
+class ClassFamilyWitnessCarrier:
+    base_name: str
+    class_names: tuple[str, ...]
+    file_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ABCOptimizerLatticeMetricsCarrier:
+    optimizer_score: int
+    lattice_node_count: int
+    lattice_edge_count: int
+
+
+@dataclass(frozen=True)
+class ABCOptimizerHierarchyMetricsCarrier(ABCOptimizerLatticeMetricsCarrier):
+    hierarchy_normal_form: str
+    abc_layer_count: int
+
+
+@dataclass(frozen=True)
+class ABCOptimizerAxisDesignCarrier:
+    mixin_axis_names: tuple[str, ...]
+    overlap_axis_names: tuple[str, ...]
+    mixin_axis_specs: tuple[str, ...]
+    overlap_axis_specs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ABCOptimizerResiduePlacementCarrier:
+    abc_concrete_method_names: tuple[str, ...]
+    leaf_residue_names: tuple[str, ...]
+    subclass_residue_count: int
+    shared_to_residue_ratio: float
+
+
+@dataclass(frozen=True)
+class SemanticOverlapABCOptimizationCandidate(
+    LineWitnessCandidate,
+    ClassFamilyWitnessCarrier,
+    ResidueHookNamesCarrier,
+    ABCOptimizerAxisDesignCarrier,
+    ABCOptimizerHierarchyMetricsCarrier,
+    ABCOptimizerResiduePlacementCarrier,
+):
+    method_name: str
+    line_numbers: tuple[int, ...]
+    shared_statement_count: int
+    varying_coordinate_count: int
+    family_method_names: tuple[str, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class SemanticOverlapABCFamilyOptimizationCandidate(
+    LineWitnessCandidate,
+    ClassFamilyWitnessCarrier,
+    ResidueHookNamesCarrier,
+    ABCOptimizerHierarchyMetricsCarrier,
+):
+    method_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    method_symbols: tuple[str, ...]
+    shared_statement_count: int
+    residue_count: int
+    abc_concrete_method_names: tuple[str, ...]
+    leaf_residue_names: tuple[str, ...]
+    shared_to_residue_ratio: float
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class GlobalInheritanceOptimizationCandidate(
+    LineWitnessCandidate, ClassFamilyWitnessCarrier, ABCOptimizerLatticeMetricsCarrier
+):
+    method_names: tuple[str, ...]
+    family_specs: tuple[str, ...]
+    mixin_axis_specs: tuple[str, ...]
+    overlap_axis_specs: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    method_symbols: tuple[str, ...]
+    shared_statement_count: int
+    residue_count: int
+    leaf_residue_names: tuple[str, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class SemanticOverlapABCResidueAxisCatalogCandidate(
+    LineWitnessCandidate, ClassFamilyWitnessCarrier
+):
+    method_names: tuple[str, ...]
+    residue_kind_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    method_symbols: tuple[str, ...]
+    residue_site_count: int
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_METHOD_SYMBOLS_ATTRIBUTE,
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ClassLevelInheritanceOptimizationCandidate(
+    LineWitnessCandidate, ClassFamilyWitnessCarrier
+):
+    line_numbers: tuple[int, ...]
+    declaration_names: tuple[str, ...]
+    declaration_signatures: tuple[str, ...]
+    declaration_sources: tuple[str, ...]
+    line_count: int
+    compression_certificate: CompressionCertificate
+    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+        MultiFileZippedSourceLocationEvidenceProperty(
+            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
+            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
+            symbol_names_attribute_name=_CLASS_NAMES_ATTRIBUTE,
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -11085,9 +12679,12 @@ class ManualRegistryCandidate(WitnessCarrierCandidate, NameFamilyClassNamesMixin
     registry_name = AliasProperty[str]("subject_name")
 
 
-# fmt: off
-_materialize_product_record(_product_record_spec('StructuralConfusabilityCandidate', 'parameter_name: str; observed_method_names: tuple[str, ...]', 'WitnessCarrierCandidate NameFamilyClassNamesMixin SubjectNameFunctionNameMixin'))
-# fmt: on
+@dataclass(frozen=True)
+class StructuralConfusabilityCandidate(
+    WitnessCarrierCandidate, NameFamilyClassNamesMixin, SubjectNameFunctionNameMixin
+):
+    parameter_name: str
+    observed_method_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -11099,12 +12696,14 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-# fmt: off
-_materialize_product_records((
-    _product_record_spec('WitnessCarrierFamilyCandidate', 'shared_role_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
-    _product_record_spec('WitnessMixinEnforcementCandidate', 'role_field_names: tuple[tuple[str, tuple[str, ...]], ...]', 'ClassLineNumbersGroup'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class WitnessCarrierFamilyCandidate(ClassLineNumbersGroup):
+    shared_role_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class WitnessMixinEnforcementCandidate(ClassLineNumbersGroup):
+    role_field_names: tuple[tuple[str, tuple[str, ...]], ...]
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

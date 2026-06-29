@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from operator import attrgetter
 from typing import Callable, Generic, TypeVar, cast, overload
 
@@ -15,14 +15,6 @@ class AliasProperty(Generic[ValueT]):
     """Descriptor for properties that are pure aliases of another attribute."""
 
     source_name: str
-    _project: Callable[[object], ValueT] = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_project",
-            cast(Callable[[object], ValueT], attrgetter(self.source_name)),
-        )
 
     @overload
     def __get__(
@@ -42,7 +34,8 @@ class AliasProperty(Generic[ValueT]):
         del owner
         if instance is None:
             return self
-        return self._project(instance)
+        project = cast(Callable[[object], ValueT], attrgetter(self.source_name))
+        return project(instance)
 
 
 @dataclass(frozen=True)
@@ -78,22 +71,6 @@ class CollectionAttributeProjection(Generic[MemberValueT]):
 
     collection_name: str
     member_attribute_name: str
-    _collection: Callable[[object], object] = field(init=False, repr=False)
-    _member_attribute: Callable[[object], MemberValueT] = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "_collection",
-            attrgetter(self.collection_name),
-        )
-        object.__setattr__(
-            self,
-            "_member_attribute",
-            cast(
-                Callable[[object], MemberValueT], attrgetter(self.member_attribute_name)
-            ),
-        )
 
     @overload
     def __get__(
@@ -113,6 +90,10 @@ class CollectionAttributeProjection(Generic[MemberValueT]):
         del owner
         if instance is None:
             return self
+        collection = attrgetter(self.collection_name)
+        member_attribute = cast(
+            Callable[[object], MemberValueT], attrgetter(self.member_attribute_name)
+        )
         return tuple(
-            self._member_attribute(member) for member in self._collection(instance)
+            member_attribute(member) for member in collection(instance)
         )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import MISSING, asdict, dataclass, field, fields, is_dataclass
+from enum import StrEnum
 import hashlib
 from typing import Any, ClassVar, cast
 
@@ -46,13 +47,61 @@ class SemanticRecord(ABC, metaclass=AutoRegisterMeta):
         return asdict(record)
 
 
+class SemanticFieldRole(StrEnum):
+    SOURCE_PATH = "source_path"
+    SOURCE_LINE = "source_line"
+    OWNER_SYMBOL = "owner_symbol"
+
+
 @dataclass(frozen=True)
-class SourceLocation(SemanticRecord):
-    """One evidence site in source code."""
+class SourceLineReference:
+    """One source file and line reference shared by source evidence records."""
 
     file_path: str
     line: int
+
+
+@dataclass(frozen=True)
+class SourceLocation(SourceLineReference, SemanticRecord):
+    """One evidence site in source code."""
+
     symbol: str
+
+    @classmethod
+    def file_path_field_name(cls) -> str:
+        return next(field.name for field in fields(cls) if field.name.endswith("_path"))
+
+    @classmethod
+    def line_field_name(cls) -> str:
+        return next(field.name for field in fields(cls) if field.name == "line")
+
+    @classmethod
+    def symbol_field_name(cls) -> str:
+        return next(field.name for field in fields(cls) if field.name == "symbol")
+
+    @classmethod
+    def semantic_field_role_names(cls, field_name: str) -> tuple[str, ...]:
+        roles: list[str] = []
+        if field_name == cls.file_path_field_name() or field_name.endswith("_path"):
+            roles.append(SemanticFieldRole.SOURCE_PATH.value)
+        if field_name in {cls.line_field_name(), "lineno"} or field_name.endswith(
+            "_line"
+        ):
+            roles.append(SemanticFieldRole.SOURCE_LINE.value)
+        if field_name in {
+            cls.symbol_field_name(),
+            "owner_symbol",
+        } or field_name.endswith("_symbol"):
+            roles.append(SemanticFieldRole.OWNER_SYMBOL.value)
+        return tuple(roles)
+
+
+@dataclass(frozen=True)
+class SourceLocationZipDescriptorShape(SemanticRecord):
+    """Shared schema for zipped source-location descriptor declarations."""
+
+    line_numbers_attribute_name: str
+    symbol_names_attribute_name: str
 
 
 def stable_source_location_id(source_location: SourceLocation) -> str:
@@ -132,6 +181,9 @@ class OutcomeEstimate(ImpactDelta):
 class FindingMetrics(SemanticRecord, ABC):
     """Base class for typed metric bags attached to findings."""
 
+    derived_count_constructor_name: ClassVar[str | None] = None
+    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = ()
+
     @classmethod
     def semantic_bag_key_sets(cls) -> tuple[frozenset[str], ...]:
         if not is_dataclass(cls):
@@ -152,6 +204,33 @@ class FindingMetrics(SemanticRecord, ABC):
                 if not is_dataclass(base):
                     return base.__name__
         return FindingMetrics.__name__
+
+    @classmethod
+    def derived_count_shape(cls) -> "DerivedCountMetricShape | None":
+        if (
+            cls.derived_count_constructor_name is None
+            or not cls.derived_count_field_pairs
+        ):
+            return None
+        return DerivedCountMetricShape(
+            metric_class_name=cls.__name__,
+            constructor_name=cls.derived_count_constructor_name,
+            field_pairs=cls.derived_count_field_pairs,
+        )
+
+    @classmethod
+    def derived_count_metric_shapes(cls) -> tuple["DerivedCountMetricShape", ...]:
+        return tuple(
+            sorted(
+                (
+                    shape
+                    for metric_type in _metric_subclasses(cls)
+                    for shape in (metric_type.derived_count_shape(),)
+                    if shape is not None
+                ),
+                key=lambda shape: shape.metric_class_name,
+            )
+        )
 
     shared_algorithm_sites = ConstantProperty[int](0)
     registration_sites = ConstantProperty[int](0)
@@ -174,6 +253,23 @@ class FindingMetrics(SemanticRecord, ABC):
     plan_dispatch_axis = ConstantProperty[str | None](None)
     plan_literal_cases = ConstantProperty[tuple[str, ...]](())
     plan_field_execution_level = ConstantProperty[str | None](None)
+
+
+@dataclass(frozen=True)
+class DerivedCountMetricShape(SemanticRecord):
+    metric_class_name: str
+    constructor_name: str
+    field_pairs: tuple[tuple[str, str], ...]
+
+
+def _metric_subclasses(
+    metric_type: type[FindingMetrics],
+) -> tuple[type[FindingMetrics], ...]:
+    children = tuple(metric_type.__subclasses__())
+    return (
+        *children,
+        *(descendant for child in children for descendant in _metric_subclasses(child)),
+    )
 
 
 BehaviorFindingMetrics = CompositeClassSpec(
@@ -328,6 +424,10 @@ class WitnessCarrierMetrics(ClassNamesPlanMetrics):
 class MappingMetrics(MappingFindingMetrics):
     """Metrics for repeated projection or mapping surfaces."""
 
+    derived_count_constructor_name: ClassVar[str | None] = "from_field_names"
+    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("field_count", "field_names"),
+    )
     mapping_site_count: int
     field_count: int
     mapping_name: str | None = None
@@ -388,6 +488,10 @@ class MappingMetrics(MappingFindingMetrics):
 class RegistrationMetrics(RegistrationFindingMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
+    derived_count_constructor_name: ClassVar[str | None] = "from_class_names"
+    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("class_count", "class_names"),
+    )
     registration_site_count: int
     class_count: int | None = None
     registry_name: str | None = None
@@ -506,6 +610,10 @@ class ProbeCountMetrics(CountedDispatchMetrics):
 
 @dataclass(frozen=True)
 class DispatchCountMetrics(CountedDispatchMetrics):
+    derived_count_constructor_name: ClassVar[str | None] = "from_literal_family"
+    derived_count_field_pairs: ClassVar[tuple[tuple[str, str], ...]] = (
+        ("dispatch_site_count", "literal_cases"),
+    )
     count_field_name: ClassVar[str] = "dispatch_site_count"
     dispatch_site_count: int
     dispatch_axis: str | None = None
@@ -532,10 +640,16 @@ class DispatchCountMetrics(CountedDispatchMetrics):
 
 
 @dataclass(frozen=True)
-class OrchestrationMetrics(BehaviorFindingMetrics):
+class CallSiteCountMetric:
+    """Nominal carrier for call-site count evidence."""
+
+    call_site_count: int
+
+
+@dataclass(frozen=True)
+class OrchestrationMetrics(CallSiteCountMetric, BehaviorFindingMetrics):
     function_line_count: int
     branch_site_count: int
-    call_site_count: int
     parameter_count: int
     callee_family_count: int
 
@@ -770,7 +884,33 @@ class RefactorTrajectorySummary(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class RefactorPlan(SemanticRecord):
+class RefactorPatternSequence(SemanticRecord):
+    """Ordered refactoring pattern witness sequence for a synthesized plan."""
+
+    ordered_pattern_ids: tuple[PatternId, ...]
+
+    def __post_init__(self) -> None:
+        if not self.ordered_pattern_ids:
+            raise ValueError("RefactorPatternSequence requires at least one pattern.")
+
+    @property
+    def primary_pattern_id(self) -> PatternId:
+        return self.ordered_pattern_ids[0]
+
+    @property
+    def secondary_pattern_ids(self) -> tuple[PatternId, ...]:
+        return self.ordered_pattern_ids[1:]
+
+
+@dataclass(frozen=True)
+class RefactorPatternSequenceCarrier(SemanticRecord):
+    """Record surface for values derived from one refactoring pattern sequence."""
+
+    pattern_sequence: RefactorPatternSequence
+
+
+@dataclass(frozen=True)
+class RefactorPlan(RefactorPatternSequenceCarrier):
     """Subsystem-level composition of findings into an ordered refactor plan."""
 
     subsystem: str
@@ -779,9 +919,6 @@ class RefactorPlan(SemanticRecord):
     collapsed_distinctions: tuple[str, ...]
     missing_capabilities: tuple[str, ...]
     certification: CertificationLevel
-    primary_pattern_id: PatternId
-    secondary_pattern_ids: tuple[PatternId, ...]
-    application_order: tuple[PatternId, ...]
     canonical_normal_form: str
     plan_steps: tuple[str, ...]
     supporting_findings: tuple[str, ...]

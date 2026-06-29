@@ -6,9 +6,12 @@ import ast
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from functools import lru_cache
 from types import EllipsisType
 from typing import Iterable, Sequence
 
+from ..ast_tools import BuiltinCallName
+from ..export_tools import PublicExportPolicy, derive_public_exports
 from ..semantic_algebra import FiniteAxisSystem, ObjectFamilyShape
 from ..semantic_description_length import CompressionCertificate
 from ._base import *
@@ -100,21 +103,8 @@ _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS = frozenset(
         "with",
     }
 )
-_ROLE_SURFACE_DRIFT_ITERATION_CALLS = frozenset(
-    {
-        "all",
-        "any",
-        "dict",
-        "enumerate",
-        "len",
-        "list",
-        "max",
-        "min",
-        "set",
-        "sum",
-        "tuple",
-        "zip",
-    }
+_ROLE_SURFACE_DRIFT_ITERATION_CALLS = (
+    BuiltinCallName.role_surface_iteration_call_names()
 )
 _ROLE_SURFACE_OPERATION_ASSIGNED_FROM = "assigned_from"
 _ROLE_SURFACE_OPERATION_COUNTED = "counted"
@@ -140,16 +130,12 @@ _ROLE_SURFACE_BROAD_CARRIER_TOKENS = frozenset(
     }
 )
 _ROLE_SURFACE_PRESENTATION_CONTEXT_TOKENS = frozenset(
-    {
-        "codemod",
+    (
+        *CandidateFindingRenderer.presentation_context_tokens(),
         "finding",
         "metric",
-        "metrics",
-        "patch",
         "renderer",
-        "scaffold",
-        "summary",
-    }
+    )
 )
 _GENERIC_ROLE_CASE_LITERAL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _GENERIC_ROLE_CASE_CONTEXT_MAP_KEY = "mapping_key"
@@ -258,26 +244,92 @@ class RoleSurfaceDriftCandidate(RoleSurfaceFieldWitness):
 
 
 @dataclass(frozen=True)
-class GenericRoleCaseTableSite(LineWitnessCandidate):
+class BroadSemanticAxisTokenBoundary:
+    """Broad semantic role tokens shared by local case tables and logic."""
+
+    broad_semantic_axis_tokens: tuple[str, ...]
+
+    @classmethod
+    def from_context(
+        cls,
+        *,
+        owner_tokens: tuple[str, ...],
+        body_tokens: tuple[str, ...],
+        module_tokens: frozenset[str],
+    ) -> "BroadSemanticAxisTokenBoundary | None":
+        broad_semantic_axis_tokens = tuple(
+            token
+            for token in owner_tokens
+            if token in body_tokens and token not in {"self", "cls"} | module_tokens
+        )
+        if not broad_semantic_axis_tokens:
+            return None
+        return cls(broad_semantic_axis_tokens)
+
+    @property
+    def label(self) -> str:
+        return ", ".join(self.broad_semantic_axis_tokens)
+
+    @property
+    def token_set(self) -> frozenset[str]:
+        return frozenset(self.broad_semantic_axis_tokens)
+
+    def camel_case_name(self, default_tokens: tuple[str, ...]) -> str:
+        return _camel_case(
+            "_".join(self.broad_semantic_axis_tokens[:2] or default_tokens)
+        )
+
+
+@dataclass(frozen=True)
+class RoleCaseLiteralBoundary:
+    """Concrete role-case literals observed under one semantic axis."""
+
+    case_literals: tuple[str, ...]
+
+    @property
+    def case_label(self) -> str:
+        return ", ".join(self.case_literals)
+
+    @property
+    def short_case_label(self) -> str:
+        return ",".join(self.case_literals[:4])
+
+
+@dataclass(frozen=True)
+class RoleCaseTokenBoundary:
+    """Token projection of concrete role-case literals."""
+
+    case_tokens: tuple[str, ...]
+
+    @property
+    def case_token_label(self) -> str:
+        return ", ".join(self.case_tokens)
+
+
+@dataclass(frozen=True)
+class GenericRoleCaseTableSite(
+    BroadSemanticAxisTokenBoundary,
+    RoleCaseLiteralBoundary,
+    RoleCaseTokenBoundary,
+    LineWitnessCandidate,
+):
     owner_symbol: str
     owner_tokens: tuple[str, ...]
-    broad_tokens: tuple[str, ...]
-    case_tokens: tuple[str, ...]
-    case_literals: tuple[str, ...]
     context_kinds: tuple[str, ...]
 
     @property
     def symbol(self) -> str:
-        cases = ",".join(self.case_literals[:4])
-        return f"{self.owner_symbol}:role_cases:{cases}"
+        return f"{self.owner_symbol}:role_cases:{self.short_case_label}"
 
 
 @dataclass(frozen=True)
-class GenericRoleCaseTableCandidate(LineWitnessCandidate):
-    broad_tokens: tuple[str, ...]
+class GenericRoleCaseTableCandidate(
+    BroadSemanticAxisTokenBoundary,
+    RoleCaseLiteralBoundary,
+    LineWitnessCandidate,
+):
     shared_case_tokens: tuple[str, ...]
     owner_symbols: tuple[str, ...]
-    case_literals: tuple[str, ...]
     sites: tuple[GenericRoleCaseTableSite, ...]
     compression_certificate: CompressionCertificate
 
@@ -290,7 +342,7 @@ class GenericRoleCaseTableCandidate(LineWitnessCandidate):
 
     @property
     def scaffold(self) -> str:
-        broad = _camel_case("_".join(self.broad_tokens[:2] or ("role", "case")))
+        broad = self.camel_case_name(("role", "case"))
         return (
             f"@dataclass(frozen=True)\n"
             f"class {broad}CaseAuthority:\n"
@@ -302,10 +354,9 @@ class GenericRoleCaseTableCandidate(LineWitnessCandidate):
 
     @property
     def codemod_patch(self) -> str:
-        broad = ", ".join(self.broad_tokens)
         cases = ", ".join(self.shared_case_tokens)
         return (
-            f"# Concrete case table(s) for broad role token(s) {broad} repeat "
+            f"# Concrete case table(s) for broad role token(s) {self.label} repeat "
             f"case token(s) {cases} across {len(self.owner_symbols)} owner(s).\n"
             "# Move the case table to one role-neutral authority owned by the "
             "broad semantic axis, then have concrete viewers/adapters call that "
@@ -314,12 +365,14 @@ class GenericRoleCaseTableCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
+class LocalRoleCaseLogicCandidate(
+    BroadSemanticAxisTokenBoundary,
+    RoleCaseLiteralBoundary,
+    RoleCaseTokenBoundary,
+    LineWitnessCandidate,
+):
     owner_symbol: str
     owner_tokens: tuple[str, ...]
-    broad_tokens: tuple[str, ...]
-    case_tokens: tuple[str, ...]
-    case_literals: tuple[str, ...]
     context_kinds: tuple[str, ...]
 
     @property
@@ -328,7 +381,7 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
             SourceLocation(
                 self.file_path,
                 self.line,
-                f"{self.owner_symbol}:local_role_cases:{','.join(self.case_literals[:4])}",
+                f"{self.owner_symbol}:local_role_cases:{self.short_case_label}",
             ),
         )
 
@@ -338,7 +391,7 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
             manual_object_count=max(
                 (len(self.case_literals) * max(len(self.context_kinds), 1))
                 + len(self.case_tokens)
-                + len(self.broad_tokens),
+                + len(self.broad_semantic_axis_tokens),
                 8,
             ),
             replacement_shape=ObjectFamilyShape.from_roles(
@@ -347,7 +400,7 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
                 source=("owner_scope",),
             ),
             semantic_axes=(
-                ("broad_tokens", self.broad_tokens),
+                ("broad_semantic_axis_tokens", self.broad_semantic_axis_tokens),
                 ("case_tokens", self.case_tokens),
                 ("context_kinds", self.context_kinds),
             ),
@@ -355,7 +408,7 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
 
     @property
     def scaffold(self) -> str:
-        broad = _camel_case("_".join(self.broad_tokens[:2] or ("role", "axis")))
+        broad = self.camel_case_name(("role", "axis"))
         return (
             f"@dataclass(frozen=True)\n"
             f"class {broad}ProjectionAuthority:\n"
@@ -367,11 +420,9 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
 
     @property
     def codemod_patch(self) -> str:
-        broad = ", ".join(self.broad_tokens)
-        cases = ", ".join(self.case_literals)
         return (
-            f"# `{self.owner_symbol}` embeds concrete case literal(s) {cases} "
-            f"inside a broad role axis ({broad}).\n"
+            f"# `{self.owner_symbol}` embeds concrete case literal(s) {self.case_label} "
+            f"inside a broad role axis ({self.label}).\n"
             "# Move the concrete case knowledge behind a nominal role-axis authority "
             "and have this behavior surface query that authority instead of owning "
             "local map/guard cases."
@@ -379,6 +430,7 @@ class LocalRoleCaseLogicCandidate(LineWitnessCandidate):
 
 
 class RoleSurfaceTokenProjection:
+    @lru_cache(maxsize=None)
     def identifier_tokens(self, text: str) -> tuple[str, ...]:
         return tuple(
             self.canonical_token(token)
@@ -400,6 +452,7 @@ class RoleSurfaceTokenProjection:
             if token not in _ROLE_SURFACE_DRIFT_TOKEN_STOPWORDS
         )
 
+    @lru_cache(maxsize=None)
     def node_tokens(self, node: ast.AST | None) -> tuple[str, ...]:
         if node is None:
             return ()
@@ -425,9 +478,10 @@ ROLE_SURFACE_TOKEN_PROJECTION = RoleSurfaceTokenProjection()
 @dataclass(frozen=True)
 class _GenericRoleCaseTableProjection:
     site: GenericRoleCaseTableSite
-    broad_token: str
+    broad_semantic_axis_token: str
 
 
+@lru_cache(maxsize=None)
 def _generic_role_case_body_tokens(root: ast.AST) -> tuple[str, ...]:
     tokens: set[str] = set()
     for node in ast.walk(root):
@@ -442,6 +496,7 @@ def _generic_role_case_body_tokens(root: ast.AST) -> tuple[str, ...]:
     return tuple(sorted(tokens))
 
 
+@lru_cache(maxsize=None)
 def _generic_role_case_literal_tokens(
     value: str | bytes | int | float | complex | bool | None | EllipsisType,
 ) -> tuple[str, ...]:
@@ -510,8 +565,8 @@ class _LocalRoleCaseLiteralRecord:
 
 
 class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
-    def __init__(self, broad_tokens: tuple[str, ...]) -> None:
-        self.broad_tokens = frozenset(broad_tokens)
+    def __init__(self, role_boundary: BroadSemanticAxisTokenBoundary) -> None:
+        self.role_boundary = role_boundary
         self.mapping_records_by_name: dict[str, list[_LocalRoleCaseLiteralRecord]] = (
             defaultdict(list)
         )
@@ -614,7 +669,8 @@ class _LocalRoleCaseLiteralCollector(ast.NodeVisitor):
 
     def _expression_has_broad_axis_token(self, node: ast.AST) -> bool:
         return bool(
-            self.broad_tokens & set(ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(node))
+            self.role_boundary.token_set
+            & set(ROLE_SURFACE_TOKEN_PROJECTION.node_tokens(node))
         )
 
 
@@ -636,12 +692,12 @@ def _generic_role_case_table_site(
         for part in module.path.with_suffix("").parts
         for token in ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(part)
     }
-    broad_tokens = tuple(
-        token
-        for token in owner_tokens
-        if token in body_tokens and token not in {"self", "cls"} | module_tokens
+    role_boundary = BroadSemanticAxisTokenBoundary.from_context(
+        owner_tokens=owner_tokens,
+        body_tokens=body_tokens,
+        module_tokens=frozenset(module_tokens),
     )
-    if not broad_tokens:
+    if role_boundary is None:
         return None
 
     visitor = _GenericRoleCaseLiteralVisitor()
@@ -655,7 +711,7 @@ def _generic_role_case_table_site(
                 token
                 for _, _, literal_tokens, _ in literal_records
                 for token in literal_tokens
-                if token not in broad_tokens
+                if token not in role_boundary.broad_semantic_axis_tokens
             }
         )
     )
@@ -668,7 +724,7 @@ def _generic_role_case_table_site(
         line=line,
         owner_symbol=owner_symbol,
         owner_tokens=owner_tokens,
-        broad_tokens=broad_tokens,
+        broad_semantic_axis_tokens=role_boundary.broad_semantic_axis_tokens,
         case_tokens=case_tokens,
         case_literals=case_literals,
         context_kinds=context_kinds,
@@ -715,7 +771,7 @@ def _generic_role_case_table_sites(
 def _generic_role_case_table_certificate(
     *,
     sites: tuple[GenericRoleCaseTableSite, ...],
-    broad_tokens: tuple[str, ...],
+    role_boundary: BroadSemanticAxisTokenBoundary,
     shared_case_tokens: tuple[str, ...],
 ) -> CompressionCertificate:
     return CompressionCertificate.from_object_family(
@@ -726,7 +782,7 @@ def _generic_role_case_table_certificate(
             source=("owner_projection",),
         ),
         semantic_axes=(
-            ("broad_tokens", broad_tokens),
+            ("broad_semantic_axis_tokens", role_boundary.broad_semantic_axis_tokens),
             ("shared_case_tokens", shared_case_tokens),
         ),
         independent_source_count=len({site.owner_symbol for site in sites}),
@@ -738,10 +794,12 @@ def _generic_role_case_table_candidates(
     config: DetectorConfig,
 ) -> tuple[GenericRoleCaseTableCandidate, ...]:
     projections = tuple(
-        _GenericRoleCaseTableProjection(site=site, broad_token=broad_token)
+        _GenericRoleCaseTableProjection(
+            site=site, broad_semantic_axis_token=broad_semantic_axis_token
+        )
         for module in modules
         for site in _generic_role_case_table_sites(module, config)
-        for broad_token in site.broad_tokens
+        for broad_semantic_axis_token in site.broad_semantic_axis_tokens
     )
     if len(projections) < 2:
         return ()
@@ -751,14 +809,16 @@ def _generic_role_case_table_candidates(
             (
                 projection,
                 {
-                    "broad_token": projection.broad_token,
+                    "broad_semantic_axis_token": projection.broad_semantic_axis_token,
                     "context_kinds": projection.site.context_kinds,
                 },
             )
             for projection in projections
         )
     )
-    graph = axis_system.confusability_graph((("broad_token", "context_kinds"),))
+    graph = axis_system.confusability_graph(
+        (("broad_semantic_axis_token", "context_kinds"),)
+    )
 
     candidates: list[GenericRoleCaseTableCandidate] = []
     for component in graph.connected_components:
@@ -768,8 +828,15 @@ def _generic_role_case_table_candidates(
         owner_symbols = tuple(sorted({site.owner_symbol for site in unique_sites}))
         if len(owner_symbols) < config.min_generic_role_case_table_owners:
             continue
-        shared_broad_tokens = tuple(
-            sorted(set.intersection(*(set(site.broad_tokens) for site in unique_sites)))
+        shared_broad_semantic_axis_tokens = tuple(
+            sorted(
+                set.intersection(
+                    *(set(site.broad_semantic_axis_tokens) for site in unique_sites)
+                )
+            )
+        )
+        shared_role_boundary = BroadSemanticAxisTokenBoundary(
+            shared_broad_semantic_axis_tokens
         )
         case_counts = Counter(
             token for site in unique_sites for token in site.case_tokens
@@ -783,7 +850,7 @@ def _generic_role_case_table_candidates(
             continue
         certificate = _generic_role_case_table_certificate(
             sites=unique_sites,
-            broad_tokens=shared_broad_tokens,
+            role_boundary=shared_role_boundary,
             shared_case_tokens=shared_case_tokens,
         )
         if not certificate.pays_rent:
@@ -793,7 +860,7 @@ def _generic_role_case_table_candidates(
             GenericRoleCaseTableCandidate(
                 file_path=first_site.file_path,
                 line=first_site.line,
-                broad_tokens=shared_broad_tokens,
+                broad_semantic_axis_tokens=shared_role_boundary.broad_semantic_axis_tokens,
                 shared_case_tokens=shared_case_tokens,
                 owner_symbols=owner_symbols,
                 case_literals=tuple(
@@ -816,7 +883,7 @@ def _generic_role_case_table_candidates(
     ] = {}
     for candidate in candidates:
         key = (
-            candidate.broad_tokens,
+            candidate.broad_semantic_axis_tokens,
             candidate.shared_case_tokens,
             candidate.owner_symbols,
         )
@@ -847,15 +914,15 @@ def _local_role_case_logic_site(
         for part in module.path.with_suffix("").parts
         for token in ROLE_SURFACE_TOKEN_PROJECTION.identifier_tokens(part)
     }
-    broad_tokens = tuple(
-        token
-        for token in owner_tokens
-        if token in body_tokens and token not in {"self", "cls"} | module_tokens
+    role_boundary = BroadSemanticAxisTokenBoundary.from_context(
+        owner_tokens=owner_tokens,
+        body_tokens=body_tokens,
+        module_tokens=frozenset(module_tokens),
     )
-    if not broad_tokens:
+    if role_boundary is None:
         return None
 
-    visitor = _LocalRoleCaseLiteralCollector(broad_tokens)
+    visitor = _LocalRoleCaseLiteralCollector(role_boundary)
     visitor.visit(root)
     literal_records = visitor.records
     if not literal_records:
@@ -867,7 +934,7 @@ def _local_role_case_logic_site(
                 token
                 for record in literal_records
                 for token in record.literal_tokens
-                if token not in broad_tokens
+                if token not in role_boundary.broad_semantic_axis_tokens
             }
         )
     )
@@ -880,7 +947,7 @@ def _local_role_case_logic_site(
         line=root.lineno,
         owner_symbol=owner_symbol,
         owner_tokens=owner_tokens,
-        broad_tokens=broad_tokens,
+        broad_semantic_axis_tokens=role_boundary.broad_semantic_axis_tokens,
         case_tokens=case_tokens,
         case_literals=case_literals,
         context_kinds=context_kinds,
@@ -890,8 +957,8 @@ def _local_role_case_logic_site(
     return candidate
 
 
-def _local_role_case_logic_candidates(
-    modules: Sequence[ParsedModule],
+def _local_role_case_logic_candidates_for_module(
+    module: ParsedModule,
     config: DetectorConfig,
 ) -> tuple[LocalRoleCaseLogicCandidate, ...]:
     candidates: list[LocalRoleCaseLogicCandidate] = []
@@ -916,13 +983,23 @@ def _local_role_case_logic_candidates(
             if candidate is not None:
                 candidates.append(candidate)
 
-    for module in modules:
-        Visitor(module).visit(module.module)
+    Visitor(module).visit(module.module)
     return tuple(
         sorted(
             candidates,
             key=lambda item: (item.file_path, item.line, item.owner_symbol),
         )
+    )
+
+
+def _local_role_case_logic_candidates(
+    modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[LocalRoleCaseLogicCandidate, ...]:
+    return tuple(
+        candidate
+        for module in modules
+        for candidate in _local_role_case_logic_candidates_for_module(module, config)
     )
 
 
@@ -1233,6 +1310,7 @@ def _role_surface_drift_candidates(
 class RoleSurfaceDriftDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[RoleSurfaceDriftCandidate]
 ):
+    ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
         "Role-specific surface is carrying broader latent role semantics",
@@ -1275,7 +1353,6 @@ class RoleSurfaceDriftDetector(
 class GenericRoleCaseTableDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[GenericRoleCaseTableCandidate]
 ):
-    detector_id = "generic_role_case_table"
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Concrete role-case tables should move behind one generic axis authority",
@@ -1290,13 +1367,12 @@ class GenericRoleCaseTableDetector(
     def _finding_for_candidate(
         self, candidate: GenericRoleCaseTableCandidate
     ) -> RefactorFinding:
-        broad = ", ".join(candidate.broad_tokens)
         cases = ", ".join(candidate.shared_case_tokens)
         owners = ", ".join(candidate.owner_symbols)
         return self.build_finding(
             (
                 f"Owners {owners} repeat concrete case token(s) {cases} "
-                f"under broad semantic token(s) {broad}; centralize the "
+                f"under broad semantic token(s) {candidate.label}; centralize the "
                 "case table behind one generic axis authority."
             ),
             candidate.evidence,
@@ -1308,13 +1384,13 @@ class GenericRoleCaseTableDetector(
                 field_count=len(candidate.shared_case_tokens),
                 mapping_name="generic_role_case_table",
                 field_names=candidate.shared_case_tokens,
-                source_name=",".join(candidate.broad_tokens),
+                source_name=",".join(candidate.broad_semantic_axis_tokens),
             ),
         )
 
 
 class LocalRoleCaseLogicDetector(
-    ConfiguredCrossModuleCollectorCandidateDetector[LocalRoleCaseLogicCandidate]
+    ConfiguredModuleCollectorCandidateDetector[LocalRoleCaseLogicCandidate]
 ):
     finding_spec = high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
@@ -1325,18 +1401,16 @@ class LocalRoleCaseLogicDetector(
         _NOMINAL_IDENTITY_PROVENANCE_AUTHORITATIVE_CAPABILITY_TAGS,
         _CLASS_FAMILY_KEYWORD_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
-    candidate_collector = staticmethod(_local_role_case_logic_candidates)
+    candidate_collector = staticmethod(_local_role_case_logic_candidates_for_module)
 
     def _finding_for_candidate(
         self, candidate: LocalRoleCaseLogicCandidate
     ) -> RefactorFinding:
-        broad = ", ".join(candidate.broad_tokens)
-        cases = ", ".join(candidate.case_literals)
         contexts = ", ".join(candidate.context_kinds)
         return self.build_finding(
             (
                 f"`{candidate.owner_symbol}` embeds concrete case literal(s) "
-                f"{cases} under broad semantic token(s) {broad} via {contexts}; "
+                f"{candidate.case_label} under broad semantic token(s) {candidate.label} via {contexts}; "
                 "move those semantics behind a nominal axis authority."
             ),
             candidate.evidence,
@@ -1348,13 +1422,15 @@ class LocalRoleCaseLogicDetector(
                 field_count=len(candidate.case_tokens),
                 mapping_name="local_role_case_logic",
                 field_names=candidate.case_tokens,
-                source_name=",".join(candidate.broad_tokens),
+                source_name=",".join(candidate.broad_semantic_axis_tokens),
             ),
         )
 
 
-__all__ = (
-    "GenericRoleCaseTableDetector",
-    "LocalRoleCaseLogicDetector",
-    "RoleSurfaceDriftDetector",
+_PUBLIC_EXPORT_POLICY = PublicExportPolicy(
+    module_name=__name__,
+    root_types=(IssueDetector,),
 )
+
+
+__all__ = derive_public_exports(globals(), _PUBLIC_EXPORT_POLICY)

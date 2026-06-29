@@ -134,6 +134,7 @@ from .models import (
     OutcomeEstimate,
     RefactorFinding,
     RefactorPlan,
+    SourceLineReference,
     SourceLocation,
 )
 from .patterns import (
@@ -164,6 +165,30 @@ from .semantic_inspection import (
     inspect_modules,
     inspect_path,
     inspect_paths,
+)
+from .semantic_descent import (
+    DescentCertificate,
+    DescentStatus,
+    MirrorEdge,
+    PresentationProjection,
+    PresentationProjectionKind,
+    PresentationToken,
+    PresentationTokenKind,
+    PresentationTokenRole,
+    SemanticAuthority,
+    SemanticAuthorityKind,
+    SemanticDescentGraph,
+    SemanticDescentGraphCacheDisabled,
+    SemanticDescentGraphCacheHit,
+    SemanticDescentGraphCacheIdentity,
+    SemanticDescentGraphCacheLookup,
+    SemanticDescentGraphCacheMiss,
+    SemanticDescentGraphCacheReadError,
+    SemanticDescentGraphCacheSchema,
+    SemanticDescentImplementationSignature,
+    SemanticDescentModuleSignature,
+    SemanticFact,
+    build_semantic_descent_graph,
 )
 from .taxonomy import (
     CapabilityTag,

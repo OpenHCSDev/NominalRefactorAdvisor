@@ -18,6 +18,8 @@ from .analysis_cache import (
     AnalysisFindingSummary,
     AnalysisCacheStatus,
     AnalysisFindingCache,
+    ContextualGlobalAnalysisCacheIdentity,
+    ContextualModuleAnalysisCacheIdentity,
     PerModuleAnalysisCacheIdentity,
 )
 from .ast_tools import (
@@ -27,8 +29,14 @@ from .ast_tools import (
     parse_python_module_roots,
     parse_python_modules,
 )
-from .cache_paths import analysis_cache_sibling, default_analysis_cache_dir
+from .cache_paths import (
+    ParseCacheDirectory,
+    analysis_cache_sibling,
+    default_analysis_cache_dir,
+)
 from .detectors import (
+    ContextualGlobalCacheContract,
+    ContextualModuleIssueDetector,
     DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
@@ -117,8 +125,7 @@ class AnalysisContextRootResolver:
         if not self.file_only_scan:
             return self.requested_roots
         return self._dedupe(
-            self.context_root_for_file(root)
-            for root in self.requested_roots
+            self.context_root_for_file(root) for root in self.requested_roots
         )
 
     @property
@@ -262,6 +269,8 @@ class DetectorTypePartition:
     """Split detectors by the cache granularity their contract supports."""
 
     per_module_detector_types: tuple[type[IssueDetector], ...]
+    contextual_module_detector_types: tuple[type[IssueDetector], ...]
+    contextual_global_detector_types: tuple[type[IssueDetector], ...]
     global_detector_types: tuple[type[IssueDetector], ...]
 
     @classmethod
@@ -270,14 +279,28 @@ class DetectorTypePartition:
         detector_types: tuple[type[IssueDetector], ...],
     ) -> "DetectorTypePartition":
         per_module_detector_types: list[type[IssueDetector]] = []
+        contextual_module_detector_types: list[type[IssueDetector]] = []
+        contextual_global_detector_types: list[type[IssueDetector]] = []
         global_detector_types: list[type[IssueDetector]] = []
         for detector_type in detector_types:
             if detector_type.cache_granularity is DetectorCacheGranularity.PER_MODULE:
                 per_module_detector_types.append(detector_type)
+            elif (
+                detector_type.cache_granularity
+                is DetectorCacheGranularity.CONTEXTUAL_MODULE
+            ):
+                contextual_module_detector_types.append(detector_type)
+            elif (
+                detector_type.cache_granularity
+                is DetectorCacheGranularity.CONTEXTUAL_GLOBAL
+            ):
+                contextual_global_detector_types.append(detector_type)
             else:
                 global_detector_types.append(detector_type)
         return cls(
             per_module_detector_types=tuple(per_module_detector_types),
+            contextual_module_detector_types=tuple(contextual_module_detector_types),
+            contextual_global_detector_types=tuple(contextual_global_detector_types),
             global_detector_types=tuple(global_detector_types),
         )
 
@@ -286,18 +309,75 @@ class DetectorTypePartition:
         return bool(self.per_module_detector_types)
 
     @property
+    def has_contextual_module_detectors(self) -> bool:
+        return bool(self.contextual_module_detector_types)
+
+    @property
+    def has_contextual_global_detectors(self) -> bool:
+        return bool(self.contextual_global_detector_types)
+
+    @property
     def has_global_detectors(self) -> bool:
         return bool(self.global_detector_types)
+
+
+@dataclass(frozen=True)
+class DetectorPriorityIndex:
+    """Presentation priority derived from the registered detector family."""
+
+    detector_types: tuple[type[IssueDetector], ...]
+    unknown_detector_priority: int = 10_000
+
+    @classmethod
+    def from_registered_detectors(cls) -> "DetectorPriorityIndex":
+        return cls(IssueDetector.registered_detector_types())
+
+    @property
+    def priorities_by_detector_id(self) -> dict[str, int]:
+        return {
+            detector_id: detector_type.detector_priority
+            for detector_type in self.detector_types
+            for detector_id in (detector_type.effective_detector_id(),)
+            if detector_id is not None
+        }
+
+    def priority_for_finding(self, finding: RefactorFinding) -> int:
+        priorities = self.priorities_by_detector_id
+        if finding.detector_id in priorities:
+            return priorities[finding.detector_id]
+        return self.unknown_detector_priority
 
 
 class SortedFindingsAuthority:
     """Centralize the stable presentation order for detector findings."""
 
-    @staticmethod
-    def sort(findings: Iterable[RefactorFinding]) -> list[RefactorFinding]:
+    @classmethod
+    def sort(
+        cls,
+        findings: Iterable[RefactorFinding],
+        *,
+        detector_types: tuple[type[IssueDetector], ...] | None = None,
+    ) -> list[RefactorFinding]:
+        priority_index = (
+            DetectorPriorityIndex.from_registered_detectors()
+            if detector_types is None
+            else DetectorPriorityIndex(detector_types)
+        )
         return sorted(
             findings,
-            key=lambda finding: (finding.pattern_id, finding.title, finding.summary),
+            key=lambda finding: cls.sort_key(finding, priority_index),
+        )
+
+    @staticmethod
+    def sort_key(
+        finding: RefactorFinding,
+        priority_index: DetectorPriorityIndex,
+    ) -> tuple[int, int, str, str]:
+        return (
+            priority_index.priority_for_finding(finding),
+            finding.pattern_id,
+            finding.title,
+            finding.summary,
         )
 
 
@@ -407,12 +487,13 @@ def analyze_detector_types(
                 detector_types,
             )
         return SortedFindingsAuthority.sort(
-            finding for findings in detector_findings for finding in findings
+            (finding for findings in detector_findings for finding in findings),
+            detector_types=detector_types,
         )
     findings: list[RefactorFinding] = []
     for detector_type in detector_types:
         findings.extend(detector_type().detect(modules, config))
-    return SortedFindingsAuthority.sort(findings)
+    return SortedFindingsAuthority.sort(findings, detector_types=detector_types)
 
 
 @dataclass(frozen=True)
@@ -474,7 +555,9 @@ class AnalysisCacheResolutionAuthority:
     def cache_result(self) -> CachedAnalysisResult:
         return self._cache_result
 
-    def analyze_uncached(self, cache_status: AnalysisCacheStatus) -> CachedAnalysisResult:
+    def analyze_uncached(
+        self, cache_status: AnalysisCacheStatus
+    ) -> CachedAnalysisResult:
         return CachedAnalysisResult(
             analyze_modules(
                 self._modules,
@@ -491,17 +574,32 @@ class AnalysisCacheResolutionAuthority:
             self._source_policy,
         ).cache_identity()
         analysis_cache = AnalysisFindingCache(self._analysis_cache_dir)
+        semantic_cache_identity = AnalysisCacheIdentity.from_modules(
+            self._roots,
+            tuple(self._modules),
+            self._config,
+        )
+        semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
+        if semantic_cache_lookup.status is AnalysisCacheStatus.HIT:
+            findings = list(semantic_cache_lookup.findings)
+            if semantic_cache_identity != cache_identity:
+                analysis_cache.store(cache_identity, findings)
+            return CachedAnalysisResult(
+                findings,
+                AnalysisCacheStatus.HIT,
+                cache_identity=cache_identity,
+            )
         incremental_result = IncrementalAnalysisCacheResolver(
-            cache_identity=cache_identity,
+            cache_identity=semantic_cache_identity,
             modules=self._modules,
             config=self._config,
             analysis_cache=analysis_cache,
             analysis_workers=self._analysis_workers,
-            previous_cache_identity=self._cache_result.previous_cache_identity,
-            previous_findings=self._cache_result.previous_findings,
         ).result()
         findings = incremental_result.findings
         analysis_cache.store(cache_identity, findings)
+        if semantic_cache_identity != cache_identity:
+            analysis_cache.store(semantic_cache_identity, findings)
         return CachedAnalysisResult(
             findings,
             incremental_result.cache_status,
@@ -528,30 +626,47 @@ class IncrementalAnalysisCacheResolver:
         config: DetectorConfig,
         analysis_cache: AnalysisFindingCache,
         analysis_workers: int,
-        previous_cache_identity: AnalysisCacheIdentity | None = None,
-        previous_findings: tuple[RefactorFinding, ...] = (),
     ) -> None:
         self._cache_identity = cache_identity
         self._modules = modules
         self._config = config
         self._analysis_cache = analysis_cache
         self._analysis_workers = analysis_workers
-        self._previous_cache_identity = previous_cache_identity
-        self._previous_findings = previous_findings
+        self._detector_types = default_detector_types_for_analysis()
         self._detector_partition = DetectorTypePartition.from_detector_types(
-            default_detector_types_for_analysis()
+            self._detector_types
         )
 
     def result(self) -> IncrementalAnalysisResult:
         per_module_findings = self._per_module_findings()
+        contextual_module_findings = self._contextual_module_findings()
+        contextual_global_findings = self._contextual_global_findings()
         global_findings = self._global_findings()
         findings = SortedFindingsAuthority.sort(
-            [*per_module_findings.findings, *global_findings]
+            [
+                *per_module_findings.findings,
+                *contextual_module_findings.findings,
+                *contextual_global_findings.findings,
+                *global_findings,
+            ],
+            detector_types=self._detector_types,
         )
         return IncrementalAnalysisResult(
             findings=findings,
-            cache_status=per_module_findings.cache_status,
+            cache_status=self._combined_cache_status(
+                per_module_findings.cache_status,
+                contextual_module_findings.cache_status,
+                contextual_global_findings.cache_status,
+            ),
         )
+
+    @staticmethod
+    def _combined_cache_status(
+        *cache_statuses: AnalysisCacheStatus,
+    ) -> AnalysisCacheStatus:
+        if AnalysisCacheStatus.PARTIAL in cache_statuses:
+            return AnalysisCacheStatus.PARTIAL
+        return AnalysisCacheStatus.MISS
 
     def _per_module_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_per_module_detectors:
@@ -584,9 +699,7 @@ class IncrementalAnalysisCacheResolver:
             findings.extend(module_findings)
 
         cache_status = (
-            AnalysisCacheStatus.MISS
-            if hit_count == 0
-            else AnalysisCacheStatus.PARTIAL
+            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
         )
         return IncrementalAnalysisResult(findings, cache_status)
 
@@ -628,11 +741,51 @@ class IncrementalAnalysisCacheResolver:
             for module in missing_modules
         ]
 
+    def _contextual_module_findings(self) -> IncrementalAnalysisResult:
+        if not self._detector_partition.has_contextual_module_detectors:
+            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+
+        findings: list[RefactorFinding] = []
+        hit_count = 0
+        module_context = tuple(self._modules)
+        for detector_type in self._detector_partition.contextual_module_detector_types:
+            if not issubclass(detector_type, ContextualModuleIssueDetector):
+                raise TypeError(
+                    f"{detector_type.__name__} declares contextual-module caching "
+                    "without inheriting ContextualModuleIssueDetector"
+                )
+            detector = detector_type()
+            context_signature = detector_type.context_signature(
+                module_context, self._config
+            )
+            for module in self._modules:
+                identity = ContextualModuleAnalysisCacheIdentity.from_module_context(
+                    module,
+                    self._config,
+                    detector_type,
+                    context_signature,
+                )
+                cache_lookup = self._analysis_cache.load(identity)
+                if cache_lookup.status is AnalysisCacheStatus.HIT:
+                    hit_count += 1
+                    findings.extend(cache_lookup.findings)
+                    continue
+                module_findings = detector.findings_for_module_context(
+                    module,
+                    module_context,
+                    self._config,
+                )
+                self._analysis_cache.store(identity, module_findings)
+                findings.extend(module_findings)
+
+        cache_status = (
+            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
+        )
+        return IncrementalAnalysisResult(findings, cache_status)
+
     def _global_findings(self) -> list[RefactorFinding]:
         if not self._detector_partition.has_global_detectors:
             return []
-        if self._previous_cache_identity is not None and self._previous_findings:
-            return self._partially_reused_global_findings()
         return analyze_detector_types(
             self._modules,
             self._config,
@@ -640,64 +793,40 @@ class IncrementalAnalysisCacheResolver:
             analysis_workers=self._analysis_workers,
         )
 
-    def _partially_reused_global_findings(self) -> list[RefactorFinding]:
-        changed_paths = self._changed_source_file_paths()
-        if not changed_paths:
-            return [
-                finding
-                for finding in self._previous_findings
-                if finding.detector_id in self._global_detector_ids
-            ]
-        changed_modules = [
-            module
-            for module in self._modules
-            if str(module.path.resolve()) in changed_paths
-        ]
-        reused_findings = [
-            finding
-            for finding in self._previous_findings
-            if finding.detector_id in self._global_detector_ids
-            and not self._finding_touches_any_path(finding, changed_paths)
-        ]
-        changed_findings: list[RefactorFinding] = []
-        if changed_modules:
-            changed_findings = [
-                finding
-                for finding in analyze_detector_types(
-                    changed_modules,
-                    self._config,
-                    detector_types=self._detector_partition.global_detector_types,
-                    analysis_workers=self._analysis_workers,
+    def _contextual_global_findings(self) -> IncrementalAnalysisResult:
+        if not self._detector_partition.has_contextual_global_detectors:
+            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+
+        findings: list[RefactorFinding] = []
+        hit_count = 0
+        module_context = tuple(self._modules)
+        for detector_type in self._detector_partition.contextual_global_detector_types:
+            if not issubclass(detector_type, ContextualGlobalCacheContract):
+                raise TypeError(
+                    f"{detector_type.__name__} declares contextual-global caching "
+                    "without inheriting ContextualGlobalCacheContract"
                 )
-                if self._finding_touches_any_path(finding, changed_paths)
-            ]
-        return SortedFindingsAuthority.sort([*reused_findings, *changed_findings])
+            context_signature = detector_type.context_signature(
+                module_context, self._config
+            )
+            identity = ContextualGlobalAnalysisCacheIdentity.from_global_context(
+                self._config,
+                detector_type,
+                context_signature,
+            )
+            cache_lookup = self._analysis_cache.load(identity)
+            if cache_lookup.status is AnalysisCacheStatus.HIT:
+                hit_count += 1
+                findings.extend(cache_lookup.findings)
+                continue
+            detector_findings = detector_type().detect(self._modules, self._config)
+            self._analysis_cache.store(identity, detector_findings)
+            findings.extend(detector_findings)
 
-    @property
-    def _global_detector_ids(self) -> frozenset[str]:
-        return frozenset(
-            detector_type().detector_id
-            for detector_type in self._detector_partition.global_detector_types
-            if detector_type().detector_id is not None
+        cache_status = (
+            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
         )
-
-    def _changed_source_file_paths(self) -> frozenset[str]:
-        if self._previous_cache_identity is None:
-            return frozenset()
-        return ChangedSourcePathAuthority.paths(
-            self._cache_identity,
-            self._previous_cache_identity,
-        )
-
-    @staticmethod
-    def _finding_touches_any_path(
-        finding: RefactorFinding,
-        paths: frozenset[str],
-    ) -> bool:
-        return EvidenceLocalFindingReuseAuthority.finding_touches_any_path(
-            finding,
-            paths,
-        )
+        return IncrementalAnalysisResult(findings, cache_status)
 
 
 class AnalysisCacheStatusStrategy(ABC, metaclass=AutoRegisterMeta):
@@ -877,14 +1006,12 @@ def analysis_cache_dir_for_root(
     return default_analysis_cache_dir(root)
 
 
-@dataclass(frozen=True)
-class CachedPathAnalysisRequest:
+@dataclass(frozen=True, kw_only=True)
+class CachedPathAnalysisRequest(ParseCacheDirectory):
     """Nominal request for cache-first filesystem path analysis."""
 
     roots: tuple[Path, ...]
     config: DetectorConfig
-    cache_dir: Path | None
-    use_parse_cache: bool
     parse_workers: int
     analysis_workers: int
     source_policy: PythonSourcePathPolicy | None
@@ -893,7 +1020,7 @@ class CachedPathAnalysisRequest:
     def analysis_cache_dir(self) -> Path | None:
         return analysis_cache_dir_for_root(
             self.roots[0],
-            self.cache_dir,
+            self.parse_cache_dir,
             self.use_parse_cache,
         )
 
@@ -938,6 +1065,11 @@ class FastCachedPathAnalysisAuthority:
             cache_result.cache_identity is not None
             and cache_result.previous_cache_identity is not None
             and cache_result.previous_findings
+            # Evidence-local reuse only reparses changed files. Global detectors need
+            # the full semantic context, so they must use the exact incremental path.
+            and not DetectorTypePartition.from_detector_types(
+                default_detector_types_for_analysis()
+            ).has_global_detectors
         )
 
     def _partial_result(
@@ -963,7 +1095,8 @@ class FastCachedPathAnalysisAuthority:
                     changed_findings,
                     changed_paths,
                 ),
-            ]
+            ],
+            detector_types=default_detector_types_for_analysis(),
         )
         AnalysisFindingCache(self._request.analysis_cache_dir).store(
             cache_result.cache_identity,
@@ -990,13 +1123,17 @@ class FastCachedPathAnalysisAuthority:
     def _changed_modules(self, changed_paths: frozenset[str]) -> list[ParsedModule]:
         modules: list[ParsedModule] = []
         seen_paths: set[Path] = set()
-        for root, paths in ChangedPathRootAssignment(
-            roots=self._request.roots,
-            changed_paths=changed_paths,
-        ).paths_by_root().items():
+        for root, paths in (
+            ChangedPathRootAssignment(
+                roots=self._request.roots,
+                changed_paths=changed_paths,
+            )
+            .paths_by_root()
+            .items()
+        ):
             parser = PythonModuleRootParser.for_root(
                 root,
-                cache_dir=self._request.cache_dir,
+                cache_dir=self._request.parse_cache_dir,
                 use_parse_cache=self._request.use_parse_cache,
                 parse_workers=self._request.parse_workers,
                 source_policy=self._request.source_policy,
@@ -1018,16 +1155,12 @@ class ChangedPathRootAssignment:
     changed_paths: frozenset[str]
 
     def paths_by_root(self) -> dict[Path, tuple[Path, ...]]:
-        buckets: dict[Path, list[Path]] = {root: [] for root in self.roots}
+        buckets: dict[Path, list[Path]] = {root.resolve(): [] for root in self.roots}
         for path_text in sorted(self.changed_paths):
             path = Path(path_text)
             owner = self._owning_root(path)
             buckets[owner].append(path)
-        return {
-            root: tuple(paths)
-            for root, paths in buckets.items()
-            if paths
-        }
+        return {root: tuple(paths) for root, paths in buckets.items() if paths}
 
     def _owning_root(self, path: Path) -> Path:
         candidate = path.resolve()
@@ -1035,11 +1168,9 @@ class ChangedPathRootAssignment:
             resolved_root = root.resolve()
             if resolved_root.is_file():
                 if candidate == resolved_root:
-                    return root
-            elif candidate == resolved_root or candidate.is_relative_to(
-                resolved_root
-            ):
-                return root
+                    return resolved_root
+            elif candidate == resolved_root or candidate.is_relative_to(resolved_root):
+                return resolved_root
         raise ValueError(f"changed source path is outside analysis roots: {path}")
 
 
@@ -1059,7 +1190,7 @@ def analyze_path(
         CachedPathAnalysisRequest(
             roots=(root,),
             config=config,
-            cache_dir=cache_dir,
+            parse_cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
             analysis_workers=analysis_workers,
@@ -1105,7 +1236,7 @@ def analyze_paths(
         CachedPathAnalysisRequest(
             roots=roots,
             config=config,
-            cache_dir=cache_dir,
+            parse_cache_dir=cache_dir,
             use_parse_cache=use_parse_cache,
             parse_workers=parse_workers,
             analysis_workers=analysis_workers,

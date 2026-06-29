@@ -18,7 +18,12 @@ from typing import Iterable, Sequence, TypeAlias, cast
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .detectors import DetectorConfig
-from .models import RefactorFinding, SemanticRecord, stable_source_location_id
+from .models import (
+    RefactorFinding,
+    SemanticRecord,
+    SourceLineReference,
+    stable_source_location_id,
+)
 from .source_index import (
     AstTargetDigest,
     SourceFileDigest,
@@ -57,25 +62,22 @@ class ImportSummary(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class AssignmentSummary(SemanticInspectionRecord):
-    assignment_id: str
-    file_path: str
+class ScopedAstEventReference(SourceLineReference):
     module_name: str
-    line: int
     scope_qualname: str
     target_id: str | None
+
+
+@dataclass(frozen=True)
+class AssignmentSummary(SemanticInspectionRecord, ScopedAstEventReference):
+    assignment_id: str
     target_names: tuple[str, ...]
     value_kind: str
 
 
 @dataclass(frozen=True)
-class CallSummary(SemanticInspectionRecord):
+class CallSummary(SemanticInspectionRecord, ScopedAstEventReference):
     call_id: str
-    file_path: str
-    module_name: str
-    line: int
-    scope_qualname: str
-    target_id: str | None
     callee: str
     argument_names: tuple[str, ...]
     keyword_names: tuple[str, ...]
@@ -99,32 +101,27 @@ class FunctionSummary(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class ClassSummary(SemanticInspectionRecord):
+class ClassTargetSummaryReference(SourceLineReference):
     target_id: str
-    file_path: str
     module_name: str
     name: str
     qualname: str
-    line: int
+    method_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ClassSummary(SemanticInspectionRecord, ClassTargetSummaryReference):
     end_line: int
     base_names: tuple[str, ...]
     decorators: tuple[str, ...]
     is_dataclass: bool
-    method_ids: tuple[str, ...]
     assignment_ids: tuple[str, ...]
     finding_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class DataclassSummary(SemanticInspectionRecord):
-    target_id: str
-    file_path: str
-    module_name: str
-    name: str
-    qualname: str
-    line: int
+class DataclassSummary(SemanticInspectionRecord, ClassTargetSummaryReference):
     field_names: tuple[str, ...]
-    method_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -178,13 +175,13 @@ class SemanticInspectionReport(SemanticInspectionRecord):
     assignments: tuple[AssignmentSummary, ...]
     findings: tuple[FindingSummary, ...]
     evidence: tuple[EvidenceSummary, ...]
-    ast_targets: tuple[AstTargetDigest, ...]
     source_index: SourceIndex
 
     def to_dict(self) -> dict[str, JsonValue]:
         payload = cast(dict[str, JsonValue], asdict(self))
         payload["ast_targets"] = tuple(
-            cast(dict[str, JsonValue], item.__dict__) for item in self.ast_targets
+            cast(dict[str, JsonValue], item.__dict__)
+            for item in self.source_index.ast_targets
         )
         payload["source_index"] = cast(
             dict[str, JsonValue], self.source_index.to_dict()
@@ -323,7 +320,6 @@ class _SemanticInspectionProjection:
             assignments=assignments,
             findings=self._finding_summaries(findings),
             evidence=self._evidence_summaries(),
-            ast_targets=self.source_index.ast_targets,
             source_index=self.source_index,
         )
 
@@ -925,20 +921,19 @@ def inspect_modules(
     return inspector.inspect_modules(modules, findings=findings)
 
 
+def _semantic_inspection_record_export_names() -> tuple[str, ...]:
+    return tuple(
+        record_type.__name__
+        for record_type in SemanticInspectionRecord.__subclasses__()
+        if record_type.__module__ == __name__
+    )
+
+
 __all__ = (
-    "AssignmentSummary",
-    "CallSummary",
-    "ClassSummary",
-    "DataclassSummary",
-    "EvidenceSummary",
-    "FindingSummary",
-    "FunctionSummary",
-    "ImportSummary",
-    "ModuleSummary",
+    *_semantic_inspection_record_export_names(),
+    "SourceIndexSemanticAstInspector",
     "SemanticAstInspector",
     "SemanticInspectionRecord",
-    "SemanticInspectionReport",
-    "SourceIndexSemanticAstInspector",
     "inspect_modules",
     "inspect_path",
     "inspect_paths",

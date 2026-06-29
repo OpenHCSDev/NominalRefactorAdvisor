@@ -6,12 +6,6 @@ first refactor moves that findings and plans reference in CLI output and docs.
 
 from __future__ import annotations
 
-from .record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
-
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
@@ -60,9 +54,22 @@ class ActionBuilderId(Enum):
     AUTHORITATIVE_SCHEMA = "authoritative_schema"
 
 
-# fmt: off
-materialize_product_record(product_record_spec('PatternSpec', 'pattern_id: PatternId; name: str; prescription: str; canonical_shape: str; first_moves: tuple[str, ...]; witness_capabilities: tuple[CapabilityTag, ...]; example_skeletons: tuple[str, ...]; priority: int; dependencies: tuple[PatternId, ...]; synergy_with: tuple[PatternId, ...]; plan_step_builder_id: PlanStepBuilderId | None; action_builder_id: ActionBuilderId | None', defaults={'witness_capabilities': (), 'example_skeletons': (), 'priority': 0, 'dependencies': (), 'synergy_with': (), 'plan_step_builder_id': None, 'action_builder_id': None}, doc='Documentation payload for one canonical refactoring pattern.'))
-# fmt: on
+@dataclass(frozen=True)
+class PatternSpec:
+    """Documentation payload for one canonical refactoring pattern."""
+
+    pattern_id: PatternId
+    name: str
+    prescription: str
+    canonical_shape: str
+    first_moves: tuple[str, ...]
+    witness_capabilities: tuple[CapabilityTag, ...] = ()
+    example_skeletons: tuple[str, ...] = ()
+    priority: int = 0
+    dependencies: tuple[PatternId, ...] = ()
+    synergy_with: tuple[PatternId, ...] = ()
+    plan_step_builder_id: PlanStepBuilderId | None = None
+    action_builder_id: ActionBuilderId | None = None
 
 
 PATTERN_SPECS: dict[PatternId, PatternSpec] = {

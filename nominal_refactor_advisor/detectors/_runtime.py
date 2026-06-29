@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import hashlib
 import os
 import re
 import tempfile
@@ -15,21 +16,18 @@ from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from typing import Callable, ClassVar, Generic, TypeAlias, TypeVar
 
+from ..ast_tools import BuiltinCallName
 from ..factorization import (
     FactorizationEngine,
     FactorizationLattice,
     FactorizationPlan,
+    ResidueHookNamesCarrier,
 )
-from ..semantic_algebra import ObjectFamilyShape
+from ..semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
 from ..semantic_description_length import CompressionCertificate
+from ..semantic_identity import SemanticRoleIdentityToken
 from ..codemod import CancelableCompositionSignal, detect_cancelable_composition_signals
 from ..source_index import build_source_index
-
-from ..record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
 
 from ._base import *
 from ._helpers import *
@@ -235,9 +233,12 @@ def _algebraic_duplicate_compound_block_compression_certificate(
     )
 
 
-def _literal_dispatch_authority_name(axis_expression: str) -> str:
+def _literal_dispatch_authority_name(dispatch_axis_expression: str) -> str:
     words = "".join(
-        (character if character.isalnum() else "_" for character in axis_expression)
+        (
+            character if character.isalnum() else "_"
+            for character in dispatch_axis_expression
+        )
     ).strip("_")
     return f"dispatch_{words or 'case'}"
 
@@ -255,12 +256,14 @@ def _literal_dispatch_case_class_name(literal_case: str, index: int) -> str:
 def _literal_dispatch_authority_patch(
     observation: LiteralDispatchObservation,
 ) -> str:
-    return f"# Replace the repeated `{observation.axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
+    return f"# Replace the repeated `{observation.dispatch_axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
 
 
 class LiteralDispatchFindingFactory:
     def authority_scaffold(self, observation: LiteralDispatchObservation) -> str:
-        dispatch_name = _literal_dispatch_authority_name(observation.axis_expression)
+        dispatch_name = _literal_dispatch_authority_name(
+            observation.dispatch_axis_expression
+        )
         case_classes = tuple(
             (
                 _literal_dispatch_case_class_name(case, index)
@@ -301,19 +304,19 @@ class LiteralDispatchFindingFactory:
         relation_case_label: str,
     ) -> RefactorFinding:
         return detector.build_finding(
-            f"{module.path} dispatches on `{observation.axis_expression}` through {case_summary_label} {observation.literal_cases}.",
+            f"{module.path} dispatches on `{observation.dispatch_axis_expression}` through {case_summary_label} {observation.literal_cases}.",
             (
                 SourceLocation(
                     observation.file_path, observation.line, observation.symbol
                 ),
             ),
             relation_context=(
-                f"same observed axis `{observation.axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
+                f"same observed axis `{observation.dispatch_axis_expression}` is split across {relation_case_label} {observation.literal_cases}"
             ),
             scaffold=self.authority_scaffold(observation),
             codemod_patch=_literal_dispatch_authority_patch(observation),
             metrics=DispatchCountMetrics.from_literal_family(
-                observation.axis_expression,
+                observation.dispatch_axis_expression,
                 observation.literal_cases,
             ),
         )
@@ -488,6 +491,9 @@ def _fallback_owner(
     return ".".join(owner_parts) if owner_parts else "module"
 
 
+_UNCLASSIFIED_RUNTIME_FALLBACK_MIN_SITES = 2
+
+
 _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS = frozenset(
     (
         "callback",
@@ -524,10 +530,9 @@ _SMELLY_TYPE_ALIAS_CALLABLE_ROOT_NAMES = frozenset(("Callable",))
 _SMELLY_TYPE_ALIAS_MAPPING_ROOT_NAMES = frozenset(
     ("Dict", "Mapping", "MutableMapping", "dict")
 )
-_SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = frozenset(
+_SMELLY_TYPE_ALIAS_DOMAIN_STRUCTURAL_NAME_TOKENS = frozenset(
     (
         "by",
-        "dict",
         "dicts",
         "group",
         "groups",
@@ -536,9 +541,7 @@ _SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = frozenset(
         "indices",
         "key",
         "keys",
-        "list",
         "lists",
-        "map",
         "maps",
         "mapping",
         "mappings",
@@ -546,15 +549,17 @@ _SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = frozenset(
         "pairs",
         "sequence",
         "sequences",
-        "set",
         "sets",
         "spec",
         "specs",
         "table",
         "tables",
-        "tuple",
         "tuples",
     )
+)
+_SMELLY_TYPE_ALIAS_STRUCTURAL_NAME_TOKENS = (
+    _SMELLY_TYPE_ALIAS_DOMAIN_STRUCTURAL_NAME_TOKENS
+    | BuiltinCallName.smelly_type_alias_builtin_tokens()
 )
 
 
@@ -783,14 +788,11 @@ def _private_object_boundary_fields(
             field_tokens = frozenset(_private_boundary_identifier_tokens(field_name))
             if not (field_tokens & _PRIVATE_OBJECT_BOUNDARY_FIELD_TOKENS):
                 continue
-            fields_by_class.setdefault(node.name, []).append(
-                (int(getattr(statement, "lineno", node.lineno)), field_name)
-            )
+            fields_by_class.setdefault(node.name, []).append((statement.lineno, field_name))
     return fields_by_class
 
 
 class PrivateObjectBoundaryFieldDetector(PerModuleIssueDetector):
-    detector_id = "private_object_boundary_field"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Private object-typed boundary field should become a typed authority",
@@ -972,7 +974,6 @@ def _opaque_object_annotation_sites(
 
 
 class OpaqueObjectAnnotationDetector(PerModuleIssueDetector):
-    detector_id = "opaque_object_annotation"
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Opaque object-like annotations should become nominal typed contracts",
@@ -1069,20 +1070,17 @@ def _smelly_type_alias_sites(module: ParsedModule) -> tuple[SmellyTypeAliasSite,
         )
 
     def add_type_stmt_alias(node: ast.AST) -> bool:
-        type_alias_type = getattr(ast, "TypeAlias", None)
-        if type_alias_type is None or not isinstance(node, type_alias_type):
+        if type(node).__name__ != "TypeAlias":
             return False
-        alias_node = getattr(node, "name", None)
-        value = getattr(node, "value", None)
-        if value is None:
-            return True
+        alias_node = node.name
+        value = node.value
         if isinstance(alias_node, ast.Name):
             alias_name = alias_node.id
         elif isinstance(alias_node, str):
             alias_name = alias_node
         else:
             return True
-        add_alias(alias_name, value, int(getattr(node, "lineno", 0)))
+        add_alias(alias_name, value, node.lineno)
         return True
 
     class Visitor(ast.NodeVisitor):
@@ -1133,7 +1131,6 @@ def _smelly_type_alias_sites(module: ParsedModule) -> tuple[SmellyTypeAliasSite,
 
 
 class SmellyTypeAliasDetector(PerModuleIssueDetector):
-    detector_id = "smelly_type_alias"
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Type alias erases a semantic boundary",
@@ -1235,11 +1232,8 @@ class StringKeyedFormulaSubclassFamilyCandidate(LineWitnessCandidate):
 
 
 _STRING_KEYED_FORMULA_ATTR_RE = re.compile(r"^(?:kind|mode|.+_(?:kind|mode))$")
-_FORMULA_CALLEE_NAMES = frozenset(
+_FORMULA_LIBRARY_CALLEE_NAMES = frozenset(
     (
-        "abs",
-        "all",
-        "any",
         "argmax",
         "argmin",
         "array",
@@ -1248,15 +1242,15 @@ _FORMULA_CALLEE_NAMES = frozenset(
         "concatenate",
         "count_nonzero",
         "flatnonzero",
-        "max",
         "mean",
-        "min",
         "ones",
         "prod",
-        "sum",
         "where",
         "zeros",
     )
+)
+_FORMULA_CALLEE_NAMES = (
+    _FORMULA_LIBRARY_CALLEE_NAMES | BuiltinCallName.formula_builtin_callee_names()
 )
 
 
@@ -1592,8 +1586,6 @@ def _literal_schema_dispatch_candidates(
 class LiteralSchemaDispatchDetector(
     ConfiguredModuleCollectorCandidateDetector[LiteralSchemaDispatchCandidate]
 ):
-    detector_id = "literal_schema_dispatch"
-    candidate_collector = _literal_schema_dispatch_candidates
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated literal schema dispatch should move behind one nominal authority",
@@ -1661,18 +1653,13 @@ _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
 )
 _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS = 3
 _FORMAL_BOUNDARY_STRING_ID_TOKENS = frozenset(
-    {
+    (
+        *SemanticRoleIdentityToken.pluralized_string_identifier_values(),
         "field",
         "fields",
-        "id",
-        "ids",
-        "key",
-        "keys",
-        "name",
-        "names",
         "source",
         "sources",
-    }
+    )
 )
 
 
@@ -2194,7 +2181,6 @@ class FormalBoundaryStringlySourceScopeVisitor(ClassFunctionStackNodeVisitor):
 
 
 class FormalBoundaryStringlySourceScopeDetector(PerModuleIssueDetector):
-    detector_id = "formal_boundary_stringly_source_scope"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary source scopes should use nominal carriers",
@@ -2530,7 +2516,6 @@ class FormalBoundaryExternalStringRegistryMirrorDetector(IssueDetector):
 
 
 class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
-    detector_id = "unclassified_runtime_fallback"
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Runtime fallback/default sites should be classified at the formal boundary",
@@ -2544,7 +2529,6 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        minimum = 1
         sites_by_owner: dict[str, list[tuple[int, str]]] = {}
 
         class Visitor(ClassFunctionStackNodeVisitor):
@@ -2555,10 +2539,10 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
                 ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
             )
 
-            def _record(self, node: ast.AST, fallback_kind: str) -> None:
+            def _record(self, node: ast.expr, fallback_kind: str) -> None:
                 owner = _fallback_owner(self.class_stack, self.function_stack)
                 sites_by_owner.setdefault(owner, []).append(
-                    (int(getattr(node, "lineno", 1)), fallback_kind)
+                    (node.lineno, fallback_kind)
                 )
 
             def visit_Call(self, node: ast.Call) -> None:
@@ -2579,7 +2563,7 @@ class UnclassifiedRuntimeFallbackDetector(PerModuleIssueDetector):
         Visitor().visit(module.module)
         findings: list[RefactorFinding] = []
         for owner, sites in sorted(sites_by_owner.items()):
-            if len(sites) < minimum:
+            if len(sites) < _UNCLASSIFIED_RUNTIME_FALLBACK_MIN_SITES:
                 continue
             fallback_kinds = sorted_tuple({kind for _line, kind in sites})
             evidence = tuple(
@@ -2662,7 +2646,6 @@ def _globals_guard_symbol(node: ast.If) -> str | None:
 
 
 class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
-    detector_id = "runtime_namespace_bridge"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Runtime namespace bridges should be replaced with explicit authorities",
@@ -2753,16 +2736,14 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
 
 _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS = frozenset(
     (
+        *SemanticRoleIdentityToken.runtime_semantic_branch_axis_values(),
         "action",
         "basis",
         "budget",
         "certified",
-        "family",
         "frontier",
-        "kind",
         "formal",
         "materialization",
-        "mode",
         "policy",
         "profile",
         "projection",
@@ -2785,8 +2766,8 @@ def _runtime_semantic_identifier_tokens(text: str) -> tuple[str, ...]:
     return tuple((token for token in normalized.split("_") if token))
 
 
-def _runtime_semantic_axis_is_interesting(axis_expression: str) -> bool:
-    tokens = set(_runtime_semantic_identifier_tokens(axis_expression))
+def _runtime_semantic_axis_is_interesting(dispatch_axis_expression: str) -> bool:
+    tokens = set(_runtime_semantic_identifier_tokens(dispatch_axis_expression))
     return bool(tokens & _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS)
 
 
@@ -2797,17 +2778,17 @@ def _runtime_semantic_branch_test(
         inner = _runtime_semantic_branch_test(test.operand)
         if inner is None:
             return None
-        axis_expression, case_expression = inner
-        return axis_expression, f"not {case_expression}"
+        dispatch_axis_expression, case_expression = inner
+        return dispatch_axis_expression, f"not {case_expression}"
 
     if isinstance(test, ast.Compare) and len(test.ops) == 1 and test.comparators:
         operator = test.ops[0]
         comparator = test.comparators[0]
         if isinstance(operator, (ast.In, ast.NotIn)):
-            axis_expression = ast.unparse(comparator)
+            dispatch_axis_expression = ast.unparse(comparator)
             case_expression = ast.unparse(test.left)
-            if _runtime_semantic_axis_is_interesting(axis_expression):
-                return axis_expression, case_expression
+            if _runtime_semantic_axis_is_interesting(dispatch_axis_expression):
+                return dispatch_axis_expression, case_expression
         if isinstance(operator, (ast.Eq, ast.Is)):
             left_expression = ast.unparse(test.left)
             comparator_expression = ast.unparse(comparator)
@@ -2821,9 +2802,9 @@ def _runtime_semantic_branch_test(
                 return left_expression, comparator_expression
 
     if isinstance(test, (ast.Name, ast.Attribute, ast.Subscript)):
-        axis_expression = ast.unparse(test)
-        if _runtime_semantic_axis_is_interesting(axis_expression):
-            return axis_expression, "truthy"
+        dispatch_axis_expression = ast.unparse(test)
+        if _runtime_semantic_axis_is_interesting(dispatch_axis_expression):
+            return dispatch_axis_expression, "truthy"
 
     if isinstance(test, ast.BoolOp):
         for value in test.values:
@@ -2845,8 +2826,8 @@ def _runtime_semantic_elif_chain(
         branch_test = _runtime_semantic_branch_test(current.test)
         if branch_test is None:
             return ()
-        axis_expression, case_expression = branch_test
-        chain.append((current.lineno, axis_expression, case_expression))
+        dispatch_axis_expression, case_expression = branch_test
+        chain.append((current.lineno, dispatch_axis_expression, case_expression))
         if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
             current = current.orelse[0]
             continue
@@ -2867,8 +2848,8 @@ def _runtime_semantic_sequential_guard_chain(
         branch_test = _runtime_semantic_branch_test(statement.test)
         if branch_test is None:
             break
-        axis_expression, case_expression = branch_test
-        chain.append((statement.lineno, axis_expression, case_expression))
+        dispatch_axis_expression, case_expression = branch_test
+        chain.append((statement.lineno, dispatch_axis_expression, case_expression))
         index += 1
     return tuple(chain) if len(chain) >= 2 else ()
 
@@ -2891,7 +2872,6 @@ def _runtime_semantic_branch_chains_from_body(
 
 
 class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
-    detector_id = "runtime_semantic_branch_chain"
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Runtime semantic if-chain should move behind a formal policy authority",
@@ -2919,9 +2899,9 @@ class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
                     SourceLocation(
                         str(module.path),
                         line,
-                        f"{qualname}:{axis_expression}:{case_expression}",
+                        f"{qualname}:{dispatch_axis_expression}:{case_expression}",
                     )
-                    for line, axis_expression, case_expression in chain[:6]
+                    for line, dispatch_axis_expression, case_expression in chain[:6]
                 )
                 findings.append(
                     self.build_finding(
@@ -2969,7 +2949,7 @@ class IsinstanceFamilyScatterCandidate(RuntimeSubjectFunctionCandidate):
     test_expressions: tuple[str, ...]
 
 
-_ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES = frozenset(
+_ISINSTANCE_SCATTER_EXCLUDED_DOMAIN_TYPE_NAMES = frozenset(
     {
         "ABC",
         "Any",
@@ -2986,23 +2966,13 @@ _ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES = frozenset(
         "Set",
         "SimpleNamespace",
         "TypeAlias",
-        "bytearray",
-        "bool",
-        "bytes",
-        "dict",
-        "float",
-        "frozenset",
         "generic",
-        "int",
-        "list",
-        "memoryview",
         "ndarray",
-        "object",
-        "set",
-        "str",
-        "tuple",
-        "type",
     }
+)
+_ISINSTANCE_SCATTER_EXCLUDED_TYPE_NAMES = (
+    _ISINSTANCE_SCATTER_EXCLUDED_DOMAIN_TYPE_NAMES
+    | BuiltinCallName.isinstance_scatter_builtin_type_names()
 )
 
 
@@ -3089,7 +3059,6 @@ def _isinstance_family_scatter_candidates(
 
 
 class IsinstanceFamilyScatterDetector(PerModuleIssueDetector):
-    detector_id = "isinstance_family_scatter"
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Scattered concrete isinstance recovery should become polymorphic behavior",
@@ -3179,8 +3148,9 @@ def _declared_class_surface_members(node: ast.ClassDef) -> tuple[str, ...]:
     return tuple(sorted(members))
 
 
+@lru_cache(maxsize=8)
 def _role_surface_members_by_type_name(
-    modules: Sequence[ParsedModule],
+    modules: tuple[ParsedModule, ...],
 ) -> dict[str, tuple[str, ...]]:
     surfaces: dict[str, set[str]] = defaultdict(set)
     for module in modules:
@@ -3196,6 +3166,15 @@ def _role_surface_members_by_type_name(
         type_name: tuple(sorted(members))
         for type_name, members in sorted(surfaces.items())
     }
+
+
+def _role_surface_context_signature(role_surfaces: dict[str, tuple[str, ...]]) -> str:
+    payload = repr(tuple(sorted(role_surfaces.items()))).encode("utf-8")
+    return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+def _stable_text_digest(value: str) -> str:
+    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def _isinstance_guard_bindings(
@@ -3294,16 +3273,15 @@ def _role_guarded_surface_access_candidates_for_function(
 def _role_guarded_surface_access_candidates(
     modules: Sequence[ParsedModule],
 ) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
-    role_surfaces = _role_surface_members_by_type_name(modules)
+    module_context = tuple(modules)
+    role_surfaces = _role_surface_members_by_type_name(module_context)
     return tuple(
         sorted(
             (
                 candidate
-                for module in modules
-                for candidate in _collect_named_function_candidates(
-                    module,
-                    _role_guarded_surface_access_candidates_for_function,
-                    role_surfaces,
+                for module in module_context
+                for candidate in _role_guarded_surface_access_candidates_for_module(
+                    module, role_surfaces
                 )
             ),
             key=lambda item: (
@@ -3314,6 +3292,17 @@ def _role_guarded_surface_access_candidates(
                 item.role_type_name,
             ),
         )
+    )
+
+
+def _role_guarded_surface_access_candidates_for_module(
+    module: ParsedModule,
+    role_surfaces: dict[str, tuple[str, ...]],
+) -> tuple[RoleGuardedSurfaceAccessCandidate, ...]:
+    return _collect_named_function_candidates(
+        module,
+        _role_guarded_surface_access_candidates_for_function,
+        role_surfaces,
     )
 
 
@@ -3371,7 +3360,7 @@ def _role_guarded_surface_access_patch(
     )
 
 
-class RoleGuardedSurfaceAccessDetector(IssueDetector):
+class RoleGuardedSurfaceAccessDetector(ContextualModuleIssueDetector):
     detector_priority = -25
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
@@ -3391,10 +3380,23 @@ class RoleGuardedSurfaceAccessDetector(IssueDetector):
         ),
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
+    @classmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        del config
+        return _role_surface_context_signature(
+            _role_surface_members_by_type_name(modules)
+        )
+
+    def _findings_for_module_context(
+        self,
+        module: ParsedModule,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
+        role_surfaces = _role_surface_members_by_type_name(modules)
         return [
             self.build_finding(
                 _role_guarded_surface_access_summary(candidate),
@@ -3407,21 +3409,20 @@ class RoleGuardedSurfaceAccessDetector(IssueDetector):
                     literal_cases=(candidate.role_type_name,),
                 ),
             )
-            for candidate in _role_guarded_surface_access_candidates(modules)
+            for candidate in _role_guarded_surface_access_candidates_for_module(
+                module,
+                role_surfaces,
+            )
         ]
 
 
 _LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(
     (
+        *SemanticRoleIdentityToken.literal_discriminator_axis_values(),
         "action",
         "backend",
         "case",
-        "family",
         "field",
-        "format",
-        "key",
-        "kind",
-        "mode",
         "policy",
         "profile",
         "rank",
@@ -3431,7 +3432,6 @@ _LITERAL_DISCRIMINATOR_AXIS_TOKENS = frozenset(
         "state",
         "status",
         "strategy",
-        "type",
         "version",
     )
 )
@@ -3455,11 +3455,10 @@ _LITERAL_DISCRIMINATOR_OWNER_TOKENS = frozenset(
 
 
 @dataclass(frozen=True)
-class LiteralDiscriminatorBranchCandidate:
+class LiteralDiscriminatorBranchCandidate(DispatchAxisExpression):
     file_path: str
     line: int
     qualname: str
-    axis_expression: str
     literal_cases: tuple[str, ...]
     test_expression: str
 
@@ -3489,9 +3488,9 @@ def _literal_case_collection(value: ast.AST) -> tuple[str, ...]:
 
 
 def _literal_discriminator_axis_is_interesting(
-    axis_expression: str, qualname: str
+    dispatch_axis_expression: str, qualname: str
 ) -> bool:
-    axis_tokens = set(_runtime_semantic_identifier_tokens(axis_expression))
+    axis_tokens = set(_runtime_semantic_identifier_tokens(dispatch_axis_expression))
     if axis_tokens & _LITERAL_DISCRIMINATOR_AXIS_TOKENS:
         return True
     owner_tokens = set(_runtime_semantic_identifier_tokens(qualname))
@@ -3517,23 +3516,29 @@ def _literal_discriminator_compare(
     if isinstance(operator, (ast.Eq, ast.Is)):
         right_case = _non_none_literal_case(comparator)
         if right_case is not None:
-            axis_expression = ast.unparse(test.left)
-            if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
-                return axis_expression, (right_case,)
+            dispatch_axis_expression = ast.unparse(test.left)
+            if _literal_discriminator_axis_is_interesting(
+                dispatch_axis_expression, qualname
+            ):
+                return dispatch_axis_expression, (right_case,)
         left_case = _non_none_literal_case(test.left)
         if left_case is not None:
-            axis_expression = ast.unparse(comparator)
-            if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
-                return axis_expression, (left_case,)
+            dispatch_axis_expression = ast.unparse(comparator)
+            if _literal_discriminator_axis_is_interesting(
+                dispatch_axis_expression, qualname
+            ):
+                return dispatch_axis_expression, (left_case,)
         return None
 
     if isinstance(operator, (ast.In, ast.NotIn)):
         literal_cases = _literal_case_collection(comparator)
         if not literal_cases:
             return None
-        axis_expression = ast.unparse(test.left)
-        if _literal_discriminator_axis_is_interesting(axis_expression, qualname):
-            return axis_expression, literal_cases
+        dispatch_axis_expression = ast.unparse(test.left)
+        if _literal_discriminator_axis_is_interesting(
+            dispatch_axis_expression, qualname
+        ):
+            return dispatch_axis_expression, literal_cases
     return None
 
 
@@ -3548,13 +3553,13 @@ def _literal_discriminator_branch_candidates(
             match = _literal_discriminator_compare(node.test, qualname)
             if match is None:
                 continue
-            axis_expression, literal_cases = match
+            dispatch_axis_expression, literal_cases = match
             candidates.append(
                 LiteralDiscriminatorBranchCandidate(
                     file_path=str(module.path),
                     line=node.lineno,
                     qualname=qualname,
-                    axis_expression=axis_expression,
+                    dispatch_axis_expression=dispatch_axis_expression,
                     literal_cases=literal_cases,
                     test_expression=ast.unparse(node.test),
                 )
@@ -3565,13 +3570,12 @@ def _literal_discriminator_branch_candidates(
             item.file_path,
             item.line,
             item.qualname,
-            item.axis_expression,
+            item.dispatch_axis_expression,
         ),
     )
 
 
 class LiteralDiscriminatorBranchDetector(PerModuleIssueDetector):
-    detector_id = "literal_discriminator_branch"
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Literal discriminator branch should be a nominal closed-axis authority",
@@ -3593,7 +3597,7 @@ class LiteralDiscriminatorBranchDetector(PerModuleIssueDetector):
                 self.build_finding(
                     (
                         f"`{candidate.qualname}` branches on discriminator "
-                        f"`{candidate.axis_expression}` with literal case(s) "
+                        f"`{candidate.dispatch_axis_expression}` with literal case(s) "
                         f"{case_summary}."
                     ),
                     (
@@ -3602,7 +3606,7 @@ class LiteralDiscriminatorBranchDetector(PerModuleIssueDetector):
                             candidate.line,
                             (
                                 f"{candidate.qualname}:"
-                                f"{candidate.axis_expression}:{case_summary}"
+                                f"{candidate.dispatch_axis_expression}:{case_summary}"
                             ),
                         ),
                     ),
@@ -3623,7 +3627,7 @@ class LiteralDiscriminatorBranchDetector(PerModuleIssueDetector):
                         "or a generated artifact contract, and let unknown cases fail loudly."
                     ),
                     metrics=DispatchCountMetrics.from_literal_family(
-                        candidate.axis_expression,
+                        candidate.dispatch_axis_expression,
                         candidate.literal_cases,
                     ),
                 )
@@ -3780,7 +3784,6 @@ def _runtime_authority_name_is_interesting(text: str) -> bool:
 
 
 class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
-    detector_id = "runtime_authority_branch_semantics"
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Runtime authority return guards should move behind a formal policy authority",
@@ -3860,13 +3863,12 @@ class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
 
 _RELATION_COMPARISON_AXIS_TOKENS = frozenset(
     (
+        *SemanticRoleIdentityToken.relation_comparison_axis_values(),
         "certificate",
         "certified",
         "case",
         "count",
-        "family",
         "index",
-        "key",
         "length",
         "original",
         "previous",
@@ -3876,7 +3878,6 @@ _RELATION_COMPARISON_AXIS_TOKENS = frozenset(
         "shape",
         "signature",
         "size",
-        "type",
         "version",
     )
 )
@@ -4003,7 +4004,6 @@ def _load_bearing_relation_chains_from_body(
 
 
 class LoadBearingRelationBranchDetector(PerModuleIssueDetector):
-    detector_id = "load_bearing_relation_branch"
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Load-bearing relation dispatch should be a nominal case family",
@@ -4160,7 +4160,6 @@ def _semantic_certificate_fallback_return_expression(
 
 
 class SemanticCertificateFallbackDetector(PerModuleIssueDetector):
-    detector_id = "semantic_certificate_fallback"
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Semantic mismatch guards should produce typed certificates",
@@ -4244,7 +4243,7 @@ class SemanticCertificateFallbackDetector(PerModuleIssueDetector):
 
 
 class MirroredConstructorValidationDetector(PerModuleIssueDetector):
-    detector_id = "mirrored_constructor_validation"
+    ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Mirrored constructor validators should move into the record schema",
@@ -4306,7 +4305,7 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
                             (
                                 SourceLocation(
                                     str(module.path),
-                                    int(getattr(node, "lineno", 1)),
+                                    node.lineno,
                                     owner,
                                 ),
                             ),
@@ -4359,6 +4358,7 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
 
 class RepeatedBuilderCallDetector(IssueDetector):
     detector_id = "repeated_builder_calls"
+    ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated field assignment should become an authoritative builder",
@@ -4539,6 +4539,7 @@ class DeclaredFieldExtractionSite:
 
 
 class DeclaredFieldExtractionFanoutDetector(IssueDetector):
+    ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Declared-field extraction should become a construction authority",
@@ -4807,8 +4808,11 @@ def _is_external_declarative_builder_call(builder: BuilderCallShape) -> bool:
     return builder.callee_name in _EXTERNAL_DECLARATIVE_BUILDER_CALLS
 
 
-class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
+class RepeatedExportDictDetector(
+    FiberCollectedShapeIssueDetector[ExportDictShape, tuple[tuple[str, ...], str]]
+):
     detector_id = "repeated_export_dicts"
+    ssot_authority_boundary = True
     observation_kind = ObservationKind.EXPORT_DICT
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -4820,26 +4824,24 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
         _PROJECTION_DICT_EXPORT_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
 
-    def _module_shapes(self, module: ParsedModule) -> tuple[object, ...]:
+    def _module_shapes(self, module: ParsedModule) -> tuple[ExportDictShape, ...]:
         return tuple(
             CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
                 module, ExportDictShapeFamily, ExportDictShape
             )
         )
 
-    def _include_shape(self, shape: object, config: DetectorConfig) -> bool:
-        export_shape = _as_export_shape(shape)
-        return len(export_shape.key_names) >= config.min_export_keys
+    def _include_shape(self, shape: ExportDictShape, config: DetectorConfig) -> bool:
+        return len(shape.key_names) >= config.min_export_keys
 
-    def _group_key(self, shape: object) -> object:
-        export_shape = _as_export_shape(shape)
-        return (export_shape.key_names, export_shape.value_fingerprint)
+    def _group_key(self, shape: ExportDictShape) -> tuple[tuple[str, ...], str]:
+        return (shape.key_names, shape.value_fingerprint)
 
     def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
+        self, shapes: tuple[ExportDictShape, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         export_shapes = sorted_tuple(
-            (_as_export_shape(shape) for shape in shapes),
+            shapes,
             key=lambda item: (item.file_path, item.lineno),
         )
         if len(export_shapes) < 2:
@@ -4867,7 +4869,9 @@ class RepeatedExportDictDetector(FiberCollectedShapeIssueDetector):
         )
 
 
-class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
+class ManualClassRegistrationDetector(
+    GroupedShapeIssueDetector[RegistrationShape, str]
+):
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual class registration should become metaclass-registry AutoRegisterMeta",
@@ -4880,7 +4884,7 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
 
     def _collect_shapes(
         self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[object]:
+    ) -> list[RegistrationShape]:
         return [
             shape
             for module in modules
@@ -4889,15 +4893,14 @@ class ManualClassRegistrationDetector(GroupedShapeIssueDetector):
             )
         ]
 
-    def _group_key(self, shape: object) -> object:
-        registration = _as_registration_shape(shape)
-        return registration.registry_name
+    def _group_key(self, shape: RegistrationShape) -> str:
+        return shape.registry_name
 
     def _finding_from_group(
-        self, shapes: tuple[object, ...], config: DetectorConfig
+        self, shapes: tuple[RegistrationShape, ...], config: DetectorConfig
     ) -> RefactorFinding | None:
         registrations = sorted_tuple(
-            (_as_registration_shape(shape) for shape in shapes),
+            shapes,
             key=lambda item: (item.file_path, item.lineno),
         )
         if len(registrations) < config.min_registration_sites:
@@ -5089,6 +5092,7 @@ class SemanticInheritanceFamilySSOTDetector(
         SemanticInheritanceFamilySSOTCandidate
     ]
 ):
+    ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Semantic inheritance family should have a metaclass membership SSOT",
@@ -5321,7 +5325,16 @@ class ParallelMirroredLeafFamilyDetector(
         )
 
 
-class SentinelAttributeSimulationDetector(CandidateFindingDetector):
+@dataclass(frozen=True)
+class SentinelAttributeSimulationCandidate:
+    attr_name: str
+    evidence: tuple[SourceLocation, ...]
+    branch_evidence: tuple[SourceLocation, ...]
+
+
+class SentinelAttributeSimulationDetector(
+    CandidateFindingDetector[SentinelAttributeSimulationCandidate]
+):
     finding_spec = finding_spec_template(
         PatternId.NOMINAL_BOUNDARY,
         "Sentinel attribute is simulating nominal identity",
@@ -5334,9 +5347,9 @@ class SentinelAttributeSimulationDetector(CandidateFindingDetector):
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[SentinelAttributeSimulationCandidate]:
         sentinel_attrs = _collect_class_sentinel_attrs(module.module)
-        candidates: list[object] = []
+        candidates: list[SentinelAttributeSimulationCandidate] = []
         for attr_name, evidence in sentinel_attrs.items():
             if len(evidence) < 2:
                 continue
@@ -5346,16 +5359,22 @@ class SentinelAttributeSimulationDetector(CandidateFindingDetector):
             generic_name = attr_name.lower() in {"name", "label", "title"}
             if generic_name and len(branch_evidence) < 2:
                 continue
-            candidates.append((attr_name, tuple(evidence), tuple(branch_evidence)))
+            candidates.append(
+                SentinelAttributeSimulationCandidate(
+                    attr_name=attr_name,
+                    evidence=tuple(evidence),
+                    branch_evidence=tuple(branch_evidence),
+                )
+            )
         return tuple(candidates)
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        attr_name, evidence, branch_evidence = cast(
-            tuple[str, tuple[SourceLocation, ...], tuple[SourceLocation, ...]],
-            candidate,
-        )
+    def _finding_for_candidate(
+        self, candidate: SentinelAttributeSimulationCandidate
+    ) -> RefactorFinding:
+        evidence = candidate.evidence
+        branch_evidence = candidate.branch_evidence
         return self.build_finding(
-            f"Attribute `{attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites.",
+            f"Attribute `{candidate.attr_name}` is declared across {len(evidence)} classes and also drives {len(branch_evidence)} branch sites.",
             tuple((evidence + branch_evidence)[:6]),
             metrics=SentinelSimulationMetrics(
                 class_count=len(evidence), branch_site_count=len(branch_evidence)
@@ -5363,7 +5382,16 @@ class SentinelAttributeSimulationDetector(CandidateFindingDetector):
         )
 
 
-class PredicateFactoryChainDetector(CandidateFindingDetector):
+@dataclass(frozen=True)
+class PredicateFactoryChainCandidate:
+    file_path: str
+    function: ast.FunctionDef | ast.AsyncFunctionDef
+    branch_count: int
+
+
+class PredicateFactoryChainDetector(
+    CandidateFindingDetector[PredicateFactoryChainCandidate]
+):
     finding_spec = finding_spec_template(
         PatternId.DISCRIMINATED_UNION,
         "Predicate chain should become a discriminated union family",
@@ -5376,25 +5404,34 @@ class PredicateFactoryChainDetector(CandidateFindingDetector):
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[PredicateFactoryChainCandidate]:
         del config
         return tuple(
             (
-                (str(module.path), function, branch_count)
+                PredicateFactoryChainCandidate(
+                    file_path=str(module.path),
+                    function=function,
+                    branch_count=branch_count,
+                )
                 for function in _iter_functions(module.module)
                 if (branch_count := _predicate_factory_chain_branch_count(function))
                 is not None
             )
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        file_path, function, branch_count = cast(
-            tuple[str, ast.FunctionDef | ast.AsyncFunctionDef, int], candidate
-        )
+    def _finding_for_candidate(
+        self, candidate: PredicateFactoryChainCandidate
+    ) -> RefactorFinding:
         return self.build_finding(
-            f"{function.name} contains a {branch_count}-branch predicate factory chain returning variant constructors.",
-            (SourceLocation(file_path, function.lineno, function.name),),
-            metrics=BranchCountMetrics(branch_site_count=branch_count),
+            f"{candidate.function.name} contains a {candidate.branch_count}-branch predicate factory chain returning variant constructors.",
+            (
+                SourceLocation(
+                    candidate.file_path,
+                    candidate.function.lineno,
+                    candidate.function.name,
+                ),
+            ),
+            metrics=BranchCountMetrics(branch_site_count=candidate.branch_count),
         )
 
 
@@ -5531,8 +5568,6 @@ class DualAxisResolutionDetector(PerModuleIssueDetector):
                 )
             )
         return findings
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -5685,11 +5720,16 @@ class _FailSoftFallbackVisitor(ast.NodeVisitor):
     def _statement_text(self, statement: ast.stmt) -> str:
         return ast.unparse(statement)
 
-    def _record(self, node: ast.AST, fallback_kind: str, expression: str) -> None:
+    def _record(
+        self,
+        node: ast.stmt | ast.ExceptHandler,
+        fallback_kind: str,
+        expression: str,
+    ) -> None:
         self.candidates.append(
             FailSoftFallbackCandidate(
                 file_path=self.file_path,
-                line=getattr(node, "lineno", 0),
+                line=node.lineno,
                 symbol=self.symbol,
                 fallback_kind=fallback_kind,
                 expression=expression,
@@ -5698,7 +5738,6 @@ class _FailSoftFallbackVisitor(ast.NodeVisitor):
 
 
 class FailSoftFallbackDetector(PerModuleIssueDetector):
-    detector_id = "fail_soft_fallback"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
         "Fail-soft fallback should become a fail-loud resolution contract",
@@ -5753,9 +5792,10 @@ declare_typed_observation_detector(
 )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('_ExternalConcreteTypeIdentityTableCandidate', 'symbol: str; row_pairs: tuple[tuple[str, str, int], ...]', 'LineWitnessCandidate'))
-# fmt: on
+@dataclass(frozen=True)
+class _ExternalConcreteTypeIdentityTableCandidate(LineWitnessCandidate):
+    symbol: str
+    row_pairs: tuple[tuple[str, str, int], ...]
 
 
 class ExternalConcreteTypeIdentityTableDetector(PerModuleIssueDetector):
@@ -6094,11 +6134,11 @@ class InlineLiteralDispatchDetector(PerModuleIssueDetector):
             )
             findings.append(
                 self.build_finding(
-                    f"{module.path} repeats literal-case dispatch over `{observation.axis_expression}` across {branch_count} sibling branches with cases {observation.literal_cases}.",
+                    f"{module.path} repeats literal-case dispatch over `{observation.dispatch_axis_expression}` across {branch_count} sibling branches with cases {observation.literal_cases}.",
                     evidence,
                     relation_context=f"same branch role repeated inline inside {observation.scope_owner or 'module block'}",
                     metrics=DispatchCountMetrics.from_literal_family(
-                        observation.axis_expression, observation.literal_cases
+                        observation.dispatch_axis_expression, observation.literal_cases
                     ),
                     scaffold=LITERAL_DISPATCH_FINDING_FACTORY.authority_scaffold(
                         observation
@@ -6215,6 +6255,16 @@ class ScalarClassifierOperandAuthority:
         return False
 
 
+class PythonSyntaxNameShapeAuthority:
+    """Language-owned name shapes that are syntax filters, not semantic axes."""
+
+    syntax_filter_literals: ClassVar[frozenset[str]] = frozenset(("__",))
+
+    @classmethod
+    def owns_literal(cls, literal: str) -> bool:
+        return literal in cls.syntax_filter_literals
+
+
 def _substring_classifier_candidate(
     module: ParsedModule,
     owner: str,
@@ -6228,6 +6278,8 @@ def _substring_classifier_candidate(
         literal = _constant_string(right)
         classifier = left
     if literal is None or len(literal) < 2:
+        return None
+    if PythonSyntaxNameShapeAuthority.owns_literal(literal):
         return None
     if not ScalarClassifierOperandAuthority.matches(classifier):
         return None
@@ -6257,6 +6309,8 @@ def _string_shape_classifier_candidate(
         return None
     literal = _constant_string(node.args[0])
     if literal is None or len(literal) < 2:
+        return None
+    if PythonSyntaxNameShapeAuthority.owns_literal(literal):
         return None
     classifier = node.func.value
     if not ScalarClassifierOperandAuthority.matches(classifier):
@@ -6371,7 +6425,16 @@ class NumericLiteralDispatchDetector(PerModuleIssueDetector):
         )
 
 
-class RepeatedHardcodedStringDetector(CandidateFindingDetector):
+@dataclass(frozen=True)
+class RepeatedHardcodedStringCandidate:
+    file_path: str
+    literal: str
+    sites: tuple[SourceLocation, ...]
+
+
+class RepeatedHardcodedStringDetector(
+    CandidateFindingDetector[RepeatedHardcodedStringCandidate]
+):
     detector_id = "repeated_hardcoded_strings"
     finding_spec = finding_spec_template(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -6385,27 +6448,30 @@ class RepeatedHardcodedStringDetector(CandidateFindingDetector):
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[RepeatedHardcodedStringCandidate]:
         return tuple(
             (
-                (str(module.path), literal, tuple(sites))
+                RepeatedHardcodedStringCandidate(
+                    file_path=str(module.path),
+                    literal=literal,
+                    sites=tuple(sites),
+                )
                 for literal, sites in _semantic_string_literal_sites(module).items()
                 if len(sites) >= config.min_hardcoded_string_sites
             )
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        file_path, literal, sites = cast(
-            tuple[str, str, tuple[SourceLocation, ...]], candidate
-        )
+    def _finding_for_candidate(
+        self, candidate: RepeatedHardcodedStringCandidate
+    ) -> RefactorFinding:
         return self.build_finding(
-            f"String literal `{literal}` repeats across {len(sites)} semantic sites in {file_path}.",
-            tuple(sites[:6]),
+            f"String literal `{candidate.literal}` repeats across {len(candidate.sites)} semantic sites in {candidate.file_path}.",
+            tuple(candidate.sites[:6]),
             metrics=MappingMetrics(
-                mapping_site_count=len(sites),
+                mapping_site_count=len(candidate.sites),
                 field_count=1,
-                mapping_name=literal,
-                field_names=(literal,),
+                mapping_name=candidate.literal,
+                field_names=(candidate.literal,),
             ),
         )
 
@@ -6416,12 +6482,23 @@ _STATIC_PAYLOAD_WRITE_METHODS = frozenset(
 _WRITE_MODE_TOKENS = frozenset({"w", "a", "x", "wt", "at", "xt", "wb", "ab", "xb"})
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('StaticPayloadStats', 'payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]'),
-    product_record_spec('EmbeddedStaticPayloadCandidate', 'function_name: str; line_count: int; static_payload_line_count: int; largest_literal_line_count: int; marker_kinds: tuple[str, ...]; sink_kinds: tuple[str, ...]; call_site_count: int', 'QualnameLineWitnessCandidate'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class StaticPayloadStats:
+    payload_line_count: int
+    largest_literal_line_count: int
+    marker_kinds: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class EmbeddedStaticPayloadCandidate(QualnameLineWitnessCandidate):
+    function_name: str
+    line_count: int
+    static_payload_line_count: int
+    largest_literal_line_count: int
+    marker_kinds: tuple[str, ...]
+    sink_kinds: tuple[str, ...]
+    call_site_count: int
+
 
 _RuntimeFunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 _RuntimeFunctionSequence: TypeAlias = Sequence[_RuntimeFunctionNode]
@@ -6758,8 +6835,11 @@ class LineCountedQualnameCandidate(
 
 
 @dataclass(frozen=True)
-class CallCountedQualnameCandidate(LineCountedQualnameCandidate):
-    call_site_count: int
+class CallCountedQualnameCandidate(
+    CallSiteCountMetric,
+    LineCountedQualnameCandidate,
+):
+    """Candidate with repository-visible call-site evidence."""
 
 
 @dataclass(frozen=True)
@@ -6774,10 +6854,7 @@ class DanglingPrivateMethodCandidate(CallCountedQualnameCandidate):
 
 
 @dataclass(frozen=True)
-class PrivateHelperResiduePlan:
-    classvar_names: tuple[str, ...]
-    property_hook_names: tuple[str, ...]
-    behavior_hook_names: tuple[str, ...]
+class PrivateHelperResiduePlan(ResidueHookNamesCarrier):
     transported_parameter_names: tuple[str, ...]
     callsite_axis_count: int
     shared_statement_count: int
@@ -6923,15 +7000,20 @@ class _PrivateHelperPropertyResidueSink(_PrivateHelperResidueSink):
 
 class DerivedCandidateCollectorContracts:
     def names(self, modules: Sequence[ParsedModule]) -> frozenset[str]:
-        return frozenset(
-            (
-                _candidate_collector_name_from_class_name(node.name)
-                for module in modules
-                for node in module.module.body
-                if isinstance(node, ast.ClassDef)
-                and HELPER_SYNTAX_PROJECTION_AUTHORITY.class_declares_finding_spec(node)
-            )
-        )
+        collector_names: set[str] = set()
+        for module in modules:
+            for node in module.module.body:
+                if not (
+                    isinstance(node, ast.ClassDef)
+                    and HELPER_SYNTAX_PROJECTION_AUTHORITY.class_declares_finding_spec(
+                        node
+                    )
+                ):
+                    continue
+                collector_name = _candidate_collector_name_from_class_name(node.name)
+                if collector_name is not None:
+                    collector_names.add(collector_name)
+        return frozenset(collector_names)
 
 
 DERIVED_CANDIDATE_COLLECTOR_CONTRACTS = DerivedCandidateCollectorContracts()
@@ -7210,12 +7292,162 @@ class PrivateReferenceDetectorContext:
     def class_index(self) -> ClassFamilyIndex:
         return build_class_family_index(list(self.modules))
 
+    @cached_property
+    def signature(self) -> "PrivateReferenceDetectorContextSignature":
+        return PrivateReferenceDetectorContextSignature.from_context(self)
+
+
+@dataclass(frozen=True)
+class PrivateReferenceDetectorContextSignature:
+    """Stable semantic-context identity for private-reference detector shards."""
+
+    reference_count_rows: tuple["PrivateReferenceCountSignatureRow", ...]
+    derived_candidate_collector_contract_names: tuple[str, ...]
+    private_helper_call_edges: tuple["PrivateReferenceCallEdgeSignatureRow", ...]
+    surface_function_rows: tuple["PrivateReferenceFunctionSignatureRow", ...]
+    class_family_rows: tuple["PrivateReferenceClassFamilySignatureRow", ...]
+
+    @classmethod
+    def from_context(
+        cls, context: PrivateReferenceDetectorContext
+    ) -> "PrivateReferenceDetectorContextSignature":
+        return cls(
+            reference_count_rows=tuple(
+                PrivateReferenceCountSignatureRow(
+                    symbol_digest=_stable_text_digest(symbol_name),
+                    count=count,
+                )
+                for symbol_name, count in sorted(
+                    context.reference_index.total_counts.items()
+                )
+            ),
+            derived_candidate_collector_contract_names=tuple(
+                sorted(context.derived_candidate_collector_contract_names)
+            ),
+            private_helper_call_edges=tuple(
+                PrivateReferenceCallEdgeSignatureRow(
+                    function_name=function_name,
+                    caller_symbols=caller_symbols,
+                )
+                for function_name, caller_symbols in sorted(
+                    context.private_helper_call_graph.caller_symbols_by_name.items()
+                )
+            ),
+            surface_function_rows=tuple(
+                PrivateReferenceFunctionSignatureRow(
+                    qualified_function_name=qualified_function_name,
+                    body_digest=body_digest,
+                )
+                for qualified_function_name, body_digest in sorted(
+                    (
+                        (
+                            f"{module.module_name}.{qualname}",
+                            _stable_text_digest(
+                                ast.dump(function, include_attributes=False)
+                            ),
+                        )
+                        for module in context.modules
+                        for qualname, function in SurfaceFunctionIndex.from_module(
+                            module.module
+                        ).functions
+                    )
+                )
+            ),
+            class_family_rows=tuple(
+                PrivateReferenceClassFamilySignatureRow(
+                    symbol=symbol,
+                    simple_name=indexed_class.simple_name,
+                    declared_base_names=indexed_class.declared_base_names,
+                    resolved_base_symbols=indexed_class.resolved_base_symbols,
+                    ancestor_symbols=context.class_index.ancestor_symbols(symbol),
+                )
+                for symbol, indexed_class in sorted(
+                    context.class_index.classes_by_symbol.items()
+                )
+            ),
+        )
+
+    @property
+    def token(self) -> str:
+        return _stable_text_digest(repr(self))
+
+
+@dataclass(frozen=True)
+class PrivateReferenceCountSignatureRow:
+    symbol_digest: str
+    count: int
+
+
+@dataclass(frozen=True)
+class PrivateReferenceCallEdgeSignatureRow:
+    function_name: str
+    caller_symbols: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PrivateReferenceFunctionSignatureRow:
+    qualified_function_name: str
+    body_digest: str
+
+
+@dataclass(frozen=True)
+class PrivateReferenceClassFamilySignatureRow:
+    symbol: str
+    simple_name: str
+    declared_base_names: tuple[str, ...]
+    resolved_base_symbols: tuple[str, ...]
+    ancestor_symbols: tuple[str, ...]
+
 
 @lru_cache(maxsize=4)
 def _private_reference_detector_context(
     modules: tuple[ParsedModule, ...],
 ) -> PrivateReferenceDetectorContext:
     return PrivateReferenceDetectorContext(modules)
+
+
+_PrivateReferenceCandidateT = TypeVar("_PrivateReferenceCandidateT")
+
+
+class PrivateReferenceContextualDetector(
+    RenderedFindingMixin[_PrivateReferenceCandidateT],
+    ContextualModuleIssueDetector,
+    Generic[_PrivateReferenceCandidateT],
+    ABC,
+):
+    """Candidate detector backed by one repo-wide private-reference context."""
+
+    @classmethod
+    def context_signature(
+        cls, modules: tuple[ParsedModule, ...], config: DetectorConfig
+    ) -> str:
+        del config
+        return _private_reference_detector_context(modules).signature.token
+
+    def _findings_for_module_context(
+        self,
+        module: ParsedModule,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        private_reference_context = _private_reference_detector_context(modules)
+        return [
+            self._finding_for_candidate(candidate)
+            for candidate in self._candidate_items_for_private_reference_context(
+                module,
+                private_reference_context,
+                config,
+            )
+        ]
+
+    @abstractmethod
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[_PrivateReferenceCandidateT]:
+        raise NotImplementedError
 
 
 def _private_helper_caller_owner_names(
@@ -8137,9 +8369,8 @@ def _non_nominal_private_helper_candidates(
 
 
 class UnreferencedPrivateFunctionDetector(
-    ConfiguredModuleCollectorCandidateDetector[UnreferencedPrivateFunctionCandidate]
+    PrivateReferenceContextualDetector[UnreferencedPrivateFunctionCandidate]
 ):
-    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Unreferenced private function should be deleted or made explicit",
@@ -8150,23 +8381,21 @@ class UnreferencedPrivateFunctionDetector(
         _NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(tuple(modules))
-        return [
-            self._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in _unreferenced_private_function_candidates(
-                module,
-                config,
-                reference_modules=modules,
-                reference_index=private_reference_context.reference_index,
-                derived_candidate_collector_contract_names=(
-                    private_reference_context.derived_candidate_collector_contract_names
-                ),
-            )
-        ]
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[UnreferencedPrivateFunctionCandidate]:
+        return _unreferenced_private_function_candidates(
+            module,
+            config,
+            reference_modules=private_reference_context.modules,
+            reference_index=private_reference_context.reference_index,
+            derived_candidate_collector_contract_names=(
+                private_reference_context.derived_candidate_collector_contract_names
+            ),
+        )
 
     finding_renderer = CandidateFindingRenderer[UnreferencedPrivateFunctionCandidate](
         summary=lambda function_candidate: f"`{function_candidate.qualname}` spans {function_candidate.line_count} lines and has no in-module references.",
@@ -8184,9 +8413,8 @@ class UnreferencedPrivateFunctionDetector(
 
 
 class NonNominalPrivateHelperDetector(
-    ConfiguredModuleCollectorCandidateDetector[NonNominalPrivateHelperCandidate]
+    PrivateReferenceContextualDetector[NonNominalPrivateHelperCandidate]
 ):
-    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Escaped private helper should become nominal",
@@ -8197,26 +8425,22 @@ class NonNominalPrivateHelperDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(tuple(modules))
-        return [
-            self._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in _non_nominal_private_helper_candidates(
-                module,
-                config,
-                reference_modules=modules,
-                derived_candidate_collector_contract_names=(
-                    private_reference_context.derived_candidate_collector_contract_names
-                ),
-                private_helper_call_graph=(
-                    private_reference_context.private_helper_call_graph
-                ),
-                class_index=private_reference_context.class_index,
-            )
-        ]
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[NonNominalPrivateHelperCandidate]:
+        return _non_nominal_private_helper_candidates(
+            module,
+            config,
+            reference_modules=private_reference_context.modules,
+            derived_candidate_collector_contract_names=(
+                private_reference_context.derived_candidate_collector_contract_names
+            ),
+            private_helper_call_graph=private_reference_context.private_helper_call_graph,
+            class_index=private_reference_context.class_index,
+        )
 
     finding_renderer = CandidateFindingRenderer[NonNominalPrivateHelperCandidate](
         summary=lambda helper_candidate: (
@@ -8259,9 +8483,8 @@ class NonNominalPrivateHelperDetector(
 
 
 class PrivateHelperSemanticClusterDetector(
-    ConfiguredModuleCollectorCandidateDetector[PrivateHelperSemanticClusterCandidate]
+    PrivateReferenceContextualDetector[PrivateHelperSemanticClusterCandidate]
 ):
-    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Private helper cluster should have a semantic owner",
@@ -8272,25 +8495,21 @@ class PrivateHelperSemanticClusterDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(tuple(modules))
-        return [
-            self._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in _private_helper_semantic_cluster_candidates(
-                module,
-                config,
-                reference_modules=modules,
-                derived_candidate_collector_contract_names=(
-                    private_reference_context.derived_candidate_collector_contract_names
-                ),
-                private_helper_call_graph=(
-                    private_reference_context.private_helper_call_graph
-                ),
-            )
-        ]
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[PrivateHelperSemanticClusterCandidate]:
+        return _private_helper_semantic_cluster_candidates(
+            module,
+            config,
+            reference_modules=private_reference_context.modules,
+            derived_candidate_collector_contract_names=(
+                private_reference_context.derived_candidate_collector_contract_names
+            ),
+            private_helper_call_graph=private_reference_context.private_helper_call_graph,
+        )
 
     finding_renderer = CandidateFindingRenderer[PrivateHelperSemanticClusterCandidate](
         summary=lambda cluster: (
@@ -8335,9 +8554,8 @@ class PrivateHelperSemanticClusterDetector(
 
 
 class DanglingPrivateMethodDetector(
-    ConfiguredModuleCollectorCandidateDetector[DanglingPrivateMethodCandidate]
+    PrivateReferenceContextualDetector[DanglingPrivateMethodCandidate]
 ):
-    cache_granularity = DetectorCacheGranularity.GLOBAL
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Dangling private method should be deleted or made nominal",
@@ -8348,20 +8566,18 @@ class DanglingPrivateMethodDetector(
         _METHOD_ROLE_NORMALIZED_AST_PARTIAL_VIEW_OBSERVATION_TAGS,
     )
 
-    def _collect_findings(
-        self, modules: list[ParsedModule], config: DetectorConfig
-    ) -> list[RefactorFinding]:
-        private_reference_context = _private_reference_detector_context(tuple(modules))
-        return [
-            self._finding_for_candidate(candidate)
-            for module in modules
-            for candidate in _dangling_private_method_candidates(
-                module,
-                config,
-                reference_modules=modules,
-                reference_index=private_reference_context.reference_index,
-            )
-        ]
+    def _candidate_items_for_private_reference_context(
+        self,
+        module: ParsedModule,
+        private_reference_context: PrivateReferenceDetectorContext,
+        config: DetectorConfig,
+    ) -> Sequence[DanglingPrivateMethodCandidate]:
+        return _dangling_private_method_candidates(
+            module,
+            config,
+            reference_modules=private_reference_context.modules,
+            reference_index=private_reference_context.reference_index,
+        )
 
     finding_renderer = CandidateFindingRenderer[DanglingPrivateMethodCandidate](
         summary=lambda method_candidate: (
@@ -8388,37 +8604,28 @@ class DanglingPrivateMethodDetector(
     )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('SiblingSmallMethodTemplateCandidate', 'owner_name: str; statement_count: int; parameter_count: int; witness_name: ClassVar[AliasProperty[str]]', 'MethodEvidenceLocationsCandidate', defaults={'witness_name': AliasProperty('owner_name')}))
-# fmt: on
+@dataclass(frozen=True)
+class SiblingSmallMethodTemplateCandidate(MethodEvidenceLocationsCandidate):
+    owner_name: str
+    statement_count: int
+    parameter_count: int
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("owner_name")
 
 
-_NORMALIZED_TEMPLATE_STABLE_NAMES = frozenset(
+_NORMALIZED_TEMPLATE_DOMAIN_STABLE_NAMES = frozenset(
     {
         "False",
         "None",
         "True",
         "cls",
-        "dict",
-        "enumerate",
-        "float",
-        "int",
-        "len",
-        "list",
-        "max",
-        "min",
-        "open",
-        "print",
-        "range",
         "re",
         "self",
-        "set",
         "shutil",
-        "sorted",
-        "str",
-        "sum",
-        "tuple",
     }
+)
+_NORMALIZED_TEMPLATE_STABLE_NAMES = (
+    _NORMALIZED_TEMPLATE_DOMAIN_STABLE_NAMES
+    | BuiltinCallName.normalized_template_stable_builtin_names()
 )
 
 
@@ -8758,7 +8965,7 @@ class CrossClassSmallMethodTemplateDetector(
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[CrossClassSmallMethodTemplateCandidate]:
         return _cross_class_small_method_template_candidates(module)
 
     def _finding_for_candidate(
@@ -9189,7 +9396,8 @@ class ABCPolymorphismBypassedByConcreteDispatchDetector(IssueDetector):
         scatter = candidate.seed.scatter
         base_name = candidate.seed.shared_base.simple_name
         checked_type_names = tuple(
-            indexed_class.simple_name for indexed_class in candidate.seed.indexed_classes
+            indexed_class.simple_name
+            for indexed_class in candidate.seed.indexed_classes
         )
         branch_summary = ", ".join(scatter.test_expressions[:4])
         template_summary = ", ".join(
@@ -9539,7 +9747,6 @@ def _variant_method_family_candidates(
 
 
 class AlgebraicVariantMethodFamilyDetector(IssueDetector):
-    detector_id = "algebraic_variant_method_family"
     detector_priority = -15
     finding_spec = high_confidence_certified_spec(
         PatternId.ABC_TEMPLATE_METHOD,
@@ -9571,9 +9778,7 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
         field_summary = ", ".join(seed.shared_field_names[:8])
         parameter_summary = ", ".join(seed.shared_product_parameter_names)
         authority_kind = (
-            "ABC/public authority"
-            if exemplar.owner_is_abstract
-            else "public authority"
+            "ABC/public authority" if exemplar.owner_is_abstract else "public authority"
         )
         composition_summary = ", ".join(
             signal.qualname for signal in candidate.composition_signals[:3]
@@ -9625,9 +9830,7 @@ class AlgebraicVariantMethodFamilyDetector(IssueDetector):
                     + len(candidate.composition_signals)
                     + len(candidate.wrapper_chains),
                 ),
-                statement_count=max(
-                    method.statement_count for method in seed.methods
-                ),
+                statement_count=max(method.statement_count for method in seed.methods),
                 class_count=1,
                 method_symbols=seed.method_names,
             ),
@@ -9763,9 +9966,12 @@ class MirroredImportFallbackDetector(
         )
 
 
-# fmt: off
-materialize_product_record(product_record_spec('ConstantBackedDispatchAxisCandidate', 'axis_name: str; constant_prefix: str; constant_names: tuple[str, ...]; witness_name: ClassVar[AliasProperty[str]]', 'FunctionEvidenceLocationsCandidate', defaults={'witness_name': AliasProperty('axis_name')}))
-# fmt: on
+@dataclass(frozen=True)
+class ConstantBackedDispatchAxisCandidate(FunctionEvidenceLocationsCandidate):
+    axis_name: str
+    constant_prefix: str
+    constant_names: tuple[str, ...]
+    witness_name: ClassVar[AliasProperty[str]] = AliasProperty("axis_name")
 
 
 def _uppercase_constant_name(node: ast.AST) -> str | None:
@@ -9831,9 +10037,10 @@ def _constant_backed_dispatch_axis_candidates(
         for node in _walk_function_body_nodes(function):
             if not isinstance(node, ast.If):
                 continue
-            for axis_expression, constant_names in _constant_backed_dispatch_tests(
-                node.test
-            ):
+            for (
+                dispatch_axis_expression,
+                constant_names,
+            ) in _constant_backed_dispatch_tests(node.test):
                 if not constant_names:
                     continue
                 prefix_counts = Counter(
@@ -9842,7 +10049,7 @@ def _constant_backed_dispatch_axis_candidates(
                 constant_prefix, count = prefix_counts.most_common(1)[0]
                 if count != len(constant_names):
                     continue
-                grouped[_axis_key(axis_expression), constant_prefix].append(
+                grouped[_axis_key(dispatch_axis_expression), constant_prefix].append(
                     (qualname, node.lineno, constant_names)
                 )
 
@@ -10770,6 +10977,7 @@ class FlattenedProjectionPropertyDetector(
 
 
 class WrapperChainDetector(ModuleCollectorCandidateDetector[WrapperChainCandidate]):
+    ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Transport wrapper chain should collapse to one authoritative view",
@@ -10866,6 +11074,7 @@ class TrivialForwardingWrapperDetector(
 
 
 class PublicApiPrivateDelegateShellDetector(IssueDetector):
+    ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Public API shell over a private delegate should promote a public authority",
@@ -11034,8 +11243,33 @@ class SemanticDictBagDetector(PerModuleIssueDetector):
         return findings
 
 
-class BidirectionalRegistryDetector(ModuleCollectorCandidateDetector):
-    candidate_collector = _mirrored_registry_candidates
+@dataclass(frozen=True)
+class BidirectionalRegistryCandidate:
+    file_path: str
+    class_name: str
+    mirrored_pairs: tuple[tuple[int, str], ...]
+
+
+def _bidirectional_registry_candidates(
+    module: ParsedModule,
+) -> tuple[BidirectionalRegistryCandidate, ...]:
+    return tuple(
+        (
+            BidirectionalRegistryCandidate(
+                file_path=file_path,
+                class_name=class_name,
+                mirrored_pairs=mirrored_pairs,
+            )
+            for file_path, class_name, mirrored_pairs in _mirrored_registry_candidates(
+                module
+            )
+        )
+    )
+
+
+class BidirectionalRegistryDetector(
+    ModuleCollectorCandidateDetector[BidirectionalRegistryCandidate]
+):
     finding_spec = finding_spec_template(
         PatternId.BIDIRECTIONAL_LOOKUP,
         "Bidirectional registry maintained manually",
@@ -11046,25 +11280,29 @@ class BidirectionalRegistryDetector(ModuleCollectorCandidateDetector):
         _MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
     )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        file_path, class_name, mirrored_pairs = cast(
-            tuple[str, str, tuple[tuple[int, str], ...]], candidate
-        )
+    def _finding_for_candidate(
+        self, candidate: BidirectionalRegistryCandidate
+    ) -> RefactorFinding:
         evidence = tuple(
             (
-                SourceLocation(file_path, lineno, f"{class_name}.{label}")
-                for lineno, label in mirrored_pairs[:6]
+                SourceLocation(
+                    candidate.file_path, lineno, f"{candidate.class_name}.{label}"
+                )
+                for lineno, label in candidate.mirrored_pairs[:6]
             )
         )
         return self.build_finding(
-            f"Class {class_name} appears to maintain mirrored forward/reverse registry assignments.",
+            f"Class {candidate.class_name} appears to maintain mirrored forward/reverse registry assignments.",
             evidence,
             observation_tags=_MIRRORED_REGISTRY_CLASS_LEVEL_POSITION_MANUAL_SYNCHRONIZATION_OBSERVATION_TAGS,
             metrics=RegistrationMetrics(
-                registration_site_count=len(mirrored_pairs),
-                registry_name=class_name,
+                registration_site_count=len(candidate.mirrored_pairs),
+                registry_name=candidate.class_name,
                 class_key_pairs=tuple(
-                    (f"{class_name}.{label}" for _, label in mirrored_pairs)
+                    (
+                        f"{candidate.class_name}.{label}"
+                        for _, label in candidate.mirrored_pairs
+                    )
                 ),
             ),
         )

@@ -6,6 +6,8 @@ surface.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from ._base import *
 from ._helpers import *
 from ._helpers import (
@@ -153,7 +155,7 @@ declare_candidate_rule_detector(
     ),
     summary=lambda query_candidate: f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}.",
     evidence=lambda query_candidate: query_candidate.evidence,
-    scaffold=lambda query_candidate: 'ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]',
+    scaffold=lambda query_candidate: "ITEMS = authoritative_items()\nITEM_BY_KEY = {item.key: item for item in ITEMS}\nSECONDARY_KEY_ITEMS = authoritative_secondary_key_items()\nITEM_BY_SECONDARY_KEY = {item.secondary_key: item for item in SECONDARY_KEY_ITEMS}\n\ndef item_for_key(key):\n    return ITEM_BY_KEY[key]",
     codemod_patch=lambda query_candidate: f"# Keep `{query_candidate.source_expression}` as the immutable authority.\n# Delete the repeated linear-scan helper bodies by deriving keyed indexes once and routing the query helpers through those indexes.",
     metrics=lambda query_candidate: MappingMetrics(
         mapping_site_count=len(query_candidate.function_names),
@@ -681,7 +683,17 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         ]
 
 
-class StructuralObservationProjectionDetector(CandidateFindingDetector):
+@dataclass(frozen=True)
+class StructuralObservationProjectionGroup:
+    property_name: str
+    constructor_name: str
+    keyword_names: tuple[str, ...]
+    candidates: tuple[StructuralObservationPropertyCandidate, ...]
+
+
+class StructuralObservationProjectionDetector(
+    CandidateFindingDetector[StructuralObservationProjectionGroup]
+):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated property projection builders should share one projection substrate",
@@ -693,7 +705,7 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
 
     def _candidate_items(
         self, module: ParsedModule, config: DetectorConfig
-    ) -> Sequence[object]:
+    ) -> Sequence[StructuralObservationProjectionGroup]:
         del config
         grouped: dict[
             (
@@ -709,21 +721,21 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
             ].append(candidate)
         return tuple(
             (
-                (group_key, tuple(candidates))
+                StructuralObservationProjectionGroup(
+                    property_name=group_key[0],
+                    constructor_name=group_key[1],
+                    keyword_names=group_key[2],
+                    candidates=tuple(candidates),
+                )
                 for group_key, candidates in grouped.items()
                 if len(candidates) >= 3
             )
         )
 
-    def _finding_for_candidate(self, candidate: object) -> RefactorFinding:
-        group_key, grouped_candidates = cast(
-            tuple[
-                tuple[str, str, tuple[str, ...]],
-                tuple[StructuralObservationPropertyCandidate, ...],
-            ],
-            candidate,
-        )
-        property_name, constructor_name, keyword_names = group_key
+    def _finding_for_candidate(
+        self, candidate: StructuralObservationProjectionGroup
+    ) -> RefactorFinding:
+        grouped_candidates = candidate.candidates
         evidence = tuple(
             (
                 SourceLocation(item.file_path, item.line, item.class_name)
@@ -732,20 +744,20 @@ class StructuralObservationProjectionDetector(CandidateFindingDetector):
         )
         return self.build_finding(
             (
-                f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{property_name}` with the same `{constructor_name}` schema over roles {keyword_names}."
+                f"Classes {', '.join(item.class_name for item in grouped_candidates[:5])} rebuild property `{candidate.property_name}` with the same `{candidate.constructor_name}` schema over roles {candidate.keyword_names}."
             ),
             evidence,
             scaffold=(
-                f"class ProjectionTemplate(ABC):\n    @property\n    def {property_name}(self) -> {constructor_name}:\n        return {constructor_name}(...)"
+                f"class ProjectionTemplate(ABC):\n    @property\n    def {candidate.property_name}(self) -> {candidate.constructor_name}:\n        return {candidate.constructor_name}(...)"
             ),
             codemod_patch=(
-                f"# Introduce one projection template for `{property_name}` over roles {keyword_names}.\n"
+                f"# Introduce one projection template for `{candidate.property_name}` over roles {candidate.keyword_names}.\n"
                 "# Leave only the role-specific hooks on the concrete carriers."
             ),
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(grouped_candidates),
-                mapping_name=constructor_name,
-                field_names=keyword_names,
+                mapping_name=candidate.constructor_name,
+                field_names=candidate.keyword_names,
             ),
         )
 
@@ -901,7 +913,9 @@ class DistributedBoundaryFanoutCandidate:
 
     @property
     def class_names(self) -> tuple[str, ...]:
-        return tuple(sorted({declaration.class_name for declaration in self.declarations}))
+        return tuple(
+            sorted({declaration.class_name for declaration in self.declarations})
+        )
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -954,7 +968,9 @@ def _boundary_pascal_name(field_name: str) -> str:
     return "".join(part.title() for part in field_name.split("_"))
 
 
-def _distributed_boundary_scaffold(candidate: DistributedBoundaryFanoutCandidate) -> str:
+def _distributed_boundary_scaffold(
+    candidate: DistributedBoundaryFanoutCandidate,
+) -> str:
     boundary_name = _boundary_pascal_name(candidate.field_name)
     if _BOUNDARY_PROJECTION_CONTEXT_TOKENS & set(candidate.context_tokens):
         return (
@@ -1093,7 +1109,9 @@ def _distributed_boundary_declarations(
                 for target in statement.targets:
                     if isinstance(target, ast.Name):
                         add(node.name, target.id, statement.lineno)
-            elif isinstance(statement, ast.FunctionDef) and statement.name == "__init__":
+            elif (
+                isinstance(statement, ast.FunctionDef) and statement.name == "__init__"
+            ):
                 for child in _walk_nodes(statement):
                     if isinstance(child, ast.Assign):
                         for target in child.targets:
@@ -1172,7 +1190,9 @@ class _DistributedBoundaryUseVisitor(ClassFunctionStackNodeVisitor):
                 field_name=cast(str, node.arg),
                 use_kind="keyword_forwarded",
                 context_tokens=(
-                    *_boundary_identifier_tokens(_boundary_call_display_name(call_node)),
+                    *_boundary_identifier_tokens(
+                        _boundary_call_display_name(call_node)
+                    ),
                     *_boundary_node_tokens(node.value),
                 ),
             )
@@ -1222,6 +1242,14 @@ def _distributed_boundary_uses(
 
 def _distributed_boundary_fanout_candidates(
     modules: Sequence[ParsedModule],
+    config: DetectorConfig,
+) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
+    return _distributed_boundary_fanout_candidates_cached(tuple(modules), config)
+
+
+@lru_cache(maxsize=8)
+def _distributed_boundary_fanout_candidates_cached(
+    modules: tuple[ParsedModule, ...],
     config: DetectorConfig,
 ) -> tuple[DistributedBoundaryFanoutCandidate, ...]:
     declarations_by_field: dict[str, list[DistributedBoundaryDeclaration]] = (
@@ -1328,14 +1356,7 @@ def _boundary_owner_class_names(
         if non_transport_names:
             return non_transport_names
         return tuple(sorted(name for name, _ in owner_names))
-    return tuple(
-        sorted(
-            {
-                declaration.class_name
-                for declaration in declarations
-            }
-        )
-    )
+    return tuple(sorted({declaration.class_name for declaration in declarations}))
 
 
 def _boundary_local_wrapper_pairs(
@@ -1397,6 +1418,7 @@ def _boundary_local_wrapper_collapse_candidates(
 class DistributedBoundaryFanoutDetector(
     ConfiguredCrossModuleCollectorCandidateDetector[DistributedBoundaryFanoutCandidate]
 ):
+    ssot_authority_boundary = True
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_CONTEXT,
         "Distributed boundary fanout should collapse behind one nominal carrier",
@@ -1469,7 +1491,9 @@ class BoundaryLocalWrapperFindingRenderer:
         )
 
     def codemod_patch(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> str:
-        owner_hint = ", ".join(candidate.owner_class_names[:4]) or "the least common owner"
+        owner_hint = (
+            ", ".join(candidate.owner_class_names[:4]) or "the least common owner"
+        )
         return (
             f"# `{candidate.wrapper.field_name}` is a local wrapper around the still-live "
             f"`{candidate.original.field_name}` boundary.\n"
@@ -1480,7 +1504,9 @@ class BoundaryLocalWrapperFindingRenderer:
             "Pattern 16 findings for the same semantic core."
         )
 
-    def metrics(self, candidate: BoundaryLocalWrapperCollapseCandidate) -> MappingMetrics:
+    def metrics(
+        self, candidate: BoundaryLocalWrapperCollapseCandidate
+    ) -> MappingMetrics:
         return MappingMetrics.from_field_names(
             mapping_site_count=(
                 candidate.original.site_count + candidate.wrapper.site_count

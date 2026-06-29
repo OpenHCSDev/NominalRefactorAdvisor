@@ -6,12 +6,6 @@ field families, wrapper surfaces, exports, and structural record mechanics.
 
 from __future__ import annotations
 
-from ..record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
-
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -145,7 +139,7 @@ class _SemanticOverlapABCFamilyPatchRenderer(_SemanticOverlapPatchRenderer):
             f"# Extract methods {candidate.method_names} from {candidate.class_names} into one ABC family over `{candidate.base_name}`.\n"
             f"# Hierarchy normal form: {candidate.hierarchy_normal_form}.\n"
             f"# Move concrete template methods {candidate.abc_concrete_method_names} to the ABC.\n"
-            f"# Keep classvars {candidate.classvar_hook_names}, properties {candidate.property_hook_names}, and behavior hooks {candidate.behavior_hook_names} as leaf residue.\n"
+            f"# Keep classvars {candidate.classvar_names}, properties {candidate.property_hook_names}, and behavior hooks {candidate.behavior_hook_names} as leaf residue.\n"
             f"# The family removes {candidate.shared_statement_count} shared statement objects with {candidate.residue_count} residue declarations."
         )
 
@@ -1473,7 +1467,6 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
         "public class-like names are generated through `type(...)` materialization instead of declared as nominal subclasses",
         _AUTHORITATIVE_NOMINAL_IDENTITY_ENUMERATION_CAPABILITY_TAGS,
     )
-    detector_id = "dynamic_class_materialization"
 
     def _minimum_evidence(self, config: DetectorConfig) -> int:
         del config
@@ -1488,7 +1481,7 @@ class DynamicClassMaterializationDetector(EvidenceOnlyPerModuleDetector):
             if _materializes_class_with_type(node):
                 evidence.append(
                     SourceLocation(
-                        str(module.path), node.lineno, getattr(node, "name", "type")
+                        str(module.path), node.lineno, node.name
                     )
                 )
             if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -2106,16 +2099,14 @@ class ExcessiveBlankLineRunCandidate:
         )
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('CatalogInstallingMixinFamilyCandidate', 'catalog_attribute_names: tuple[str, ...]', 'ClassLineNumbersGroup'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
+    catalog_attribute_names: tuple[str, ...]
 
 
-# fmt: off
-materialize_product_record(product_record_spec('SupportPreludeModuleFamilyCandidate', 'support_module_name: str', 'MultiFileClassLineNumbersGroup'))
-# fmt: on
+@dataclass(frozen=True)
+class SupportPreludeModuleFamilyCandidate(MultiFileClassLineNumbersGroup):
+    support_module_name: str
 
 
 @dataclass(frozen=True)
@@ -2137,11 +2128,10 @@ def _docstring_line_ranges(root: ast.AST) -> set[int]:
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
             continue
-        body = getattr(node, "body", ())
-        if not body or not _is_docstring_expr(body[0]):
+        if not node.body or not _is_docstring_expr(node.body[0]):
             continue
-        start = getattr(body[0], "lineno", None)
-        end = getattr(body[0], "end_lineno", start)
+        start = node.body[0].lineno
+        end = node.body[0].end_lineno or start
         if start is None or end is None:
             continue
         protected.update(range(start, end + 1))
@@ -2215,12 +2205,16 @@ def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
     )
 
 
-# fmt: off
-materialize_product_records((
-    product_record_spec('_CatalogInstallingMixinShape', 'first_call: ast.Call; second_call: ast.Call'),
-    product_record_spec('_ExpressionCallPair', 'first_call: ast.Call; second_call: ast.Call'),
-))
-# fmt: on
+@dataclass(frozen=True)
+class _CatalogInstallingMixinShape:
+    first_call: ast.Call
+    second_call: ast.Call
+
+
+@dataclass(frozen=True)
+class _ExpressionCallPair:
+    first_call: ast.Call
+    second_call: ast.Call
 
 
 class _CatalogInstallingMixinStep(RegisteredEffectStep):

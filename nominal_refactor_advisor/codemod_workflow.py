@@ -12,7 +12,6 @@ from pathlib import Path
 from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
-    ArchitectureGuardReport,
     ArchitectureGuardSuite,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
@@ -601,34 +600,33 @@ class CodemodFixpointIteration(
     finding_count: int
     recipe_count: int
     document: CodemodPlanDocument | None = None
-    simulation: CodemodSimulationReport | None = None
-    architecture_guard_report: ArchitectureGuardReport | None = None
+    simulation_result: CodemodPlanDocumentSimulation | None = None
     applied: bool = False
     stop_reason: CodemodWorkflowStopReason | None = None
 
     @property
     def applied_rewrite_count(self) -> int:
-        if self.simulation is None or not self.applied:
+        if self.simulation_result is None or not self.applied:
             return 0
-        return self.simulation.applied_rewrite_count
+        return self.simulation_result.simulation.applied_rewrite_count
 
     @property
     def simulated_rewrite_count(self) -> int:
-        if self.simulation is None:
+        if self.simulation_result is None:
             return 0
-        return self.simulation.applied_rewrite_count
+        return self.simulation_result.simulation.applied_rewrite_count
 
     @property
     def changed_file_paths(self) -> tuple[str, ...]:
-        if self.simulation is None:
+        if self.simulation_result is None:
             return ()
-        return self.simulation.changed_file_paths
+        return self.simulation_result.simulation.changed_file_paths
 
     @property
     def is_clean(self) -> bool:
-        if self.architecture_guard_report is None:
+        if self.simulation_result is None:
             return True
-        return self.architecture_guard_report.is_clean
+        return self.simulation_result.is_clean
 
     @property
     def stop_label(self) -> str:
@@ -655,11 +653,10 @@ class CodemodFixpointIteration(
         if self.document is not None:
             payload["document"] = self.document.to_dict()
         payload.update(self.synthesis_payload())
-        if self.simulation is not None:
-            payload["simulation"] = self.simulation.to_dict()
-        if self.architecture_guard_report is not None:
+        if self.simulation_result is not None:
+            payload["simulation"] = self.simulation_result.simulation.to_dict()
             payload["architecture_guard_report"] = (
-                self.architecture_guard_report.to_dict()
+                self.simulation_result.architecture_guard_report.to_dict()
             )
         if self.finding_delta is not None:
             payload["finding_delta"] = self.finding_delta.to_dict(
@@ -881,10 +878,7 @@ class CodemodFixpointIterationBuilder:
             ),
             document=self.plan.document,
             report=self.plan.report,
-            simulation=None if simulation is None else simulation.simulation,
-            architecture_guard_report=(
-                None if simulation is None else simulation.architecture_guard_report
-            ),
+            simulation_result=simulation,
             applied=applied,
             stop_reason=stop_reason,
         )

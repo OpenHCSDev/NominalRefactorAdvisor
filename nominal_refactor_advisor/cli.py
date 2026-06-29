@@ -35,7 +35,7 @@ from .analysis import (
 )
 from .analysis_cache import AnalysisCacheStatus, AnalysisFindingSummary
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
-from .cache_paths import default_parse_cache_dir
+from .cache_paths import ParseCachePolicy, default_parse_cache_dir
 from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
@@ -65,6 +65,7 @@ from .codemod import (
     CodemodSourceSnapshot,
     FindingRecipePlan,
     FindingRecipeSynthesisRecord,
+    FindingRecipeSynthesizer,
     JsonArray,
     JsonObject,
     JsonValue,
@@ -80,6 +81,7 @@ from .codemod import (
     SourceIndexTargetSelector,
     SourceRewriteTarget,
     apply_codemod_simulation,
+    codemod_plan_from_findings,
     codemod_candidates_from_impact_ranking,
     codemod_dsl_example_plan_payload,
     codemod_dsl_manifest,
@@ -234,8 +236,8 @@ _CLI_ARGUMENT_SPECS = (
             value_type=str,
             help=(
                 "JSON payload profile: agent, full, summary, or loop. The agent "
-                "profile is the default and skips observation graph payloads; "
-                "loop emits compact findings for fast edit cycles."
+                "profile is the default and skips source index and observation "
+                "graph payloads; loop emits compact findings for fast edit cycles."
             ),
         ),
         CliArgumentSpec(
@@ -748,8 +750,8 @@ _CLI_ARGUMENT_SPECS = (
             dest="codemod_goal_detectors",
             default=[],
             help=(
-                "Restrict --codemod-refactor-goal to findings from this detector "
-                "(can be repeated)."
+                "Restrict --codemod-refactor-goal and --codemod-synthesize-plan "
+                "to findings from this detector (can be repeated)."
             ),
         ),
         CliArgumentSpec(
@@ -836,6 +838,7 @@ class JsonFindingPayloadMode(Enum):
 
     full = "full"
     counts_only = "counts_only"
+    semantic_work_queue = "semantic_work_queue"
 
 
 class JsonFindingPayloadProjection:
@@ -917,9 +920,12 @@ class JsonPayloadProfile(Enum):
 
     full = JsonPayloadSections()
     agent = JsonPayloadSections(
+        source_index=False,
         observation_graph=False,
         observation_fibers=False,
+        finding_recipe_plan=False,
         payload_timing=True,
+        default_impact_ranking=False,
     )
     summary = JsonPayloadSections(
         source_index=False,
@@ -990,7 +996,7 @@ class JsonSummaryPreparseCachePolicy:
     json_enabled: bool
     payload_profile: JsonPayloadProfile
     load_bearing_ranking_enabled: bool
-    codemod_requested: bool
+    parsed_modules_required: bool
     analysis_cache_dir: Path | None
 
     @property
@@ -999,7 +1005,7 @@ class JsonSummaryPreparseCachePolicy:
             self.json_enabled
             and self.payload_profile.sections.lightweight_status_payload
             and not self.load_bearing_ranking_enabled
-            and not self.codemod_requested
+            and not self.parsed_modules_required
             and self.analysis_cache_dir is not None
         )
 
@@ -1039,9 +1045,7 @@ class JsonFindingPayloadEnvelope:
         return {
             "findings": self.finding_payload,
             "plans": self.plan_payload,
-            "finding_payload_mode": (
-                self.section_policy.finding_payload_mode.value
-            ),
+            "finding_payload_mode": (self.section_policy.finding_payload_mode.value),
             "finding_count": self.summary.finding_count,
             "finding_counts": JsonFindingCounts(self.summary).to_dict(),
         }
@@ -1084,6 +1088,7 @@ class JsonPayloadBuilder:
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
     payload_sections: JsonPayloadSections = JsonPayloadProfile.full.sections
+    raw_findings: bool = False
 
     def to_dict(self) -> JsonObject:
         payload_started = perf_counter()
@@ -1160,16 +1165,32 @@ class JsonPayloadBuilder:
                     codemod_candidates,
                 )
         semantic_refactor_gate_seconds = 0.0
+        semantic_gate_report = SemanticRefactorGateReport.inactive()
         if sections.semantic_refactor_gate:
             started = perf_counter()
-            payload["semantic_refactor_gate"] = (
-                SemanticRefactorGateReport.from_optional_scan(
-                    codemod_candidates,
-                    impact_ranking=self.impact_ranking,
-                    findings=tuple(self.findings),
-                ).to_dict()
+            semantic_gate_report = SemanticRefactorGateReport.from_optional_scan(
+                codemod_candidates,
+                impact_ranking=self.impact_ranking,
+                findings=tuple(self.findings),
             )
+            payload["semantic_refactor_gate"] = semantic_gate_report.to_dict()
+            if semantic_gate_report.active:
+                payload["findings"] = semantic_gate_report.finding_payload()
+                payload["finding_payload_mode"] = (
+                    JsonFindingPayloadMode.semantic_work_queue.value
+                )
+                payload["active_finding_surface"] = "semantic_refactor_work_queue"
+                payload["raw_findings_default"] = (
+                    semantic_gate_report.raw_findings_default
+                )
+                payload["supporting_raw_finding_count"] = len(self.findings)
+                if self.raw_findings:
+                    payload["supporting_raw_findings"] = [
+                        finding.to_dict() for finding in self.findings
+                    ]
             semantic_refactor_gate_seconds = round(perf_counter() - started, 3)
+        if not semantic_gate_report.active:
+            payload["active_finding_surface"] = "raw_findings"
         if sections.candidate_payload and codemod_candidates is not None:
             payload["codemod_candidates"] = tuple(
                 candidate.to_dict() for candidate in codemod_candidates
@@ -1193,6 +1214,7 @@ class JsonPayloadBuilder:
                 total_seconds=round(perf_counter() - payload_started, 3),
             ).to_dict()
         return payload
+
 
 STDIN_JSON_DOCUMENT_TOKEN = "-"
 
@@ -1307,7 +1329,9 @@ def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
     return CodemodTargetSelector.from_dict(cast(Mapping[str, JsonValue], payload))
 
 
-def cli_string_tuple(value: str | list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+def cli_string_tuple(
+    value: str | list[str] | tuple[str, ...] | None,
+) -> tuple[str, ...]:
     """Normalize an optional argparse string/list value into a tuple."""
 
     if value is None:
@@ -1318,7 +1342,9 @@ def cli_string_tuple(value: str | list[str] | tuple[str, ...] | None) -> tuple[s
         return tuple(cast(list[str], value))
     if isinstance(value, tuple):
         return value
-    raise TypeError(f"Expected CLI string value or sequence, got {type(value).__name__}")
+    raise TypeError(
+        f"Expected CLI string value or sequence, got {type(value).__name__}"
+    )
 
 
 @dataclass(frozen=True)
@@ -1411,9 +1437,9 @@ class SelectedOperationTargetSelectorSource(
 ):
     """Registered CLI source for selected-operation target selectors."""
 
-    __registry__: ClassVar[
-        dict[str, type["SelectedOperationTargetSelectorSource"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["SelectedOperationTargetSelectorSource"]]] = (
+        {}
+    )
     __registry_key__ = "source_id"
     __skip_if_no_key__ = True
     source_family_label = "selected-operation target selector"
@@ -1467,6 +1493,18 @@ class InlineSourceIndexSelectorCliField:
         return self.payload_field_name, self.value_reader(args)
 
 
+@dataclass(frozen=True)
+class CliOptionStringTupleValueReader:
+    option_name: str
+
+    @property
+    def argparse_dest_name(self) -> str:
+        return self.option_name.removeprefix("--").replace("-", "_")
+
+    def __call__(self, args: argparse.Namespace) -> tuple[str, ...]:
+        return cli_string_tuple(vars(args)[self.argparse_dest_name])
+
+
 class InlineSourceIndexSelectedOperationTargetSelectorSource(
     SelectedOperationTargetSelectorSource
 ):
@@ -1483,44 +1521,29 @@ class InlineSourceIndexSelectedOperationTargetSelectorSource(
         "--codemod-selected-qualname-pattern",
     )
     registry_order = 20
-    cli_fields: ClassVar[tuple[InlineSourceIndexSelectorCliField, ...]] = (
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-node-kind",
-            payload_field_name="node_kinds",
-            value_reader=lambda args: cli_string_tuple(args.codemod_selected_node_kind),
-        ),
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-file",
-            payload_field_name="file_paths",
-            value_reader=lambda args: cli_string_tuple(args.codemod_selected_file),
-        ),
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-qualname",
-            payload_field_name="qualnames",
-            value_reader=lambda args: cli_string_tuple(args.codemod_selected_qualname),
-        ),
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-file-pattern",
-            payload_field_name="file_path_patterns",
-            value_reader=lambda args: cli_string_tuple(
-                args.codemod_selected_file_pattern
-            ),
-        ),
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-name-pattern",
-            payload_field_name="name_patterns",
-            value_reader=lambda args: cli_string_tuple(
-                args.codemod_selected_name_pattern
-            ),
-        ),
-        InlineSourceIndexSelectorCliField(
-            option_name="--codemod-selected-qualname-pattern",
-            payload_field_name="qualname_patterns",
-            value_reader=lambda args: cli_string_tuple(
-                args.codemod_selected_qualname_pattern
-            ),
-        ),
+    cli_option_names: ClassVar[tuple[str, ...]] = (
+        "--codemod-selected-node-kind",
+        "--codemod-selected-file",
+        "--codemod-selected-qualname",
+        "--codemod-selected-file-pattern",
+        "--codemod-selected-name-pattern",
+        "--codemod-selected-qualname-pattern",
     )
+
+    @classmethod
+    def cli_fields(cls) -> tuple[InlineSourceIndexSelectorCliField, ...]:
+        return tuple(
+            InlineSourceIndexSelectorCliField(
+                option_name=option_name,
+                payload_field_name=selector_binding.field_name,
+                value_reader=CliOptionStringTupleValueReader(option_name),
+            )
+            for option_name, selector_binding in zip(
+                cls.cli_option_names,
+                SourceIndexTargetSelector.selector_payload_bindings,
+                strict=True,
+            )
+        )
 
     def is_supplied(self, args: argparse.Namespace) -> bool:
         return any(values for _, values in self.payload_items(args))
@@ -1546,7 +1569,7 @@ class InlineSourceIndexSelectedOperationTargetSelectorSource(
         self,
         args: argparse.Namespace,
     ) -> tuple[tuple[str, tuple[str, ...]], ...]:
-        return tuple(field.payload_item(args) for field in self.cli_fields)
+        return tuple(field.payload_item(args) for field in self.cli_fields())
 
 
 def load_codemod_operation_templates(
@@ -2078,9 +2101,7 @@ class CodemodAuthoringBundleWorkflowTemplate(
         )
 
 
-class ReplacementPlanAuthoringWorkflowTemplate(
-    CodemodAuthoringBundleWorkflowTemplate
-):
+class ReplacementPlanAuthoringWorkflowTemplate(CodemodAuthoringBundleWorkflowTemplate):
     workflow_id = CodemodAuthoringWorkflowId.REPLACEMENT_PLAN
     registry_order = 10
     description = (
@@ -2212,9 +2233,7 @@ class CodemodAuthoringBundleCommandTemplate(
 class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.RESOLVE_SELECTOR
     registry_order = 10
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-    )
+    required_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
 
     def command_args(
         self,
@@ -2230,12 +2249,8 @@ class ResolveSelectorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
 class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.SCAFFOLD_REPLACEMENT_PLAN
     registry_order = 20
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,
-    )
-    generated_artifact_roles = (
-        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
-    )
+    required_artifact_roles = (CodemodAuthoringArtifactRole.EVIDENCE_SELECTOR_FILE,)
+    generated_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
 
     def command_args(
         self,
@@ -2253,9 +2268,7 @@ class ScaffoldReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTempla
 class ValidateReplacementPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.VALIDATE_REPLACEMENT_PLAN
     registry_order = 30
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
-    )
+    required_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
 
     def command_args(
         self,
@@ -2273,9 +2286,7 @@ class ReplacementPlanExecutionCommandTemplate(
     ABC,
 ):
     execution_flag: ClassVar[str]
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,
-    )
+    required_artifact_roles = (CodemodAuthoringArtifactRole.REPLACEMENT_PLAN_FILE,)
 
     def command_args(
         self,
@@ -2301,7 +2312,9 @@ class ApplyReplacementPlanCommandTemplate(ReplacementPlanExecutionCommandTemplat
     execution_flag = "--codemod-apply"
 
 
-class ScaffoldSelectedOperationPlanCommandTemplate(CodemodAuthoringBundleCommandTemplate):
+class ScaffoldSelectedOperationPlanCommandTemplate(
+    CodemodAuthoringBundleCommandTemplate
+):
     action_id = CodemodAuthoringCommandActionId.SCAFFOLD_SELECTED_OPERATION_PLAN
     registry_order = 60
     required_artifact_roles = (
@@ -2378,9 +2391,7 @@ class ApplySelectedOperationPlanCommandTemplate(
 class RunGoalRefactorCommandTemplate(CodemodAuthoringBundleCommandTemplate):
     action_id = CodemodAuthoringCommandActionId.RUN_GOAL_REFACTOR
     registry_order = 100
-    generated_artifact_roles = (
-        CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,
-    )
+    generated_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
 
     def command_args(
         self,
@@ -2403,9 +2414,7 @@ class GoalReplayPlanExecutionCommandTemplate(
     ABC,
 ):
     execution_flag: ClassVar[str]
-    required_artifact_roles = (
-        CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,
-    )
+    required_artifact_roles = (CodemodAuthoringArtifactRole.GOAL_REPLAY_PLAN_FILE,)
 
     def command_args(
         self,
@@ -2486,7 +2495,9 @@ class CodemodAuthoringBundleWriter:
         write_cli_json_artifact(plan_path, scaffold.document.to_dict())
         write_cli_json_artifact(operation_template_path, operation_template.to_dict())
         write_cli_json_artifact(selected_scaffold_path, selected_scaffold.to_dict())
-        write_cli_json_artifact(selected_plan_path, selected_scaffold.document.to_dict())
+        write_cli_json_artifact(
+            selected_plan_path, selected_scaffold.document.to_dict()
+        )
         context = self.authoring_context(
             authoring_record.finding_id,
             selector_path,
@@ -2501,12 +2512,16 @@ class CodemodAuthoringBundleWriter:
         workflow_specs = self.workflow_specs(context)
         command_payloads = tuple(command.to_dict() for command in command_specs)
         workflow_payloads = tuple(workflow.to_dict() for workflow in workflow_specs)
-        workflow_readiness = CodemodAuthoringWorkflowPlanner.from_payloads(
-            command_payloads,
-            workflow_payloads,
-        ).bundle_readiness(
-            self.available_authoring_artifacts(context),
-        ).to_dict()
+        workflow_readiness = (
+            CodemodAuthoringWorkflowPlanner.from_payloads(
+                command_payloads,
+                workflow_payloads,
+            )
+            .bundle_readiness(
+                self.available_authoring_artifacts(context),
+            )
+            .to_dict()
+        )
         return {
             "record_index": record_index,
             "finding_id": authoring_record.finding_id,
@@ -2652,8 +2667,7 @@ class CodemodAuthoringBundleWriter:
         return tuple(
             context.bundle_relative_path(path)
             for path in (
-                context.artifact_path(role)
-                for role in CodemodAuthoringArtifactRole
+                context.artifact_path(role) for role in CodemodAuthoringArtifactRole
             )
             if path.exists()
         )
@@ -2743,18 +2757,8 @@ class CodemodSimulationPayload:
     unified_diff: str | None = None
 
     def to_dict(self) -> JsonObject:
-        payload: JsonObject = {
-            "backend": self.simulation.backend.value,
-            "applied": self.applied,
-            "applied_rewrite_count": self.simulation.applied_rewrite_count,
-            "changed_file_paths": self.simulation.changed_file_paths,
-            "validated_file_paths": self.simulation.validated_file_paths,
-            "parse_valid": self.simulation.parse_valid,
-            "parse_validation": self.simulation.parse_validation.to_dict(),
-            "rewrites": tuple(
-                rewrite.to_dict() for rewrite in self.simulation.rewrites
-            ),
-        }
+        payload = self.simulation.to_dict()
+        payload["applied"] = self.applied
         if self.post_guard_report is not None:
             payload["architecture_guard_report"] = self.post_guard_report.to_dict()
         if self.unified_diff is not None:
@@ -2936,20 +2940,24 @@ def format_plans_markdown(plans: list[RefactorPlan]) -> str:
         return "No subsystem plans."
     lines = ["Subsystem plans:"]
     for index, plan in enumerate(plans, start=1):
-        primary = PATTERN_SPECS[plan.primary_pattern_id]
+        pattern_sequence = plan.pattern_sequence
+        primary = PATTERN_SPECS[pattern_sequence.primary_pattern_id]
         order = " -> ".join(
-            (f"Pattern {pattern_id.value}" for pattern_id in plan.application_order)
+            (
+                f"Pattern {pattern_id.value}"
+                for pattern_id in pattern_sequence.ordered_pattern_ids
+            )
         )
         lines.append(f"{index}. {plan.subsystem}")
         lines.append(f"   - Summary: {plan.summary}")
         lines.append(
             f"   - Primary pattern: Pattern {primary.pattern_id.value}: {primary.name}"
         )
-        if plan.secondary_pattern_ids:
+        if pattern_sequence.secondary_pattern_ids:
             secondary = ", ".join(
                 (
                     f"Pattern {pattern_id.value}: {PATTERN_SPECS[pattern_id].name}"
-                    for pattern_id in plan.secondary_pattern_ids
+                    for pattern_id in pattern_sequence.secondary_pattern_ids
                 )
             )
             lines.append(f"   - Secondary patterns: {secondary}")
@@ -3027,11 +3035,12 @@ def format_execution_plan_markdown(
         ),
     ]
     for index, execution_class in enumerate(execution_plan.classes, start=1):
-        primary = PATTERN_SPECS[execution_class.primary_pattern_id]
+        pattern_sequence = execution_class.pattern_sequence
+        primary = PATTERN_SPECS[pattern_sequence.primary_pattern_id]
         order = " -> ".join(
             (
                 f"Pattern {pattern_id.value}"
-                for pattern_id in execution_class.application_order
+                for pattern_id in pattern_sequence.ordered_pattern_ids
             )
         )
         lines.append(f"{index}. {execution_class.subsystem}")
@@ -3196,13 +3205,13 @@ def format_codemod_applicability_markdown(
 
     semantic_agent_count = sum(
         (
-            candidate.applicability.automation_level
+            candidate.applicability.strategy.automation_level
             is CodemodAutomationLevel.SEMANTIC_AGENT_REQUIRED
             for candidate in candidates
         )
     )
     safe_count = sum(
-        (candidate.applicability.safe_to_apply for candidate in candidates)
+        (candidate.applicability.strategy.safe_to_apply for candidate in candidates)
     )
     ready_count = sum(
         (
@@ -3221,17 +3230,17 @@ def format_codemod_applicability_markdown(
     for index, candidate in enumerate(candidates[:10], start=1):
         applicability = candidate.applicability
         lines.append(
-            f"   - Candidate {index}: {applicability.automation_level.value} "
+            f"   - Candidate {index}: {applicability.strategy.automation_level.value} "
             f"`{candidate.opportunity_key.label}` -> "
             f"{candidate.target_count} target(s), "
             f"{candidate.predicted_removed_finding_count} finding(s), "
             f"{applicability.planned_rewrite_count} planned rewrite(s), "
             f"simulation {applicability.simulation_status.value}"
         )
-        lines.append(f"     strategy: {applicability.strategy_id}")
+        lines.append(f"     strategy: {applicability.strategy.strategy_id}")
         lines.append(f"     actionability: {applicability.actionability.value}")
         lines.append(f"     confidence basis: {applicability.confidence_basis}")
-        lines.append(f"     reason: {applicability.reason}")
+        lines.append(f"     reason: {applicability.strategy.reason}")
         lines.append(f"     agent action: {applicability.agent_action}")
     return "\n".join(lines)
 
@@ -3578,9 +3587,13 @@ class CodemodAuthoringStatusCliCommand(CliEarlyExitCommand):
 
     def run(self) -> int:
         try:
-            payload = CodemodAuthoringBundleStatusReporter.from_index_path(
-                self.args.codemod_authoring_status
-            ).status().to_dict()
+            payload = (
+                CodemodAuthoringBundleStatusReporter.from_index_path(
+                    self.args.codemod_authoring_status
+                )
+                .status()
+                .to_dict()
+            )
         except (OSError, json.JSONDecodeError, TypeError) as error:
             self.parser.error(str(error))
         print(json.dumps(payload, indent=2))
@@ -3707,18 +3720,17 @@ class CodemodComposeSequenceCliCommand(CliEarlyExitCommand):
 
 
 @dataclass(frozen=True)
-class ParseCacheDirAuthority:
+class ParseCacheDirAuthority(ParseCachePolicy):
     """Resolve the effective parse cache directory for one CLI root."""
 
     root: Path
-    requested_cache_dir: Path | None
-    use_parse_cache: bool
+    requested_parse_cache_dir: Path | None
 
-    def cache_dir(self) -> Path | None:
+    def parse_cache_dir(self) -> Path | None:
         if not self.use_parse_cache:
             return None
-        if self.requested_cache_dir is not None:
-            return self.requested_cache_dir
+        if self.requested_parse_cache_dir is not None:
+            return self.requested_parse_cache_dir
         return default_parse_cache_dir(self.root)
 
 
@@ -3877,7 +3889,9 @@ class CodemodCliExecution(
                 self.plan_sequence_guard_report(plan_sequence_simulation),
                 plan_sequence_simulation,
             )
-        candidate_simulation = snapshot.simulate_rewrites(self.candidate_rewrite_batch())
+        candidate_simulation = snapshot.simulate_rewrites(
+            self.candidate_rewrite_batch()
+        )
         active_snapshot = snapshot.with_simulation(candidate_simulation)
         if self.codemod_plan_sequence.has_recipes:
             plan_sequence_simulation = self.codemod_plan_sequence.simulate_snapshot(
@@ -3999,9 +4013,7 @@ class CodemodCliExecution(
                 unified_diff=self.optional_unified_diff(snapshot, simulation),
             ).to_dict()
             if plan_sequence_simulation is not None:
-                payload["plan_sequence_simulation"] = (
-                    plan_sequence_simulation.to_dict()
-                )
+                payload["plan_sequence_simulation"] = plan_sequence_simulation.to_dict()
             projected_findings = self.optional_projected_finding_report(
                 simulation,
                 enabled=self.execution_mode.project_findings,
@@ -4178,6 +4190,9 @@ class CodemodScanQueryMode:
     replacement_plan_selector_path: Path | None
     selected_operation_target_selector_source_labels: tuple[str, ...]
     selected_operation_template_source_labels: tuple[str, ...]
+    synthesis_has_registered_detector: bool
+    synthesis_execution_requested: bool
+    synthesis_authoring_requested: bool
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "CodemodScanQueryMode":
@@ -4193,6 +4208,21 @@ class CodemodScanQueryMode:
             selected_operation_template_source_labels=(
                 SelectedOperationTemplateSource.selected_source_labels(args)
             ),
+            synthesis_has_registered_detector=(
+                FindingRecipeSynthesizer.has_registered_detector(
+                    args.codemod_goal_detectors
+                )
+            ),
+            synthesis_execution_requested=(
+                args.codemod_preflight
+                or args.codemod_diff
+                or args.codemod_simulate
+                or args.codemod_apply
+            ),
+            synthesis_authoring_requested=(
+                args.codemod_synthesis_authoring
+                or args.codemod_authoring_bundle_out is not None
+            ),
         )
 
     @property
@@ -4202,6 +4232,18 @@ class CodemodScanQueryMode:
     @property
     def needs_analysis(self) -> bool:
         return not self.source_index
+
+    @property
+    def needs_source_snapshot(self) -> bool:
+        if not self.requested:
+            return False
+        if not self.synthesize_plan:
+            return True
+        return (
+            self.synthesis_execution_requested
+            or self.synthesis_authoring_requested
+            or self.synthesis_has_registered_detector
+        )
 
     @property
     def mode_count(self) -> int:
@@ -4294,12 +4336,23 @@ class CodemodSynthesizePlanCliCommand(CodemodScanQueryCliCommand):
 
     def run(self) -> int:
         self.require_valid_document_only_mode()
-        snapshot = self.required_source_snapshot()
-        finding_recipe_plan = snapshot.plan_from_findings(self.findings)
-        authoring_bundle = self.write_authoring_bundle_if_requested(
-            snapshot,
-            finding_recipe_plan,
-        )
+        detector_ids = tuple(self.args.codemod_goal_detectors)
+        snapshot = self.source_snapshot
+        if snapshot is None:
+            finding_recipe_plan = codemod_plan_from_findings(
+                self.findings,
+                detector_ids=detector_ids,
+            )
+            authoring_bundle = None
+        else:
+            finding_recipe_plan = snapshot.plan_from_findings(
+                self.findings,
+                detector_ids=detector_ids,
+            )
+            authoring_bundle = self.write_authoring_bundle_if_requested(
+                snapshot,
+                finding_recipe_plan,
+            )
         write_cli_json_artifact(
             self.args.codemod_plan_out,
             finding_recipe_plan.document.to_dict(),
@@ -4728,12 +4781,10 @@ class CodemodSelectedOperationPlanCliCommand(CodemodScanQueryCliCommand):
         snapshot: CodemodSourceSnapshot,
         selector: CodemodTargetSelector,
     ) -> CodemodSelectedOperationPlanScaffoldReport:
-        operation_plan_template = (
-            SelectedOperationTemplateSource.required_source(
-                self.args,
-                self.parser,
-            ).operation_plan_template(self.args, self.parser)
-        )
+        operation_plan_template = SelectedOperationTemplateSource.required_source(
+            self.args,
+            self.parser,
+        ).operation_plan_template(self.args, self.parser)
         return snapshot.selected_operation_plan_scaffold_report(
             selector,
             operation_plan_template,
@@ -4830,9 +4881,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.codemod_plan_out is not None and not codemod_plan_output_supported(args):
-        parser.error(
-            "--codemod-plan-out requires a plan-producing codemod command"
-        )
+        parser.error("--codemod-plan-out requires a plan-producing codemod command")
     if args.codemod_authoring_bundle_out is not None and not (
         args.codemod_synthesize_plan and args.codemod_synthesis_authoring
     ):
@@ -4852,6 +4901,7 @@ def main() -> int:
         json_payload_profile = JsonPayloadProfile.from_cli_value(args.json_payload)
     except ValueError as error:
         parser.error(str(error))
+    explicit_impact_ranking_request = args.include_impact_ranking is not None
     impact_ranking_policy = JsonPayloadImpactRankingPolicy(
         explicit_request=args.include_impact_ranking,
         json_enabled=args.json,
@@ -4891,16 +4941,22 @@ def main() -> int:
         )
     if args.codemod_fixpoint_plan_out is not None and not args.codemod_fixpoint:
         parser.error("--codemod-fixpoint-plan-out requires --codemod-fixpoint")
-    if (
-        args.codemod_goal_plan_out is not None
-        and args.codemod_refactor_goal is None
-    ):
+    if args.codemod_goal_plan_out is not None and args.codemod_refactor_goal is None:
         parser.error("--codemod-goal-plan-out requires --codemod-refactor-goal")
     codemod_plan_sequence = (
         load_codemod_plan_sequence(args.codemod_plan)
         if args.codemod_plan is not None
         else CodemodPlanSequence()
     )
+    if (
+        codemod_requested
+        and not explicit_impact_ranking_request
+        and not args.codemod_fixpoint
+        and args.codemod_refactor_goal is None
+        and not codemod_scan_query_mode.requested
+        and not codemod_plan_sequence.has_recipes
+    ):
+        args.include_impact_ranking = True
     if args.codemod_fixpoint and args.codemod_fixpoint_max_iterations < 1:
         parser.error("--codemod-fixpoint-max-iterations must be at least 1")
     if (
@@ -4924,9 +4980,9 @@ def main() -> int:
     if args.calibrate is not None:
         parse_cache_dir = ParseCacheDirAuthority(
             root=args.calibrate.parent,
-            requested_cache_dir=args.cache_dir,
+            requested_parse_cache_dir=args.cache_dir,
             use_parse_cache=args.use_parse_cache,
-        ).cache_dir()
+        ).parse_cache_dir()
         calibration_report = run_calibration_manifest(
             args.calibrate,
             config=config,
@@ -4953,9 +5009,9 @@ def main() -> int:
     root = path_scope.primary_analysis_root
     parse_cache_dir = ParseCacheDirAuthority(
         root=root,
-        requested_cache_dir=args.cache_dir,
+        requested_parse_cache_dir=args.cache_dir,
         use_parse_cache=args.use_parse_cache,
-    ).cache_dir()
+    ).parse_cache_dir()
     analysis_cache_dir = analysis_cache_dir_for_root(
         root,
         parse_cache_dir,
@@ -5006,11 +5062,15 @@ def main() -> int:
             fail_on_proof_regression=args.fail_on_proof_regression,
         ).exit_code()
 
+    emitted_semantic_refactor_gate = (
+        args.json and json_payload_profile.sections.semantic_refactor_gate
+    ) or args.plans_only
     try:
         SemanticRefactorGateMode.from_flags(
             include_impact_ranking=args.include_impact_ranking
             or args.codemod_fixpoint
             or codemod_scan_query_mode.requested,
+            semantic_refactor_gate=emitted_semantic_refactor_gate,
             raw_findings=(
                 args.raw_findings
                 or impact_ranking_policy.lightweight_profile_acknowledges_raw_findings
@@ -5024,7 +5084,12 @@ def main() -> int:
             json_enabled=args.json,
             payload_profile=json_payload_profile,
             load_bearing_ranking_enabled=args.include_impact_ranking,
-            codemod_requested=codemod_requested,
+            parsed_modules_required=(
+                args.codemod_fixpoint
+                or args.codemod_refactor_goal is not None
+                or codemod_plan_sequence.has_recipes
+                or codemod_scan_query_mode.needs_source_snapshot
+            ),
             analysis_cache_dir=analysis_cache_dir,
         )
         fast_cache_result = None
@@ -5033,15 +5098,13 @@ def main() -> int:
             fast_cache_request = CachedPathAnalysisRequest(
                 roots=roots,
                 config=config,
-                cache_dir=parse_cache_dir,
+                parse_cache_dir=parse_cache_dir,
                 use_parse_cache=args.use_parse_cache,
                 parse_workers=args.parse_workers,
                 analysis_workers=args.analysis_workers,
                 source_policy=source_policy,
             )
-            fast_cache_authority = FastCachedPathAnalysisAuthority(
-                fast_cache_request
-            )
+            fast_cache_authority = FastCachedPathAnalysisAuthority(fast_cache_request)
             if (
                 json_payload_profile is JsonPayloadProfile.loop
                 and not path_scope.has_report_filter
@@ -5190,7 +5253,7 @@ def main() -> int:
     if (
         args.include_impact_ranking
         or codemod_plan_sequence.has_recipes
-        or codemod_scan_query_mode.requested
+        or codemod_scan_query_mode.needs_source_snapshot
     ):
         started = perf_counter()
         source_snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -5282,6 +5345,7 @@ def main() -> int:
                     scan_guard_report=architecture_guard_report,
                     source_snapshot=source_snapshot,
                     payload_sections=json_payload_profile.sections,
+                    raw_findings=args.raw_findings,
                 ).to_dict(),
                 indent=2,
             )

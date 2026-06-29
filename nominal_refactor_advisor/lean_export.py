@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 import json
 from pathlib import Path
-from typing import Any, ClassVar, Mapping
+from typing import ClassVar, Mapping, TypeAlias
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -25,7 +25,12 @@ from .taxonomy import ObservationTag
 LEAN_EXPORT_SCHEMA = "nominal_refactor_advisor.lean_export.v1"
 
 
-JsonObject = Mapping[str, Any]
+JsonScalar: TypeAlias = str | int | float | bool | None
+JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
+
+
+class JsonObject(dict[str, JsonValue]):
+    """Nominal JSON object at the Lean export boundary."""
 
 
 class LeanExportError(ValueError):
@@ -34,7 +39,7 @@ class LeanExportError(ValueError):
 
 def _object(value: object, context: str) -> JsonObject:
     if isinstance(value, Mapping):
-        return value
+        return JsonObject(value)
     raise LeanExportError(f"{context} must be a JSON object")
 
 

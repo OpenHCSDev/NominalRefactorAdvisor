@@ -204,6 +204,13 @@ class FiberGeometry(
 
 
 @dataclass(frozen=True)
+class DispatchAxisExpression:
+    """Source expression that selects one semantic axis at a boundary."""
+
+    dispatch_axis_expression: str
+
+
+@dataclass(frozen=True)
 class AxisPoint(Generic[ObjectT, AxisT]):
     """One semantic object represented as a finite axis-value tuple."""
 
@@ -239,11 +246,36 @@ class AxisPoint(Generic[ObjectT, AxisT]):
 
 
 @dataclass(frozen=True)
+class VertexIndexEdge:
+    left: int
+    right: int
+
+    @classmethod
+    def from_indices(cls, first_index: int, second_index: int) -> "VertexIndexEdge":
+        return (
+            cls(first_index, second_index)
+            if first_index < second_index
+            else cls(second_index, first_index)
+        )
+
+    @classmethod
+    def from_distinct_indices(
+        cls, first_index: int, second_index: int
+    ) -> "VertexIndexEdge | None":
+        if first_index == second_index:
+            return None
+        return cls.from_indices(first_index, second_index)
+
+    def as_pair(self) -> tuple[int, int]:
+        return (self.left, self.right)
+
+
+@dataclass(frozen=True)
 class ConfusabilityGraph(Generic[ObjectT]):
     """Undirected confusability graph over finite semantic objects."""
 
     vertices: tuple[ObjectT, ...]
-    edges: tuple[tuple[int, int], ...]
+    edges: tuple[VertexIndexEdge, ...]
 
     @property
     def edge_count(self) -> int:
@@ -252,22 +284,23 @@ class ConfusabilityGraph(Generic[ObjectT]):
     @property
     def edge_objects(self) -> ObjectEdgePairs[ObjectT]:
         return tuple(
-            ((self.vertices[left], self.vertices[right]) for left, right in self.edges)
+            (
+                (self.vertices[edge.left], self.vertices[edge.right])
+                for edge in self.edges
+            )
         )
 
     def adjacent(self, left: int, right: int) -> bool:
-        if left == right:
-            return False
-        edge = (left, right) if left < right else (right, left)
-        return edge in self.edges
+        edge = VertexIndexEdge.from_distinct_indices(left, right)
+        return edge is not None and edge in self.edges
 
     def _connected_component_indices(self) -> tuple[tuple[int, ...], ...]:
         adjacency: dict[int, set[int]] = {
             index: set() for index in range(len(self.vertices))
         }
-        for left, right in self.edges:
-            adjacency[left].add(right)
-            adjacency[right].add(left)
+        for edge in self.edges:
+            adjacency[edge.left].add(edge.right)
+            adjacency[edge.right].add(edge.left)
         unseen = set(adjacency)
         components: list[tuple[int, ...]] = []
         while unseen:
@@ -301,7 +334,7 @@ class ConfusabilityGraph(Generic[ObjectT]):
         edge_set = set(self.edges)
         for component in self._connected_component_indices():
             for left, right in combinations(component, 2):
-                if (min(left, right), max(left, right)) not in edge_set:
+                if VertexIndexEdge.from_indices(left, right) not in edge_set:
                     return False
         return True
 
@@ -433,12 +466,12 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
         self, view_axes: Iterable[Iterable[AxisT]]
     ) -> ConfusabilityGraph[ObjectT]:
         view_axis_sets = tuple((frozenset(view) for view in view_axes))
-        edges: list[tuple[int, int]] = []
+        edges: list[VertexIndexEdge] = []
         for left_index, right_index in combinations(range(len(self.points)), 2):
             left = self.points[left_index]
             right = self.points[right_index]
             if any((self.axis_equal(left, right, view) for view in view_axis_sets)):
-                edges.append((left_index, right_index))
+                edges.append(VertexIndexEdge.from_indices(left_index, right_index))
         return ConfusabilityGraph(self.semantic_objects, tuple(edges))
 
 

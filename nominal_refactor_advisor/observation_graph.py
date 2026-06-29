@@ -10,8 +10,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
-from functools import cached_property
-from typing import TYPE_CHECKING, TypeAlias, cast
+from functools import cached_property, lru_cache
+from typing import TYPE_CHECKING, TypeAlias
 
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import CollectionAttributeProjection
@@ -60,12 +60,14 @@ class StructuralExecutionLevel(StrEnum):
 
 _ObservationAxis: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel]
 _FiberGroupKey: TypeAlias = tuple[ObservationKind, StructuralExecutionLevel, str]
-_CoherenceCohortCacheKey: TypeAlias = tuple[
-    ObservationKind,
-    StructuralExecutionLevel,
-    int,
-    int,
-]
+
+
+@dataclass(frozen=True)
+class _CoherenceCohortCacheKey:
+    observation_kind: ObservationKind
+    execution_level: StructuralExecutionLevel
+    minimum_witnesses: int
+    minimum_fibers: int
 
 
 @dataclass(frozen=True)
@@ -99,23 +101,6 @@ class StructuralObservationCarrier(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class SortedObservationAttribute:
-    """Descriptor for sorted unique string projections from an observation group."""
-
-    attribute_name: str
-
-    def __get__(
-        self,
-        instance: ObservationGroup | None,
-        owner: type[ObservationGroup],
-    ) -> tuple[str, ...] | SortedObservationAttribute:
-        del owner
-        if instance is None:
-            return self
-        return instance.sorted_observation_attribute(self.attribute_name)
-
-
-@dataclass(frozen=True)
 class ObservationGroup(metaclass=AutoRegisterMeta):
     """Common carrier for grouped observations under one structural axis."""
 
@@ -126,11 +111,6 @@ class ObservationGroup(metaclass=AutoRegisterMeta):
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     observations: tuple[StructuralObservation, ...]
-
-    def sorted_observation_attribute(self, attribute_name: str) -> tuple[str, ...]:
-        return sorted_tuple(
-            {cast(str, getattr(item, attribute_name)) for item in self.observations}
-        )
 
 
 @dataclass(frozen=True)
@@ -143,7 +123,9 @@ class ObservationFiber(ObservationGroup):
     def observed_name(self) -> str:
         return self.observations[0].observed_name
 
-    nominal_witnesses = SortedObservationAttribute("nominal_witness")
+    @property
+    def nominal_witnesses(self) -> tuple[str, ...]:
+        return sorted_tuple({item.nominal_witness for item in self.observations})
 
 
 @dataclass(frozen=True)
@@ -152,8 +134,18 @@ class NominalWitnessGroup(ObservationGroup):
 
     nominal_witness: str
 
-    observed_names = SortedObservationAttribute("observed_name")
-    fiber_keys = SortedObservationAttribute("fiber_key")
+    @property
+    def observed_names(self) -> tuple[str, ...]:
+        return sorted_tuple({item.observed_name for item in self.observations})
+
+    @property
+    def fiber_keys(self) -> tuple[str, ...]:
+        return sorted_tuple({item.fiber_key for item in self.observations})
+
+
+_WitnessGroupsByAxis: TypeAlias = dict[
+    _ObservationAxis, tuple[NominalWitnessGroup, ...]
+]
 
 
 @dataclass(frozen=True)
@@ -253,7 +245,7 @@ class ObservationGraph:
     @cached_property
     def _witness_groups_by_axis(
         self,
-    ) -> dict[_ObservationAxis, tuple[NominalWitnessGroup, ...]]:
+    ) -> _WitnessGroupsByAxis:
         grouped_by_axis: dict[
             _ObservationAxis, dict[str, list[StructuralObservation]]
         ] = {}
@@ -263,7 +255,7 @@ class ObservationGraph:
                 observation.nominal_witness, []
             ).append(observation)
 
-        groups_by_axis: dict[_ObservationAxis, tuple[NominalWitnessGroup, ...]] = {}
+        groups_by_axis: _WitnessGroupsByAxis = {}
         for (observation_kind, execution_level), grouped in grouped_by_axis.items():
             groups = [
                 NominalWitnessGroup(
@@ -293,11 +285,11 @@ class ObservationGraph:
         minimum_witnesses: int = 2,
         minimum_fibers: int = 2,
     ) -> tuple[ObservationCohort, ...]:
-        cache_key = (
-            observation_kind,
-            execution_level,
-            minimum_witnesses,
-            minimum_fibers,
+        cache_key = _CoherenceCohortCacheKey(
+            observation_kind=observation_kind,
+            execution_level=execution_level,
+            minimum_witnesses=minimum_witnesses,
+            minimum_fibers=minimum_fibers,
         )
         cached = self._coherence_cohorts_cache.get(cache_key)
         if cached is not None:
@@ -383,6 +375,13 @@ def collect_structural_observations(
     parsed_module: ParsedModule,
 ) -> tuple[StructuralObservation, ...]:
     """Collect and sort structural observations for one parsed module."""
+    return _collect_structural_observations_cached(parsed_module)
+
+
+@lru_cache(maxsize=None)
+def _collect_structural_observations_cached(
+    parsed_module: ParsedModule,
+) -> tuple[StructuralObservation, ...]:
     from .ast_tools import CollectedFamily, collect_family_items
 
     observations: list[StructuralObservation] = []
@@ -401,6 +400,13 @@ def collect_structural_observations(
 
 def build_observation_graph(modules: list[ParsedModule]) -> ObservationGraph:
     """Build one observation graph from a list of parsed modules."""
+    return _build_observation_graph_cached(tuple(modules))
+
+
+@lru_cache(maxsize=None)
+def _build_observation_graph_cached(
+    modules: tuple[ParsedModule, ...],
+) -> ObservationGraph:
     observations: list[StructuralObservation] = []
     for module in modules:
         observations.extend(collect_structural_observations(module))

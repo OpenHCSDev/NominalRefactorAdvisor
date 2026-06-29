@@ -9,7 +9,6 @@ from enum import Enum
 from typing import Generic, Hashable, TypeVar
 
 from .collection_algebra import sorted_tuple
-from .record_algebra import product_record
 
 KeyT = TypeVar("KeyT", bound=Hashable)
 RowT = TypeVar("RowT")
@@ -17,38 +16,35 @@ ValueT = TypeVar("ValueT")
 EnumT = TypeVar("EnumT", bound=Enum)
 
 
-_PROOF_RECORD_DECLARATIONS = (
-    (
-        "ExhaustivePolicyProof",
-        "expected_keys: frozenset[Hashable]; actual_keys: frozenset[Hashable]",
-        "Runtime proof that a finite policy catalog covers exactly one closed key set.",
-    ),
-    (
-        "ProjectionSurfaceCoverageProof",
-        (
-            "surface_names: tuple[str, ...]; expected_keys: frozenset[Hashable]; "
-            "decompression_keys: Mapping[str, str]"
-        ),
-        "Proof that several derived surfaces cover the same finite semantic axis.",
-    ),
-    (
-        "InjectiveTypeRegistryProof",
-        (
-            "key_axis_name: str; registered_type_names: tuple[str, ...]; "
-            "key_names: tuple[str, ...]; duplicate_key_names: tuple[str, ...]; "
-            "duplicate_type_names: tuple[str, ...]; missing_type_names: tuple[str, ...]; "
-            "reverse_lookup_names: tuple[str, ...]; consumer_symbols: tuple[str, ...]"
-        ),
-        "Proof that one nominal registry axis maps each concrete type to one stable key.",
-    ),
-)
+@dataclass(frozen=True)
+class ExhaustivePolicyProof:
+    """Runtime proof that a finite policy catalog covers exactly one closed key set."""
 
-globals().update(
-    {
-        name: product_record(name, schema, doc=doc)
-        for name, schema, doc in _PROOF_RECORD_DECLARATIONS
-    }
-)
+    expected_keys: frozenset[Hashable]
+    actual_keys: frozenset[Hashable]
+
+
+@dataclass(frozen=True)
+class ProjectionSurfaceCoverageProof:
+    """Proof that several derived surfaces cover the same finite semantic axis."""
+
+    surface_names: tuple[str, ...]
+    expected_keys: frozenset[Hashable]
+    decompression_keys: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class InjectiveTypeRegistryProof:
+    """Proof that one nominal registry axis maps each concrete type to one stable key."""
+
+    key_axis_name: str
+    registered_type_names: tuple[str, ...]
+    key_names: tuple[str, ...]
+    duplicate_key_names: tuple[str, ...]
+    duplicate_type_names: tuple[str, ...]
+    missing_type_names: tuple[str, ...]
+    reverse_lookup_names: tuple[str, ...]
+    consumer_symbols: tuple[str, ...]
 
 
 def _injective_type_registry_proof(

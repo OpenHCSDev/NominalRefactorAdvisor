@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Generic, TypeVar
 
-from .record_algebra import product_record
+ConstructorValueT = TypeVar("ConstructorValueT")
+ConstructedRecordT = TypeVar("ConstructedRecordT")
 
 
 @dataclass(frozen=True)
@@ -18,27 +19,44 @@ class ConstructorParameterField:
     def source_name(self) -> str:
         return self.parameter_name or self.field_name
 
+    @classmethod
+    def from_assignment(
+        cls,
+        *,
+        field_name: str,
+        parameter_names: Sequence[str],
+        value_references: frozenset[str],
+    ) -> "ConstructorParameterField | None":
+        if field_name in parameter_names:
+            return cls(field_name)
+        for parameter_name in parameter_names:
+            if parameter_name not in value_references:
+                continue
+            return cls(field_name, parameter_name)
+        return None
 
-ConstructorDerivedField = product_record(
-    "ConstructorDerivedField",
-    "field_name: str; resolver: Callable[[Mapping[str, Any]], Any]",
-)
 
-ConstructorConstant = product_record(
-    "ConstructorConstant",
-    "field_name: str; value: Any",
-)
+@dataclass(frozen=True)
+class ConstructorDerivedField(Generic[ConstructorValueT]):
+    field_name: str
+    resolver: Callable[[Mapping[str, ConstructorValueT]], ConstructorValueT]
+
+
+@dataclass(frozen=True)
+class ConstructorConstant(Generic[ConstructorValueT]):
+    field_name: str
+    value: ConstructorValueT
 
 
 def _bind_constructor_parameters(
     method_name: str,
     parameter_names: Sequence[str],
-    args: tuple[Any, ...],
-    kwargs: Mapping[str, Any],
-) -> dict[str, Any]:
+    args: tuple[ConstructorValueT, ...],
+    kwargs: Mapping[str, ConstructorValueT],
+) -> dict[str, ConstructorValueT]:
     if len(args) > len(parameter_names):
         raise TypeError(f"{method_name} received too many positional arguments")
-    bound: dict[str, Any] = dict(zip(parameter_names, args, strict=False))
+    bound: dict[str, ConstructorValueT] = dict(zip(parameter_names, args, strict=False))
     unexpected = set(kwargs) - set(parameter_names)
     if unexpected:
         names = ", ".join(sorted(unexpected))
@@ -56,12 +74,12 @@ def _bind_constructor_parameters(
 
 
 @dataclass(frozen=True)
-class ConstructorVariantSpec:
+class ConstructorVariantSpec(Generic[ConstructorValueT]):
     method_name: str
     parameters: tuple[str, ...]
     parameter_fields: tuple[ConstructorParameterField | str, ...] = ()
-    derived_fields: tuple[ConstructorDerivedField, ...] = ()
-    constants: tuple[ConstructorConstant, ...] = ()
+    derived_fields: tuple[ConstructorDerivedField[ConstructorValueT], ...] = ()
+    constants: tuple[ConstructorConstant[ConstructorValueT], ...] = ()
 
     @property
     def projected_parameter_fields(self) -> tuple[ConstructorParameterField, ...]:
@@ -72,7 +90,11 @@ class ConstructorVariantSpec:
         )
 
     def derived_method(self) -> classmethod:
-        def method(cls: type[Any], *args: Any, **kwargs: Any) -> Any:
+        def method(
+            cls: type[ConstructedRecordT],
+            *args: ConstructorValueT,
+            **kwargs: ConstructorValueT,
+        ) -> ConstructedRecordT:
             bound = _bind_constructor_parameters(
                 self.method_name, self.parameters, args, kwargs
             )
@@ -97,8 +119,8 @@ class ConstructorVariantSpec:
 
 
 @dataclass(frozen=True)
-class ConstructorVariantCatalog:
-    variants: tuple[ConstructorVariantSpec, ...]
+class ConstructorVariantCatalog(Generic[ConstructorValueT]):
+    variants: tuple[ConstructorVariantSpec[ConstructorValueT], ...]
 
     def derived_methods(self) -> tuple[classmethod, ...]:
         return tuple((variant.derived_method() for variant in self.variants))

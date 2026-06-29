@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
-from .record_algebra import (
-    materialize_product_record,
-    materialize_product_records,
-    product_record_spec,
-)
-
 import inspect
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-# fmt: off
-materialize_product_record(product_record_spec('PublicExportPolicy', 'module_name: str; types_only: bool; allow_callables: bool; include_enums: bool; exclude_abstract: bool; root_types: tuple[type[object], ...]; explicit_names: frozenset[str]', defaults={'types_only': True, 'allow_callables': False, 'include_enums': False, 'exclude_abstract': False, 'root_types': (), 'explicit_names': frozenset()}, doc="Declarative policy for deriving a module's public export surface."))
-# fmt: on
+
+@dataclass(frozen=True)
+class PublicExportPolicy:
+    """Declarative policy for deriving a module's public export surface."""
+
+    module_name: str
+    types_only: bool = True
+    allow_callables: bool = False
+    include_enums: bool = False
+    exclude_abstract: bool = False
+    root_types: tuple[type[object], ...] = ()
+    explicit_names: frozenset[str] = frozenset()
 
 
 def matches_public_export_policy(
@@ -27,7 +30,8 @@ def matches_public_export_policy(
         return False
     if name in policy.explicit_names:
         return True
-    if getattr(value, "__module__", None) != policy.module_name:
+    module = inspect.getmodule(value)
+    if module is None or module.__name__ != policy.module_name:
         return False
     if policy.types_only and (not isinstance(value, type)):
         return False

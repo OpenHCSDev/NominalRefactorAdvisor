@@ -17,7 +17,6 @@ from typing import Generic, Hashable, TypeAlias, TypeVar
 
 from .collection_algebra import sorted_tuple
 from .descriptor_algebra import AliasProperty, CollectionAttributeProjection
-from .record_algebra import materialize_product_records, product_record_spec
 from .registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE, class_name_registry_key
 from .semantic_algebra import FiniteAxisSystem, ObjectFamilyShape, structural_key
 from .semantic_description_length import CompressionCertificate, SemanticCostVector
@@ -1239,50 +1238,77 @@ class AxisIndependenceModel:
         )
 
 
-materialize_product_records(
-    (
-        product_record_spec(
-            "SuppressedExplanation",
-            "explanation: CompressibleExplanation; selected_by: CompressibleExplanation | None; reason: str",
-            doc="One MDL explanation rejected in favor of a shorter cover.",
-        ),
-        product_record_spec(
-            "MDLCompetitionResult",
-            "selected: tuple[CompressibleExplanation, ...]; suppressed: tuple[SuppressedExplanation, ...]",
-            doc="Shortest selected MDL cover plus rejected explanations.",
-        ),
-        product_record_spec(
-            "OwnershipProjection",
-            "owner_name: str; projection_name: str; target_name: str",
-            doc="One directed ownership projection edge.",
-        ),
-        product_record_spec(
-            "ProjectionDiagram",
-            "source_name: str; target_name: str; paths: tuple[ProjectionPath, ...]",
-            doc="All projection paths connecting one source-target semantic pair.",
-        ),
-        product_record_spec(
-            "SubmodularMDLSelection",
-            "selected: tuple[CompressibleExplanation, ...]; objective_value: int",
-            doc="Selected explanations under a diminishing-return coverage objective.",
-        ),
-        product_record_spec(
-            "InheritanceResidueProfile",
-            "classvar_names: tuple[str, ...]; property_hook_names: tuple[str, ...]; behavior_hook_names: tuple[str, ...]",
-            doc="Residual subclass surface left after shared inheritance behavior moves upward.",
-        ),
-        product_record_spec(
-            "InheritanceMethodSpec",
-            "method_name: str; class_names: tuple[str, ...]; shared_statement_count: int; residue: InheritanceResidueProfile",
-            doc="One repeated method family available to inheritance design search.",
-        ),
-        product_record_spec(
-            "InheritanceSearchResult",
-            "best_design: InheritanceDesign | None; suppressed_designs: tuple[InheritanceDesign, ...]",
-            doc="Best hierarchy design plus dominated alternatives.",
-        ),
-    )
-)
+@dataclass(frozen=True)
+class SuppressedExplanation:
+    """One MDL explanation rejected in favor of a shorter cover."""
+
+    explanation: CompressibleExplanation
+    selected_by: CompressibleExplanation | None
+    reason: str
+
+
+@dataclass(frozen=True)
+class MDLCompetitionResult:
+    """Shortest selected MDL cover plus rejected explanations."""
+
+    selected: tuple[CompressibleExplanation, ...]
+    suppressed: tuple[SuppressedExplanation, ...]
+
+
+@dataclass(frozen=True)
+class OwnershipProjection:
+    """One directed ownership projection edge."""
+
+    owner_name: str
+    projection_name: str
+    target_name: str
+
+
+@dataclass(frozen=True)
+class ProjectionDiagram:
+    """All projection paths connecting one source-target semantic pair."""
+
+    source_name: str
+    target_name: str
+    paths: tuple[ProjectionPath, ...]
+
+
+@dataclass(frozen=True)
+class SubmodularMDLSelection:
+    """Selected explanations under a diminishing-return coverage objective."""
+
+    selected: tuple[CompressibleExplanation, ...]
+    objective_value: int
+
+
+@dataclass(frozen=True)
+class ResidueHookNamesCarrier:
+    classvar_names: tuple[str, ...]
+    property_hook_names: tuple[str, ...]
+    behavior_hook_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class InheritanceResidueProfile(ResidueHookNamesCarrier):
+    """Residual subclass surface left after shared inheritance behavior moves upward."""
+
+
+@dataclass(frozen=True)
+class InheritanceMethodSpec:
+    """One repeated method family available to inheritance design search."""
+
+    method_name: str
+    class_names: tuple[str, ...]
+    shared_statement_count: int
+    residue: InheritanceResidueProfile
+
+
+@dataclass(frozen=True)
+class InheritanceSearchResult:
+    """Best hierarchy design plus dominated alternatives."""
+
+    best_design: InheritanceDesign | None
+    suppressed_designs: tuple[InheritanceDesign, ...]
 
 
 @dataclass(frozen=True)
