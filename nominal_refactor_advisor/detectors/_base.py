@@ -691,6 +691,15 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         )
 
     @classmethod
+    def semantic_mirror_authority_evidence_indices(cls) -> dict[str, int | None]:
+        return {
+            detector_id: detector_type.semantic_mirror_authority_evidence_index
+            for detector_type in cls.registered_detector_types()
+            for detector_id in (detector_type.effective_detector_id(),)
+            if detector_id is not None and detector_type.semantic_mirror_role
+        }
+
+    @classmethod
     def _detector_ids_for_role(
         cls,
         role_predicate: Callable[[type["IssueDetector"]], bool],

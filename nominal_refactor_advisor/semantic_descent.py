@@ -17,6 +17,7 @@ import pickle
 import re
 import sys
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -36,7 +37,13 @@ from .class_index import (
     build_class_family_index,
 )
 from .collection_algebra import sorted_tuple
-from .models import SourceLocation
+from .models import (
+    FindingMetrics,
+    MappingMetrics,
+    RefactorFinding,
+    RegistrationMetrics,
+    SourceLocation,
+)
 from .registry_identity import AutoRegisterClassAuthority, class_name_registry_key
 from .semantic_identity import SemanticRoleIdentityToken
 
@@ -109,6 +116,16 @@ class SemanticAuthorityKind(StrEnum):
         "Move the case table behind `{authority_name}` or derive it by iterating "
         "enum members. Matched members: {matched_names}.",
     )
+    FINDING_DECLARED_AUTHORITY = (
+        "finding_declared_authority",
+        False,
+        "detector-declared semantic mirror authority",
+        False,
+        "# Replace the detector-observed mirror `{authority_name}` with a "
+        "projection derived from its nominal authority.",
+        "Derive `{authority_name}` from the nominal authority instead of "
+        "maintaining the detector-observed mirror. Matched facts: {matched_names}.",
+    )
 
     def __new__(
         cls,
@@ -155,6 +172,7 @@ class SemanticFactKind(StrEnum):
     CLASS_MEMBER = "class_member"
     DATACLASS_FIELD = "dataclass_field"
     ENUM_MEMBER = "enum_member"
+    FINDING_EVIDENCE = "finding_evidence"
 
 
 class PresentationProjectionKind(StrEnum):
@@ -162,6 +180,7 @@ class PresentationProjectionKind(StrEnum):
 
     CALL_LITERAL = "call_literal"
     COLLECTION_LITERAL = "collection_literal"
+    DETECTOR_FINDING = "detector_finding"
     MAPPING_LITERAL = "mapping_literal"
     BRANCH_LITERAL = "branch_literal"
     MATCH_LITERAL = "match_literal"
@@ -695,6 +714,12 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
         )
 
 
+class FindingDeclaredAuthorityMirrorPolicy(SemanticAuthorityMirrorPolicy):
+    """Mirror policy for detector findings projected into the descent graph."""
+
+    authority_kind = SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
+
+
 @dataclass(frozen=True)
 class _FactTokenReference(SemanticFactReference):
     """Indexed lookup row from one normalized token to one semantic fact."""
@@ -920,6 +945,302 @@ class SemanticDescentGraph(SemanticDescentGraphSpace):
 
     mirror_edges: tuple[MirrorEdge, ...]
     certificates: tuple[DescentCertificate, ...]
+
+
+def semantic_descent_finding_authority_id(finding: RefactorFinding) -> str:
+    return f"finding:{finding.stable_id}:authority"
+
+
+def semantic_descent_finding_projection_id(finding: RefactorFinding) -> str:
+    return f"finding:{finding.stable_id}:projection"
+
+
+@dataclass(frozen=True)
+class FindingBackedSemanticDescentGraphRequest:
+    """Graph request for detector findings already classified as semantic mirrors."""
+
+    findings: tuple[RefactorFinding, ...]
+    semantic_mirror_detector_ids: frozenset[str]
+    authority_evidence_indices: tuple[tuple[str, int | None], ...] = ()
+
+    @classmethod
+    def from_inputs(
+        cls,
+        findings: tuple[RefactorFinding, ...],
+        *,
+        semantic_mirror_detector_ids: frozenset[str],
+        authority_evidence_index_by_detector_id: Mapping[str, int | None],
+    ) -> "FindingBackedSemanticDescentGraphRequest":
+        return cls(
+            findings=tuple(
+                finding
+                for finding in findings
+                if finding.detector_id in semantic_mirror_detector_ids
+            ),
+            semantic_mirror_detector_ids=semantic_mirror_detector_ids,
+            authority_evidence_indices=tuple(
+                sorted(authority_evidence_index_by_detector_id.items())
+            ),
+        )
+
+    @cached_property
+    def authority_evidence_index_by_detector_id(self) -> dict[str, int | None]:
+        return dict(self.authority_evidence_indices)
+
+    def build_graph(self) -> SemanticDescentGraph:
+        authorities: list[SemanticAuthority] = []
+        facts: list[SemanticFact] = []
+        projections: list[PresentationProjection] = []
+        edges: list[MirrorEdge] = []
+        certificates: list[DescentCertificate] = []
+        for finding in self.findings:
+            authority = FindingBackedAuthorityProjection.authority(
+                finding,
+                self.authority_evidence_index_by_detector_id,
+            )
+            finding_facts = FindingBackedFactProjection.facts(finding, authority)
+            projection = FindingBackedPresentationProjection.projection(finding)
+            edge = FindingBackedMirrorEdgeProjection.edge(
+                authority,
+                finding_facts,
+                projection,
+            )
+            authorities.append(authority)
+            facts.extend(finding_facts)
+            projections.append(projection)
+            edges.append(edge)
+            certificates.append(FindingBackedCertificateProjection.certificate(finding, edge))
+        return SemanticDescentGraph(
+            authorities=sorted_tuple(authorities, key=lambda item: item.authority_id),
+            facts=sorted_tuple(facts, key=lambda item: item.fact_id),
+            projections=sorted_tuple(projections, key=lambda item: item.projection_id),
+            mirror_edges=sorted_tuple(edges, key=lambda item: item.projection_id),
+            certificates=sorted_tuple(
+                certificates,
+                key=lambda item: item.edge.projection_id,
+            ),
+        )
+
+
+class FindingBackedAuthorityProjection:
+    """Project detector finding evidence onto a nominal semantic authority."""
+
+    @classmethod
+    def authority(
+        cls,
+        finding: RefactorFinding,
+        authority_evidence_index_by_detector_id: Mapping[str, int | None],
+    ) -> SemanticAuthority:
+        authority_location = cls.authority_location(
+            finding,
+            authority_evidence_index_by_detector_id,
+        )
+        authority_id = semantic_descent_finding_authority_id(finding)
+        return SemanticAuthority(
+            authority_id=authority_id,
+            kind=SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
+            name=authority_location.symbol,
+            location=authority_location,
+            fact_ids=tuple(
+                FindingBackedFactProjection.fact_id(authority_id, index)
+                for index, _fact_name in enumerate(
+                    FindingBackedFactProjection.fact_names(finding)
+                )
+            ),
+        )
+
+    @classmethod
+    def authority_location(
+        cls,
+        finding: RefactorFinding,
+        authority_evidence_index_by_detector_id: Mapping[str, int | None],
+    ) -> SourceLocation:
+        evidence_index = authority_evidence_index_by_detector_id.get(
+            finding.detector_id
+        )
+        if evidence_index is not None and evidence_index < len(finding.evidence):
+            return finding.evidence[evidence_index]
+        return FindingBackedPresentationProjection.projection_location(finding)
+
+
+class FindingBackedPresentationProjection:
+    """Project detector finding evidence onto a presentation projection."""
+
+    @classmethod
+    def projection(cls, finding: RefactorFinding) -> PresentationProjection:
+        fact_names = FindingBackedFactProjection.fact_names(finding)
+        return PresentationProjection(
+            projection_id=semantic_descent_finding_projection_id(finding),
+            kind=PresentationProjectionKind.DETECTOR_FINDING,
+            label=finding.title,
+            owner_symbol=finding.detector_id,
+            location=cls.projection_location(finding),
+            tokens=tuple(
+                PresentationToken(
+                    value=fact_name,
+                    kind=PresentationTokenKind.STRING_LITERAL,
+                    role=PresentationTokenRole.COLLECTION_ITEM,
+                )
+                for fact_name in fact_names
+            ),
+            source_text=finding.stable_id,
+        )
+
+    @staticmethod
+    def projection_location(finding: RefactorFinding) -> SourceLocation:
+        if finding.evidence:
+            return finding.evidence[0]
+        return SourceLocation("", 0, finding.title)
+
+
+class FindingBackedFactProjection:
+    """Project detector finding metrics and evidence into semantic facts."""
+
+    @classmethod
+    def facts(
+        cls,
+        finding: RefactorFinding,
+        authority: SemanticAuthority,
+    ) -> tuple[SemanticFact, ...]:
+        fact_names = cls.fact_names(finding)
+        fact_location = FindingBackedPresentationProjection.projection_location(finding)
+        return tuple(
+            SemanticFact(
+                authority_id=authority.authority_id,
+                fact_id=cls.fact_id(authority.authority_id, index),
+                kind=SemanticFactKind.FINDING_EVIDENCE,
+                name=fact_name,
+                aliases=(fact_name,),
+                location=fact_location,
+            )
+            for index, fact_name in enumerate(fact_names)
+        )
+
+    @staticmethod
+    def fact_id(authority_id: str, index: int) -> str:
+        return f"{authority_id}:fact:{index}"
+
+    @staticmethod
+    def fact_names(finding: RefactorFinding) -> tuple[str, ...]:
+        metric_names = FindingMetricsFactExtractor.fact_names_for(finding.metrics)
+        if metric_names:
+            return metric_names
+        evidence_names = sorted_tuple(location.symbol for location in finding.evidence)
+        if evidence_names:
+            return evidence_names
+        return (finding.title,)
+
+
+class FindingBackedMirrorEdgeProjection:
+    """Project finding-backed authorities and facts into mirror edges."""
+
+    @staticmethod
+    def edge(
+        authority: SemanticAuthority,
+        facts: tuple[SemanticFact, ...],
+        projection: PresentationProjection,
+    ) -> MirrorEdge:
+        return MirrorEdge(
+            authority_id=authority.authority_id,
+            projection_id=projection.projection_id,
+            matched_fact_ids=tuple(fact.fact_id for fact in facts),
+            matched_tokens=sorted_tuple(
+                {
+                    variant
+                    for fact in facts
+                    for variant in normalized_name_variants(fact.name)
+                }
+            ),
+            coverage_ratio=1.0,
+        )
+
+
+class FindingBackedCertificateProjection:
+    """Project detector finding relation context into descent certificates."""
+
+    @staticmethod
+    def certificate(
+        finding: RefactorFinding,
+        edge: MirrorEdge,
+    ) -> DescentCertificate:
+        return DescentCertificate(
+            status=DescentStatus.MIRRORED_WITHOUT_DESCENT,
+            edge=edge,
+            missing_derivation_path=(
+                finding.relation_context
+                or "detector finding reports a mirror without a derivation path"
+            ),
+        )
+
+
+def build_finding_backed_semantic_descent_graph(
+    findings: tuple[RefactorFinding, ...],
+    *,
+    semantic_mirror_detector_ids: frozenset[str],
+    authority_evidence_index_by_detector_id: Mapping[str, int | None],
+) -> SemanticDescentGraph:
+    """Project semantic-mirror detector findings into descent graph certificates."""
+
+    request = FindingBackedSemanticDescentGraphRequest.from_inputs(
+        findings,
+        semantic_mirror_detector_ids=semantic_mirror_detector_ids,
+        authority_evidence_index_by_detector_id=authority_evidence_index_by_detector_id,
+    )
+    return _build_finding_backed_semantic_descent_graph_cached(request)
+
+
+@lru_cache(maxsize=16)
+def _build_finding_backed_semantic_descent_graph_cached(
+    request: FindingBackedSemanticDescentGraphRequest,
+) -> SemanticDescentGraph:
+    return request.build_graph()
+
+
+class FindingMetricsFactExtractor(ABC, metaclass=AutoRegisterMeta):
+    """Registered projection from finding metrics to semantic fact names."""
+
+    __registry__: ClassVar[
+        dict[type[FindingMetrics], type["FindingMetricsFactExtractor"]]
+    ] = {}
+    __registry_key__ = "metrics_type"
+    __skip_if_no_key__ = True
+    metrics_type: ClassVar[type[FindingMetrics]]
+
+    @abstractmethod
+    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @classmethod
+    def fact_names_for(cls, metrics: FindingMetrics) -> tuple[str, ...]:
+        for extractor_type in cls.__registry__.values():
+            if isinstance(metrics, extractor_type.metrics_type):
+                return extractor_type().fact_names(metrics)
+        return ()
+
+
+class MappingMetricsFactExtractor(FindingMetricsFactExtractor):
+    """Use mapping field names as semantic facts."""
+
+    metrics_type: ClassVar[type[FindingMetrics]] = MappingMetrics
+
+    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
+        if not isinstance(metrics, MappingMetrics):
+            return ()
+        return metrics.field_names or metrics.identity_field_names
+
+
+class RegistrationMetricsFactExtractor(FindingMetricsFactExtractor):
+    """Use registered class names as semantic facts."""
+
+    metrics_type: ClassVar[type[FindingMetrics]] = RegistrationMetrics
+
+    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
+        if not isinstance(metrics, RegistrationMetrics):
+            return ()
+        return metrics.class_names or tuple(
+            class_key_pair.split("=", 1)[0]
+            for class_key_pair in metrics.class_key_pairs
+        )
 
 
 class SemanticDescentGraphCacheLookup:

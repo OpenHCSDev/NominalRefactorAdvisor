@@ -30,6 +30,7 @@ def test_semantic_mirror_detector_role_is_inherited_by_mirror_families() -> None
     from nominal_refactor_advisor.detectors import IssueDetector
 
     role_ids = IssueDetector.semantic_mirror_detector_ids()
+    authority_evidence_indices = IssueDetector.semantic_mirror_authority_evidence_indices()
 
     assert "semantic_mirror_issue" not in role_ids
     assert "per_module_semantic_mirror_issue" not in role_ids
@@ -42,3 +43,5 @@ def test_semantic_mirror_detector_role_is_inherited_by_mirror_families() -> None
         "runtime_semantic_branch_chain",
         "semantic_mirror_without_descent",
     } <= role_ids
+    assert authority_evidence_indices["semantic_mirror_without_descent"] == 1
+    assert authority_evidence_indices["generic_role_case_table"] is None

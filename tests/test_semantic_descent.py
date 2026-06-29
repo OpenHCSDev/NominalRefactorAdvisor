@@ -15,10 +15,13 @@ from nominal_refactor_advisor.detectors import (
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_descent import (
-    SemanticAuthorityMirrorPolicy,
     PresentationTokenRole,
     SemanticAuthorityKind,
+    PresentationProjectionKind,
+    SemanticAuthorityMirrorPolicy,
+    build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
+    semantic_descent_finding_projection_id,
 )
 
 
@@ -124,6 +127,52 @@ def test_semantic_mirror_detector_reports_authority_and_projection(
         "LoadStep='load'",
         "SaveStep='save'",
     )
+
+
+def test_semantic_mirror_finding_projects_to_descent_graph(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class Step:\n"
+        "    pass\n"
+        "\n"
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n"
+        "\n"
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
+    )
+    finding = next(
+        item
+        for item in SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+        if item.detector_id == "semantic_mirror_without_descent"
+    )
+
+    graph = build_finding_backed_semantic_descent_graph(
+        (finding,),
+        semantic_mirror_detector_ids=frozenset({finding.detector_id}),
+        authority_evidence_index_by_detector_id={finding.detector_id: 1},
+    )
+
+    authority = graph.authorities[0]
+    projection = graph.projections[0]
+    certificate = graph.certificates[0]
+
+    assert authority.name == "Step"
+    assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
+    assert projection.kind is PresentationProjectionKind.DETECTOR_FINDING
+    assert projection.projection_id == semantic_descent_finding_projection_id(finding)
+    assert projection.source_text == finding.stable_id
+    assert certificate.edge.authority_id == authority.authority_id
+    assert certificate.edge.projection_id == projection.projection_id
+    assert certificate.missing_derivation_path == finding.relation_context
+    assert {fact.name for fact in graph.facts} == {"LoadStep", "SaveStep"}
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(

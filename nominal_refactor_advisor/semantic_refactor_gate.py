@@ -14,7 +14,13 @@ from .codemod import (
 )
 from .detectors import IssueDetector
 from .impact_ranking import RefactorImpactRankingReport
-from .models import RefactorFinding, SemanticRecord, SourceLocation
+from .models import RefactorFinding, SemanticRecord
+from .semantic_descent import (
+    DescentCertificate,
+    SemanticDescentGraph,
+    build_finding_backed_semantic_descent_graph,
+    semantic_descent_finding_projection_id,
+)
 
 SEMANTIC_REFACTOR_GATE_DISABLED_MESSAGE = (
     "--no-impact-ranking disables the semantic refactor gate; pass "
@@ -240,16 +246,28 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
         cls,
         finding: RefactorFinding,
     ) -> "SemanticRefactorGateWorkItem":
-        return cls.from_ssot_finding_group((finding,))
+        return cls.from_ssot_finding_group(
+            (finding,),
+            finding_descent_graph=build_finding_backed_semantic_descent_graph(
+                (finding,),
+                semantic_mirror_detector_ids=IssueDetector.semantic_mirror_detector_ids(),
+                authority_evidence_index_by_detector_id=(
+                    IssueDetector.semantic_mirror_authority_evidence_indices()
+                ),
+            ),
+        )
 
     @classmethod
     def from_ssot_finding_group(
         cls,
         findings: tuple[RefactorFinding, ...],
+        *,
+        finding_descent_graph: SemanticDescentGraph,
     ) -> "SemanticRefactorGateWorkItem":
         first_finding = findings[0]
         authority_candidates = _unique_strings(
-            _authority_candidate_for_finding(finding) for finding in findings
+            _authority_candidate_for_finding(finding, finding_descent_graph)
+            for finding in findings
         )
         evidence_symbols = _unique_strings(
             location.symbol for finding in findings for location in finding.evidence
@@ -264,7 +282,10 @@ class SemanticRefactorGateWorkItem(SemanticRecord):
             label=label,
             authority_candidate=authority_candidates[0],
             authority_candidates=authority_candidates,
-            missing_derivation_path=_missing_derivation_path_for_finding(first_finding),
+            missing_derivation_path=_missing_derivation_path_for_finding(
+                first_finding,
+                finding_descent_graph,
+            ),
             detector_ids=detector_ids,
             actionability="semantic_agent_refactor",
             finding_ids=tuple(finding.stable_id for finding in findings),
@@ -332,6 +353,13 @@ class SemanticRefactorGateReport(SemanticRecord):
         semantic_candidates = cls._semantic_candidates(candidates)
         ssot_findings = ssot_authority_findings(findings)
         cleanup_findings = cleanup_followup_findings(findings)
+        finding_descent_graph = build_finding_backed_semantic_descent_graph(
+            ssot_findings,
+            semantic_mirror_detector_ids=IssueDetector.semantic_mirror_detector_ids(),
+            authority_evidence_index_by_detector_id=(
+                IssueDetector.semantic_mirror_authority_evidence_indices()
+            ),
+        )
         authority_targets = tuple(
             SemanticRefactorAuthorityTarget.from_candidate(candidate)
             for candidate in cls._priority_sorted_candidates(semantic_candidates)[:10]
@@ -355,7 +383,11 @@ class SemanticRefactorGateReport(SemanticRecord):
                 impact_ranking
             ),
             authority_targets=authority_targets,
-            work_queue=cls._work_queue(authority_targets, ssot_findings),
+            work_queue=cls._work_queue(
+                authority_targets,
+                ssot_findings,
+                finding_descent_graph,
+            ),
         )
 
     @classmethod
@@ -431,6 +463,7 @@ class SemanticRefactorGateReport(SemanticRecord):
     def _work_queue(
         authority_targets: tuple[SemanticRefactorAuthorityTarget, ...],
         ssot_findings: tuple[RefactorFinding, ...],
+        finding_descent_graph: SemanticDescentGraph,
     ) -> tuple[SemanticRefactorGateWorkItem, ...]:
         items = (
             *(
@@ -438,7 +471,10 @@ class SemanticRefactorGateReport(SemanticRecord):
                 for target in authority_targets
             ),
             *(
-                SemanticRefactorGateWorkItem.from_ssot_finding_group(group)
+                SemanticRefactorGateWorkItem.from_ssot_finding_group(
+                    group,
+                    finding_descent_graph=finding_descent_graph,
+                )
                 for group in SemanticRefactorGateReport._ssot_finding_groups(
                     ssot_findings
                 )
@@ -569,39 +605,41 @@ class SemanticRefactorGateReport(SemanticRecord):
         )
 
 
-def _authority_candidate_for_finding(finding: RefactorFinding) -> str:
+def _authority_candidate_for_finding(
+    finding: RefactorFinding,
+    finding_descent_graph: SemanticDescentGraph,
+) -> str:
     if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-        authority_evidence = _semantic_mirror_authority_evidence(finding)
-        if authority_evidence is not None:
-            return authority_evidence.symbol
+        certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
+        if certificate is not None:
+            return finding_descent_graph.authority_by_id[
+                certificate.edge.authority_id
+            ].name
         return finding.title
     if finding.evidence:
         return finding.evidence[0].symbol
     return finding.title
 
 
-def _semantic_mirror_authority_evidence(
+def _descent_certificate_for_finding(
     finding: RefactorFinding,
-) -> SourceLocation | None:
-    detector_type = IssueDetector.registered_detector_type_for_id(finding.detector_id)
-    if detector_type is None:
-        return _first_evidence(finding)
-    evidence_index = detector_type.semantic_mirror_authority_evidence_index
-    if evidence_index is None:
-        return _first_evidence(finding)
-    if evidence_index >= len(finding.evidence):
-        return _first_evidence(finding)
-    return finding.evidence[evidence_index]
+    finding_descent_graph: SemanticDescentGraph,
+) -> DescentCertificate | None:
+    projection_id = semantic_descent_finding_projection_id(finding)
+    for certificate in finding_descent_graph.certificates:
+        if certificate.edge.projection_id == projection_id:
+            return certificate
+    return None
 
 
-def _first_evidence(finding: RefactorFinding) -> SourceLocation | None:
-    if not finding.evidence:
-        return None
-    return finding.evidence[0]
-
-
-def _missing_derivation_path_for_finding(finding: RefactorFinding) -> str:
+def _missing_derivation_path_for_finding(
+    finding: RefactorFinding,
+    finding_descent_graph: SemanticDescentGraph,
+) -> str:
     if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
+        certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
+        if certificate is not None:
+            return certificate.missing_derivation_path
         return finding.relation_context
     return SemanticRefactorGateWorkItem.missing_derivation_path_for_detectors(
         (finding.detector_id,)
