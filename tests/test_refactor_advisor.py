@@ -276,9 +276,7 @@ def test_builtin_call_name_declares_collection_factory_names() -> None:
 
 
 def test_labeled_str_enum_subclasses_own_name_aliases() -> None:
-    assert CapabilityTag.name_aliases() == {
-        "AUTHORITATIVE": "AUTHORITATIVE_MAPPING"
-    }
+    assert CapabilityTag.name_aliases() == {"AUTHORITATIVE": "AUTHORITATIVE_MAPPING"}
     assert ObservationTag.name_aliases() == {
         "EXPORT": "EXPORT_MAPPING",
         "KEYWORD": "KEYWORD_MAPPING",
@@ -4841,8 +4839,9 @@ def test_pattern_action_catalog_derives_from_registered_action_builders() -> Non
 
     assert set(PATTERN_CATALOG.action_builders) == expected_action_ids
     assert (
-        PATTERN_CATALOG.action_builders[ActionBuilderId.CLOSED_FAMILY_DISPATCH]
-        .__class__.__name__
+        PATTERN_CATALOG.action_builders[
+            ActionBuilderId.CLOSED_FAMILY_DISPATCH
+        ].__class__.__name__
         == "ClosedFamilyDispatchActionBuilder"
     )
     assert [action.kind for action in actions] == [
@@ -10789,6 +10788,8 @@ def test_codemod_dsl_example_plan_document_round_trips() -> None:
 
 
 def test_module_cli_emits_codemod_dsl_manifest() -> None:
+    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowPlanJsonParser
+
     result = subprocess.run(
         [
             sys.executable,
@@ -10818,8 +10819,34 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
     workflows = {
         workflow["workflow_id"]: workflow for workflow in payload["authoring_workflows"]
     }
+    workflow_plans = {
+        workflow_plan["workflow"]: workflow_plan
+        for workflow_plan in payload["workflow_plans"]
+    }
+    workflow_plan_examples = {
+        workflow_plan["workflow"]: workflow_plan
+        for workflow_plan in payload["workflow_plan_examples"]
+    }
     assert "replacement_plan" in payload["authoring_artifact_roles"]
     assert "goal_replay_plan" in payload["authoring_artifact_roles"]
+    assert set(workflow_plans) == {"fixpoint", "refactor_goal"}
+    assert set(workflow_plan_examples) == {"fixpoint", "refactor_goal"}
+    assert [
+        field["field_name"] for field in workflow_plans["fixpoint"]["payload_fields"]
+    ] == ["workflow", "plan_id", "max_iterations"]
+    assert {
+        field["field_name"]: field
+        for field in workflow_plans["refactor_goal"]["payload_fields"]
+    }["goal"]["value_kind"] == "object"
+    assert workflow_plan_examples["fixpoint"]["max_iterations"] == 8
+    assert (
+        workflow_plan_examples["refactor_goal"]["goal"]["kind"]
+        == "nominal_boundary_extraction"
+    )
+    assert [
+        CodemodWorkflowPlanJsonParser().parse_plan(example).kind.value
+        for example in payload["workflow_plan_examples"]
+    ] == ["fixpoint", "refactor_goal"]
     assert "simulate_replacement_plan" in command_actions
     assert command_actions["simulate_replacement_plan"]["class_name"] == (
         "SimulateReplacementPlanCommandTemplate"
@@ -11630,7 +11657,8 @@ def test_codemod_source_snapshot_reuses_source_index_target_nodes(
 
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), ())
     target_ids_by_qualname = {
-        target.qualname: target.target_id for target in snapshot.source_index.ast_targets
+        target.qualname: target.target_id
+        for target in snapshot.source_index.ast_targets
     }
 
     assert "Alpha" in target_ids_by_qualname
@@ -15256,9 +15284,10 @@ def test_codemod_workflow_plan_runs_goal_from_json(
     assert report.terminal_reason is CodemodWorkflowStopReason.ACHIEVED
     assert len(report.replay_sequence.documents) == 1
     assert (
-        report.replay_sequence.documents[0].recipes[0].operations[0].to_dict()[
-            "operation"
-        ]
+        report.replay_sequence.documents[0]
+        .recipes[0]
+        .operations[0]
+        .to_dict()["operation"]
         == "replace_text"
     )
     replay_payload = report.replay_sequence.to_dict()
@@ -15558,6 +15587,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
     from nominal_refactor_advisor import CodemodSourceSnapshot
+    from nominal_refactor_advisor import CodemodWorkflowPlanFieldManifest
+    from nominal_refactor_advisor import CodemodWorkflowPlanManifest
     from nominal_refactor_advisor import CodemodWorkflowReport
     from nominal_refactor_advisor import CodemodWorkflowPlan
     from nominal_refactor_advisor import CodemodWorkflowPlanJsonParser
@@ -15567,6 +15598,8 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import codemod_dsl_manifest
+    from nominal_refactor_advisor import codemod_workflow_plan_example_payloads
+    from nominal_refactor_advisor import codemod_workflow_plan_manifests
 
     assert CodemodPlanJsonParser().recipes({}) == ()
     assert isinstance(codemod_dsl_manifest(), CodemodDslManifest)
@@ -15652,6 +15685,10 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
     assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
+    assert CodemodWorkflowPlanFieldManifest.__name__ == (
+        "CodemodWorkflowPlanFieldManifest"
+    )
+    assert CodemodWorkflowPlanManifest.__name__ == "CodemodWorkflowPlanManifest"
     assert CodemodWorkflowReport.__name__ == "CodemodWorkflowReport"
     assert CodemodWorkflowPlan.__name__ == "CodemodWorkflowPlan"
     assert (
@@ -15674,6 +15711,16 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
         .max_iterations
         == 8
     )
+    assert [
+        manifest.workflow.value for manifest in codemod_workflow_plan_manifests()
+    ] == [
+        "fixpoint",
+        "refactor_goal",
+    ]
+    assert [
+        CodemodWorkflowPlanJsonParser().parse_plan(example).kind.value
+        for example in codemod_workflow_plan_example_payloads()
+    ] == ["fixpoint", "refactor_goal"]
     assert CodemodWorkflowScanRequest.__name__ == "CodemodWorkflowScanRequest"
     assert ProjectedScanModuleSet.__name__ == "ProjectedScanModuleSet"
     assert ParseCacheRequest(enabled=True).enabled is True

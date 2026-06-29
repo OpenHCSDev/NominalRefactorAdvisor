@@ -100,6 +100,8 @@ from .codemod_workflow import (
     CodemodSimulationFindingProjection,
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
+    codemod_workflow_plan_example_payloads,
+    codemod_workflow_plan_manifests,
 )
 from .codemod_authoring import (
     CodemodAuthoringBundleActionRunner,
@@ -2754,6 +2756,10 @@ def codemod_cli_dsl_manifest_payload() -> JsonObject:
     """Return the codemod DSL manifest plus executable authoring workflow metadata."""
 
     payload = codemod_dsl_manifest().to_dict()
+    payload["workflow_plans"] = tuple(
+        manifest.to_dict() for manifest in codemod_workflow_plan_manifests()
+    )
+    payload["workflow_plan_examples"] = codemod_workflow_plan_example_payloads()
     payload["authoring_artifact_roles"] = tuple(
         artifact_role.value for artifact_role in CodemodAuthoringArtifactRole
     )

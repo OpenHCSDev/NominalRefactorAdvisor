@@ -8581,6 +8581,7 @@ class CodemodDslFieldKind(StrEnum):
     CLASS_KEY_PAIR_ARRAY = "class_key_pair_array"
     INTEGER = "integer"
     NODE_KIND_ARRAY = "node_kind_array"
+    OBJECT = "object"
     OPERATION_TEMPLATE_ARRAY = "operation_template_array"
     PYTHON_LITERAL_ARRAY = "python_literal_array"
     SELECTOR_ARRAY = "selector_array"
@@ -9020,6 +9021,13 @@ class IntegerCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvid
 
     value_kind = CodemodDslFieldKind.INTEGER
     constant_example_value = 1
+
+
+class ObjectCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):
+    """Example value for object fields."""
+
+    value_kind = CodemodDslFieldKind.OBJECT
+    constant_example_value = {}
 
 
 class UnknownCodemodDslExampleValueProvider(ConstantCodemodDslExampleValueProvider):

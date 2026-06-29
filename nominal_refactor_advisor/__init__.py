@@ -124,6 +124,8 @@ from .codemod_workflow import (
     CodemodRefactorGoalStage,
     CodemodRefactorGoalWorkflowPlan,
     CodemodSimulationFindingProjection,
+    CodemodWorkflowPlanFieldManifest,
+    CodemodWorkflowPlanManifest,
     CodemodWorkflowPlan,
     CodemodWorkflowPlanJsonParser,
     CodemodWorkflowPlanKind,
@@ -132,6 +134,8 @@ from .codemod_workflow import (
     CodemodWorkflowStopReason,
     ParseCacheRequest,
     ProjectedScanModuleSet,
+    codemod_workflow_plan_example_payloads,
+    codemod_workflow_plan_manifests,
 )
 from .models import (
     AnalysisReport,

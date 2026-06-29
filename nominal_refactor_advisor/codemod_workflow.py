@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -17,6 +18,7 @@ from .analysis import analyze_modules
 from .ast_tools import ParsedModule, parse_python_module_roots
 from .codemod import (
     ArchitectureGuardSuite,
+    CodemodDslFieldKind,
     CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
@@ -59,6 +61,46 @@ class CodemodWorkflowPlanKind(StrEnum):
 
     FIXPOINT = "fixpoint"
     REFACTOR_GOAL = "refactor_goal"
+
+
+@dataclass(frozen=True)
+class CodemodWorkflowPlanFieldManifest:
+    """One JSON field accepted by an executable codemod workflow plan."""
+
+    field_name: str
+    value_kind: CodemodDslFieldKind
+    required: bool
+    description: str
+    example_value: JsonValue
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "field_name": self.field_name,
+            "value_kind": self.value_kind.value,
+            "required": self.required,
+            "description": self.description,
+            "example_value": self.example_value,
+        }
+
+
+@dataclass(frozen=True)
+class CodemodWorkflowPlanManifest:
+    """Registry-derived schema and example for one workflow-plan DSL entry."""
+
+    workflow: CodemodWorkflowPlanKind
+    class_name: str
+    description: str
+    payload_fields: tuple[CodemodWorkflowPlanFieldManifest, ...]
+    example_payload: JsonObject
+
+    def to_dict(self) -> JsonObject:
+        return {
+            "workflow": self.workflow.value,
+            "class_name": self.class_name,
+            "description": self.description,
+            "payload_fields": tuple(field.to_dict() for field in self.payload_fields),
+            "example_payload": self.example_payload,
+        }
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -245,13 +287,20 @@ class CodemodRefactorGoal:
     """Declarative target for staged semantic-fact extraction refactors."""
 
     goal_id: str
-    kind: CodemodRefactorGoalKind = (
-        CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
-    )
+    kind: CodemodRefactorGoalKind = CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
     target_finding_ids: tuple[str, ...] = ()
     detector_ids: tuple[str, ...] = ()
     pattern_ids: tuple[int, ...] = ()
     max_stages: int = 8
+
+    @classmethod
+    def example_payload(cls) -> JsonObject:
+        """Return a starter goal payload for workflow-plan DSL authoring."""
+
+        return cls(
+            goal_id="nominal-boundary-goal",
+            detector_ids=("semantic_mirroring",),
+        ).to_dict()
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodRefactorGoal":
@@ -298,9 +347,7 @@ class CodemodRefactorGoal:
         self,
         findings: Iterable[RefactorFinding],
     ) -> tuple[RefactorFinding, ...]:
-        return tuple(
-            finding for finding in findings if self.matches_finding(finding)
-        )
+        return tuple(finding for finding in findings if self.matches_finding(finding))
 
     def matches_finding(self, finding: RefactorFinding) -> bool:
         if not self.has_explicit_targets:
@@ -326,12 +373,20 @@ class CodemodRefactorGoal:
 class CodemodWorkflowPlan(ABC, metaclass=AutoRegisterMeta):
     """Reusable JSON/API plan for closed-loop codemod DSL execution."""
 
-    __registry__: ClassVar[dict[CodemodWorkflowPlanKind, type["CodemodWorkflowPlan"]]] = {}
+    __registry__: ClassVar[
+        dict[CodemodWorkflowPlanKind, type["CodemodWorkflowPlan"]]
+    ] = {}
     __registry_key__ = "workflow"
     __skip_if_no_key__ = True
     workflow: ClassVar[CodemodWorkflowPlanKind | None] = None
 
     plan_id: str
+
+    @classmethod
+    def workflow_key(cls) -> CodemodWorkflowPlanKind:
+        if cls.workflow is None:
+            raise ValueError(f"{cls.__name__} has no workflow key")
+        return cls.workflow
 
     @classmethod
     def workflow_type(
@@ -341,7 +396,52 @@ class CodemodWorkflowPlan(ABC, metaclass=AutoRegisterMeta):
         try:
             return cls.__registry__[workflow]
         except KeyError as error:
-            raise ValueError(f"unsupported codemod workflow plan kind: {workflow}") from error
+            raise ValueError(
+                f"unsupported codemod workflow plan kind: {workflow}"
+            ) from error
+
+    @classmethod
+    def common_payload_field_manifests(
+        cls,
+    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
+        return (
+            CodemodWorkflowPlanFieldManifest(
+                field_name="workflow",
+                value_kind=CodemodDslFieldKind.STRING,
+                required=True,
+                description="Registered executable workflow-plan kind.",
+                example_value=cls.workflow_key().value,
+            ),
+            CodemodWorkflowPlanFieldManifest(
+                field_name="plan_id",
+                value_kind=CodemodDslFieldKind.STRING,
+                required=True,
+                description="Stable caller-chosen identifier for this workflow run.",
+                example_value=f"{cls.workflow_key().value}-plan",
+            ),
+        )
+
+    @classmethod
+    def workflow_manifest(cls) -> CodemodWorkflowPlanManifest:
+        return CodemodWorkflowPlanManifest(
+            workflow=cls.workflow_key(),
+            class_name=cls.__name__,
+            description=codemod_workflow_entry_description(cls),
+            payload_fields=cls.payload_field_manifests(),
+            example_payload=cls.example_payload(),
+        )
+
+    @classmethod
+    @abstractmethod
+    def payload_field_manifests(
+        cls,
+    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def example_payload(cls) -> JsonObject:
+        raise NotImplementedError
 
     @classmethod
     @abstractmethod
@@ -384,6 +484,28 @@ class CodemodFixpointWorkflowPlan(CodemodWorkflowPlan):
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.FIXPOINT
     max_iterations: int = 8
+
+    @classmethod
+    def payload_field_manifests(
+        cls,
+    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
+        return (
+            *cls.common_payload_field_manifests(),
+            CodemodWorkflowPlanFieldManifest(
+                field_name="max_iterations",
+                value_kind=CodemodDslFieldKind.INTEGER,
+                required=True,
+                description="Maximum synthesize/apply/rescan cycles.",
+                example_value=8,
+            ),
+        )
+
+    @classmethod
+    def example_payload(cls) -> JsonObject:
+        return cls(
+            plan_id="finding-backed-fixpoint",
+            max_iterations=8,
+        ).to_dict()
 
     @classmethod
     def from_payload(
@@ -440,6 +562,31 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.REFACTOR_GOAL
     goal: CodemodRefactorGoal
+
+    @classmethod
+    def payload_field_manifests(
+        cls,
+    ) -> tuple[CodemodWorkflowPlanFieldManifest, ...]:
+        return (
+            *cls.common_payload_field_manifests(),
+            CodemodWorkflowPlanFieldManifest(
+                field_name="goal",
+                value_kind=CodemodDslFieldKind.OBJECT,
+                required=True,
+                description="Declarative semantic refactor goal to pursue.",
+                example_value=CodemodRefactorGoal.example_payload(),
+            ),
+        )
+
+    @classmethod
+    def example_payload(cls) -> JsonObject:
+        return cls(
+            plan_id="nominal-boundary-goal",
+            goal=CodemodRefactorGoal(
+                goal_id="nominal-boundary-goal",
+                detector_ids=("semantic_mirroring",),
+            ),
+        ).to_dict()
 
     @classmethod
     def from_payload(
@@ -578,6 +725,34 @@ class CodemodWorkflowPlanJsonParser:
         if not all(isinstance(item, item_type) for item in value):
             raise ValueError(f"`{field_name}` entries must be {item_type.__name__}")
         return tuple(value)
+
+
+def codemod_workflow_entry_description(
+    entry_type: type[CodemodWorkflowPlan],
+) -> str:
+    """Return a normalized semantic description for one workflow-plan entry."""
+
+    description = inspect.getdoc(entry_type)
+    if description is None:
+        raise ValueError(f"{entry_type.__name__} must define a workflow description")
+    return description
+
+
+def codemod_workflow_plan_manifests() -> tuple[CodemodWorkflowPlanManifest, ...]:
+    """Return registry-derived manifest rows for executable workflow plans."""
+
+    return tuple(
+        CodemodWorkflowPlan.workflow_type(kind).workflow_manifest()
+        for kind in CodemodWorkflowPlanKind
+    )
+
+
+def codemod_workflow_plan_example_payloads() -> tuple[JsonObject, ...]:
+    """Return parseable starter payloads for executable workflow plans."""
+
+    return tuple(
+        manifest.example_payload for manifest in codemod_workflow_plan_manifests()
+    )
 
 
 @dataclass(frozen=True)
@@ -826,9 +1001,7 @@ class CodemodProjectedFindingReport:
             "before_finding_count": self.before_finding_count,
             "after_finding_count": self.after_finding_count,
             "finding_delta": self.finding_delta.to_dict(),
-            "after_findings": tuple(
-                finding.to_dict() for finding in after_findings
-            ),
+            "after_findings": tuple(finding.to_dict() for finding in after_findings),
             "projected_source_index": projected_snapshot.source_index.to_dict(),
             "projected_finding_recipe_plan": continuation_report.plan.to_dict(),
             "projected_finding_continuation": continuation_report.to_dict(),
@@ -1471,10 +1644,7 @@ class ProjectedScanModuleSet:
         )
 
     def projected_existing_modules(self) -> tuple[ParsedModule, ...]:
-        return tuple(
-            self.projected_module(module)
-            for module in self.modules
-        )
+        return tuple(self.projected_module(module) for module in self.modules)
 
     def projected_module(self, module: ParsedModule) -> ParsedModule:
         projection = ProjectedModuleSource(
