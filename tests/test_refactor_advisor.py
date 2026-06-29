@@ -10843,6 +10843,7 @@ def test_module_cli_emits_codemod_dsl_manifest() -> None:
         workflow_plan_examples["refactor_goal"]["goal"]["kind"]
         == "nominal_boundary_extraction"
     )
+    assert workflow_plan_examples["refactor_goal"]["goal"]["detector_ids"] == []
     assert [
         CodemodWorkflowPlanJsonParser().parse_plan(example).kind.value
         for example in payload["workflow_plan_examples"]
@@ -15583,6 +15584,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodRefactorGoalReport
     from nominal_refactor_advisor import CodemodRefactorGoalRunner
     from nominal_refactor_advisor import CodemodRefactorGoalStage
+    from nominal_refactor_advisor import CodemodRefactorGoalTargetPolicy
     from nominal_refactor_advisor import CodemodRefactorGoalWorkflowPlan
     from nominal_refactor_advisor import CodemodWorkflowStopReason
     from nominal_refactor_advisor import CodemodSimulationFindingProjection
@@ -15595,6 +15597,7 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     from nominal_refactor_advisor import CodemodWorkflowPlanKind
     from nominal_refactor_advisor import CodemodWorkflowScanRequest
     from nominal_refactor_advisor import ParseCacheRequest
+    from nominal_refactor_advisor import NominalBoundaryExtractionGoalTargetPolicy
     from nominal_refactor_advisor import ProjectedScanModuleSet
     from nominal_refactor_advisor import SourceRewriteSimulationPayload
     from nominal_refactor_advisor import codemod_dsl_manifest
@@ -15684,6 +15687,12 @@ def test_codemod_workflow_types_are_public_package_exports() -> None:
     assert CodemodRefactorGoalReport.__name__ == "CodemodRefactorGoalReport"
     assert CodemodRefactorGoalRunner.__name__ == "CodemodRefactorGoalRunner"
     assert CodemodRefactorGoalStage.__name__ == "CodemodRefactorGoalStage"
+    assert (
+        CodemodRefactorGoalTargetPolicy.policy_for(
+            CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
+        ).__class__
+        is NominalBoundaryExtractionGoalTargetPolicy
+    )
     assert CodemodWorkflowStopReason.ACHIEVED.value == "achieved"
     assert CodemodWorkflowPlanFieldManifest.__name__ == (
         "CodemodWorkflowPlanFieldManifest"

@@ -294,15 +294,6 @@ class CodemodRefactorGoal:
     max_stages: int = 8
 
     @classmethod
-    def example_payload(cls) -> JsonObject:
-        """Return a starter goal payload for workflow-plan DSL authoring."""
-
-        return cls(
-            goal_id="nominal-boundary-goal",
-            detector_ids=("semantic_mirroring",),
-        ).to_dict()
-
-    @classmethod
     def from_json_value(cls, value: JsonValue) -> "CodemodRefactorGoal":
         """Parse a reusable goal declaration from codemod workflow-plan JSON."""
 
@@ -343,21 +334,6 @@ class CodemodRefactorGoal:
     def has_explicit_targets(self) -> bool:
         return bool(self.target_finding_ids or self.detector_ids or self.pattern_ids)
 
-    def target_findings(
-        self,
-        findings: Iterable[RefactorFinding],
-    ) -> tuple[RefactorFinding, ...]:
-        return tuple(finding for finding in findings if self.matches_finding(finding))
-
-    def matches_finding(self, finding: RefactorFinding) -> bool:
-        if not self.has_explicit_targets:
-            return True
-        if finding.stable_id in self.target_finding_ids:
-            return True
-        if finding.detector_id in self.detector_ids:
-            return True
-        return int(finding.pattern_id) in self.pattern_ids
-
     def to_dict(self) -> JsonObject:
         return {
             "goal_id": self.goal_id,
@@ -367,6 +343,78 @@ class CodemodRefactorGoal:
             "pattern_ids": self.pattern_ids,
             "max_stages": self.max_stages,
         }
+
+
+class CodemodRefactorGoalTargetPolicy(ABC, metaclass=AutoRegisterMeta):
+    """Registered target-selection policy for one refactor goal kind."""
+
+    __registry__: ClassVar[
+        dict[CodemodRefactorGoalKind, type["CodemodRefactorGoalTargetPolicy"]]
+    ] = {}
+    __registry_key__ = "goal_kind"
+    __skip_if_no_key__ = True
+
+    goal_kind: ClassVar[CodemodRefactorGoalKind | None] = None
+
+    @classmethod
+    def policy_for(
+        cls,
+        goal_kind: CodemodRefactorGoalKind,
+    ) -> "CodemodRefactorGoalTargetPolicy":
+        try:
+            return cls.__registry__[goal_kind]()
+        except KeyError as error:
+            raise ValueError(
+                f"unsupported codemod refactor goal kind: {goal_kind}"
+            ) from error
+
+    def target_findings(
+        self,
+        goal: CodemodRefactorGoal,
+        findings: Iterable[RefactorFinding],
+    ) -> tuple[RefactorFinding, ...]:
+        return tuple(
+            finding for finding in findings if self.matches_finding(goal, finding)
+        )
+
+    def matches_finding(
+        self,
+        goal: CodemodRefactorGoal,
+        finding: RefactorFinding,
+    ) -> bool:
+        if goal.has_explicit_targets:
+            return self.explicit_target_matches_finding(goal, finding)
+        return self.default_target_matches_finding(finding)
+
+    @staticmethod
+    def explicit_target_matches_finding(
+        goal: CodemodRefactorGoal,
+        finding: RefactorFinding,
+    ) -> bool:
+        if finding.stable_id in goal.target_finding_ids:
+            return True
+        if finding.detector_id in goal.detector_ids:
+            return True
+        return int(finding.pattern_id) in goal.pattern_ids
+
+    @abstractmethod
+    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
+        raise NotImplementedError
+
+
+class NominalBoundaryExtractionGoalTargetPolicy(CodemodRefactorGoalTargetPolicy):
+    """Target semantic-mirror findings for nominal-boundary extraction goals."""
+
+    goal_kind = CodemodRefactorGoalKind.NOMINAL_BOUNDARY_EXTRACTION
+
+    @staticmethod
+    def default_detector_ids() -> frozenset[str]:
+        from .detectors import IssueDetector
+
+        return IssueDetector.semantic_mirror_detector_ids()
+
+    def default_target_matches_finding(self, finding: RefactorFinding) -> bool:
+        return finding.detector_id in self.default_detector_ids()
 
 
 @dataclass(frozen=True)
@@ -561,6 +609,9 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
     """Workflow plan that drives a declarative refactor goal through staged recipes."""
 
     workflow: ClassVar[CodemodWorkflowPlanKind] = CodemodWorkflowPlanKind.REFACTOR_GOAL
+    example_goal: ClassVar[CodemodRefactorGoal] = CodemodRefactorGoal(
+        goal_id="nominal-boundary-goal"
+    )
     goal: CodemodRefactorGoal
 
     @classmethod
@@ -574,18 +625,15 @@ class CodemodRefactorGoalWorkflowPlan(CodemodWorkflowPlan):
                 value_kind=CodemodDslFieldKind.OBJECT,
                 required=True,
                 description="Declarative semantic refactor goal to pursue.",
-                example_value=CodemodRefactorGoal.example_payload(),
+                example_value=cls.example_goal.to_dict(),
             ),
         )
 
     @classmethod
     def example_payload(cls) -> JsonObject:
         return cls(
-            plan_id="nominal-boundary-goal",
-            goal=CodemodRefactorGoal(
-                goal_id="nominal-boundary-goal",
-                detector_ids=("semantic_mirroring",),
-            ),
+            plan_id=cls.example_goal.goal_id,
+            goal=cls.example_goal,
         ).to_dict()
 
     @classmethod
@@ -769,12 +817,15 @@ class CodemodRefactorGoalProgress:
         before_findings: Iterable[RefactorFinding],
         after_findings: Iterable[RefactorFinding],
     ) -> "CodemodRefactorGoalProgress":
+        target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
         return cls(
             before_target_finding_ids=tuple(
-                finding.stable_id for finding in goal.target_findings(before_findings)
+                finding.stable_id
+                for finding in target_policy.target_findings(goal, before_findings)
             ),
             after_target_finding_ids=tuple(
-                finding.stable_id for finding in goal.target_findings(after_findings)
+                finding.stable_id
+                for finding in target_policy.target_findings(goal, after_findings)
             ),
         )
 
@@ -1496,12 +1547,16 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
 
     goal: CodemodRefactorGoal
 
+    @cached_property
+    def target_policy(self) -> CodemodRefactorGoalTargetPolicy:
+        return CodemodRefactorGoalTargetPolicy.policy_for(self.goal.kind)
+
     def run(self) -> CodemodRefactorGoalReport:
         if self.goal.max_stages < 1:
             raise ValueError("goal max_stages must be at least 1")
         stages: list[CodemodRefactorGoalStage] = []
         active_scan = self.scan(0)
-        if not self.goal.target_findings(active_scan.findings):
+        if not self.target_policy.target_findings(self.goal, active_scan.findings):
             return self.report(
                 stages=(),
                 scan=active_scan,
@@ -1561,7 +1616,7 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         stage_index: int,
         scan: CodemodFixpointScan,
     ) -> CodemodRefactorGoalStage | None:
-        target_findings = self.goal.target_findings(scan.findings)
+        target_findings = self.target_policy.target_findings(self.goal, scan.findings)
         if not target_findings:
             return None
         snapshot = scan.source_snapshot
@@ -1624,7 +1679,10 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             final_finding_count=len(scan.findings),
             final_target_finding_ids=tuple(
                 finding.stable_id
-                for finding in self.goal.target_findings(scan.findings)
+                for finding in self.target_policy.target_findings(
+                    self.goal,
+                    scan.findings,
+                )
             ),
         )
 

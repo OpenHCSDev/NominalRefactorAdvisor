@@ -8,6 +8,10 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     codemod_plan_from_findings,
 )
+from nominal_refactor_advisor.codemod_workflow import (
+    CodemodRefactorGoal,
+    CodemodRefactorGoalTargetPolicy,
+)
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
     DerivedMetricCountBoilerplateDetector,
@@ -177,6 +181,36 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     assert certificate.edge.projection_id == projection.projection_id
     assert certificate.missing_derivation_path == finding.relation_context
     assert {fact.name for fact in graph.facts} == {"LoadStep", "SaveStep"}
+
+
+def test_nominal_boundary_goal_targets_semantic_mirror_role_by_default(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class Step:\n"
+        "    pass\n"
+        "\n"
+        "class LoadStep(Step):\n"
+        "    step_id = 'load'\n"
+        "\n"
+        "class SaveStep(Step):\n"
+        "    step_id = 'save'\n"
+        "\n"
+        "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}\n",
+    )
+    findings = tuple(
+        SemanticMirrorWithoutDescentDetector().detect(
+            parse_python_modules(tmp_path),
+            DetectorConfig(),
+        )
+    )
+    goal = CodemodRefactorGoal(goal_id="semantic-descent")
+    target_policy = CodemodRefactorGoalTargetPolicy.policy_for(goal.kind)
+
+    assert tuple(
+        finding.detector_id for finding in target_policy.target_findings(goal, findings)
+    ) == ("semantic_mirror_without_descent",)
 
 
 def test_dataclass_template_materializer_certifies_projection_descent(
