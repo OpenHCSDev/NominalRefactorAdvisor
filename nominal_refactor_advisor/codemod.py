@@ -12586,10 +12586,12 @@ class RuntimeProductRecordSchemaFindingRecipeSynthesizer(FindingRecipeSynthesize
 def _field_family_carrier_name_from_class_names(
     class_names: tuple[str, ...],
 ) -> str | None:
+    prefix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_prefix(class_names)
     suffix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_suffix(class_names)
+    if prefix_tokens and suffix_tokens:
+        return _field_family_base_name_from_tokens((*prefix_tokens, *suffix_tokens))
     if suffix_tokens:
         return _field_family_base_name_from_tokens(suffix_tokens)
-    prefix_tokens = CLASS_NAME_ALGEBRA.longest_common_token_prefix(class_names)
     if prefix_tokens:
         return _field_family_base_name_from_tokens(prefix_tokens)
     return None
@@ -15201,11 +15203,14 @@ class LocalRoleCaseAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseBranchItem:
-    """One ordered branch case extracted from local role-case guard logic."""
-
+class LocalRoleCaseItemBase:
     axis_name: str
     expected_source: str
+
+@dataclass(frozen=True)
+class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):
+    """One ordered branch case extracted from local role-case guard logic."""
+
     result_source: str
 
     def construction_source(self, item_class_name: str) -> str:
@@ -15216,11 +15221,9 @@ class LocalRoleCaseBranchItem:
 
 
 @dataclass(frozen=True)
-class LocalRoleCaseAssignmentItem:
+class LocalRoleCaseAssignmentItem(LocalRoleCaseItemBase):
     """One ordered branch case assigning local result values."""
 
-    axis_name: str
-    expected_source: str
     value_sources: tuple[str, ...]
     value_names: tuple[str, ...]
 

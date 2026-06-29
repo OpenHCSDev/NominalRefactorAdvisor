@@ -856,6 +856,46 @@ def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
     assert simulation.is_clean is True
 
 
+def test_repeated_field_synthesis_preserves_prefix_and_suffix_in_carrier_name(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class LocalRoleCaseBranchItem:\n"
+        "    axis_name: str\n"
+        "    expected_source: str\n"
+        "    result_source: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class LocalRoleCaseAssignmentItem:\n"
+        "    axis_name: str\n"
+        "    expected_source: str\n"
+        "    value_sources: tuple[str, ...]\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
+        if item.detector_id == "repeated_field_family"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert operation["carrier_name"] == "LocalRoleCaseItemBase"
+    assert "class LocalRoleCaseItemBase:" in rewritten
+    assert "class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):" in rewritten
+    assert "class LocalRoleCaseAssignmentItem(LocalRoleCaseItemBase):" in rewritten
+    assert simulation.is_clean is True
+
+
 def test_repeated_field_synthesis_rejects_field_named_carrier(
     tmp_path: Path,
 ) -> None:
