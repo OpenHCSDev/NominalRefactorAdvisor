@@ -1705,6 +1705,68 @@ def test_semantic_descent_treats_declared_materializer_class_as_descent(
     )
 
 
+def test_semantic_descent_treats_descriptor_literal_fields_as_descent(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLineReference:\n"
+        "    file_path: str\n"
+        "    line: int\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SourceLocation(SourceLineReference):\n"
+        "    symbol: str\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class CandidateOrder:\n"
+        "    file_path: str\n"
+        "    line: int\n"
+        "\n"
+        "def project(attribute_name, instance):\n"
+        "    return None\n"
+        "\n"
+        "class SourceLocationEvidenceProperty:\n"
+        "    def __init__(self, file_attribute_name, line_attribute_name, symbol_attribute_name):\n"
+        "        self.file_attribute_name = file_attribute_name\n"
+        "        self.line_attribute_name = line_attribute_name\n"
+        "        self.symbol_attribute_name = symbol_attribute_name\n"
+        "\n"
+        "    def __get__(self, instance, owner=None):\n"
+        "        return SourceLocation(\n"
+        "            project(self.file_attribute_name, instance),\n"
+        "            project(self.line_attribute_name, instance),\n"
+        "            project(self.symbol_attribute_name, instance),\n"
+        "        )\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Candidate:\n"
+        "    file_path: str\n"
+        "    line: int\n"
+        "    qualname: str\n"
+        "\n"
+        "    evidence = SourceLocationEvidenceProperty(\n"
+        "        'file_path', 'line', 'qualname'\n"
+        "    )\n",
+    )
+
+    graph = build_semantic_descent_graph(parse_python_modules(tmp_path))
+
+    authority_ids = {
+        authority.name: authority.authority_id
+        for authority in graph.authorities
+        if authority.name in {"SourceLineReference", "CandidateOrder"}
+    }
+    certificate_authority_ids = {
+        certificate.edge.authority_id for certificate in graph.certificates
+    }
+    assert authority_ids["SourceLineReference"] not in certificate_authority_ids
+    assert authority_ids["CandidateOrder"] not in certificate_authority_ids
+
+
 def test_semantic_descent_ignores_local_constructor_assignment_projection(
     tmp_path: Path,
 ) -> None:

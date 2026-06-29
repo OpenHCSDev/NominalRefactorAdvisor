@@ -17,7 +17,7 @@ import pickle
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -382,6 +382,12 @@ class PresentationAuthorityConstruction:
     field_tokens: tuple[str, ...]
 
 
+ConstructionAuthorityPredicate: TypeAlias = Callable[
+    [PresentationAuthorityConstruction, SemanticAuthority],
+    bool,
+]
+
+
 @dataclass(frozen=True)
 class PresentationKeyValuePair:
     """One source-level key/value binding inside a presentation projection."""
@@ -645,10 +651,29 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             )
         ):
             return False
+        if (
+            resolver.projection_materializes_any_dataclass_authority(
+                candidate.projection,
+            )
+            and not resolver.projection_has_authority_affinity(
+                candidate.projection,
+                candidate.authority,
+            )
+            and not resolver.projection_has_qualified_authority_reference(
+                candidate.projection,
+                candidate.authority,
+            )
+        ):
+            return False
         return not (
             candidate.coverage_ratio < 1.0
-            and resolver.projection_descends_to_any_dataclass_authority(
-                candidate.projection,
+            and (
+                resolver.projection_descends_to_any_dataclass_authority(
+                    candidate.projection,
+                )
+                or resolver.projection_materializes_any_dataclass_authority(
+                    candidate.projection,
+                )
             )
         )
 
@@ -2058,26 +2083,12 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         authority: SemanticAuthority,
         matched_facts: tuple[SemanticFact, ...],
     ) -> bool:
-        if not matched_facts:
-            return False
-        matched_tokens = frozenset(
-            variant
-            for fact in matched_facts
-            for variant in normalized_name_variants(fact.name)
+        return self._projection_owner_derives_dataclass_authority(
+            projection,
+            authority,
+            matched_facts,
+            self._construction_type_descends_to_authority,
         )
-        if not matched_tokens:
-            return False
-        descended_field_tokens: set[str] = set()
-        for construction in projection.owner_constructions:
-            if not self._construction_type_descends_to_authority(
-                construction,
-                authority,
-            ):
-                continue
-            descended_field_tokens.update(construction.field_tokens)
-            if matched_tokens <= frozenset(construction.field_tokens):
-                return True
-        return matched_tokens <= frozenset(descended_field_tokens)
 
     def _construction_type_descends_to_authority(
         self,
@@ -2149,8 +2160,22 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         authority: SemanticAuthority,
     ) -> bool:
         return any(
-            self._construction_type_is_authority_class(construction, authority)
-            for construction in PresentationAuthorityConstructionCollector.constructions_for_function(
+            self._call_constructs_authority(child, authority)
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call)
+        )
+
+    def _call_constructs_authority(
+        self,
+        node: ast.Call,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            self._construction_type_is_authority_class(
+                PresentationAuthorityConstruction(type_name, ()),
+                authority,
+            )
+            for type_name in PresentationAuthorityConstructionCollector.construction_type_names(
                 node
             )
         )
@@ -2163,6 +2188,57 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             self.dataclass_projection_descends_to_authority(projection, authority)
             for authority in self.dataclass_authorities
         )
+
+    def projection_materializes_any_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
+        return any(
+            self.projection_owner_materializes_dataclass_authority(
+                projection,
+                authority,
+                self.fact_authority_index.facts_for_authority(authority.authority_id),
+            )
+            for authority in self.dataclass_authorities
+        )
+
+    def projection_owner_materializes_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        return self._projection_owner_derives_dataclass_authority(
+            projection,
+            authority,
+            matched_facts,
+            self._construction_type_materializes_authority,
+        )
+
+    def _projection_owner_derives_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+        accepts_construction: ConstructionAuthorityPredicate,
+    ) -> bool:
+        if not matched_facts:
+            return False
+        matched_tokens = frozenset(
+            variant
+            for fact in matched_facts
+            for variant in normalized_name_variants(fact.name)
+        )
+        if not matched_tokens:
+            return False
+        descended_field_tokens: set[str] = set()
+        for construction in projection.owner_constructions:
+            if not accepts_construction(construction, authority):
+                continue
+            descended_field_tokens.update(construction.field_tokens)
+            if matched_tokens <= frozenset(construction.field_tokens):
+                return True
+        return matched_tokens <= frozenset(descended_field_tokens)
 
     def projection_shares_dataclass_base_with_authority(
         self,
@@ -2675,7 +2751,7 @@ class PresentationAuthorityConstructionCollector:
         field_names = [
             keyword.arg for keyword in node.keywords if keyword.arg is not None
         ]
-        field_names.extend(cls.argument_name_id(argument) for argument in node.args)
+        field_names.extend(cls.argument_field_name(argument) for argument in node.args)
         return sorted_tuple(
             variant
             for field_name in field_names
@@ -2684,9 +2760,15 @@ class PresentationAuthorityConstructionCollector:
         )
 
     @staticmethod
-    def argument_name_id(node: ast.AST) -> str | None:
+    def argument_field_name(node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and PresentationTokenProjection.looks_like_semantic_literal(node.value)
+        ):
+            return node.value
         return None
 
 
