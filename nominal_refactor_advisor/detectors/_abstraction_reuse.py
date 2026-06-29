@@ -110,11 +110,17 @@ _CARRIER_NAME_SUFFIXES = (
 
 
 @dataclass(frozen=True, slots=True)
-class ParallelPrimitiveFieldBundle:
+class FilePathLineModuleNameBase:
     file_path: str
-    module_name: str
     line: int
+    module_name: str
+
+@dataclass(frozen=True, slots=True)
+class SharedFieldsBase(FilePathLineModuleNameBase):
     class_name: str
+
+@dataclass(frozen=True, slots=True)
+class ParallelPrimitiveFieldBundle(SharedFieldsBase):
     field_names: tuple[str, ...]
     semantic_roles: tuple[str, ...]
 
@@ -126,16 +132,15 @@ class ParallelPrimitiveCarrierCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class CarrierSurface:
-    file_path: str
-    module_name: str
-    line: int
-    class_name: str
+class CarrierBase(SharedFieldsBase):
+    base_names: tuple[str, ...]
+    nominal_ancestor_names: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class CarrierSurface(CarrierBase):
     field_names: tuple[str, ...]
     field_type_map: tuple[tuple[str, str], ...]
     role_names: tuple[str, ...]
-    base_names: tuple[str, ...]
-    nominal_ancestor_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,15 +152,9 @@ class AvailableCarrierReuseCandidate:
 
 
 @dataclass(frozen=True, slots=True)
-class CarrierCompositionRetreatCandidate:
-    file_path: str
-    module_name: str
-    line: int
-    class_name: str
+class CarrierCompositionRetreatCandidate(CarrierBase):
     field_name: str
     carrier_type_name: str
-    base_names: tuple[str, ...]
-    nominal_ancestor_names: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -753,23 +752,18 @@ def _parallel_primitive_carrier_candidates(
 
 
 @dataclass(frozen=True, slots=True)
-class AbstractionAuthoritySignature:
-    file_path: str
-    module_name: str
-    line: int
-    name: str
-    symbol: str
+class SignatureBase(FilePathLineModuleNameBase):
     signature: CapabilitySignature
+    symbol: str
+
+@dataclass(frozen=True, slots=True)
+class AbstractionAuthoritySignature(SignatureBase):
+    name: str
     shared_path_authority: bool
 
 
 @dataclass(frozen=True, slots=True)
-class LocalImplementationSignature:
-    file_path: str
-    module_name: str
-    line: int
-    symbol: str
-    signature: CapabilitySignature
+class LocalImplementationSignature(SignatureBase):
     imported_names: frozenset[str]
 
 

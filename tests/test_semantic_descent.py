@@ -10,8 +10,10 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.detectors import (
     DetectorConfig,
+    RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
 )
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_descent import (
     SemanticAuthorityMirrorPolicy,
     PresentationTokenRole,
@@ -25,6 +27,13 @@ def _write_module(root: Path, source: str) -> Path:
     path.parent.mkdir(parents=True)
     path.write_text(source, encoding="utf-8")
     return path
+
+
+def test_class_name_algebra_uses_tokens_for_common_suffixes() -> None:
+    assert (
+        CLASS_NAME_ALGEBRA.longest_common_suffix(("AlphaResult", "BetaResult"))
+        == "Result"
+    )
 
 
 def test_semantic_authority_mirror_policy_registry_covers_authority_kinds() -> None:
@@ -282,6 +291,108 @@ def test_semantic_mirror_registry_finding_synthesizes_autoregister_recipe(
     assert operation["class_key_pairs"] == ("LoadStep='load'", "SaveStep='save'")
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
+
+
+def test_finding_recipe_synthesis_collapses_repeated_dataclass_fields(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class AlphaResult:\n"
+        "    pose_id: int\n"
+        "    score: float\n"
+        "    label: str\n"
+        "    alpha_only: int\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class BetaResult:\n"
+        "    pose_id: int\n"
+        "    score: float\n"
+        "    label: str\n"
+        "    beta_only: int\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
+        if item.detector_id == "repeated_field_family"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    operation = plan.document.recipes[0].operations[0].to_dict()
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "RepeatedFieldFamilyFindingRecipeSynthesizer"
+    )
+    assert operation["operation"] == "collapse_fields_to_carrier"
+    assert operation["carrier_name"] == "ResultBase"
+    assert operation["carrier_dataclass_arguments"] == ("frozen=True", "slots=True")
+    assert set(operation["field_declaration_sources"]) == {
+        "label: str",
+        "pose_id: int",
+        "score: float",
+    }
+    assert "class ResultBase:" in rewritten
+    assert "class AlphaResult(ResultBase):" in rewritten
+    assert "class BetaResult(ResultBase):" in rewritten
+    assert rewritten.count("pose_id: int") == 1
+    assert rewritten.count("score: float") == 1
+    assert rewritten.count("label: str") == 1
+    assert simulation.is_clean is True
+
+
+def test_finding_recipe_synthesis_rejects_partial_action_key_overlap(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class AlphaResult:\n"
+        "    a: int\n"
+        "    b: int\n"
+        "    x: int\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class BetaResult:\n"
+        "    a: int\n"
+        "    b: int\n"
+        "    c: int\n"
+        "    y: int\n"
+        "\n"
+        "@dataclass(frozen=True, slots=True)\n"
+        "class GammaResult:\n"
+        "    b: int\n"
+        "    c: int\n"
+        "    z: int\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        RepeatedFieldFamilyDetector().detect(modules, DetectorConfig())
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(
+        findings,
+        selector_context=snapshot,
+        detector_ids=("repeated_field_family",),
+    )
+    record_statuses = tuple(record.status.value for record in plan.records)
+    simulation = plan.simulate_snapshot(snapshot)
+
+    assert record_statuses == ("planned", "duplicate_action_keys")
+    assert len(plan.document.recipes) == 1
+    assert len(plan.document.recipes[0].operations) == 1
+    assert simulation.is_clean is True
 
 
 def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(

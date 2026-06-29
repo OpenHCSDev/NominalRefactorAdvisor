@@ -16,6 +16,7 @@ from typing import Generic, TypeVar
 from ..ast_tools import ParsedModule, _walk_nodes
 from ..class_index import ClassFamilyIndex, IndexedClass
 from ..collection_algebra import sorted_tuple
+from ..name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
 
 _TYPE_NAME_LITERAL = "type"
 ProjectionT = TypeVar("ProjectionT")
@@ -246,46 +247,6 @@ def _is_dataclass_class(node: ast.ClassDef) -> bool:
 
 def _annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
     return _annotation_type_names_projection(node)
-
-
-@dataclass(frozen=True)
-class ClassNameAlgebra:
-    ignored_tokens: frozenset[str] = frozenset(
-        {"abc", "abstract", "base", "mixin", "spec"}
-    )
-
-    def token_set(self, name: str) -> frozenset[str]:
-        return frozenset(self.ordered_tokens(name))
-
-    def ordered_tokens(self, name: str) -> tuple[str, ...]:
-        return tuple(
-            (
-                token.lower()
-                for token in re.findall(
-                    "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+",
-                    name.lstrip("_"),
-                )
-                if token.lower() not in self.ignored_tokens
-            )
-        )
-
-    def longest_common_prefix(self, values: tuple[str, ...]) -> str:
-        if not values:
-            return ""
-        prefix = values[0]
-        for value in values[1:]:
-            while prefix and (not value.startswith(prefix)):
-                prefix = prefix[:-1]
-        return prefix
-
-    def longest_common_suffix(self, values: tuple[str, ...]) -> str:
-        if not values:
-            return ""
-        reversed_values = tuple(value[::-1] for value in values)
-        return self.longest_common_prefix(reversed_values)[::-1]
-
-
-CLASS_NAME_ALGEBRA = ClassNameAlgebra()
 
 
 _IGNORED_BASE_NAMES = frozenset({"ABC", "object"})

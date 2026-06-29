@@ -795,6 +795,7 @@ class RepeatedFieldFamilyDetector(CandidateFindingDetector[FieldFamilyCandidate]
                 field_names=field_candidate.field_names,
                 execution_level=field_candidate.execution_level,
                 dataclass_count=field_candidate.dataclass_count,
+                field_type_map=field_candidate.field_type_map,
             ),
         )
 

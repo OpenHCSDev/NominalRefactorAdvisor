@@ -385,6 +385,7 @@ class FieldFamilyMetrics(ClassNamesPlanMetrics):
     field_names: tuple[str, ...]
     execution_level: str
     dataclass_count: int = 0
+    field_type_map: tuple[tuple[str, str], ...] = ()
 
     @property
     def impact_delta(self) -> ImpactDelta:
