@@ -1208,16 +1208,9 @@ class LiteralSchemaDispatchCandidate(LiteralSchemaDispatchBase, LineWitnessCandi
     function_names: tuple[str, ...]
     source_expressions: tuple[str, ...]
 
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(self.file_path, line, function_name)
-            for line, function_name in zip(
-                self.line_numbers,
-                self.function_names,
-                strict=True,
-            )
-        )
+    evidence = ZippedSourceLocationEvidenceProperty(
+        "line_numbers", "function_names", "file_path"
+    )
 
 
 @dataclass(frozen=True)
@@ -9056,9 +9049,7 @@ class _VariantMethodSurface:
     forwarded_field_names: tuple[str, ...]
     construction_shape: str
 
-    @property
-    def evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.qualname)
+    evidence = SourceLocationEvidenceProperty("file_path", "line", "qualname")
 
 
 @dataclass(frozen=True)

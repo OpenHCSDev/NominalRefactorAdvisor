@@ -2952,6 +2952,91 @@ def test_zipped_source_location_descriptor_codemod_builder_replaces_property(
     assert "def keep_behavior" in rewritten
 
 
+def test_source_location_descriptor_finding_recipe_replaces_property(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n"
+        "    @property\n"
+        "    def evidence(self):\n"
+        "        return SourceLocation(self.file_path, self.lineno, self.qualname)\n\n"
+        "    def keep_behavior(self):\n"
+        "        return self.qualname\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "source_location_evidence_property"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "SourceLocationEvidencePropertyFindingRecipeSynthesizer"
+    )
+    assert (
+        '    evidence = SourceLocationEvidenceProperty("file_path", "lineno", "qualname")'
+        in rewritten
+    )
+    assert "@property" not in rewritten
+    assert "def evidence" not in rewritten
+    assert "def keep_behavior" in rewritten
+
+
+def test_zipped_source_location_descriptor_finding_recipe_replaces_property(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass LocalRecord:\n"
+        "    @property\n"
+        "    def evidence_locations(self):\n"
+        "        return tuple(\n"
+        "            SourceLocation(self.file_path, line, function_name)\n"
+        "            for line, function_name in zip(\n"
+        "                self.line_numbers, self.function_names, strict=True\n"
+        "            )\n"
+        "        )\n\n"
+        "    def keep_behavior(self):\n"
+        "        return self.function_names\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in analyze_modules(modules)
+        if finding.detector_id == "zipped_source_location_evidence_property"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot, backend=CodemodBackend.AST_SPAN)
+    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer"
+    )
+    assert (
+        '    evidence_locations = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names", "file_path")'
+        in rewritten
+    )
+    assert "@property" not in rewritten
+    assert "def evidence_locations" not in rewritten
+    assert "def keep_behavior" in rewritten
+
+
 def test_derivable_detector_id_codemod_builder_deletes_redundant_assignment(
     tmp_path: Path,
 ) -> None:

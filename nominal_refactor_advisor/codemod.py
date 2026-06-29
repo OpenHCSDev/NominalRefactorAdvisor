@@ -13316,11 +13316,13 @@ class DuplicateVisitorAliasRecipeParts(DuplicateVisitorBase):
         return f"{indent}{method_node.name} = {canonical_method_name}\n"
 
 
-class RecipeMetadataAuthority:
-    """Class-level recipe identity metadata shared by recipe synthesizer families."""
-
+class SharedRecipeIdSuffixRecipeReasonBase:
     recipe_id_suffix: ClassVar[str]
     recipe_reason: ClassVar[str]
+
+
+class RecipeMetadataAuthority(SharedRecipeIdSuffixRecipeReasonBase):
+    """Class-level recipe identity metadata shared by recipe synthesizer families."""
 
 
 class ClassAssignmentDeletionFindingRecipeSynthesizer(
@@ -16029,6 +16031,115 @@ class ZippedSourceLocationDescriptorAssignmentAuthority(
     """Projection authority for exact zipped SourceLocation evidence properties."""
 
     assignment_builder = staticmethod(_zipped_source_location_descriptor_assignment)
+
+
+class DescriptorPropertyFindingRecipeSynthesizer(
+    SharedRecipeIdSuffixRecipeReasonBase,
+    EvaluatedFindingRecipeSynthesizer,
+    ABC,
+):
+    """Bridge descriptor-property findings into finding-backed recipe synthesis."""
+
+    descriptor_assignment_authority: ClassVar[type[DescriptorAssignmentAuthority]]
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property rewrite requires source context"
+            )
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property finding has no primary evidence"
+            )
+        target_id = SourceRewriteTarget(
+            qualname=evidence.symbol,
+            source_path=evidence.file_path,
+        ).optional_identifier(context.source_index)
+        if target_id is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property evidence did not resolve to one target"
+            )
+        node = context.ast_target_nodes_by_id[target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property target is not a function"
+            )
+        assignment = type(self).descriptor_assignment_authority.assignment(node)
+        if assignment is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor assignment authority rejected target shape"
+            )
+        class_target = _containing_class_target(context.source_index, target_id)
+        if class_target is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property target has no containing class"
+            )
+        source = context.sources_by_file_path.get(class_target.file_path)
+        if source is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="descriptor property source text is unavailable"
+            )
+        geometry = SourceTextGeometry(source)
+        start, end = geometry.node_span_offsets(
+            SourceNodeSpan(
+                node,
+                decorator_policy=SourceNodeDecoratorPolicy.INCLUDE,
+            )
+        )
+        old_source = source[start:end]
+        new_source = f"{geometry.line_indent(start)}{assignment}\n"
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",
+            reason=self.recipe_reason,
+        ).replace_text(
+            class_target.qualname,
+            old_source,
+            new_source,
+            source_path=class_target.file_path,
+            rationale=self.recipe_reason,
+        )
+        return FindingRecipeEvaluation(recipe=recipe)
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, evidence.symbol),),
+        )
+
+
+class SourceLocationEvidencePropertyFindingRecipeSynthesizer(
+    DescriptorPropertyFindingRecipeSynthesizer
+):
+    """Synthesize descriptor assignments for SourceLocation evidence properties."""
+
+    detector_id = "source_location_evidence_property"
+    descriptor_assignment_authority = SourceLocationDescriptorAssignmentAuthority
+    recipe_id_suffix = "replace-source-location-evidence-property"
+    recipe_reason = (
+        "Replace boilerplate SourceLocation evidence property with descriptor data."
+    )
+
+
+class ZippedSourceLocationEvidencePropertyFindingRecipeSynthesizer(
+    DescriptorPropertyFindingRecipeSynthesizer
+):
+    """Synthesize descriptor assignments for zipped SourceLocation evidence."""
+
+    detector_id = "zipped_source_location_evidence_property"
+    descriptor_assignment_authority = ZippedSourceLocationDescriptorAssignmentAuthority
+    recipe_id_suffix = "replace-zipped-source-location-evidence-property"
+    recipe_reason = "Replace boilerplate zipped SourceLocation evidence property with descriptor data."
 
 
 class DetectorDeclarationSelector(ABC, metaclass=AutoRegisterMeta):
