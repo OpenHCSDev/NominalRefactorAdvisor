@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
@@ -709,7 +710,10 @@ def test_semantic_inheritance_family_ssot_synthesizes_registered_root(
         plan.records[0].synthesizer_name
         == "SemanticInheritanceFamilySSOTFindingRecipeSynthesizer"
     )
-    assert "class SharedRecipeMetadata(ABC, metaclass=AutoRegisterMeta):" in rewritten_source
+    assert (
+        "class SharedRecipeMetadata(ABC, metaclass=AutoRegisterMeta):"
+        in rewritten_source
+    )
     assert "def recipe_id_suffix(self):" in rewritten_source
     assert "def recipe_reason(self):" in rewritten_source
     assert "def assignment_name(self):" in rewritten_source
@@ -929,6 +933,55 @@ def test_repeated_field_synthesis_rejects_field_named_carrier(
     assert record.status.value == "rejected_by_safety_check"
     assert "shared class-name prefix or suffix" in record.reason
     assert plan.document.recipes == ()
+
+
+def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class SupportItem:\n"
+        "    name: str\n"
+        "    value: str\n"
+        "\n"
+        "class SupportBuilder:\n"
+        "    def first(self, name, value):\n"
+        "        return (self.item(name, value),)\n"
+        "\n"
+        "    def second(self, *, name, value):\n"
+        "        return self.item(value=value, name=name)\n"
+        "\n"
+        "    @staticmethod\n"
+        "    def item(name, value):\n"
+        "        return SupportItem(name=name, value=value)\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "identity_keyword_forwarding_shell"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    recipe = plan.document.to_dict()["recipes"][0]
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "IdentityKeywordForwardingShellFindingRecipeSynthesizer"
+    )
+    assert len(recipe["rewrites"]) == 1
+    assert recipe["operations"] == ()
+    assert "def item" not in rewritten
+    assert "return (SupportItem(name=name, value=value),)" in rewritten
+    assert "return SupportItem(name=name, value=value)" in rewritten
+    assert simulation.is_clean is True
 
 
 def test_finding_recipe_synthesis_rejects_partial_action_key_overlap(

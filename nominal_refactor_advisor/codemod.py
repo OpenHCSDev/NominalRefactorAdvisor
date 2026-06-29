@@ -12804,6 +12804,427 @@ class RepeatedFieldFamilyFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesi
         return next(iter(file_paths))
 
 
+@dataclass(frozen=True)
+class IdentityKeywordForwardingCallRewrite:
+    """One same-name forwarding shell call site rewritten to the callee authority."""
+
+    target: AstTargetDigest
+    replacement_source: str
+
+
+@dataclass(frozen=True)
+class IdentityKeywordForwardingShellRecipeParts:
+    """Executable facts for one identity keyword forwarding shell collapse."""
+
+    call_rewrites: tuple[IdentityKeywordForwardingCallRewrite, ...]
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-collapse-identity-keyword-forwarding",
+            reason="Inline identity keyword forwarding shell calls into the callee authority.",
+        )
+        for call_rewrite in self.call_rewrites:
+            recipe = recipe.replace_target(
+                call_rewrite.replacement_source,
+                target_identifier=call_rewrite.target.target_id,
+                rationale="Inline identity keyword forwarding shell call.",
+            )
+        return recipe
+
+
+class SharedActionKeysForFindingMixin:
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            ((evidence.file_path, dispatch_evidence_subject(evidence.symbol)),),
+        )
+
+
+class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
+    SharedActionKeysForFindingMixin,
+    EvaluatedFindingRecipeSynthesizer,
+):
+    """Build recipes that inline same-name keyword forwarding shells."""
+
+    detector_id = "identity_keyword_forwarding_shell"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "identity keyword forwarding collapse requires a source selector context"
+                )
+            )
+        parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
+        if rejection_reason:
+            return FindingRecipeEvaluation(rejection_reason=rejection_reason)
+        if parts is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="identity keyword forwarding collapse found no recipe parts"
+            )
+        return FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+
+    def recipe_parts_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> tuple[IdentityKeywordForwardingShellRecipeParts | None, str]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return None, "identity keyword forwarding collapse requires source evidence"
+        resolved_paths = context.resolve_source_paths((evidence.file_path,))
+        if len(resolved_paths) != 1:
+            return None, "identity keyword forwarding collapse requires one source file"
+        source_path = next(iter(resolved_paths))
+        wrapper_qualname = dispatch_evidence_subject(evidence.symbol)
+        wrapper = self.wrapper_target(context, source_path, wrapper_qualname)
+        if wrapper is None:
+            return None, "identity keyword forwarding collapse cannot resolve wrapper"
+        wrapper_target, wrapper_node = wrapper
+        source = context.sources_by_file_path.get(source_path)
+        if source is None:
+            return None, "identity keyword forwarding collapse requires source text"
+        call_shape = self.wrapper_call_shape(wrapper_node)
+        if call_shape is None:
+            return (
+                None,
+                "identity keyword forwarding collapse requires a pure return call",
+            )
+        callee_source, parameter_names = call_shape
+        call_rewrites = self.call_rewrites(
+            context,
+            source_path=source_path,
+            source=source,
+            wrapper_target=wrapper_target,
+            wrapper_node=wrapper_node,
+            wrapper_method_name=wrapper_node.name,
+            callee_source=callee_source,
+            parameter_names=parameter_names,
+        )
+        if not call_rewrites:
+            return None, "identity keyword forwarding collapse found no safe call sites"
+        return (
+            IdentityKeywordForwardingShellRecipeParts(
+                call_rewrites=call_rewrites,
+            ),
+            "",
+        )
+
+    @staticmethod
+    def wrapper_target(
+        context: CodemodSelectorContext,
+        source_path: str,
+        wrapper_qualname: str,
+    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
+            file_paths=(source_path,),
+            qualnames=(wrapper_qualname,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return target, node
+
+    @classmethod
+    def wrapper_call_shape(
+        cls,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        if len(node.body) != 1:
+            return None
+        statement = node.body[0]
+        if not isinstance(statement, ast.Return):
+            return None
+        if not isinstance(statement.value, ast.Call):
+            return None
+        call = statement.value
+        if call.args:
+            return None
+        parameter_names = cls.forwarded_parameter_names(node)
+        if not parameter_names:
+            return None
+        if tuple(keyword.arg for keyword in call.keywords) != parameter_names:
+            return None
+        for keyword in call.keywords:
+            if keyword.arg is None:
+                return None
+            if not isinstance(keyword.value, ast.Name):
+                return None
+            if keyword.value.id != keyword.arg:
+                return None
+        return ast.unparse(call.func), parameter_names
+
+    @staticmethod
+    def forwarded_parameter_names(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, ...]:
+        if node.args.vararg is not None or node.args.kwarg is not None:
+            return ()
+        positional_arguments = tuple((*node.args.posonlyargs, *node.args.args))
+        if positional_arguments and positional_arguments[0].arg in {"self", "cls"}:
+            positional_arguments = positional_arguments[1:]
+        arguments = (*positional_arguments, *node.args.kwonlyargs)
+        return tuple(argument.arg for argument in arguments)
+
+    def call_rewrites(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        source: str,
+        wrapper_target: AstTargetDigest,
+        wrapper_node: ast.FunctionDef | ast.AsyncFunctionDef,
+        wrapper_method_name: str,
+        callee_source: str,
+        parameter_names: tuple[str, ...],
+    ) -> tuple[IdentityKeywordForwardingCallRewrite, ...]:
+        owner_qualname = wrapper_target.qualname.rpartition(".")[0]
+        replacement_scope = self.replacement_scope(
+            context,
+            source_path=source_path,
+            owner_qualname=owner_qualname,
+        )
+        if replacement_scope is None:
+            return ()
+        target, _node = replacement_scope
+        call_replacements = tuple(
+            replacement
+            for caller_target in self.caller_targets(
+                context,
+                source_path,
+                wrapper_target,
+                owner_qualname=owner_qualname,
+            )
+            for caller_node in (
+                context.ast_target_nodes_by_id[caller_target.target_id],
+            )
+            if isinstance(caller_node, ast.FunctionDef | ast.AsyncFunctionDef)
+            for call in ast.walk(caller_node)
+            for replacement in (
+                self.call_replacement(
+                    source,
+                    call,
+                    wrapper_method_name=wrapper_method_name,
+                    owner_qualname=owner_qualname,
+                    caller_qualname=caller_target.qualname,
+                    callee_source=callee_source,
+                    parameter_names=parameter_names,
+                ),
+            )
+            if replacement is not None
+        )
+        if not call_replacements:
+            return ()
+        wrapper_delete_replacement = self.delete_node_replacement(source, wrapper_node)
+        return (
+            IdentityKeywordForwardingCallRewrite(
+                target=target,
+                replacement_source=self.replacement_source_for_target(
+                    source,
+                    target,
+                    (*call_replacements, wrapper_delete_replacement),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def replacement_scope(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        owner_qualname: str,
+    ) -> tuple[AstTargetDigest, ast.AST] | None:
+        if not owner_qualname:
+            module_targets = tuple(
+                target
+                for target in context.source_index.ast_targets
+                if target.file_path == source_path and target.is_module
+            )
+            if len(module_targets) != 1:
+                return None
+            source = context.sources_by_file_path.get(source_path)
+            if source is None:
+                return None
+            return module_targets[0], ast.parse(source, filename=source_path)
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(source_path,),
+            qualnames=(owner_qualname,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        return target, context.ast_target_nodes_by_id[target.target_id]
+
+    @staticmethod
+    def caller_targets(
+        context: CodemodSelectorContext,
+        source_path: str,
+        wrapper_target: AstTargetDigest,
+        *,
+        owner_qualname: str,
+    ) -> tuple[AstTargetDigest, ...]:
+        return tuple(
+            target
+            for target in context.source_index.ast_targets
+            if target.file_path == source_path
+            and target.target_id != wrapper_target.target_id
+            and target.node_kind
+            in {AstTargetNodeKind.FUNCTION.value, AstTargetNodeKind.METHOD.value}
+            and (not owner_qualname or target.qualname.startswith(f"{owner_qualname}."))
+        )
+
+    def call_replacement(
+        self,
+        source: str,
+        node: ast.AST,
+        *,
+        wrapper_method_name: str,
+        owner_qualname: str,
+        caller_qualname: str,
+        callee_source: str,
+        parameter_names: tuple[str, ...],
+    ) -> SourceOffsetReplacement | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if not self.is_wrapper_call(
+            node,
+            wrapper_method_name=wrapper_method_name,
+            owner_qualname=owner_qualname,
+            caller_qualname=caller_qualname,
+        ):
+            return None
+        argument_sources = self.argument_sources(source, node, parameter_names)
+        if argument_sources is None:
+            return None
+        start_offset, end_offset = self.node_offsets(source, node)
+        return SourceOffsetReplacement(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=(
+                f"{callee_source}("
+                f"{', '.join(f'{name}={argument_sources[name]}' for name in parameter_names)}"
+                ")"
+            ),
+        )
+
+    @staticmethod
+    def is_wrapper_call(
+        node: ast.Call,
+        *,
+        wrapper_method_name: str,
+        owner_qualname: str,
+        caller_qualname: str,
+    ) -> bool:
+        if isinstance(node.func, ast.Attribute):
+            if node.func.attr != wrapper_method_name:
+                return False
+            if not isinstance(node.func.value, ast.Name):
+                return False
+            if node.func.value.id not in {"self", "cls"}:
+                return False
+            return bool(owner_qualname) and caller_qualname.startswith(
+                f"{owner_qualname}."
+            )
+        if isinstance(node.func, ast.Name):
+            return not owner_qualname and node.func.id == wrapper_method_name
+        return False
+
+    @staticmethod
+    def argument_sources(
+        source: str,
+        node: ast.Call,
+        parameter_names: tuple[str, ...],
+    ) -> dict[str, str] | None:
+        if any(keyword.arg is None for keyword in node.keywords):
+            return None
+        if len(node.args) + len(node.keywords) != len(parameter_names):
+            return None
+        argument_by_name: dict[str, ast.AST] = {}
+        for parameter_name, argument in zip(parameter_names, node.args, strict=False):
+            argument_by_name[parameter_name] = argument
+        for keyword in node.keywords:
+            if keyword.arg not in parameter_names:
+                return None
+            if keyword.arg in argument_by_name:
+                return None
+            argument_by_name[keyword.arg] = keyword.value
+        if frozenset(argument_by_name) != frozenset(parameter_names):
+            return None
+        source_by_name = {
+            name: ast.get_source_segment(source, argument_by_name[name])
+            for name in parameter_names
+        }
+        if any(value is None for value in source_by_name.values()):
+            return None
+        return {name: value or "" for name, value in source_by_name.items()}
+
+    @staticmethod
+    def node_offsets(source: str, node: ast.AST) -> tuple[int, int]:
+        try:
+            start_line = node.lineno
+            start_column = node.col_offset
+            end_line = node.end_lineno
+            end_column = node.end_col_offset
+        except AttributeError:
+            raise ValueError("AST node lacks source offsets")
+        if end_line is None or end_column is None:
+            raise ValueError("AST node lacks source offsets")
+        geometry = SourceTextGeometry(source)
+        start_offset = geometry.line_offsets[start_line - 1] + start_column
+        end_offset = geometry.line_offsets[end_line - 1] + end_column
+        return start_offset, end_offset
+
+    @classmethod
+    def delete_node_replacement(
+        cls,
+        source: str,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SourceOffsetReplacement:
+        geometry = SourceTextGeometry(source)
+        start_offset, end_offset = geometry.node_span_offsets(
+            SourceNodeSpan(node, SourceNodeDecoratorPolicy.INCLUDE)
+        )
+        return SourceOffsetReplacement(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source="",
+        )
+
+    @staticmethod
+    def replacement_source_for_target(
+        source: str,
+        target: AstTargetDigest,
+        replacements: tuple[SourceOffsetReplacement, ...],
+    ) -> str:
+        geometry = SourceTextGeometry(source)
+        start_offset = geometry.line_offsets[target.line - 1]
+        end_offset = (
+            geometry.line_offsets[target.end_line]
+            if target.end_line < len(geometry.line_offsets)
+            else geometry.end_offset
+        )
+        return geometry.source_with_replacements_in_span(
+            start_offset,
+            end_offset,
+            replacements,
+        )
+
+
 class ClassLevelInheritanceOptimizationFindingRecipeSynthesizer(
     EvaluatedFindingRecipeSynthesizer
 ):
@@ -13687,7 +14108,7 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
                 (
                     f"{indent}__registry__: "
                     "ClassVar[\n"
-                    f"{indent}    dict[str, type[\"{family_name}\"]]\n"
+                    f'{indent}    dict[str, type["{family_name}"]]\n'
                     f"{indent}] = {{}}\n"
                 ),
             ),
@@ -13771,10 +14192,7 @@ class SemanticInheritanceFamilySSOTFindingRecipeSynthesizer(
         decorator_name: str,
     ) -> bool:
         return any(
-            (
-                isinstance(decorator, ast.Name)
-                and decorator.id == decorator_name
-            )
+            (isinstance(decorator, ast.Name) and decorator.id == decorator_name)
             or (
                 isinstance(decorator, ast.Attribute)
                 and decorator.attr == decorator_name
@@ -15137,9 +15555,7 @@ class LocalRoleCaseAuthoritySourceRenderer:
 class LocalRoleCaseAuthorityExtractionBase(ABC, metaclass=AutoRegisterMeta):
     """Common renderer contract for extracted role-case authorities."""
 
-    __registry__: ClassVar[
-        dict[str, type["LocalRoleCaseAuthorityExtractionBase"]]
-    ] = {}
+    __registry__: ClassVar[dict[str, type["LocalRoleCaseAuthorityExtractionBase"]]] = {}
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
     __skip_if_no_key__ = True
@@ -15197,15 +15613,14 @@ class LocalRoleCaseAuthorityExtraction(LocalRoleCaseAuthorityExtractionBase):
         )
 
     def delegating_body_source(self, authority_name: str) -> str:
-        return (
-            f"return {authority_name}.{self.owner_function_name}({self.axis_name})"
-        )
+        return f"return {authority_name}.{self.owner_function_name}({self.axis_name})"
 
 
 @dataclass(frozen=True)
 class LocalRoleCaseItemBase:
     axis_name: str
     expected_source: str
+
 
 @dataclass(frozen=True)
 class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):
@@ -15639,7 +16054,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 return None
             if statement.orelse:
                 return None
-            if len(statement.body) != 1 or not isinstance(statement.body[0], ast.Return):
+            if len(statement.body) != 1 or not isinstance(
+                statement.body[0], ast.Return
+            ):
                 return None
             result_source = self.node_source(source, statement.body[0].value)
             if result_source is None:
@@ -15651,7 +16068,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             )
             if not condition_items:
                 return None
-            if any(item.axis_name not in parameter_name_set for item in condition_items):
+            if any(
+                item.axis_name not in parameter_name_set for item in condition_items
+            ):
                 return None
             items.extend(condition_items)
         if not self.branch_items_cover_finding(tuple(items)):
@@ -15692,9 +16111,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         if not value_names:
             return None
         return LocalRoleCaseAssignmentAuthorityExtraction(
-            items=tuple(
-                replace(item, value_names=value_names) for item in items
-            ),
+            items=tuple(replace(item, value_names=value_names) for item in items),
             default_item=replace(default_item, value_names=value_names),
             owner_function_name=node.name,
             assignment_names=assignment_names,
@@ -15707,11 +16124,14 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         self,
         source: str,
         root: ast.If,
-    ) -> tuple[
-        tuple[LocalRoleCaseAssignmentItem, ...],
-        LocalRoleCaseAssignmentDefault,
-        tuple[str, ...],
-    ] | None:
+    ) -> (
+        tuple[
+            tuple[LocalRoleCaseAssignmentItem, ...],
+            LocalRoleCaseAssignmentDefault,
+            tuple[str, ...],
+        ]
+        | None
+    ):
         items: list[LocalRoleCaseAssignmentItem] = []
         assignment_names: tuple[str, ...] | None = None
         current: ast.If | None = root
@@ -15805,18 +16225,17 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         items: tuple[LocalRoleCaseAssignmentItem, ...],
         default_item: LocalRoleCaseAssignmentDefault,
     ) -> tuple[str, ...]:
-        ordered_candidate_names = (
-            FunctionParameterProjection.public_names(node) + self.assigned_names(prelude)
-        )
+        ordered_candidate_names = FunctionParameterProjection.public_names(
+            node
+        ) + self.assigned_names(prelude)
         candidate_names = frozenset(ordered_candidate_names)
         axis_names = frozenset(item.axis_name for item in items)
         if not axis_names <= candidate_names:
             return ()
-        value_sources = tuple(
-            value_source
-            for item in items
-            for value_source in item.value_sources
-        ) + default_item.value_sources
+        value_sources = (
+            tuple(value_source for item in items for value_source in item.value_sources)
+            + default_item.value_sources
+        )
         used_names = {
             child.id
             for value_source in value_sources
@@ -15824,7 +16243,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
         }
         return tuple(
-            name for name in ordered_candidate_names if name in axis_names or name in used_names
+            name
+            for name in ordered_candidate_names
+            if name in axis_names or name in used_names
         )
 
     def assignment_items_cover_finding(
@@ -15846,7 +16267,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         for statement in statements:
             if isinstance(statement, ast.Assign):
                 names.extend(
-                    target.id for target in statement.targets if isinstance(target, ast.Name)
+                    target.id
+                    for target in statement.targets
+                    if isinstance(target, ast.Name)
                 )
             elif isinstance(statement, ast.AnnAssign) and isinstance(
                 statement.target,
@@ -15879,7 +16302,11 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         )
         if any(statement_source is None for statement_source in statement_sources):
             return None
-        return "\n".join(statement_source for statement_source in statement_sources if statement_source)
+        return "\n".join(
+            statement_source
+            for statement_source in statement_sources
+            if statement_source
+        )
 
     @staticmethod
     def semantic_body(
@@ -15904,7 +16331,9 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         value: ast.AST | None = None
         if isinstance(statement, ast.Assign):
             target_names = tuple(
-                target.id for target in statement.targets if isinstance(target, ast.Name)
+                target.id
+                for target in statement.targets
+                if isinstance(target, ast.Name)
             )
             if len(target_names) == 1:
                 target_name = target_names[0]
@@ -15992,12 +16421,24 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             expected_source = self.node_source(source, right)
             if expected_source is None:
                 return ()
-            return (self.branch_item(left.id, expected_source, result_source),)
+            return (
+                LocalRoleCaseBranchItem(
+                    axis_name=left.id,
+                    expected_source=expected_source,
+                    result_source=result_source,
+                ),
+            )
         if isinstance(right, ast.Name):
             expected_source = self.node_source(source, left)
             if expected_source is None:
                 return ()
-            return (self.branch_item(right.id, expected_source, result_source),)
+            return (
+                LocalRoleCaseBranchItem(
+                    axis_name=right.id,
+                    expected_source=expected_source,
+                    result_source=result_source,
+                ),
+            )
         return ()
 
     def membership_branch_item(
@@ -16012,18 +16453,12 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         expected_source = self.membership_expected_source(source, right)
         if expected_source is None:
             return ()
-        return (self.branch_item(left.id, expected_source, result_source),)
-
-    @staticmethod
-    def branch_item(
-        axis_name: str,
-        expected_source: str,
-        result_source: str,
-    ) -> LocalRoleCaseBranchItem:
-        return LocalRoleCaseBranchItem(
-            axis_name=axis_name,
-            expected_source=expected_source,
-            result_source=result_source,
+        return (
+            LocalRoleCaseBranchItem(
+                axis_name=left.id,
+                expected_source=expected_source,
+                result_source=result_source,
+            ),
         )
 
     def membership_expected_source(
@@ -16770,9 +17205,11 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> str:
-        builder_reason = MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-            finding,
-            context,
+        builder_reason = (
+            MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+                finding,
+                context,
+            )
         )
         return (
             "semantic mapping mirror has a stable DSL action key, but no safe "
@@ -16894,7 +17331,10 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         return "".join(source_lines[target.line - 1 : target.end_line])
 
 
-class BranchSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
+class BranchSemanticMirrorRecipeStrategy(
+    SharedActionKeysForFindingMixin,
+    TypedMetricSemanticMirrorRecipeStrategy,
+):
     """Route branch-chain semantic mirrors through executable policy extraction."""
 
     metric_type = BranchCountMetrics
@@ -16908,23 +17348,6 @@ class BranchSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy
         if builder is None:
             return None
         return builder.recipe()
-
-    def action_keys_for_finding(
-        self,
-        finding: RefactorFinding,
-    ) -> tuple[FindingRecipeActionKey, ...]:
-        evidence = FindingPrimaryEvidence(finding).source_location
-        if evidence is None:
-            return ()
-        return FindingRecipeActionKey.from_finding_file_subjects(
-            finding,
-            (
-                (
-                    evidence.file_path,
-                    dispatch_evidence_subject(evidence.symbol),
-                ),
-            ),
-        )
 
     def rejection_reason_for_finding(
         self,
