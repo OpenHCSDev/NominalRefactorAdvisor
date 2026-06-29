@@ -1189,21 +1189,21 @@ class LiteralSchemaFieldAccess:
 
 
 @dataclass(frozen=True)
-class LiteralSchemaDispatchOwner:
-    qualname: str
-    source_expression: str
+class LiteralSchemaDispatchBase:
+    access_count: int
     key_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
-    access_count: int
+
+@dataclass(frozen=True)
+class LiteralSchemaDispatchOwner(LiteralSchemaDispatchBase):
+    qualname: str
+    source_expression: str
 
 
 @dataclass(frozen=True)
-class LiteralSchemaDispatchCandidate(LineWitnessCandidate):
+class LiteralSchemaDispatchCandidate(LiteralSchemaDispatchBase, LineWitnessCandidate):
     function_names: tuple[str, ...]
     source_expressions: tuple[str, ...]
-    key_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    access_count: int
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -1932,7 +1932,7 @@ class FormalBoundaryLiteralRegistryCallVisitor(ClassFunctionStackNodeVisitor):
         )
 
 
-class FormalBoundaryLiteralRegistryMirrorDetector(PerModuleIssueDetector):
+class FormalBoundaryLiteralRegistryMirrorDetector(PerModuleSemanticMirrorIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary literal registries should be derived",
@@ -2495,7 +2495,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         )
 
 
-class FormalBoundaryExternalStringRegistryMirrorDetector(IssueDetector):
+class FormalBoundaryExternalStringRegistryMirrorDetector(SemanticMirrorIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary string registries should not be mirrored across sources",
@@ -2871,7 +2871,7 @@ def _runtime_semantic_branch_chains_from_body(
     )
 
 
-class RuntimeSemanticBranchChainDetector(PerModuleIssueDetector):
+class RuntimeSemanticBranchChainDetector(PerModuleSemanticMirrorIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Runtime semantic if-chain should move behind a formal policy authority",
@@ -3783,7 +3783,7 @@ def _runtime_authority_name_is_interesting(text: str) -> bool:
     return any((token in normalized for token in _RUNTIME_SEMANTIC_BRANCH_AXIS_TOKENS))
 
 
-class RuntimeAuthorityBranchSemanticsDetector(PerModuleIssueDetector):
+class RuntimeAuthorityBranchSemanticsDetector(PerModuleSemanticMirrorIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Runtime authority return guards should move behind a formal policy authority",

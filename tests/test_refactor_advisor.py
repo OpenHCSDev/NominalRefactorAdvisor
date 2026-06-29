@@ -17569,7 +17569,10 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     critical = spec.build(
         "semantic_mirror_without_descent",
         "`HANDLERS` mirrors `Handler` without a descent path.",
-        (SourceLocation("module.py", 10, "HANDLERS"),),
+        (
+            SourceLocation("module.py", 10, "HANDLERS"),
+            SourceLocation("module.py", 3, "Handler"),
+        ),
         title="`HANDLERS` mirrors `Handler`",
         relation_context=(
             "mapping_literal has semantic overlap with class_family `Handler`; "
@@ -17599,7 +17602,7 @@ def test_json_payload_uses_semantic_work_queue_when_gate_is_active() -> None:
     assert payload["supporting_raw_finding_count"] == 1
     assert "supporting_raw_findings" not in payload
     assert work_queue[0]["source"] == "ssot_finding"
-    assert work_queue[0]["authority_candidate"] == "`HANDLERS` mirrors `Handler`"
+    assert work_queue[0]["authority_candidate"] == "Handler"
     assert work_queue[0]["detector_ids"] == ("semantic_mirror_without_descent",)
     assert work_queue[0]["finding_ids"] == (critical.stable_id,)
     assert gate_queue[0] == work_queue[0]

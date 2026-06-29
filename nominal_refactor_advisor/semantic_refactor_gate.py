@@ -14,7 +14,7 @@ from .codemod import (
 )
 from .detectors import IssueDetector
 from .impact_ranking import RefactorImpactRankingReport
-from .models import RefactorFinding, SemanticRecord
+from .models import RefactorFinding, SemanticRecord, SourceLocation
 
 SEMANTIC_REFACTOR_GATE_DISABLED_MESSAGE = (
     "--no-impact-ranking disables the semantic refactor gate; pass "
@@ -571,10 +571,33 @@ class SemanticRefactorGateReport(SemanticRecord):
 
 def _authority_candidate_for_finding(finding: RefactorFinding) -> str:
     if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
+        authority_evidence = _semantic_mirror_authority_evidence(finding)
+        if authority_evidence is not None:
+            return authority_evidence.symbol
         return finding.title
     if finding.evidence:
         return finding.evidence[0].symbol
     return finding.title
+
+
+def _semantic_mirror_authority_evidence(
+    finding: RefactorFinding,
+) -> SourceLocation | None:
+    detector_type = IssueDetector.registered_detector_type_for_id(finding.detector_id)
+    if detector_type is None:
+        return _first_evidence(finding)
+    evidence_index = detector_type.semantic_mirror_authority_evidence_index
+    if evidence_index is None:
+        return _first_evidence(finding)
+    if evidence_index >= len(finding.evidence):
+        return _first_evidence(finding)
+    return finding.evidence[evidence_index]
+
+
+def _first_evidence(finding: RefactorFinding) -> SourceLocation | None:
+    if not finding.evidence:
+        return None
+    return finding.evidence[0]
 
 
 def _missing_derivation_path_for_finding(finding: RefactorFinding) -> str:

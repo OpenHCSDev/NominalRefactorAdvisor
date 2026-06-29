@@ -644,6 +644,7 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
     detector_priority: ClassVar[int] = 0
     ssot_authority_boundary: ClassVar[bool] = False
     semantic_mirror_role: ClassVar[bool] = False
+    semantic_mirror_authority_evidence_index: ClassVar[int | None] = None
     registry_normal_form_policy: ClassVar[RegistryNormalFormPolicy | None] = None
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
@@ -661,6 +662,14 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
                 item.__qualname__,
             ),
         )
+
+    @classmethod
+    def registered_detector_type_for_id(
+        cls,
+        detector_id: str,
+    ) -> type["IssueDetector"] | None:
+        detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
+        return detector_registry.get(detector_id)
 
     @classmethod
     def detector_family_base_names(cls) -> frozenset[str]:
@@ -749,6 +758,13 @@ class IssueDetector(ABC, metaclass=AutoRegisterMeta):
         raise NotImplementedError
 
 
+class SemanticMirrorIssueDetector(IssueDetector):
+    """Detector base for semantic mirrors that need authority-boundary priority."""
+
+    ssot_authority_boundary: ClassVar[bool] = True
+    semantic_mirror_role: ClassVar[bool] = True
+
+
 class PerModuleIssueDetector(IssueDetector):
     """Detector base that evaluates one parsed module at a time."""
 
@@ -769,6 +785,13 @@ class PerModuleIssueDetector(IssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+
+class PerModuleSemanticMirrorIssueDetector(
+    SemanticMirrorIssueDetector,
+    PerModuleIssueDetector,
+):
+    """Per-module detector base for semantic mirror surfaces."""
 
 
 class ContextualModuleIssueDetector(IssueDetector):

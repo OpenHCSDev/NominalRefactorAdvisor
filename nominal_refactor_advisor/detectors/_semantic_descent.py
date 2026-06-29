@@ -7,7 +7,11 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from ._base import DetectorConfig, IssueDetector, high_confidence_certified_spec
+from ._base import (
+    DetectorConfig,
+    SemanticMirrorIssueDetector,
+    high_confidence_certified_spec,
+)
 from ..ast_tools import ParsedModule
 from ..models import (
     MappingMetrics,
@@ -108,12 +112,11 @@ class AliasOverlapClassKeySourceResolver(SemanticMirrorClassKeySourceResolver):
         return None
 
 
-class SemanticMirrorWithoutDescentDetector(IssueDetector):
+class SemanticMirrorWithoutDescentDetector(SemanticMirrorIssueDetector):
     """Report presentation projections that mirror a nominal semantic authority."""
 
     detector_priority = -100
-    semantic_mirror_role = True
-    ssot_authority_boundary = True
+    semantic_mirror_authority_evidence_index = 1
     finding_spec = high_confidence_certified_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Semantic mirror should descend to its nominal authority",

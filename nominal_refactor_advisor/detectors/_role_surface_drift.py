@@ -1351,6 +1351,7 @@ class RoleSurfaceDriftDetector(
 
 
 class GenericRoleCaseTableDetector(
+    SemanticMirrorIssueDetector,
     ConfiguredCrossModuleCollectorCandidateDetector[GenericRoleCaseTableCandidate]
 ):
     finding_spec = high_confidence_certified_spec(
@@ -1390,6 +1391,7 @@ class GenericRoleCaseTableDetector(
 
 
 class LocalRoleCaseLogicDetector(
+    SemanticMirrorIssueDetector,
     ConfiguredModuleCollectorCandidateDetector[LocalRoleCaseLogicCandidate]
 ):
     finding_spec = high_confidence_certified_spec(
