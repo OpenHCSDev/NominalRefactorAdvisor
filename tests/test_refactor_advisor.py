@@ -20943,6 +20943,19 @@ def test_detects_formal_boundary_string_id_catalog_mirror(tmp_path: Path) -> Non
     assert "exported formal/profile/schema catalog" in (finding.codemod_patch or "")
 
 
+def test_allows_scaffold_only_formal_boundary_string_ids(tmp_path: Path) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        '\n_AXIS_POLICY_ROOT_NAME = "AxisPolicy"\n_AXIS_POLICY_KEY_TYPE_NAME = "AxisEnum"\n_AXIS_POLICY_KEY_ATTR_NAME = "axis_key"\n\n\ndef scaffold():\n    return f"class {_AXIS_POLICY_ROOT_NAME}:\\n    axis: {_AXIS_POLICY_KEY_TYPE_NAME}\\n    key = {_AXIS_POLICY_KEY_ATTR_NAME}"\n',
+    )
+    findings = analyze_path(tmp_path)
+    assert not any(
+        finding.detector_id == "formal_boundary_literal_registry_mirror"
+        for finding in findings
+    )
+
+
 def test_detects_formal_boundary_stringly_source_scope_kwargs(
     tmp_path: Path,
 ) -> None:

@@ -1834,7 +1834,39 @@ class FormalBoundaryStringRegistryAuthority:
                                 line=statement.lineno,
                             )
                         )
+        if not FormalBoundaryStringRegistryAuthority.has_formal_boundary_consumer(
+            module,
+            tuple(constants),
+        ):
+            return ()
         return tuple(constants)
+
+    @staticmethod
+    def has_formal_boundary_consumer(
+        module: ParsedModule,
+        constants: tuple[FormalBoundaryStringRegistryConstant, ...],
+    ) -> bool:
+        constant_names = frozenset(constant.target_name for constant in constants)
+        if not constant_names:
+            return False
+        return any(
+            FormalBoundaryStringRegistryAuthority.call_consumes_constant(
+                node,
+                constant_names,
+            )
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.Call) and _is_formal_boundary_literal_registry_call(node)
+        )
+
+    @staticmethod
+    def call_consumes_constant(
+        node: ast.Call,
+        constant_names: frozenset[str],
+    ) -> bool:
+        return any(
+            isinstance(child, ast.Name) and child.id in constant_names
+            for child in ast.walk(node)
+        )
 
 
 class FormalBoundaryLiteralRegistryCallVisitor(ClassFunctionStackNodeVisitor):
