@@ -14572,6 +14572,657 @@ class EnumSubsetSemanticMirrorRecipeBuilder(CodemodSelectorContext):
         )
 
 
+class MappingSemanticMirrorRecipeBuilder(
+    CodemodSelectorContext,
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
+    """Registered executable recipe builder for one mapping-mirror family."""
+
+    __registry__: ClassVar[dict[str, type["MappingSemanticMirrorRecipeBuilder"]]] = {}
+    __registry_key__ = "mapping_name"
+    __skip_if_no_key__ = True
+    mapping_name: ClassVar[str]
+
+    finding: RefactorFinding
+
+    @classmethod
+    def builder_for(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> "MappingSemanticMirrorRecipeBuilder | None":
+        if context is None:
+            return None
+        if not isinstance(finding.metrics, MappingMetrics):
+            return None
+        mapping_name = finding.metrics.plan_mapping_name
+        if mapping_name is None:
+            return None
+        builder_type = cls.__registry__.get(mapping_name)
+        if builder_type is None:
+            return None
+        return builder_type(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            ast_target_node_cache=context.ast_target_node_cache,
+            finding=finding,
+        )
+
+    @classmethod
+    def rejection_reason_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> str:
+        builder = cls.builder_for(finding, context)
+        if builder is None:
+            return "no registered mapping-mirror recipe builder matched the finding"
+        return builder.rejection_reason()
+
+    @abstractmethod
+    def recipe(self) -> RefactorRecipe | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def rejection_reason(self) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseAuthorityItem:
+    """One extracted concrete role-case fact from a local mapping literal."""
+
+    literal_source: str
+    value_source: str
+
+    def construction_source(self, item_class_name: str) -> str:
+        return f"{item_class_name}({self.literal_source}, {self.value_source})"
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseAuthoritySourceRenderer:
+    """Render the shared source skeleton for extracted role-case authorities."""
+
+    item_class_source: str
+    authority_name: str
+    item_rows: tuple[str, ...]
+    behavior_method_source: str
+
+    def source(self) -> str:
+        return (
+            f"{self.item_class_source}\n\n"
+            f"class {self.authority_name}:\n"
+            f"{self.role_cases_method_source()}\n"
+            f"{self.behavior_method_source}\n\n"
+        )
+
+    def role_cases_method_source(self) -> str:
+        item_rows = "\n".join(f"            {row}," for row in self.item_rows)
+        return (
+            "    @classmethod\n"
+            "    def role_cases(cls):\n"
+            "        return (\n"
+            f"{item_rows}\n"
+            "        )\n"
+        )
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseAuthorityExtraction:
+    """Safe source-level extraction from local role-case logic."""
+
+    mapping_name: str
+    axis_name: str
+    items: tuple[LocalRoleCaseAuthorityItem, ...]
+    owner_function_name: str
+
+    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
+        item_class_source = (
+            f"class {item_class_name}:\n"
+            f"    def __init__(self, {self.axis_name}, value):\n"
+            f"        self.{self.axis_name} = {self.axis_name}\n"
+            "        self.value = value\n"
+        )
+        behavior_method_source = (
+            "    @classmethod\n"
+            f"    def {self.owner_function_name}(cls, {self.axis_name}):\n"
+            "        for role_case in cls.role_cases():\n"
+            f"            if role_case.{self.axis_name} == {self.axis_name}:\n"
+            "                return role_case.value\n"
+            "        return None\n"
+        )
+        return LocalRoleCaseAuthoritySourceRenderer(
+            item_class_source=item_class_source,
+            authority_name=authority_name,
+            item_rows=tuple(
+                item.construction_source(item_class_name) for item in self.items
+            ),
+            behavior_method_source=behavior_method_source,
+        ).source()
+
+    def delegating_body_source(self, authority_name: str) -> str:
+        return (
+            f"return {authority_name}.{self.owner_function_name}({self.axis_name})"
+        )
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseBranchItem:
+    """One ordered branch case extracted from local role-case guard logic."""
+
+    axis_name: str
+    expected_source: str
+    result_source: str
+
+    def construction_source(self, item_class_name: str) -> str:
+        return (
+            f"{item_class_name}("
+            f"{self.axis_name!r}, {self.expected_source}, {self.result_source})"
+        )
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseBranchAuthorityExtraction:
+    """Safe extraction from ordered literal guard branches to case objects."""
+
+    items: tuple[LocalRoleCaseBranchItem, ...]
+    default_source: str
+    owner_function_name: str
+    parameter_names: tuple[str, ...]
+
+    def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
+        item_class_source = (
+            f"class {item_class_name}:\n"
+            "    def __init__(self, axis_name, expected_value, result):\n"
+            "        self.axis_name = axis_name\n"
+            "        self.expected_value = expected_value\n"
+            "        self.result = result\n"
+            "\n"
+            "    def matches(self, axis_values):\n"
+            "        axis_value = axis_values[self.axis_name]\n"
+            "        if isinstance(self.expected_value, tuple):\n"
+            "            return axis_value in self.expected_value\n"
+            "        return axis_value == self.expected_value\n"
+        )
+        behavior_method_source = (
+            "    @classmethod\n"
+            f"    def {self.owner_function_name}(cls, **axis_values):\n"
+            "        for role_case in cls.role_cases():\n"
+            "            if role_case.matches(axis_values):\n"
+            "                return role_case.result\n"
+            f"        return {self.default_source}\n"
+        )
+        return LocalRoleCaseAuthoritySourceRenderer(
+            item_class_source=item_class_source,
+            authority_name=authority_name,
+            item_rows=tuple(
+                item.construction_source(item_class_name) for item in self.items
+            ),
+            behavior_method_source=behavior_method_source,
+        ).source()
+
+    def delegating_body_source(self, authority_name: str) -> str:
+        arguments = ", ".join(f"{name}={name}" for name in self.parameter_names)
+        return f"return {authority_name}.{self.owner_function_name}({arguments})"
+
+
+@dataclass(frozen=True)
+class LocalRoleCaseLogicRecipeParts:
+    """Executable source rewrite facts for local role-case authority extraction."""
+
+    source_path: str
+    function_qualname: str
+    insertion_qualname: str
+    authority_name: str
+    item_class_name: str
+    extraction: LocalRoleCaseAuthorityExtraction | LocalRoleCaseBranchAuthorityExtraction
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        authority_source = self.extraction.authority_source(
+            item_class_name=self.item_class_name,
+            authority_name=self.authority_name,
+        )
+        return (
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-extract-local-role-case-authority",
+                reason="Move local role-case literals behind a nominal authority.",
+            )
+            .insert_before_target(
+                self.insertion_qualname,
+                authority_source,
+                source_path=self.source_path,
+            )
+            .replace_function_body(
+                self.function_qualname,
+                self.extraction.delegating_body_source(self.authority_name),
+                source_path=self.source_path,
+            )
+        )
+
+
+@dataclass(frozen=True)
+class AxisIndexedMappingLookupProjection:
+    """Project mapping.get(axis) calls used by local role-case map extraction."""
+
+    lookup_method_name: ClassVar[str] = "get"
+
+    @classmethod
+    def axis_name(cls, value: ast.AST | None, mapping_name: str) -> str | None:
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Attribute)
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id == mapping_name
+            and value.func.attr == cls.lookup_method_name
+            and len(value.args) == 1
+            and isinstance(value.args[0], ast.Name)
+            and not value.keywords
+        ):
+            return value.args[0].id
+        return None
+
+
+@dataclass(frozen=True)
+class FunctionParameterProjection:
+    """Project callable parameter names for recipe synthesis."""
+
+    receiver_names: ClassVar[frozenset[str]] = frozenset(("self", "cls"))
+
+    @classmethod
+    def all_names(cls, node: ast.FunctionDef) -> frozenset[str]:
+        return frozenset(cls.ordered_names(node))
+
+    @classmethod
+    def public_names(cls, node: ast.FunctionDef) -> tuple[str, ...]:
+        if node.args.vararg is not None or node.args.kwarg is not None:
+            return ()
+        return tuple(
+            name for name in cls.ordered_names(node) if name not in cls.receiver_names
+        )
+
+    @staticmethod
+    def ordered_names(node: ast.FunctionDef) -> tuple[str, ...]:
+        return tuple(
+            parameter.arg
+            for parameter in (
+                *node.args.posonlyargs,
+                *node.args.args,
+                *node.args.kwonlyargs,
+            )
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder):
+    """Extract local role-case maps into a nominal authority recipe."""
+
+    mapping_name: ClassVar[str] = "local_role_case_logic"
+    finding: RefactorFinding
+
+    def recipe(self) -> RefactorRecipe | None:
+        parts = self.parts()
+        if parts is None:
+            return None
+        return parts.recipe_for(self.finding)
+
+    def rejection_reason(self) -> str:
+        if self.parts() is not None:
+            return "local role-case logic has an executable extraction recipe"
+        return (
+            "local role-case logic extraction requires either one simple function "
+            "body with a local string-keyed mapping and a return of mapping.get(axis), "
+            "or an ordered if/return chain whose literal guards compare function "
+            "parameters to expected case values"
+        )
+
+    def parts(self) -> LocalRoleCaseLogicRecipeParts | None:
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None:
+            return None
+        function_qualname = dispatch_evidence_subject(evidence.symbol)
+        resolved_source_path = SourcePathResolutionAuthority.from_source_index(
+            evidence.file_path,
+            self.source_index,
+        ).optional_path()
+        if resolved_source_path is None:
+            return None
+        target = self.function_target(resolved_source_path, function_qualname)
+        if target is None:
+            return None
+        target_digest, node = target
+        if isinstance(node, ast.AsyncFunctionDef):
+            return None
+        extraction = self.extraction_for(resolved_source_path, node)
+        if extraction is None:
+            return None
+        authority_stem = self.authority_stem()
+        if not authority_stem:
+            return None
+        authority_name = f"{authority_stem}RoleCaseAuthority"
+        item_class_name = f"{authority_stem}RoleCase"
+        if self.class_name_conflicts(authority_name, item_class_name):
+            return None
+        return LocalRoleCaseLogicRecipeParts(
+            source_path=resolved_source_path,
+            function_qualname=target_digest.qualname,
+            insertion_qualname=self.insertion_qualname(target_digest.qualname),
+            authority_name=authority_name,
+            item_class_name=item_class_name,
+            extraction=extraction,
+        )
+
+    def function_target(
+        self,
+        source_path: str,
+        function_qualname: str,
+    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
+            file_paths=(source_path,),
+            qualnames=(function_qualname,),
+        ).target_ids(self)
+        if len(target_ids) != 1:
+            return None
+        target = self.source_index.target_by_id[target_ids[0]]
+        node = self.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return target, node
+
+    def extraction_for(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseAuthorityExtraction | LocalRoleCaseBranchAuthorityExtraction | None:
+        return self.mapping_extraction_for(source_path, node) or self.branch_extraction_for(
+            source_path,
+            node,
+        )
+
+    def mapping_extraction_for(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseAuthorityExtraction | None:
+        body = self.semantic_body(node)
+        if len(body) != 2:
+            return None
+        assignment, return_statement = body
+        if not isinstance(return_statement, ast.Return):
+            return None
+        mapping_name, items = self.mapping_assignment_items(source_path, assignment)
+        if mapping_name is None or not items:
+            return None
+        lookup = AxisIndexedMappingLookupProjection.axis_name(
+            return_statement.value,
+            mapping_name,
+        )
+        if lookup is None:
+            return None
+        axis_name = lookup
+        if axis_name not in FunctionParameterProjection.all_names(node):
+            return None
+        return LocalRoleCaseAuthorityExtraction(
+            mapping_name=mapping_name,
+            axis_name=axis_name,
+            items=items,
+            owner_function_name=node.name,
+        )
+
+    def branch_extraction_for(
+        self,
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
+        body = self.semantic_body(node)
+        if len(body) < 2:
+            return None
+        *branch_statements, default_statement = body
+        if not isinstance(default_statement, ast.Return):
+            return None
+        source = self.sources_by_file_path[source_path]
+        default_source = self.node_source(source, default_statement.value)
+        if default_source is None:
+            return None
+        parameter_names = FunctionParameterProjection.public_names(node)
+        if not parameter_names:
+            return None
+        parameter_name_set = frozenset(parameter_names)
+        items: list[LocalRoleCaseBranchItem] = []
+        for statement in branch_statements:
+            if not isinstance(statement, ast.If):
+                return None
+            if statement.orelse:
+                return None
+            if len(statement.body) != 1 or not isinstance(statement.body[0], ast.Return):
+                return None
+            result_source = self.node_source(source, statement.body[0].value)
+            if result_source is None:
+                return None
+            condition_items = self.branch_items_for_condition(
+                source,
+                statement.test,
+                result_source,
+            )
+            if not condition_items:
+                return None
+            if any(item.axis_name not in parameter_name_set for item in condition_items):
+                return None
+            items.extend(condition_items)
+        if not self.branch_items_cover_finding(tuple(items)):
+            return None
+        return LocalRoleCaseBranchAuthorityExtraction(
+            items=tuple(items),
+            default_source=default_source,
+            owner_function_name=node.name,
+            parameter_names=parameter_names,
+        )
+
+    @staticmethod
+    def semantic_body(
+        node: ast.FunctionDef,
+    ) -> tuple[ast.stmt, ...]:
+        body = tuple(node.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            return body[1:]
+        return body
+
+    def mapping_assignment_items(
+        self,
+        source_path: str,
+        statement: ast.stmt,
+    ) -> tuple[str | None, tuple[LocalRoleCaseAuthorityItem, ...]]:
+        target_name: str | None = None
+        value: ast.AST | None = None
+        if isinstance(statement, ast.Assign):
+            target_names = tuple(
+                target.id for target in statement.targets if isinstance(target, ast.Name)
+            )
+            if len(target_names) == 1:
+                target_name = target_names[0]
+                value = statement.value
+        elif isinstance(statement, ast.AnnAssign) and isinstance(
+            statement.target,
+            ast.Name,
+        ):
+            target_name = statement.target.id
+            value = statement.value
+        if target_name is None or not isinstance(value, ast.Dict):
+            return None, ()
+        source = self.sources_by_file_path[source_path]
+        items: list[LocalRoleCaseAuthorityItem] = []
+        for key_node, value_node in zip(value.keys, value.values, strict=False):
+            if not isinstance(key_node, ast.Constant) or not isinstance(
+                key_node.value,
+                str,
+            ):
+                return None, ()
+            value_source = ast.get_source_segment(source, value_node)
+            if value_source is None or "\n" in value_source:
+                return None, ()
+            items.append(
+                LocalRoleCaseAuthorityItem(
+                    literal_source=repr(key_node.value),
+                    value_source=value_source,
+                )
+            )
+        if not self.mapping_items_cover_finding(items):
+            return None, ()
+        return target_name, tuple(items)
+
+    def mapping_items_cover_finding(
+        self,
+        items: tuple[LocalRoleCaseAuthorityItem, ...],
+    ) -> bool:
+        expected_tokens = frozenset(self.finding.metrics.plan_field_names)
+        observed_tokens = frozenset(
+            token
+            for item in items
+            for token in CLASS_NAME_ALGEBRA.ordered_tokens(item.literal_source)
+        )
+        return expected_tokens <= observed_tokens
+
+    def branch_items_for_condition(
+        self,
+        source: str,
+        condition: ast.AST,
+        result_source: str,
+    ) -> tuple[LocalRoleCaseBranchItem, ...]:
+        if isinstance(condition, ast.BoolOp) and isinstance(condition.op, ast.Or):
+            items: list[LocalRoleCaseBranchItem] = []
+            for value in condition.values:
+                branch_items = self.branch_items_for_condition(
+                    source,
+                    value,
+                    result_source,
+                )
+                if not branch_items:
+                    return ()
+                items.extend(branch_items)
+            return tuple(items)
+        if not isinstance(condition, ast.Compare) or len(condition.ops) != 1:
+            return ()
+        if len(condition.comparators) != 1:
+            return ()
+        left = condition.left
+        right = condition.comparators[0]
+        operator = condition.ops[0]
+        if isinstance(operator, ast.Eq):
+            return self.equality_branch_items(source, left, right, result_source)
+        if isinstance(operator, ast.In):
+            return self.membership_branch_item(source, left, right, result_source)
+        return ()
+
+    def equality_branch_items(
+        self,
+        source: str,
+        left: ast.AST,
+        right: ast.AST,
+        result_source: str,
+    ) -> tuple[LocalRoleCaseBranchItem, ...]:
+        if isinstance(left, ast.Name):
+            expected_source = self.node_source(source, right)
+            if expected_source is None:
+                return ()
+            return (self.branch_item(left.id, expected_source, result_source),)
+        if isinstance(right, ast.Name):
+            expected_source = self.node_source(source, left)
+            if expected_source is None:
+                return ()
+            return (self.branch_item(right.id, expected_source, result_source),)
+        return ()
+
+    def membership_branch_item(
+        self,
+        source: str,
+        left: ast.AST,
+        right: ast.AST,
+        result_source: str,
+    ) -> tuple[LocalRoleCaseBranchItem, ...]:
+        if not isinstance(left, ast.Name):
+            return ()
+        expected_source = self.membership_expected_source(source, right)
+        if expected_source is None:
+            return ()
+        return (self.branch_item(left.id, expected_source, result_source),)
+
+    @staticmethod
+    def branch_item(
+        axis_name: str,
+        expected_source: str,
+        result_source: str,
+    ) -> LocalRoleCaseBranchItem:
+        return LocalRoleCaseBranchItem(
+            axis_name=axis_name,
+            expected_source=expected_source,
+            result_source=result_source,
+        )
+
+    def membership_expected_source(
+        self,
+        source: str,
+        value: ast.AST,
+    ) -> str | None:
+        if isinstance(value, ast.Set | ast.List | ast.Tuple):
+            item_sources = tuple(self.node_source(source, item) for item in value.elts)
+            if not item_sources or any(item is None for item in item_sources):
+                return None
+            if len(item_sources) == 1:
+                return f"({item_sources[0]},)"
+            return f"({', '.join(item_sources)})"
+        return self.node_source(source, value)
+
+    @staticmethod
+    def node_source(source: str, node: ast.AST | None) -> str | None:
+        if node is None:
+            return None
+        node_source = ast.get_source_segment(source, node)
+        if node_source is None or "\n" in node_source:
+            return None
+        return node_source
+
+    def branch_items_cover_finding(
+        self,
+        items: tuple[LocalRoleCaseBranchItem, ...],
+    ) -> bool:
+        expected_tokens = frozenset(self.finding.metrics.plan_field_names)
+        observed_tokens = frozenset(
+            token
+            for item in items
+            for source in (item.expected_source, item.result_source)
+            for token in CLASS_NAME_ALGEBRA.ordered_tokens(source.strip("'\""))
+        )
+        return expected_tokens <= observed_tokens
+
+    def authority_stem(self) -> str:
+        source_name = self.finding.metrics.plan_source_name
+        if source_name:
+            return _pascal_case_identifier(source_name)
+        return "RoleCase"
+
+    @staticmethod
+    def insertion_qualname(function_qualname: str) -> str:
+        owner_qualname, separator, _ = function_qualname.rpartition(".")
+        if separator:
+            return owner_qualname
+        return function_qualname
+
+    def class_name_conflicts(self, *class_names: str) -> bool:
+        requested = frozenset(class_names)
+        return any(
+            target.node_kind == AstTargetNodeKind.CLASS.value
+            and target.qualname in requested
+            for target in self.source_index.ast_targets
+        )
+
+
 class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
@@ -15205,6 +15856,11 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
+        builder = MappingSemanticMirrorRecipeBuilder.builder_for(finding, context)
+        if builder is not None:
+            builder_recipe = builder.recipe()
+            if builder_recipe is not None:
+                return builder_recipe
         context_effect = Maybe.of(context).combine(
             lambda selector_context: EnumSubsetSemanticMirrorRecipeBuilder(
                 source_index=selector_context.source_index,
@@ -15235,11 +15891,15 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> str:
-        del context
+        builder_reason = MappingSemanticMirrorRecipeBuilder.rejection_reason_from_context(
+            finding,
+            context,
+        )
         return (
             "semantic mapping mirror has a stable DSL action key, but no safe "
             f"mapping recipe exists yet to derive `{finding.metrics.plan_mapping_name}` "
-            f"from `{finding.metrics.plan_source_name}`"
+            f"from `{finding.metrics.plan_source_name}`; registered builder result: "
+            f"{builder_reason}"
         )
 
     @staticmethod

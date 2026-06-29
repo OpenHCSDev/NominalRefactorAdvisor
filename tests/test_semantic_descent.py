@@ -400,15 +400,63 @@ def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    operation_kinds = tuple(
+        operation["operation"]
+        for recipe in plan.document.to_dict()["recipes"]
+        for operation in recipe["operations"]
+    )
 
     assert record.detector_id == "local_role_case_logic"
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status.value == "planned"
     assert (
         record.synthesizer_name == "SemanticMirrorRegistrationFindingRecipeSynthesizer"
     )
     assert record.action_keys
-    assert "semantic mapping mirror has a stable DSL action key" in record.reason
-    assert plan.document.recipes == ()
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
+
+
+def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "class ProjectionSurfaceAuthority:\n"
+        "    def materialization_rule(self, surface_name, projection_role):\n"
+        "        if surface_name == '__all__':\n"
+        "            return 'module_all_tuple'\n"
+        "        if projection_role == 'test_params':\n"
+        "            return 'pytest_param_tuple'\n"
+        "        if projection_role in {'cli_choices', 'ui_options'}:\n"
+        "            return 'choices_tuple'\n"
+        "        return 'sorted_tuple'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in LocalRoleCaseLogicDetector().detect(modules, DetectorConfig())
+        if item.detector_id == "local_role_case_logic"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    operation_kinds = tuple(
+        operation["operation"]
+        for recipe in plan.document.to_dict()["recipes"]
+        for operation in recipe["operations"]
+    )
+
+    assert record.detector_id == "local_role_case_logic"
+    assert record.status.value == "planned"
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert plan.expected_removed_finding_count == 1
+    assert simulation.is_clean is True
+    assert simulation.simulation.applied_rewrite_count == 1
 
 
 def test_inherited_autoregister_config_synthesizes_assignment_deletions(
