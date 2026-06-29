@@ -713,7 +713,9 @@ def _parallel_primitive_carrier_candidates(
             for role_count in range(
                 _MIN_PARALLEL_PRIMITIVE_FIELDS, len(bundle.semantic_roles) + 1
             ):
-                for semantic_roles in combinations(bundle.semantic_roles, role_count):
+                for semantic_roles in set(
+                    combinations(bundle.semantic_roles, role_count)
+                ):
                     grouped[semantic_roles].append(bundle)
     candidates: list[ParallelPrimitiveCarrierCandidate] = []
     for semantic_roles, bundles in grouped.items():

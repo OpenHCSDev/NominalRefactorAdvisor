@@ -5195,6 +5195,31 @@ class ZMQExecutionRequestPayload:
     assert "NominalIdentityCarrier" in (finding.scaffold or "")
 
 
+def test_parallel_primitive_carrier_dedupes_repeated_roles_in_one_record(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/identity.py",
+        """
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ProjectionAuthorityRoute:
+    projection_path: str
+    authority_path: str
+    authority_name: str
+    assignment_name: str
+""",
+    )
+
+    assert not any(
+        item.detector_id == PARALLEL_PRIMITIVE_CARRIER_DETECTOR_ID
+        for item in analyze_path(tmp_path)
+    )
+
+
 def test_detects_available_nominal_carrier_reuse(tmp_path: Path) -> None:
     _write_module(
         tmp_path,
