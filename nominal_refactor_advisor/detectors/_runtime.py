@@ -5811,6 +5811,92 @@ class FailSoftFallbackDetector(PerModuleIssueDetector):
         return findings
 
 
+class DynamicRuntimePayloadOwnerDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.AUTHORITATIVE_SCHEMA,
+        "Runtime payload extraction should use the declared owner",
+        "Dispatching runtime payload extraction through type(x) lets a composed subclass decide the payload schema. That can leak unrelated inherited fields across a formal boundary; payload extraction should name the declared carrier or authority that owns the field set.",
+        "payload source extraction names the declared owner carrier",
+        "runtime payload extraction is dispatched through the concrete dynamic type",
+        _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
+        _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
+    )
+    ssot_authority_boundary = True
+
+    _payload_extraction_methods: ClassVar[frozenset[str]] = frozenset(
+        (
+            "runtime_payload_for_instance",
+            "runtime_payload_for_declared_fields",
+        )
+    )
+
+    @classmethod
+    def _dynamic_type_payload_method(cls, node: ast.Call) -> str | None:
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        method_name = node.func.attr
+        if method_name not in cls._payload_extraction_methods:
+            return None
+        owner = node.func.value
+        if not isinstance(owner, ast.Call):
+            return None
+        if not isinstance(owner.func, ast.Name) or owner.func.id != "type":
+            return None
+        return method_name
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        del config
+        findings: list[RefactorFinding] = []
+        detector = self
+
+        class Visitor(ClassFunctionStackNodeVisitor):
+            traverse_class_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+            traverse_function_body = (
+                ClassFunctionStackNodeVisitor.traverse_trimmed_node_body
+            )
+
+            def owner_symbol(self) -> str:
+                parts = (*self.class_stack, *self.function_stack)
+                return ".".join(parts) if parts else "<module>"
+
+            def visit_Call(self, node: ast.Call) -> None:
+                method_name = DynamicRuntimePayloadOwnerDetector._dynamic_type_payload_method(
+                    node
+                )
+                if method_name is not None:
+                    owner = self.owner_symbol()
+                    findings.append(
+                        detector.build_finding(
+                            f"{owner} extracts `{method_name}` through `type(...)` at {module.path}:{node.lineno}.",
+                            (
+                                SourceLocation(
+                                    str(module.path),
+                                    node.lineno,
+                                    f"{owner}.{method_name}",
+                                ),
+                            ),
+                            relation_context=(
+                                "payload schema ownership is selected by the "
+                                "concrete runtime type instead of the declared "
+                                "carrier authority"
+                            ),
+                            scaffold=(
+                                "# Replace `type(state).runtime_payload_for_instance(state)` with\n"
+                                "# `DeclaredPayloadOwner.runtime_payload_for_instance(state)` so\n"
+                                "# subclass composition cannot widen the Lean-declared field set."
+                            ),
+                        )
+                    )
+                self.generic_visit(node)
+
+        Visitor().visit(module.module)
+        return findings
+
+
 declare_typed_observation_detector(
     "ManualVirtualMembershipDetector",
     finding_spec_template(
