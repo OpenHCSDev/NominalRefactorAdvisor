@@ -422,12 +422,16 @@ def test_semantic_mirror_role_finding_uses_shared_synthesis_route(
 def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
     tmp_path: Path,
 ) -> None:
-    _write_module(
+    module_path = _write_module(
         tmp_path,
+        "MAPPING_KINDS = frozenset(('key_to_type', 'type_to_key'))\n"
+        "\n"
         "class ProjectionSurfaceAuthority:\n"
-        "    def materialization_rule(self, surface_name, projection_role):\n"
+        "    def materialization_rule(self, surface_name, surface_kind, projection_role):\n"
         "        if surface_name == '__all__':\n"
         "            return 'module_all_tuple'\n"
+        "        if surface_kind in MAPPING_KINDS:\n"
+        "            return 'mapping_literal'\n"
         "        if projection_role == 'test_params':\n"
         "            return 'pytest_param_tuple'\n"
         "        if projection_role in {'cli_choices', 'ui_options'}:\n"
@@ -457,6 +461,19 @@ def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert simulation.simulation.applied_rewrite_count == 1
+
+    namespace: dict[str, object] = {}
+    rewritten_source = simulation.simulation.rewritten_sources[str(module_path)]
+    exec(rewritten_source, namespace)
+    analyzer = namespace["ProjectionSurfaceAuthority"]()
+    assert (
+        analyzer.materialization_rule(
+            surface_name="other",
+            surface_kind="key_to_type",
+            projection_role="registry_projection",
+        )
+        == "mapping_literal"
+    )
 
 
 def test_inherited_autoregister_config_synthesizes_assignment_deletions(

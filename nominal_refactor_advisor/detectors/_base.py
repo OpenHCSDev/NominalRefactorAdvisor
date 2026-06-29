@@ -7649,6 +7649,38 @@ _REGISTRY_PROJECTION_POLICY_HINT_TERMS = frozenset(
 )
 
 
+class ProjectionSurfaceRoleCase:
+    def __init__(self, axis_name, expected_value, result):
+        self.axis_name = axis_name
+        self.expected_value = expected_value
+        self.result = result
+
+    def matches(self, axis_values):
+        axis_value = axis_values[self.axis_name]
+        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
+            return axis_value in self.expected_value
+        return axis_value == self.expected_value
+
+
+class ProjectionSurfaceRoleCaseAuthority:
+    @classmethod
+    def role_cases(cls):
+        return (
+            ProjectionSurfaceRoleCase('surface_name', "__all__", "module_all_tuple"),
+            ProjectionSurfaceRoleCase('surface_kind', _REGISTRY_PROJECTION_EXPORT_ROSTER, "module_all_tuple"),
+            ProjectionSurfaceRoleCase('surface_kind', _REGISTRY_PROJECTION_MAPPING_KINDS, "mapping_literal"),
+            ProjectionSurfaceRoleCase('projection_role', "test_params", "pytest_param_tuple"),
+            ProjectionSurfaceRoleCase('projection_role', ("cli_choices", "config_choices", "ui_options"), "choices_tuple"),
+        )
+
+    @classmethod
+    def materialization_rule(cls, **axis_values):
+        for role_case in cls.role_cases():
+            if role_case.matches(axis_values):
+                return role_case.result
+        return "sorted_tuple"
+
+
 class _RegistryProjectionSurfaceAnalyzer:
     role_terms: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ("serializer_map", ("serial", "deserial", "codec", "encode", "decode")),
@@ -7775,18 +7807,7 @@ class _RegistryProjectionSurfaceAnalyzer:
     def materialization_rule(
         self, *, surface_name: str, surface_kind: str, projection_role: str
     ) -> str:
-        if (
-            surface_name == "__all__"
-            or surface_kind == _REGISTRY_PROJECTION_EXPORT_ROSTER
-        ):
-            return "module_all_tuple"
-        if surface_kind in _REGISTRY_PROJECTION_MAPPING_KINDS:
-            return "mapping_literal"
-        if projection_role == "test_params":
-            return "pytest_param_tuple"
-        if projection_role in {"cli_choices", "config_choices", "ui_options"}:
-            return "choices_tuple"
-        return "sorted_tuple"
+        return ProjectionSurfaceRoleCaseAuthority.materialization_rule(surface_name=surface_name, surface_kind=surface_kind, projection_role=projection_role)
 
     def coverage_coordinates(
         self,

@@ -14742,7 +14742,7 @@ class LocalRoleCaseBranchAuthorityExtraction:
             "\n"
             "    def matches(self, axis_values):\n"
             "        axis_value = axis_values[self.axis_name]\n"
-            "        if isinstance(self.expected_value, tuple):\n"
+            "        if isinstance(self.expected_value, (frozenset, list, set, tuple)):\n"
             "            return axis_value in self.expected_value\n"
             "        return axis_value == self.expected_value\n"
         )
