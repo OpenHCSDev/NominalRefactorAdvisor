@@ -594,7 +594,15 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegister
 class BranchCountMetrics(CountedDispatchMetrics):
     count_field_name: ClassVar[str] = "branch_site_count"
     branch_site_count: int
+    dispatch_axis: str | None = None
+    literal_cases: tuple[str, ...] = ()
     count_value = AliasProperty[int]("branch_site_count")
+    plan_dispatch_axis: ClassVar[AliasProperty[str | None]] = AliasProperty(
+        "dispatch_axis"
+    )
+    plan_literal_cases: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
+        "literal_cases"
+    )
 
 
 @dataclass(frozen=True)

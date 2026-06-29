@@ -2952,7 +2952,13 @@ class RuntimeSemanticBranchChainDetector(PerModuleSemanticMirrorIssueDetector):
                             "# Move case membership, precedence, and default behavior into the formal "
                             "runtime profile and make this Python site consume the declared result."
                         ),
-                        metrics=BranchCountMetrics(branch_site_count=len(chain)),
+                        metrics=BranchCountMetrics(
+                            branch_site_count=len(chain),
+                            dispatch_axis=(
+                                axis_names[0] if len(axis_names) == 1 else None
+                            ),
+                            literal_cases=case_names,
+                        ),
                         capability_gap=(
                             "runtime semantic branch cases are declared by the formal policy boundary"
                         ),
@@ -3880,7 +3886,13 @@ class RuntimeAuthorityBranchSemanticsDetector(PerModuleSemanticMirrorIssueDetect
                             "# Move case precedence and missing/default behavior into the formal "
                             "runtime profile and make this authority a thin adapter over that result."
                         ),
-                        metrics=BranchCountMetrics(branch_site_count=len(chain)),
+                        metrics=BranchCountMetrics(
+                            branch_site_count=len(chain),
+                            literal_cases=tuple(
+                                result_expression
+                                for _line, _test, result_expression, _default in chain
+                            ),
+                        ),
                         capability_gap=(
                             "Authority method missing/default branch semantics are formal-boundary owned"
                         ),

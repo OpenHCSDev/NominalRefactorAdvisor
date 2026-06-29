@@ -21,6 +21,9 @@ from nominal_refactor_advisor.detectors import (
     RepeatedFieldFamilyDetector,
     SemanticMirrorWithoutDescentDetector,
 )
+from nominal_refactor_advisor.detectors._runtime import (
+    RuntimeAuthorityBranchSemanticsDetector,
+)
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_descent import (
     PresentationTokenRole,
@@ -474,6 +477,52 @@ def test_semantic_mirror_role_branch_chain_synthesizes_authority_recipe(
         )
         == "mapping_literal"
     )
+
+
+def test_runtime_authority_branch_chain_synthesizes_authority_recipe(
+    tmp_path: Path,
+) -> None:
+    module_path = _write_module(
+        tmp_path,
+        "class RuntimePolicyAuthority:\n"
+        "    def select_runtime_kind(self, mode):\n"
+        "        if mode == 'html':\n"
+        "            return 'text'\n"
+        "        if mode == 'json':\n"
+        "            return 'data'\n"
+        "        return 'other'\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in RuntimeAuthorityBranchSemanticsDetector().detect(
+            modules, DetectorConfig()
+        )
+        if item.detector_id == "runtime_authority_branch_semantics"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    record = plan.records[0]
+    simulation = plan.simulate_snapshot(snapshot)
+    rendered_plan = plan.document.to_dict()
+    operation_kinds = tuple(
+        operation["operation"]
+        for recipe in rendered_plan["recipes"]
+        for operation in recipe["operations"]
+    )
+    inserted_source = rendered_plan["recipes"][0]["operations"][0]["source"]
+
+    assert record.detector_id == "runtime_authority_branch_semantics"
+    assert record.status.value == "planned"
+    assert operation_kinds == ("insert_before_target", "replace_function_body")
+    assert "SelectRuntimeKindRoleCaseAuthority" in inserted_source
+    assert simulation.is_clean is True
+
+    namespace: dict[str, object] = {}
+    exec(simulation.simulation.rewritten_sources[str(module_path)], namespace)
+    authority = namespace["RuntimePolicyAuthority"]()
+    assert authority.select_runtime_kind("json") == "data"
 
 
 def test_inherited_autoregister_config_synthesizes_assignment_deletions(

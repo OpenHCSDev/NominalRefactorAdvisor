@@ -44,6 +44,7 @@ from .impact_ranking import (
     RefactorImpactRankingReport,
 )
 from .models import (
+    BranchCountMetrics,
     DerivedCountMetricShape,
     FieldFamilyMetrics,
     FindingMetrics,
@@ -14271,7 +14272,9 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
 class TypedMetricSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy, ABC):
     """Semantic mirror strategy selected by finding metric carrier type."""
 
-    metric_type: ClassVar[type[MappingMetrics] | type[RegistrationMetrics]]
+    metric_type: ClassVar[
+        type[BranchCountMetrics] | type[MappingMetrics] | type[RegistrationMetrics]
+    ]
 
     def matches(self, finding: RefactorFinding) -> bool:
         return isinstance(finding.metrics, self.metric_type)
@@ -15205,7 +15208,11 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         source_name = self.finding.metrics.plan_source_name
         if source_name:
             return _pascal_case_identifier(source_name)
-        return "RoleCase"
+        evidence = FindingPrimaryEvidence(self.finding).source_location
+        if evidence is None:
+            return "RoleCase"
+        function_name = dispatch_evidence_subject(evidence.symbol).rsplit(".", 1)[-1]
+        return _pascal_case_identifier(function_name) or "RoleCase"
 
     @staticmethod
     def insertion_qualname(function_qualname: str) -> str:
@@ -16013,6 +16020,64 @@ class MappingSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrateg
             keepends=True
         )
         return "".join(source_lines[target.line - 1 : target.end_line])
+
+
+class BranchSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeStrategy):
+    """Route branch-chain semantic mirrors through executable policy extraction."""
+
+    metric_type = BranchCountMetrics
+
+    def recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> RefactorRecipe | None:
+        builder = self.builder_for_finding(finding, context)
+        if builder is None:
+            return None
+        return builder.recipe()
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        evidence = FindingPrimaryEvidence(finding).source_location
+        if evidence is None:
+            return ()
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            (
+                (
+                    evidence.file_path,
+                    dispatch_evidence_subject(evidence.symbol),
+                ),
+            ),
+        )
+
+    def rejection_reason_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> str:
+        builder = self.builder_for_finding(finding, context)
+        if builder is None:
+            return "branch-chain semantic mirror extraction requires a source selector context"
+        return builder.rejection_reason()
+
+    @staticmethod
+    def builder_for_finding(
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> LocalRoleCaseLogicMappingRecipeBuilder | None:
+        if context is None:
+            return None
+        return LocalRoleCaseLogicMappingRecipeBuilder(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            ast_target_node_cache=context.ast_target_node_cache,
+            finding=finding,
+        )
 
 
 def _semantic_mirror_method_name(mapping_name: str) -> str:
