@@ -21,6 +21,7 @@ import hashlib
 import importlib.util
 import inspect
 import re
+import textwrap
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -14734,6 +14735,7 @@ class LocalRoleCaseBranchAuthorityExtraction:
     default_source: str
     owner_function_name: str
     parameter_names: tuple[str, ...]
+    prelude_source: str = ""
 
     def authority_source(self, *, item_class_name: str, authority_name: str) -> str:
         item_class_source = (
@@ -14768,7 +14770,12 @@ class LocalRoleCaseBranchAuthorityExtraction:
 
     def delegating_body_source(self, authority_name: str) -> str:
         arguments = ", ".join(f"{name}={name}" for name in self.parameter_names)
-        return f"return {authority_name}.{self.owner_function_name}({arguments})"
+        delegate_source = (
+            f"return {authority_name}.{self.owner_function_name}({arguments})"
+        )
+        if not self.prelude_source:
+            return delegate_source
+        return f"{self.prelude_source.rstrip()}\n{delegate_source}"
 
 
 @dataclass(frozen=True)
@@ -14876,8 +14883,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         return (
             "local role-case logic extraction requires either one simple function "
             "body with a local string-keyed mapping and a return of mapping.get(axis), "
-            "or an ordered if/return chain whose literal guards compare function "
-            "parameters to expected case values"
+            "or an ordered if/return suffix chain whose literal guards compare "
+            "function parameters to expected case values"
         )
 
     def parts(self) -> LocalRoleCaseLogicRecipeParts | None:
@@ -14982,10 +14989,18 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         body = self.semantic_body(node)
         if len(body) < 2:
             return None
-        *branch_statements, default_statement = body
+        branch_slice = self.suffix_branch_slice(body)
+        if branch_slice is None:
+            return None
+        branch_start, branch_stop = branch_slice
+        branch_statements = body[branch_start:branch_stop]
+        default_statement = body[branch_stop]
         if not isinstance(default_statement, ast.Return):
             return None
         source = self.sources_by_file_path[source_path]
+        prelude_source = self.prelude_source(source, body[:branch_start])
+        if prelude_source is None:
+            return None
         default_source = self.node_source(source, default_statement.value)
         if default_source is None:
             return None
@@ -15021,7 +15036,34 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             default_source=default_source,
             owner_function_name=node.name,
             parameter_names=parameter_names,
+            prelude_source=prelude_source,
         )
+
+    @staticmethod
+    def suffix_branch_slice(body: tuple[ast.stmt, ...]) -> tuple[int, int] | None:
+        if len(body) < 3 or not isinstance(body[-1], ast.Return):
+            return None
+        branch_stop = len(body) - 1
+        branch_start = branch_stop
+        while branch_start > 0 and isinstance(body[branch_start - 1], ast.If):
+            branch_start -= 1
+        if branch_stop - branch_start < 2:
+            return None
+        return branch_start, branch_stop
+
+    def prelude_source(
+        self,
+        source: str,
+        statements: tuple[ast.stmt, ...],
+    ) -> str | None:
+        if not statements:
+            return ""
+        statement_sources = tuple(
+            self.statement_source(source, statement) for statement in statements
+        )
+        if any(statement_source is None for statement_source in statement_sources):
+            return None
+        return "\n".join(statement_source for statement_source in statement_sources if statement_source)
 
     @staticmethod
     def semantic_body(
@@ -15190,6 +15232,20 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         if node_source is None or "\n" in node_source:
             return None
         return node_source
+
+    @staticmethod
+    def statement_source(source: str, node: ast.stmt) -> str | None:
+        node_source = ast.get_source_segment(source, node)
+        if node_source is None:
+            return None
+        source_lines = textwrap.dedent(node_source).splitlines()
+        if not source_lines:
+            return ""
+        nested_prefix = " " * node.col_offset
+        normalized_lines = (source_lines[0],) + tuple(
+            line.removeprefix(nested_prefix) for line in source_lines[1:]
+        )
+        return "\n".join(normalized_lines).rstrip()
 
     def branch_items_cover_finding(
         self,

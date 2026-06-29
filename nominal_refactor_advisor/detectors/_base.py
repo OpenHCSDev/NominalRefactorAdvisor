@@ -7681,6 +7681,35 @@ class ProjectionSurfaceRoleCaseAuthority:
         return "sorted_tuple"
 
 
+class SurfaceRoleRoleCase:
+    def __init__(self, axis_name, expected_value, result):
+        self.axis_name = axis_name
+        self.expected_value = expected_value
+        self.result = result
+
+    def matches(self, axis_values):
+        axis_value = axis_values[self.axis_name]
+        if isinstance(self.expected_value, (frozenset, list, set, tuple)):
+            return axis_value in self.expected_value
+        return axis_value == self.expected_value
+
+
+class SurfaceRoleRoleCaseAuthority:
+    @classmethod
+    def role_cases(cls):
+        return (
+            SurfaceRoleRoleCase('surface_kind', (_REGISTRY_PROJECTION_KEY_ROSTER, _REGISTRY_PROJECTION_TYPE_ROSTER), "option_roster"),
+            SurfaceRoleRoleCase('surface_kind', _REGISTRY_PROJECTION_MAPPING_KINDS, "lookup_projection"),
+        )
+
+    @classmethod
+    def surface_role(cls, **axis_values):
+        for role_case in cls.role_cases():
+            if role_case.matches(axis_values):
+                return role_case.result
+        return "registry_projection"
+
+
 class _RegistryProjectionSurfaceAnalyzer:
     role_terms: ClassVar[tuple[tuple[str, tuple[str, ...]], ...]] = (
         ("serializer_map", ("serial", "deserial", "codec", "encode", "decode")),
@@ -7784,14 +7813,7 @@ class _RegistryProjectionSurfaceAnalyzer:
         for role_name, terms in self.role_terms:
             if any((term in text for term in terms)):
                 return role_name
-        if surface_kind in {
-            _REGISTRY_PROJECTION_KEY_ROSTER,
-            _REGISTRY_PROJECTION_TYPE_ROSTER,
-        }:
-            return "option_roster"
-        if surface_kind in _REGISTRY_PROJECTION_MAPPING_KINDS:
-            return "lookup_projection"
-        return "registry_projection"
+        return SurfaceRoleRoleCaseAuthority.surface_role(file_path=file_path, surface_name=surface_name, surface_kind=surface_kind)
 
     def subset_policy_hint(self, surface_name: str) -> str | None:
         lowered_name = surface_name.lower()
