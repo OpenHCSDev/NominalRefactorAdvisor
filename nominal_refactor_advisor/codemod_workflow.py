@@ -1597,60 +1597,66 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
         stages: list[CodemodRefactorGoalStage] = []
         active_scan = self.scan(0)
         if not self.target_policy.target_findings(self.goal, active_scan.findings):
-            return self.report(
-                stages=(),
-                scan=active_scan,
-                reason=CodemodWorkflowStopReason.NO_TARGET_FINDINGS,
-                completed=True,
+            return self._run_report_authority(
+                (),
+                active_scan,
+                CodemodWorkflowStopReason.NO_TARGET_FINDINGS,
+                True,
+                None,
             )
         for stage_index in range(self.goal.max_stages):
             stage_attempt = self.stage_attempt(stage_index, active_scan)
             if stage_attempt.stage is None:
-                return self.report(
-                    stages=tuple(stages),
-                    scan=active_scan,
-                    reason=CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
-                    completed=False,
-                    terminal_synthesis_report=stage_attempt.report,
+                return self._run_report_authority(
+                    tuple(stages),
+                    active_scan,
+                    CodemodWorkflowStopReason.NO_EXECUTABLE_RECIPES,
+                    False,
+                    stage_attempt.report,
                 )
             stage = stage_attempt.stage
             if stage.rewrite_count == 0:
-                return self.report(
-                    stages=(*stages, stage),
-                    scan=active_scan,
-                    reason=CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
-                    completed=False,
+                return self._run_report_authority(
+                    (*stages, stage),
+                    active_scan,
+                    CodemodWorkflowStopReason.EMPTY_REWRITE_BATCH,
+                    False,
+                    None,
                 )
             if not stage.simulation.is_clean:
-                return self.report(
-                    stages=(*stages, stage),
-                    scan=active_scan,
-                    reason=CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
-                    completed=False,
+                return self._run_report_authority(
+                    (*stages, stage),
+                    active_scan,
+                    CodemodWorkflowStopReason.ARCHITECTURE_GUARD_FAILED,
+                    False,
+                    None,
                 )
             next_scan = self.next_scan(active_scan, stage)
             recorded_stage = stage if self.dry_run else replace(stage, applied=True)
             stages.append(recorded_stage)
             if stage.progress.achieved:
-                return self.report(
-                    stages=tuple(stages),
-                    scan=next_scan,
-                    reason=CodemodWorkflowStopReason.ACHIEVED,
-                    completed=True,
+                return self._run_report_authority(
+                    tuple(stages),
+                    next_scan,
+                    CodemodWorkflowStopReason.ACHIEVED,
+                    True,
+                    None,
                 )
             if not stage.progress.made_progress:
-                return self.report(
-                    stages=tuple(stages),
-                    scan=next_scan,
-                    reason=CodemodWorkflowStopReason.NO_PROGRESS,
-                    completed=False,
+                return self._run_report_authority(
+                    tuple(stages),
+                    next_scan,
+                    CodemodWorkflowStopReason.NO_PROGRESS,
+                    False,
+                    None,
                 )
             active_scan = next_scan
-        return self.report(
-            stages=tuple(stages),
-            scan=active_scan,
-            reason=CodemodWorkflowStopReason.MAX_STAGES,
-            completed=False,
+        return self._run_report_authority(
+            tuple(stages),
+            active_scan,
+            CodemodWorkflowStopReason.MAX_STAGES,
+            False,
+            None,
         )
 
     def stage_attempt(
@@ -1716,6 +1722,22 @@ class CodemodRefactorGoalRunner(CodemodGuardedWorkflowRequest):
             return self.projected_scan(scan, stage.simulation.simulation)
         stage.simulation.apply()
         return self.scan(stage.stage_index + 1)
+
+    def _run_report_authority(
+        self,
+        stages: tuple[CodemodRefactorGoalStage, ...],
+        scan: CodemodFixpointScan,
+        reason: CodemodWorkflowStopReason,
+        completed: bool,
+        terminal_synthesis_report: FindingRecipeSynthesisReport | None = None,
+    ) -> CodemodRefactorGoalReport:
+        return self.report(
+            stages=stages,
+            scan=scan,
+            reason=reason,
+            completed=completed,
+            terminal_synthesis_report=terminal_synthesis_report,
+        )
 
     def report(
         self,

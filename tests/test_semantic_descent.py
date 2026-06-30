@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
-from nominal_refactor_advisor.analysis import analyze_path
+from nominal_refactor_advisor.analysis import analyze_modules, analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
@@ -1216,6 +1216,105 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     assert "file_paths=(file_path,)" in rewritten
     assert "file_paths=(source_path,)" not in rewritten
     assert rewritten.count("TargetSelector.for_function_or_method(") == 3
+    assert simulation.is_clean is True
+
+
+def test_repeated_builder_call_synthesizes_single_owner_method_authority(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Report:\n"
+        "    stages: tuple[str, ...]\n"
+        "    scan: str\n"
+        "    reason: str\n"
+        "    completed: bool\n"
+        "    terminal_synthesis_report: str | None = None\n"
+        "\n"
+        "class Runner:\n"
+        "    def run(self, active_scan, stages, stage, report):\n"
+        "        if not active_scan:\n"
+        "            return self.report(\n"
+        "                stages=(),\n"
+        "                scan=active_scan,\n"
+        "                reason='no_targets',\n"
+        "                completed=True,\n"
+        "            )\n"
+        "        if report is None:\n"
+        "            return self.report(\n"
+        "                stages=tuple(stages),\n"
+        "                scan=active_scan,\n"
+        "                reason='no_recipe',\n"
+        "                completed=False,\n"
+        "                terminal_synthesis_report=report,\n"
+        "            )\n"
+        "        if stage:\n"
+        "            return self.report(\n"
+        "                stages=(*stages, stage),\n"
+        "                scan=active_scan,\n"
+        "                reason='staged',\n"
+        "                completed=False,\n"
+        "            )\n"
+        "        return self.report(\n"
+        "            stages=tuple(stages),\n"
+        "            scan=active_scan,\n"
+        "            reason='done',\n"
+        "            completed=True,\n"
+        "            terminal_synthesis_report=report,\n"
+        "        )\n"
+        "\n"
+        "    def report(\n"
+        "        self,\n"
+        "        *,\n"
+        "        stages: tuple[str, ...],\n"
+        "        scan: str,\n"
+        "        reason: str,\n"
+        "        completed: bool,\n"
+        "        terminal_synthesis_report: str | None = None,\n"
+        "    ) -> Report:\n"
+        "        return Report(\n"
+        "            stages=stages,\n"
+        "            scan=scan,\n"
+        "            reason=reason,\n"
+        "            completed=completed,\n"
+        "            terminal_synthesis_report=terminal_synthesis_report,\n"
+        "        )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "repeated_builder_calls"
+        and item.relation_context
+        == "one owner repeats a builder call family with varying declarative payload"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+    projected_findings = analyze_modules(
+        snapshot.with_virtual_sources(
+            simulation.simulation.rewritten_sources
+        ).parsed_modules,
+        DetectorConfig(),
+    )
+
+    assert plan.records[0].status.value == "planned"
+    assert "def _run_report_authority(" in rewritten
+    assert "return self.report(" in rewritten
+    assert rewritten.count("self._run_report_authority(") == 4
+    assert rewritten.count("return self.report(") == 1
+    assert "terminal_synthesis_report: str | None = None" in rewritten
+    assert not any(
+        item.detector_id == "repeated_builder_calls"
+        and item.relation_context
+        == "one owner repeats a builder call family with varying declarative payload"
+        for item in projected_findings
+    )
     assert simulation.is_clean is True
 
 
