@@ -35,7 +35,12 @@ from .analysis import (
 )
 from .analysis_cache import AnalysisCacheStatus, AnalysisFindingSummary
 from .ast_tools import ParsedModule, PythonSourcePathPolicy, parse_python_module_roots
-from .cache_paths import ParseCachePolicy, default_parse_cache_dir
+from .cache_paths import (
+    ParseCacheDirectory,
+    ParseCachePolicy,
+    default_parse_cache_dir,
+    semantic_descent_cache_sibling,
+)
 from .calibration import (
     CalibrationReport,
     format_calibration_markdown,
@@ -143,9 +148,11 @@ from .semantic_refactor_gate import (
     ssot_authority_findings,
 )
 from .semantic_descent import (
+    SemanticDescentGraph,
     SemanticDescentGraphPayloadReport,
     build_finding_backed_semantic_descent_graph,
     build_semantic_descent_graph,
+    load_cached_semantic_descent_graph_for_roots,
 )
 from .source_index import SourceIndex, build_source_index
 
@@ -1012,6 +1019,22 @@ class JsonPayloadImpactRankingPolicy:
         )
 
 
+class JsonPreparseCachePayloadMode(Enum):
+    """Pre-parse cache payload mode for JSON scans."""
+
+    DISABLED = "disabled"
+    LOOP_SUMMARY = "loop_summary"
+    SEMANTIC_GRAPH_PAYLOAD = "semantic_graph_payload"
+
+    @property
+    def enabled(self) -> bool:
+        return self is not type(self).DISABLED
+
+    @property
+    def requires_semantic_descent_cache(self) -> bool:
+        return self is type(self).SEMANTIC_GRAPH_PAYLOAD
+
+
 @dataclass(frozen=True)
 class JsonSummaryPreparseCachePolicy:
     """Decide whether lightweight JSON can consult cache before parsing."""
@@ -1023,14 +1046,33 @@ class JsonSummaryPreparseCachePolicy:
     analysis_cache_dir: Path | None
 
     @property
-    def enabled(self) -> bool:
+    def cache_lookup_enabled(self) -> bool:
         return (
             self.json_enabled
-            and self.payload_profile.sections.lightweight_status_payload
             and not self.load_bearing_ranking_enabled
             and not self.parsed_modules_required
             and self.analysis_cache_dir is not None
         )
+
+    @property
+    def enabled(self) -> bool:
+        return self.mode.enabled
+
+    @property
+    def mode(self) -> JsonPreparseCachePayloadMode:
+        if not self.cache_lookup_enabled:
+            return JsonPreparseCachePayloadMode.DISABLED
+        sections = self.payload_profile.sections
+        if sections.lightweight_status_payload:
+            return JsonPreparseCachePayloadMode.LOOP_SUMMARY
+        if (
+            sections.semantic_descent_graph
+            and not sections.source_index
+            and not sections.needs_observation_graph
+            and not sections.finding_recipe_plan
+        ):
+            return JsonPreparseCachePayloadMode.SEMANTIC_GRAPH_PAYLOAD
+        return JsonPreparseCachePayloadMode.DISABLED
 
 
 @dataclass(frozen=True)
@@ -1097,6 +1139,40 @@ class JsonLoopCachePayloadBuilder:
         return payload
 
 
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentCacheDirAuthority(ParseCacheDirectory):
+    """Resolve the semantic-descent graph cache from the parse-cache authority."""
+
+    def cache_dir(self) -> Path | None:
+        if not self.use_parse_cache or self.parse_cache_dir is None:
+            return None
+        return semantic_descent_cache_sibling(self.parse_cache_dir)
+
+    def graph_for_modules(self, modules: list[ParsedModule]) -> SemanticDescentGraph:
+        return build_semantic_descent_graph(
+            modules,
+            cache_dir=self.cache_dir(),
+            use_cache=self.use_parse_cache,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class JsonSemanticDescentPayloadSource(SemanticDescentCacheDirAuthority):
+    """Repository graph source for the semantic-descent JSON section."""
+
+    modules: list[ParsedModule]
+    cached_repository_graph: SemanticDescentGraph | None = None
+
+    @property
+    def available(self) -> bool:
+        return bool(self.modules) or self.cached_repository_graph is not None
+
+    def repository_graph(self) -> SemanticDescentGraph:
+        if self.cached_repository_graph is not None:
+            return self.cached_repository_graph
+        return self.graph_for_modules(self.modules)
+
+
 @dataclass(frozen=True)
 class JsonPayloadBuilder:
     """Build the JSON report payload for one advisor scan."""
@@ -1112,6 +1188,7 @@ class JsonPayloadBuilder:
     execution_plan: RefactorExecutionPlanReport | None = None
     scan_guard_report: ArchitectureGuardReport | None = None
     source_snapshot: CodemodSourceSnapshot | None = None
+    semantic_descent_source: JsonSemanticDescentPayloadSource | None = None
     payload_sections: JsonPayloadSections = JsonPayloadProfile.full.sections
     raw_findings: bool = False
 
@@ -1143,11 +1220,20 @@ class JsonPayloadBuilder:
             if sections.observation_fibers:
                 payload["fibers"] = [asdict(item) for item in graph.fibers]
         semantic_descent_graph_seconds = 0.0
-        if sections.semantic_descent_graph and finding_tuple and self.modules:
+        semantic_descent_source = (
+            self.semantic_descent_source
+            if self.semantic_descent_source is not None
+            else JsonSemanticDescentPayloadSource(modules=self.modules)
+        )
+        if (
+            sections.semantic_descent_graph
+            and finding_tuple
+            and semantic_descent_source.available
+        ):
             started = perf_counter()
             payload["semantic_descent_graph"] = (
                 SemanticDescentGraphPayloadReport.from_graphs(
-                    build_semantic_descent_graph(self.modules),
+                    semantic_descent_source.repository_graph(),
                     finding_backed_graph=build_finding_backed_semantic_descent_graph(
                         ssot_authority_findings(finding_tuple),
                         semantic_mirror_detector_ids=(
@@ -5161,6 +5247,10 @@ def main() -> int:
         parse_cache_dir,
         args.use_parse_cache,
     )
+    semantic_descent_cache_dir = SemanticDescentCacheDirAuthority(
+        parse_cache_dir=parse_cache_dir,
+        use_parse_cache=args.use_parse_cache,
+    ).cache_dir()
     source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
     if args.predict_scan:
         SingleRootModeAuthority(
@@ -5269,7 +5359,13 @@ def main() -> int:
             analysis_cache_dir=analysis_cache_dir,
         )
         fast_cache_result = None
-        if codemod_scan_query_mode.needs_analysis and preparse_cache_policy.enabled:
+        cached_semantic_descent_graph = None
+        preparse_cache_mode = preparse_cache_policy.mode
+        if (
+            codemod_scan_query_mode.needs_analysis
+            and preparse_cache_policy.cache_lookup_enabled
+            and preparse_cache_mode.enabled
+        ):
             started = perf_counter()
             fast_cache_request = CachedPathAnalysisRequest(
                 roots=roots,
@@ -5304,6 +5400,19 @@ def main() -> int:
                     )
                     return 0
             fast_cache_result = fast_cache_authority.result()
+            if (
+                fast_cache_result is not None
+                and preparse_cache_mode.requires_semantic_descent_cache
+            ):
+                cached_semantic_descent_graph = (
+                    load_cached_semantic_descent_graph_for_roots(
+                        roots,
+                        cache_dir=semantic_descent_cache_dir,
+                        source_policy=source_policy,
+                    )
+                )
+                if cached_semantic_descent_graph is None:
+                    fast_cache_result = None
             fast_cache_seconds = round(perf_counter() - started, 3)
         if fast_cache_result is not None:
             modules = []
@@ -5345,6 +5454,7 @@ def main() -> int:
         parse_seconds = 0.0
         analysis_seconds = 0.0
         analysis_cache_status = None
+        cached_semantic_descent_graph = None
     plans = None
     execution_plan = None
     planning_seconds = 0.0
@@ -5539,6 +5649,12 @@ def main() -> int:
                     execution_plan=execution_plan,
                     scan_guard_report=architecture_guard_report,
                     source_snapshot=source_snapshot,
+                    semantic_descent_source=JsonSemanticDescentPayloadSource(
+                        modules=modules,
+                        parse_cache_dir=parse_cache_dir,
+                        cached_repository_graph=cached_semantic_descent_graph,
+                        use_parse_cache=args.use_parse_cache,
+                    ),
                     payload_sections=json_payload_profile.sections,
                     raw_findings=args.raw_findings,
                 ).to_dict(),

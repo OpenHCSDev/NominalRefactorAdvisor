@@ -188,15 +188,31 @@ class PythonModuleParseContext(ParseCacheDirectory):
     analysis_root: Path
 
 
-def _module_name_for_path(path: Path, analysis_root: Path) -> tuple[str, bool]:
-    relative = path.relative_to(analysis_root)
-    module_parts = list(relative.with_suffix("").parts)
-    is_package_init = bool(module_parts and module_parts[-1] == "__init__")
-    if is_package_init:
-        module_parts = module_parts[:-1]
-    if not module_parts:
-        return ("__init__", is_package_init)
-    return (".".join(module_parts), is_package_init)
+@dataclass(frozen=True)
+class PythonModulePathIdentity:
+    """Module import identity derived from one source path and analysis root."""
+
+    path: Path
+    import_name: str
+    is_package_init: bool
+
+    @classmethod
+    def from_path(
+        cls,
+        path: Path,
+        analysis_root: Path,
+    ) -> "PythonModulePathIdentity":
+        relative = path.relative_to(analysis_root)
+        module_parts = list(relative.with_suffix("").parts)
+        is_package_init = bool(module_parts and module_parts[-1] == "__init__")
+        if is_package_init:
+            module_parts = module_parts[:-1]
+        import_name = ".".join(module_parts) if module_parts else "__init__"
+        return cls(
+            path=path,
+            import_name=import_name,
+            is_package_init=is_package_init,
+        )
 
 
 def _source_signature(source: str) -> str:
@@ -296,14 +312,14 @@ def _parse_source_module(
                 source_signature,
                 cache_dir=context.parse_cache_dir,
             )
-    module_name, is_package_init = _module_name_for_path(
+    module_identity = PythonModulePathIdentity.from_path(
         path,
         analysis_root=context.analysis_root,
     )
     return ParsedModule(
         path=path,
-        module_name=module_name,
-        is_package_init=is_package_init,
+        module_name=module_identity.import_name,
+        is_package_init=module_identity.is_package_init,
         module=module,
         source=source,
         family_cache_dir=context.collected_family_cache_dir,
@@ -1358,6 +1374,20 @@ class PythonModuleRootParser(PythonModuleParseContext):
         paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
         return self.parsed_source_paths(paths)
 
+    def source_path_identities(self) -> tuple[PythonModulePathIdentity, ...]:
+        paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
+        return self.source_path_identities_for_paths(paths)
+
+    def source_path_identities_for_paths(
+        self,
+        paths: tuple[Path, ...],
+    ) -> tuple[PythonModulePathIdentity, ...]:
+        return tuple(
+            PythonModulePathIdentity.from_path(path, self.analysis_root)
+            for path in paths
+            if path.is_file() and self.source_policy.allows_file_path(path)
+        )
+
     def parsed_source_paths(self, paths: tuple[Path, ...]) -> list[ParsedModule]:
         allowed_paths = tuple(
             path
@@ -1413,6 +1443,30 @@ def parse_python_module_roots(
             seen_paths.add(normalized_path)
             modules.append(module)
     return modules
+
+
+def python_module_path_identities_for_roots(
+    roots: tuple[Path, ...],
+    *,
+    source_policy: PythonSourcePathPolicy | None = None,
+) -> tuple[PythonModulePathIdentity, ...]:
+    """Return de-duplicated module path identities without parsing source."""
+
+    identities: list[PythonModulePathIdentity] = []
+    seen_paths: set[Path] = set()
+    for root in roots:
+        parser = PythonModuleRootParser.for_root(
+            root,
+            use_parse_cache=False,
+            source_policy=source_policy,
+        )
+        for identity in parser.source_path_identities():
+            normalized_path = identity.path.resolve()
+            if normalized_path in seen_paths:
+                continue
+            seen_paths.add(normalized_path)
+            identities.append(identity)
+    return tuple(identities)
 
 
 AstConstantValue: TypeAlias = (

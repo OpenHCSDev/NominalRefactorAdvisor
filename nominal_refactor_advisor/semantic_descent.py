@@ -28,7 +28,13 @@ from typing import ClassVar, TypeAlias
 from metaclass_registry import AutoRegisterMeta
 
 from .assignment_projection import SingleAssignmentAndValueNameProjection
-from .ast_tools import ClassFunctionStackNodeVisitor, ParsedModule
+from .ast_tools import (
+    ClassFunctionStackNodeVisitor,
+    ParsedModule,
+    PythonModulePathIdentity,
+    PythonSourcePathPolicy,
+    python_module_path_identities_for_roots,
+)
 from . import class_index as class_index_module
 from .cache_paths import default_semantic_descent_cache_dir
 from .class_index import (
@@ -276,6 +282,18 @@ class SemanticDescentModuleSignature:
             source_hash=_text_hash(module.source),
         )
 
+    @classmethod
+    def from_path_identity(
+        cls,
+        identity: PythonModulePathIdentity,
+    ) -> "SemanticDescentModuleSignature":
+        return cls(
+            path=str(identity.path.resolve()),
+            parsed_import_name=identity.import_name,
+            is_package_init=identity.is_package_init,
+            source_hash=_source_file_hash(identity.path),
+        )
+
 
 @dataclass(frozen=True)
 class SemanticDescentGraphCacheIdentity:
@@ -304,6 +322,40 @@ class SemanticDescentGraphCacheIdentity:
                     key=lambda item: item.path,
                 )
             ),
+        )
+
+    @classmethod
+    def from_path_identities(
+        cls,
+        identities: tuple[PythonModulePathIdentity, ...],
+    ) -> "SemanticDescentGraphCacheIdentity":
+        return cls(
+            schema=semantic_descent_graph_cache_schema,
+            implementation=SemanticDescentImplementationSignature.current(),
+            python_version=(sys.version_info.major, sys.version_info.minor),
+            modules=tuple(
+                sorted(
+                    (
+                        SemanticDescentModuleSignature.from_path_identity(identity)
+                        for identity in identities
+                    ),
+                    key=lambda item: item.path,
+                )
+            ),
+        )
+
+    @classmethod
+    def from_roots(
+        cls,
+        roots: tuple[Path, ...],
+        *,
+        source_policy: PythonSourcePathPolicy | None = None,
+    ) -> "SemanticDescentGraphCacheIdentity":
+        return cls.from_path_identities(
+            python_module_path_identities_for_roots(
+                roots,
+                source_policy=source_policy,
+            )
         )
 
     @property
@@ -1811,6 +1863,26 @@ def build_semantic_descent_graph(
         cache.store(identity, graph)
         return graph
     return _build_semantic_descent_graph_cached(module_tuple)
+
+
+def load_cached_semantic_descent_graph_for_roots(
+    roots: tuple[Path, ...],
+    *,
+    cache_dir: Path | None,
+    source_policy: PythonSourcePathPolicy | None = None,
+) -> SemanticDescentGraph | None:
+    """Load a semantic-descent graph cache entry addressable before AST parsing."""
+
+    if cache_dir is None:
+        return None
+    identities = python_module_path_identities_for_roots(
+        roots,
+        source_policy=source_policy,
+    )
+    if not identities:
+        return None
+    identity = SemanticDescentGraphCacheIdentity.from_path_identities(identities)
+    return SemanticDescentGraphCache(cache_dir).load(identity).graph
 
 
 @dataclass(frozen=True)

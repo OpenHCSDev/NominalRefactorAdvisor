@@ -18236,6 +18236,75 @@ def test_module_cli_auto_context_root_keeps_global_cache_for_file_scope(
     assert any(((package_root / ".nra-cache" / "ast").glob("*.pickle")))
 
 
+def test_module_cli_agent_payload_reuses_cached_semantic_graph_for_file_scope(
+    tmp_path: Path,
+) -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    package_root = tmp_path / "pkg"
+    focused_path = package_root / "beta.py"
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Handler(ABC):\n"
+        "    @abstractmethod\n"
+        "    def run(self): ...\n\n\n"
+        "class AlphaHandler(Handler):\n"
+        "    handler_id = 'alpha'\n\n"
+        "    def run(self):\n"
+        "        return 'alpha'\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        "from .alpha import AlphaHandler, Handler\n\n\n"
+        "class BetaHandler(Handler):\n"
+        "    handler_id = 'beta'\n\n"
+        "    def run(self):\n"
+        "        return 'beta'\n\n\n"
+        "HANDLERS = {'alpha': AlphaHandler, 'beta': BetaHandler}\n",
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "nominal_refactor_advisor",
+        focused_path.as_posix(),
+        "--no-impact-ranking",
+        "--raw-findings",
+        "--json",
+        "--json-payload",
+        "agent",
+    ]
+
+    first_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    second_result = subprocess.run(
+        command,
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    first_payload = json.loads(first_result.stdout)
+    second_payload = json.loads(second_result.stdout)
+    second_timing = cast(dict[str, object], second_payload["timing"])
+    graph_payload = cast(dict[str, object], second_payload["semantic_descent_graph"])
+    repository_graph = cast(dict[str, object], graph_payload["repository_graph"])
+
+    assert first_result.returncode == 0, first_result.stderr
+    assert second_result.returncode == 0, second_result.stderr
+    assert "semantic_descent_graph" in first_payload
+    assert second_timing["parse_seconds"] == 0.0
+    assert second_timing["analysis_cache_status"] == "hit"
+    assert graph_payload["active_graph_source"] in {"repository", "finding_backed"}
+    assert int(repository_graph["authority_count"]) >= 1
+
+
 def test_module_cli_can_disable_auto_context_root_for_file_scope(
     tmp_path: Path,
 ) -> None:
