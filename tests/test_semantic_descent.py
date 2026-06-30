@@ -27,7 +27,13 @@ from nominal_refactor_advisor.detectors._runtime import (
     RuntimeSemanticBranchChainDetector,
     SemanticInheritanceFamilySSOTDetector,
 )
+from nominal_refactor_advisor.models import (
+    MappingMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_descent import (
     PresentationTokenRole,
     SemanticAuthorityKind,
@@ -37,6 +43,7 @@ from nominal_refactor_advisor.semantic_descent import (
     build_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
+from nominal_refactor_advisor.semantic_refactor_gate import SemanticRefactorGateWorkItem
 
 
 def _write_module(root: Path, source: str) -> Path:
@@ -187,6 +194,101 @@ def test_semantic_mirror_finding_projects_to_descent_graph(
     assert certificate.edge.projection_id == projection.projection_id
     assert certificate.missing_derivation_path == finding.relation_context
     assert {fact.name for fact in graph.facts} == {"LoadStep", "SaveStep"}
+
+
+def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
+    finding = RefactorFinding(
+        detector_id="local_role_case_logic",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Role cases should descend to an authority",
+        summary="local case table mirrors an axis authority",
+        why="case literals repeat an axis-owned semantic fact family",
+        capability_gap="one authority-owned role-case projection",
+        relation_context="case table lacks an authority-derived projection",
+        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=3,
+            mapping_name="local_role_case_logic",
+            source_name="AxisRoleAuthority",
+            field_names=("alpha", "beta"),
+            identity_field_names=("role",),
+        ),
+    )
+
+    graph = build_finding_backed_semantic_descent_graph(
+        (finding,),
+        semantic_mirror_detector_ids=frozenset(),
+        authority_evidence_index_by_detector_id={},
+    )
+    authority = graph.authorities[0]
+    certificate = graph.certificates[0]
+
+    assert authority.name == "AxisRoleAuthority"
+    assert authority.kind is SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY
+    assert {fact.name for fact in graph.facts} == {"alpha", "beta"}
+    assert certificate.missing_derivation_path == finding.relation_context
+
+
+def test_finding_backed_graph_rejects_generic_metric_authority_names() -> None:
+    finding = RefactorFinding(
+        detector_id="local_role_case_logic",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Role cases should descend to an authority",
+        summary="local case table mirrors an axis authority",
+        why="case literals repeat an axis-owned semantic fact family",
+        capability_gap="one authority-owned role-case projection",
+        relation_context="case table lacks an authority-derived projection",
+        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=3,
+            mapping_name="local_role_case_logic",
+            source_name="authority,authority",
+            field_names=("alpha", "beta"),
+            identity_field_names=("role",),
+        ),
+    )
+
+    graph = build_finding_backed_semantic_descent_graph(
+        (finding,),
+        semantic_mirror_detector_ids=frozenset(),
+        authority_evidence_index_by_detector_id={},
+    )
+
+    assert graph.authorities[0].name == "local_role_case_logic"
+
+
+def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
+    finding = RefactorFinding(
+        detector_id="local_role_case_logic",
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Role cases should descend to an authority",
+        summary="local case table mirrors an axis authority",
+        why="case literals repeat an axis-owned semantic fact family",
+        capability_gap="one authority-owned role-case projection",
+        relation_context="case table lacks an authority-derived projection",
+        evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
+        metrics=MappingMetrics.from_field_names(
+            mapping_site_count=3,
+            mapping_name="local_role_case_logic",
+            source_name="AxisRoleAuthority",
+            field_names=("alpha", "beta"),
+            identity_field_names=("role",),
+        ),
+    )
+    graph = build_finding_backed_semantic_descent_graph(
+        (finding,),
+        semantic_mirror_detector_ids=frozenset(),
+        authority_evidence_index_by_detector_id={},
+    )
+
+    work_item = SemanticRefactorGateWorkItem.from_ssot_finding_group(
+        (finding,),
+        finding_descent_graph=graph,
+    )
+
+    assert work_item.authority_candidate == "AxisRoleAuthority"
+    assert work_item.missing_derivation_path == finding.relation_context
+    assert work_item.evidence_symbols == ("local_cases",)
 
 
 def test_nominal_boundary_goal_targets_semantic_mirror_role_by_default(

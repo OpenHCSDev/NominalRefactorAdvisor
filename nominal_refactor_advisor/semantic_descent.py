@@ -983,7 +983,7 @@ def semantic_descent_finding_projection_id(finding: RefactorFinding) -> str:
 
 @dataclass(frozen=True)
 class FindingBackedSemanticDescentGraphRequest:
-    """Graph request for detector findings already classified as semantic mirrors."""
+    """Graph request for findings projected into semantic-descent certificates."""
 
     findings: tuple[RefactorFinding, ...]
     semantic_mirror_detector_ids: frozenset[str]
@@ -998,11 +998,7 @@ class FindingBackedSemanticDescentGraphRequest:
         authority_evidence_index_by_detector_id: Mapping[str, int | None],
     ) -> "FindingBackedSemanticDescentGraphRequest":
         return cls(
-            findings=tuple(
-                finding
-                for finding in findings
-                if finding.detector_id in semantic_mirror_detector_ids
-            ),
+            findings=tuple(findings),
             semantic_mirror_detector_ids=semantic_mirror_detector_ids,
             authority_evidence_indices=tuple(
                 sorted(authority_evidence_index_by_detector_id.items())
@@ -1035,7 +1031,9 @@ class FindingBackedSemanticDescentGraphRequest:
             facts.extend(finding_facts)
             projections.append(projection)
             edges.append(edge)
-            certificates.append(FindingBackedCertificateProjection.certificate(finding, edge))
+            certificates.append(
+                FindingBackedCertificateProjection.certificate(finding, edge)
+            )
         return SemanticDescentGraph(
             authorities=sorted_tuple(authorities, key=lambda item: item.authority_id),
             facts=sorted_tuple(facts, key=lambda item: item.fact_id),
@@ -1062,10 +1060,17 @@ class FindingBackedAuthorityProjection:
             authority_evidence_index_by_detector_id,
         )
         authority_id = semantic_descent_finding_authority_id(finding)
+        if authority_evidence_index_by_detector_id.get(finding.detector_id) is None:
+            authority_name = (
+                FindingMetricsSemanticProjection.authority_name_for(finding.metrics)
+                or authority_location.symbol
+            )
+        else:
+            authority_name = authority_location.symbol
         return SemanticAuthority(
             authority_id=authority_id,
             kind=SemanticAuthorityKind.FINDING_DECLARED_AUTHORITY,
-            name=authority_location.symbol,
+            name=authority_name,
             location=authority_location,
             fact_ids=tuple(
                 FindingBackedFactProjection.fact_id(authority_id, index)
@@ -1148,7 +1153,7 @@ class FindingBackedFactProjection:
 
     @staticmethod
     def fact_names(finding: RefactorFinding) -> tuple[str, ...]:
-        metric_names = FindingMetricsFactExtractor.fact_names_for(finding.metrics)
+        metric_names = FindingMetricsSemanticProjection.fact_names_for(finding.metrics)
         if metric_names:
             return metric_names
         evidence_names = sorted_tuple(location.symbol for location in finding.evidence)
@@ -1222,32 +1227,108 @@ def _build_finding_backed_semantic_descent_graph_cached(
     return request.build_graph()
 
 
-class FindingMetricsFactExtractor(ABC, metaclass=AutoRegisterMeta):
-    """Registered projection from finding metrics to semantic fact names."""
+class FindingMetricsSemanticProjection(ABC, metaclass=AutoRegisterMeta):
+    """Registered projection from finding metrics into descent-graph semantics."""
 
     __registry__: ClassVar[
-        dict[type[FindingMetrics], type["FindingMetricsFactExtractor"]]
+        dict[type[FindingMetrics], type["FindingMetricsSemanticProjection"]]
     ] = {}
     __registry_key__ = "metrics_type"
     __skip_if_no_key__ = True
     metrics_type: ClassVar[type[FindingMetrics]]
+
+    def authority_name_candidate_names(
+        self,
+        metrics: FindingMetrics,
+    ) -> tuple[str | None, ...]:
+        del metrics
+        return ()
+
+    def authority_name(self, metrics: FindingMetrics) -> str | None:
+        return FindingAuthorityNamePolicy.first_specific_name(
+            *self.authority_name_candidate_names(metrics)
+        )
 
     @abstractmethod
     def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
         raise NotImplementedError
 
     @classmethod
+    def projection_for(
+        cls,
+        metrics: FindingMetrics,
+    ) -> "FindingMetricsSemanticProjection | None":
+        for projection_type in cls.__registry__.values():
+            if isinstance(metrics, projection_type.metrics_type):
+                return projection_type()
+        return None
+
+    @classmethod
+    def authority_name_for(cls, metrics: FindingMetrics) -> str | None:
+        projection = cls.projection_for(metrics)
+        if projection is None:
+            return None
+        return projection.authority_name(metrics)
+
+    @classmethod
     def fact_names_for(cls, metrics: FindingMetrics) -> tuple[str, ...]:
-        for extractor_type in cls.__registry__.values():
-            if isinstance(metrics, extractor_type.metrics_type):
-                return extractor_type().fact_names(metrics)
-        return ()
+        projection = cls.projection_for(metrics)
+        if projection is None:
+            return ()
+        return projection.fact_names(metrics)
 
 
-class MappingMetricsFactExtractor(FindingMetricsFactExtractor):
-    """Use mapping field names as semantic facts."""
+class FindingAuthorityNamePolicy:
+    """Select metric-derived authority names only when they carry identity."""
+
+    bag_delimiters: ClassVar[frozenset[str]] = frozenset((",", "/", "|"))
+    generic_tokens: ClassVar[
+        frozenset[str]
+    ] = SemanticRoleIdentityToken.identity_axis_values() | frozenset(
+        (
+            "authority",
+            "candidate",
+            "generic",
+            "level",
+            "local",
+            "logic",
+            "mapping",
+            "projection",
+            "semantic",
+            "unknown",
+        )
+    )
+
+    @classmethod
+    def first_specific_name(cls, *names: str | None) -> str | None:
+        for name in names:
+            if name is not None and cls.is_specific_name(name):
+                return name
+        return None
+
+    @classmethod
+    def is_specific_name(cls, name: str) -> bool:
+        tokens = NormalizeNameProjection.token_set(name)
+        return bool(
+            name
+            and not any(delimiter in name for delimiter in cls.bag_delimiters)
+            and tokens
+            and tokens - cls.generic_tokens
+        )
+
+
+class MappingMetricsSemanticProjection(FindingMetricsSemanticProjection):
+    """Use mapping metrics as source-authority and projected field facts."""
 
     metrics_type: ClassVar[type[FindingMetrics]] = MappingMetrics
+
+    def authority_name_candidate_names(
+        self,
+        metrics: FindingMetrics,
+    ) -> tuple[str | None, ...]:
+        if not isinstance(metrics, MappingMetrics):
+            return ()
+        return (metrics.source_name, metrics.mapping_name)
 
     def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
         if not isinstance(metrics, MappingMetrics):
@@ -1255,10 +1336,18 @@ class MappingMetricsFactExtractor(FindingMetricsFactExtractor):
         return metrics.field_names or metrics.identity_field_names
 
 
-class RegistrationMetricsFactExtractor(FindingMetricsFactExtractor):
-    """Use registered class names as semantic facts."""
+class RegistrationMetricsSemanticProjection(FindingMetricsSemanticProjection):
+    """Use registration metrics as registry-authority and registered facts."""
 
     metrics_type: ClassVar[type[FindingMetrics]] = RegistrationMetrics
+
+    def authority_name_candidate_names(
+        self,
+        metrics: FindingMetrics,
+    ) -> tuple[str | None, ...]:
+        if not isinstance(metrics, RegistrationMetrics):
+            return ()
+        return (metrics.registry_name,)
 
     def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
         if not isinstance(metrics, RegistrationMetrics):
@@ -1266,6 +1355,30 @@ class RegistrationMetricsFactExtractor(FindingMetricsFactExtractor):
         return metrics.class_names or tuple(
             class_key_pair.split("=", 1)[0]
             for class_key_pair in metrics.class_key_pairs
+        )
+
+
+class FallbackMetricsSemanticProjection(FindingMetricsSemanticProjection):
+    """Use generic plan fields when no more specific metrics projection exists."""
+
+    metrics_type: ClassVar[type[FindingMetrics]] = FindingMetrics
+
+    def authority_name_candidate_names(
+        self,
+        metrics: FindingMetrics,
+    ) -> tuple[str | None, ...]:
+        return (
+            metrics.plan_source_name,
+            metrics.plan_mapping_name,
+            metrics.plan_registry_name,
+        )
+
+    def fact_names(self, metrics: FindingMetrics) -> tuple[str, ...]:
+        return (
+            metrics.plan_field_names
+            or metrics.plan_identity_field_names
+            or metrics.plan_class_names
+            or metrics.plan_literal_cases
         )
 
 
@@ -2295,10 +2408,10 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     ) -> bool:
         cache = self.projection_materializes_any_dataclass_authority_cache
         if projection.projection_id not in cache:
-            cache[
-                projection.projection_id
-            ] = self._projection_materializes_any_dataclass_authority_uncached(
-                projection,
+            cache[projection.projection_id] = (
+                self._projection_materializes_any_dataclass_authority_uncached(
+                    projection,
+                )
             )
         return cache[projection.projection_id]
 

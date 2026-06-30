@@ -609,12 +609,10 @@ def _authority_candidate_for_finding(
     finding: RefactorFinding,
     finding_descent_graph: SemanticDescentGraph,
 ) -> str:
+    certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
+    if certificate is not None:
+        return finding_descent_graph.authority_by_id[certificate.edge.authority_id].name
     if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-        certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
-        if certificate is not None:
-            return finding_descent_graph.authority_by_id[
-                certificate.edge.authority_id
-            ].name
         return finding.title
     if finding.evidence:
         return finding.evidence[0].symbol
@@ -636,10 +634,10 @@ def _missing_derivation_path_for_finding(
     finding: RefactorFinding,
     finding_descent_graph: SemanticDescentGraph,
 ) -> str:
+    certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
+    if certificate is not None:
+        return certificate.missing_derivation_path
     if detector_ids_have_semantic_mirror_role((finding.detector_id,)):
-        certificate = _descent_certificate_for_finding(finding, finding_descent_graph)
-        if certificate is not None:
-            return certificate.missing_derivation_path
         return finding.relation_context
     return SemanticRefactorGateWorkItem.missing_derivation_path_for_detectors(
         (finding.detector_id,)
