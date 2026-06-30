@@ -10314,6 +10314,51 @@ def test_repeated_builder_normalizes_positional_identity_fields(tmp_path: Path) 
     )
 
 
+def test_repeated_builder_ignores_declared_owned_builder_authority_calls(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass ObjectLabelVariantData:\n"
+        "    @classmethod\n"
+        "    def for_labels(cls, labels, unedited_labels, small_removed_labels):\n"
+        "        return cls(\n"
+        "            labels=labels,\n"
+        "            unedited_labels=unedited_labels,\n"
+        "            small_removed_labels=small_removed_labels,\n"
+        "        )\n"
+        "\n"
+        "\ndef alpha(labels, unedited_labels, small_removed_labels):\n"
+        "    return ObjectLabelVariantData.for_labels(\n"
+        "        labels=labels,\n"
+        "        unedited_labels=unedited_labels,\n"
+        "        small_removed_labels=small_removed_labels,\n"
+        "    )\n"
+        "\n"
+        "\ndef beta(labels, unedited_labels, small_removed_labels):\n"
+        "    return ObjectLabelVariantData.for_labels(\n"
+        "        labels=labels,\n"
+        "        unedited_labels=unedited_labels,\n"
+        "        small_removed_labels=small_removed_labels,\n"
+        "    )\n"
+        "\n"
+        "\ndef gamma(labels, unedited_labels, small_removed_labels):\n"
+        "    return ObjectLabelVariantData.for_labels(\n"
+        "        labels=labels,\n"
+        "        unedited_labels=unedited_labels,\n"
+        "        small_removed_labels=small_removed_labels,\n"
+        "    )\n",
+    )
+
+    assert not any(
+        (
+            finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
+            for finding in analyze_path(tmp_path)
+        )
+    )
+
+
 def test_repeated_builder_requires_three_local_assemblies(tmp_path: Path) -> None:
     _write_module(
         tmp_path,

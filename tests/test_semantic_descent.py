@@ -984,6 +984,134 @@ def test_identity_keyword_forwarding_shell_synthesizes_inline_delete_recipe(
     assert simulation.is_clean is True
 
 
+def test_repeated_builder_call_synthesizes_constructor_authority_recipe(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class BranchItem:\n"
+        "    axis_name: str\n"
+        "    expected_source: str\n"
+        "    result_source: str\n"
+        "\n"
+        "    def render(self):\n"
+        "        return self.axis_name\n"
+        "\n"
+        "class BranchBuilder:\n"
+        "    def first(self, source_axis, expected_source, result_source):\n"
+        "        return BranchItem(\n"
+        "            axis_name=source_axis,\n"
+        "            expected_source=expected_source,\n"
+        "            result_source=result_source,\n"
+        "        )\n"
+        "\n"
+        "    def second(self, source_axis, expected_source, result_source):\n"
+        "        return BranchItem(\n"
+        "            axis_name=source_axis,\n"
+        "            expected_source=expected_source,\n"
+        "            result_source=result_source,\n"
+        "        )\n"
+        "\n"
+        "    def third(self, source_axis, expected_source, result_source):\n"
+        "        return BranchItem(\n"
+        "            axis_name=source_axis,\n"
+        "            expected_source=expected_source,\n"
+        "            result_source=result_source,\n"
+        "        )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "repeated_builder_calls"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    recipe = plan.document.to_dict()["recipes"][0]
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert (
+        plan.records[0].synthesizer_name
+        == "RepeatedBuilderCallFindingRecipeSynthesizer"
+    )
+    assert len(recipe["rewrites"]) == 4
+    assert "def from_sources(" in rewritten
+    assert rewritten.count("BranchItem.from_sources(") == 3
+    assert "return cls(" in rewritten
+    assert simulation.is_clean is True
+
+
+def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "from dataclasses import dataclass\n"
+        "from enum import Enum\n"
+        "\n"
+        "class NodeKind(Enum):\n"
+        "    FUNCTION = 'function'\n"
+        "    METHOD = 'method'\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class TargetSelector:\n"
+        "    node_kinds: tuple[NodeKind, ...] = ()\n"
+        "    file_paths: tuple[str, ...] = ()\n"
+        "    qualnames: tuple[str, ...] = ()\n"
+        "\n"
+        "    def select(self):\n"
+        "        return self.qualnames\n"
+        "\n"
+        "class SelectorBuilder:\n"
+        "    def first(self, source_path, wrapper_qualname):\n"
+        "        return TargetSelector(\n"
+        "            node_kinds=(NodeKind.FUNCTION, NodeKind.METHOD),\n"
+        "            file_paths=(source_path,),\n"
+        "            qualnames=(wrapper_qualname,),\n"
+        "        )\n"
+        "\n"
+        "    def second(self, source_path, function_qualname):\n"
+        "        return TargetSelector(\n"
+        "            node_kinds=(NodeKind.FUNCTION, NodeKind.METHOD),\n"
+        "            file_paths=(source_path,),\n"
+        "            qualnames=(function_qualname,),\n"
+        "        )\n"
+        "\n"
+        "    def third(self, source_path, target_qualname):\n"
+        "        return TargetSelector(\n"
+        "            node_kinds=(NodeKind.FUNCTION, NodeKind.METHOD),\n"
+        "            file_paths=(source_path,),\n"
+        "            qualnames=(target_qualname,),\n"
+        "        )\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    finding = next(
+        item
+        for item in analyze_path(tmp_path)
+        if item.detector_id == "repeated_builder_calls"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
+
+    plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
+    simulation = plan.simulate_snapshot(snapshot)
+    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+
+    assert plan.records[0].status.value == "planned"
+    assert "def for_function_or_method(" in rewritten
+    assert "file_path: str" in rewritten
+    assert "qualname: str" in rewritten
+    assert "file_paths=(file_path,)" in rewritten
+    assert "file_paths=(source_path,)" not in rewritten
+    assert rewritten.count("TargetSelector.for_function_or_method(") == 3
+    assert simulation.is_clean is True
+
+
 def test_finding_recipe_synthesis_rejects_partial_action_key_overlap(
     tmp_path: Path,
 ) -> None:

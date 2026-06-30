@@ -2164,6 +2164,18 @@ class SourceIndexTargetSelector(CodemodTargetSelector):
         )
     )
 
+    @classmethod
+    def for_function_or_method(
+        cls,
+        file_path: str,
+        qualname: str,
+    ) -> "SourceIndexTargetSelector":
+        return cls(
+            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
+            file_paths=(file_path,),
+            qualnames=(qualname,),
+        )
+
     def target_ids(self, context: CodemodSelectorContext) -> tuple[str, ...]:
         node_kinds = frozenset(self.node_kinds)
         file_paths = context.resolve_source_paths(self.file_paths)
@@ -12926,10 +12938,8 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         source_path: str,
         wrapper_qualname: str,
     ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
-            file_paths=(source_path,),
-            qualnames=(wrapper_qualname,),
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path, qualname=wrapper_qualname
         ).target_ids(context)
         if len(target_ids) != 1:
             return None
@@ -13221,6 +13231,756 @@ class IdentityKeywordForwardingShellFindingRecipeSynthesizer(
         return geometry.source_with_replacements_in_span(
             start_offset,
             end_offset,
+            replacements,
+        )
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityCallRewrite:
+    """One repeated builder call site rewritten through an owned constructor."""
+
+    target: AstTargetDigest
+    replacement_source: str
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityParameter:
+    """One generated builder-authority parameter projected from call sites."""
+
+    name: str
+    annotation: str
+    source_field_name: str
+    unwrap_single_tuple: bool = False
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderConstructorArgument:
+    """One constructor argument emitted by the generated builder authority."""
+
+    field_name: str
+    value_source: str
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityMethod:
+    """Generated builder-authority method signature and constructor mapping."""
+
+    method_name: str
+    parameters: tuple[RepeatedBuilderAuthorityParameter, ...]
+    constructor_arguments: tuple[RepeatedBuilderConstructorArgument, ...]
+
+
+@dataclass(frozen=True)
+class RepeatedBuilderAuthorityRecipeParts:
+    """Executable facts for one repeated builder-call authority extraction."""
+
+    constructor_class_rewrite: RepeatedBuilderAuthorityCallRewrite
+    call_rewrites: tuple[RepeatedBuilderAuthorityCallRewrite, ...]
+
+    def recipe_for(self, finding: RefactorFinding) -> RefactorRecipe:
+        recipe = RefactorRecipe(
+            recipe_id=f"{finding.stable_id}-extract-builder-authority",
+            reason="Move repeated constructor field mapping behind an owned builder authority.",
+        ).replace_target(
+            self.constructor_class_rewrite.replacement_source,
+            target_identifier=self.constructor_class_rewrite.target.target_id,
+            rationale="Insert owned builder authority for repeated constructor mapping.",
+        )
+        for call_rewrite in self.call_rewrites:
+            recipe = recipe.replace_target(
+                call_rewrite.replacement_source,
+                target_identifier=call_rewrite.target.target_id,
+                rationale="Rewrite repeated constructor call through builder authority.",
+            )
+        return recipe
+
+
+class RepeatedBuilderCallFindingRecipeSynthesizer(EvaluatedFindingRecipeSynthesizer):
+    """Build class-owned constructor authority recipes for repeated builder calls."""
+
+    detector_id = "repeated_builder_calls"
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        if context is None:
+            return FindingRecipeEvaluation(
+                rejection_reason=(
+                    "repeated-builder authority extraction requires a source selector context"
+                )
+            )
+        parts, rejection_reason = self.recipe_parts_for_finding(finding, context)
+        if rejection_reason:
+            return FindingRecipeEvaluation(rejection_reason=rejection_reason)
+        if parts is None:
+            return FindingRecipeEvaluation(
+                rejection_reason="repeated-builder authority extraction found no recipe parts"
+            )
+        return FindingRecipeEvaluation(recipe=parts.recipe_for(finding))
+
+    def recipe_parts_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> tuple[RepeatedBuilderAuthorityRecipeParts | None, str]:
+        if not isinstance(finding.metrics, MappingMetrics):
+            return (
+                None,
+                "repeated-builder authority extraction requires mapping metrics",
+            )
+        metrics = finding.metrics
+        constructor_name = metrics.plan_mapping_name
+        if constructor_name is None:
+            return (
+                None,
+                "repeated-builder authority extraction requires a constructor name",
+            )
+        if "." in constructor_name:
+            return (
+                None,
+                "repeated-builder authority extraction only supports class constructors",
+            )
+        source_path = self.source_path(finding, context)
+        if source_path is None:
+            return (
+                None,
+                "repeated-builder authority extraction requires one source file",
+            )
+        source = context.sources_by_file_path.get(source_path)
+        if source is None:
+            return None, "repeated-builder authority extraction requires source text"
+        constructor = self.constructor_target(context, source_path, constructor_name)
+        if constructor is None:
+            return (
+                None,
+                "repeated-builder authority extraction cannot resolve constructor class",
+            )
+        constructor_target, constructor_node = constructor
+        field_names = metrics.plan_field_names
+        field_annotations = self.field_annotations_or_none(
+            context,
+            source_path,
+            constructor_node,
+            field_names,
+        )
+        if field_annotations is None:
+            return (
+                None,
+                "repeated-builder authority extraction requires typed constructor fields",
+            )
+        matching_calls = self.matching_calls(
+            context,
+            source_path=source_path,
+            constructor_name=constructor_name,
+            field_names=field_names,
+            evidence_symbols=tuple(evidence.symbol for evidence in finding.evidence),
+        )
+        method = self.authority_method_or_none(
+            metrics,
+            field_annotations,
+            matching_calls,
+        )
+        if method is None:
+            return (
+                None,
+                "repeated-builder authority extraction requires a role or invariant selector axis",
+            )
+        if self.class_defines_method(constructor_node, method.method_name):
+            return (
+                None,
+                f"repeated-builder authority extraction will not overwrite {method.method_name}",
+            )
+        call_rewrites = self.call_rewrites(
+            context,
+            source_path=source_path,
+            source=source,
+            constructor_name=constructor_name,
+            method=method,
+            evidence_symbols=tuple(evidence.symbol for evidence in finding.evidence),
+        )
+        if not call_rewrites:
+            return (
+                None,
+                "repeated-builder authority extraction found no safe call sites",
+            )
+        return (
+            RepeatedBuilderAuthorityRecipeParts(
+                constructor_class_rewrite=RepeatedBuilderAuthorityCallRewrite(
+                    target=constructor_target,
+                    replacement_source=self.constructor_replacement_source(
+                        source,
+                        constructor_target,
+                        constructor_node,
+                        constructor_name=constructor_name,
+                        method=method,
+                    ),
+                ),
+                call_rewrites=call_rewrites,
+            ),
+            "",
+        )
+
+    def action_keys_for_finding(
+        self,
+        finding: RefactorFinding,
+    ) -> tuple[FindingRecipeActionKey, ...]:
+        if not isinstance(finding.metrics, MappingMetrics):
+            return ()
+        constructor_name = finding.metrics.plan_mapping_name
+        if constructor_name is None:
+            return ()
+        subjects = {
+            (evidence.file_path, dispatch_evidence_subject(evidence.symbol))
+            for evidence in finding.evidence
+        }
+        subjects.add((finding.evidence[0].file_path, constructor_name))
+        return FindingRecipeActionKey.from_finding_file_subjects(
+            finding,
+            sorted(subjects),
+        )
+
+    @staticmethod
+    def source_path(
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+    ) -> str | None:
+        resolved_paths = context.resolve_source_paths(
+            evidence.file_path for evidence in finding.evidence
+        )
+        if len(resolved_paths) != 1:
+            return None
+        return next(iter(resolved_paths))
+
+    @staticmethod
+    def constructor_target(
+        context: CodemodSelectorContext,
+        source_path: str,
+        constructor_name: str,
+    ) -> tuple[AstTargetDigest, ast.ClassDef] | None:
+        target_ids = SourceIndexTargetSelector(
+            node_kinds=(AstTargetNodeKind.CLASS,),
+            file_paths=(source_path,),
+            qualnames=(constructor_name,),
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.ClassDef):
+            return None
+        return target, node
+
+    @staticmethod
+    def field_annotations_or_none(
+        context: CodemodSelectorContext,
+        source_path: str,
+        class_node: ast.ClassDef,
+        field_names: tuple[str, ...],
+    ) -> tuple[tuple[str, str], ...] | None:
+        annotation_by_name = (
+            RepeatedBuilderCallFindingRecipeSynthesizer.class_annotation_map(
+                context,
+                source_path,
+                class_node,
+                visited_class_names=frozenset(),
+            )
+        )
+        if any(field_name not in annotation_by_name for field_name in field_names):
+            return None
+        return tuple(
+            (field_name, annotation_by_name[field_name]) for field_name in field_names
+        )
+
+    @staticmethod
+    def class_annotation_map(
+        context: CodemodSelectorContext,
+        source_path: str,
+        class_node: ast.ClassDef,
+        *,
+        visited_class_names: frozenset[str],
+    ) -> dict[str, str]:
+        if class_node.name in visited_class_names:
+            return {}
+        annotation_by_name: dict[str, str] = {}
+        for base in class_node.bases:
+            base_name = _terminal_name(base)
+            if base_name is None:
+                continue
+            base_target = (
+                RepeatedBuilderCallFindingRecipeSynthesizer.constructor_target(
+                    context,
+                    source_path,
+                    base_name,
+                )
+            )
+            if base_target is None:
+                continue
+            _target, base_node = base_target
+            annotation_by_name.update(
+                RepeatedBuilderCallFindingRecipeSynthesizer.class_annotation_map(
+                    context,
+                    source_path,
+                    base_node,
+                    visited_class_names=visited_class_names
+                    | frozenset({class_node.name}),
+                )
+            )
+        for statement in class_node.body:
+            if not isinstance(statement, ast.AnnAssign):
+                continue
+            if not isinstance(statement.target, ast.Name):
+                continue
+            annotation_by_name[statement.target.id] = ast.unparse(statement.annotation)
+        return annotation_by_name
+
+    @staticmethod
+    def class_defines_method(class_node: ast.ClassDef, method_name: str) -> bool:
+        return any(
+            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name == method_name
+            for statement in class_node.body
+        )
+
+    @classmethod
+    def authority_method_or_none(
+        cls,
+        metrics: MappingMetrics,
+        field_annotations: tuple[tuple[str, str], ...],
+        matching_calls: tuple[ast.Call, ...],
+    ) -> RepeatedBuilderAuthorityMethod | None:
+        return cls.role_authority_method_or_none(
+            metrics,
+            field_annotations,
+        ) or cls.invariant_selector_authority_method_or_none(
+            metrics,
+            field_annotations,
+            matching_calls,
+        )
+
+    @classmethod
+    def role_authority_method_or_none(
+        cls,
+        metrics: MappingMetrics,
+        field_annotations: tuple[tuple[str, str], ...],
+    ) -> RepeatedBuilderAuthorityMethod | None:
+        role_tokens = cls.shared_suffix_tokens(metrics.plan_identity_field_names)
+        if not role_tokens:
+            return None
+        role_name = "_".join(role_tokens)
+        if not role_name.endswith("s"):
+            role_name = f"{role_name}s"
+        return RepeatedBuilderAuthorityMethod(
+            method_name=f"from_{role_name}",
+            parameters=tuple(
+                RepeatedBuilderAuthorityParameter(
+                    name=field_name,
+                    annotation=annotation,
+                    source_field_name=field_name,
+                )
+                for field_name, annotation in field_annotations
+            ),
+            constructor_arguments=tuple(
+                RepeatedBuilderConstructorArgument(
+                    field_name=field_name,
+                    value_source=field_name,
+                )
+                for field_name, _annotation in field_annotations
+            ),
+        )
+
+    @classmethod
+    def invariant_selector_authority_method_or_none(
+        cls,
+        metrics: MappingMetrics,
+        field_annotations: tuple[tuple[str, str], ...],
+        matching_calls: tuple[ast.Call, ...],
+    ) -> RepeatedBuilderAuthorityMethod | None:
+        if not matching_calls:
+            return None
+        field_names = metrics.plan_field_names
+        annotation_by_field = dict(field_annotations)
+        values_by_field = {
+            field_name: tuple(
+                keyword.value
+                for call in matching_calls
+                for keyword in call.keywords
+                if keyword.arg == field_name
+            )
+            for field_name in field_names
+        }
+        constructor_arguments: list[RepeatedBuilderConstructorArgument] = []
+        parameters: list[RepeatedBuilderAuthorityParameter] = []
+        constant_values: list[ast.AST] = []
+        for field_name in field_names:
+            values = values_by_field[field_name]
+            if len(values) != len(matching_calls):
+                return None
+            value_sources = tuple(ast.unparse(value) for value in values)
+            if len(set(value_sources)) == 1 and cls.authority_constant_value(values[0]):
+                constant_values.append(values[0])
+                constructor_arguments.append(
+                    RepeatedBuilderConstructorArgument(
+                        field_name=field_name,
+                        value_source=value_sources[0],
+                    )
+                )
+                continue
+            tuple_items = tuple(cls.single_tuple_item(value) for value in values)
+            if any(item is None for item in tuple_items):
+                return None
+            parameter_name = cls.singular_field_name(field_name)
+            parameters.append(
+                RepeatedBuilderAuthorityParameter(
+                    name=parameter_name,
+                    annotation=cls.scalar_annotation(annotation_by_field[field_name]),
+                    source_field_name=field_name,
+                    unwrap_single_tuple=True,
+                )
+            )
+            constructor_arguments.append(
+                RepeatedBuilderConstructorArgument(
+                    field_name=field_name,
+                    value_source=f"({parameter_name},)",
+                )
+            )
+        parameter_names = tuple(parameter.name for parameter in parameters)
+        if len(set(parameter_names)) != len(parameter_names):
+            return None
+        if not constant_values or not parameters:
+            return None
+        method_name = cls.invariant_selector_method_name(constant_values)
+        if method_name is None:
+            return None
+        return RepeatedBuilderAuthorityMethod(
+            method_name=method_name,
+            parameters=tuple(parameters),
+            constructor_arguments=tuple(constructor_arguments),
+        )
+
+    @classmethod
+    def authority_constant_value(cls, value: ast.AST) -> bool:
+        if isinstance(value, ast.Constant):
+            return True
+        if isinstance(value, ast.Attribute):
+            return True
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return all(cls.authority_constant_value(item) for item in value.elts)
+        return False
+
+    @staticmethod
+    def single_tuple_item(value: ast.AST) -> ast.AST | None:
+        if not isinstance(value, ast.Tuple):
+            return None
+        if len(value.elts) != 1:
+            return None
+        return value.elts[0]
+
+    @staticmethod
+    def singular_field_name(field_name: str) -> str:
+        if field_name.endswith("ies"):
+            return f"{field_name[:-3]}y"
+        if field_name.endswith("s"):
+            return field_name[:-1]
+        return field_name
+
+    @staticmethod
+    def scalar_annotation(annotation: str) -> str:
+        if annotation.startswith("tuple[") and annotation.endswith("]"):
+            inner = annotation.removeprefix("tuple[").removesuffix("]")
+            return inner.split(",", 1)[0].strip()
+        return "str"
+
+    @classmethod
+    def invariant_selector_method_name(
+        cls,
+        constant_values: Iterable[ast.AST],
+    ) -> str | None:
+        tokens = tuple(
+            token
+            for value in constant_values
+            for token in cls.invariant_value_tokens(value)
+        )
+        if not tokens:
+            return None
+        return f"for_{'_or_'.join(dict.fromkeys(tokens))}"
+
+    @classmethod
+    def invariant_value_tokens(cls, value: ast.AST) -> tuple[str, ...]:
+        if isinstance(value, ast.Tuple | ast.List | ast.Set):
+            return tuple(
+                token
+                for item in value.elts
+                for token in cls.invariant_value_tokens(item)
+            )
+        if isinstance(value, ast.Attribute):
+            return tuple(CLASS_NAME_ALGEBRA.ordered_tokens(value.attr))
+        if isinstance(value, ast.Name):
+            return tuple(CLASS_NAME_ALGEBRA.ordered_tokens(value.id))
+        return ()
+
+    @staticmethod
+    def shared_suffix_tokens(field_names: tuple[str, ...]) -> tuple[str, ...]:
+        if not field_names:
+            return ()
+        token_rows = tuple(
+            CLASS_NAME_ALGEBRA.ordered_tokens(name) for name in field_names
+        )
+        if not all(token_rows):
+            return ()
+        suffix: list[str] = []
+        for offset in range(1, min(len(row) for row in token_rows) + 1):
+            tokens = {row[-offset] for row in token_rows}
+            if len(tokens) != 1:
+                break
+            suffix.insert(0, next(iter(tokens)))
+        return tuple(suffix)
+
+    def constructor_replacement_source(
+        self,
+        source: str,
+        target: AstTargetDigest,
+        node: ast.ClassDef,
+        *,
+        constructor_name: str,
+        method: RepeatedBuilderAuthorityMethod,
+    ) -> str:
+        method_source = self.method_source(
+            constructor_name=constructor_name,
+            method=method,
+        )
+        insertion_offset = self.class_method_insertion_offset(source, node)
+        return self.replacement_source_for_target(
+            source,
+            target,
+            (
+                SourceOffsetReplacement(
+                    start_offset=insertion_offset,
+                    end_offset=insertion_offset,
+                    replacement_source=method_source,
+                ),
+            ),
+        )
+
+    @staticmethod
+    def method_source(
+        *,
+        constructor_name: str,
+        method: RepeatedBuilderAuthorityMethod,
+    ) -> str:
+        parameter_lines = tuple(
+            f"        {parameter.name}: {parameter.annotation},\n"
+            for parameter in method.parameters
+        )
+        constructor_lines = tuple(
+            f"            {argument.field_name}={argument.value_source},\n"
+            for argument in method.constructor_arguments
+        )
+        return (
+            "    @classmethod\n"
+            f"    def {method.method_name}(\n"
+            "        cls,\n"
+            f"{''.join(parameter_lines)}"
+            f'    ) -> "{constructor_name}":\n'
+            "        return cls(\n"
+            f"{''.join(constructor_lines)}"
+            "        )\n\n"
+        )
+
+    @staticmethod
+    def class_method_insertion_offset(source: str, node: ast.ClassDef) -> int:
+        geometry = SourceTextGeometry(source)
+        for statement in node.body:
+            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                return geometry.line_offsets[statement.lineno - 1]
+        return (
+            geometry.line_offsets[node.end_lineno]
+            if node.end_lineno is not None
+            and node.end_lineno < len(geometry.line_offsets)
+            else geometry.end_offset
+        )
+
+    def call_rewrites(
+        self,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        source: str,
+        constructor_name: str,
+        method: RepeatedBuilderAuthorityMethod,
+        evidence_symbols: tuple[str, ...],
+    ) -> tuple[RepeatedBuilderAuthorityCallRewrite, ...]:
+        target_qualnames = sorted_tuple(
+            {dispatch_evidence_subject(symbol) for symbol in evidence_symbols}
+        )
+        rewrites = []
+        for target_qualname in target_qualnames:
+            target = self.function_target(context, source_path, target_qualname)
+            if target is None:
+                return ()
+            target_digest, target_node = target
+            replacements = tuple(
+                replacement
+                for call in ast.walk(target_node)
+                for replacement in (
+                    self.call_replacement(
+                        source,
+                        call,
+                        constructor_name=constructor_name,
+                        method=method,
+                    ),
+                )
+                if replacement is not None
+            )
+            if not replacements:
+                return ()
+            rewrites.append(
+                RepeatedBuilderAuthorityCallRewrite(
+                    target=target_digest,
+                    replacement_source=self.replacement_source_for_target(
+                        source,
+                        target_digest,
+                        replacements,
+                    ),
+                )
+            )
+        return tuple(rewrites)
+
+    @staticmethod
+    def function_target(
+        context: CodemodSelectorContext,
+        source_path: str,
+        target_qualname: str,
+    ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path, qualname=target_qualname
+        ).target_ids(context)
+        if len(target_ids) != 1:
+            return None
+        target = context.source_index.target_by_id[target_ids[0]]
+        node = context.ast_target_nodes_by_id[target.target_id]
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        return target, node
+
+    @classmethod
+    def call_replacement(
+        cls,
+        source: str,
+        node: ast.AST,
+        *,
+        constructor_name: str,
+        method: RepeatedBuilderAuthorityMethod,
+    ) -> SourceOffsetReplacement | None:
+        if not isinstance(node, ast.Call):
+            return None
+        if not cls.constructor_call_matches(
+            node,
+            constructor_name=constructor_name,
+            field_names=tuple(
+                argument.field_name for argument in method.constructor_arguments
+            ),
+        ):
+            return None
+        argument_sources = {
+            parameter.name: cls.parameter_source(source, node, parameter)
+            for parameter in method.parameters
+        }
+        if any(argument_sources[name] is None for name in argument_sources):
+            return None
+        start_offset, end_offset = (
+            IdentityKeywordForwardingShellFindingRecipeSynthesizer.node_offsets(
+                source,
+                node,
+            )
+        )
+        return SourceOffsetReplacement(
+            start_offset=start_offset,
+            end_offset=end_offset,
+            replacement_source=(
+                f"{constructor_name}.{method.method_name}("
+                f"{', '.join(f'{parameter.name}={argument_sources[parameter.name]}' for parameter in method.parameters)}"
+                ")"
+            ),
+        )
+
+    @classmethod
+    def matching_calls(
+        cls,
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        constructor_name: str,
+        field_names: tuple[str, ...],
+        evidence_symbols: tuple[str, ...],
+    ) -> tuple[ast.Call, ...]:
+        calls: list[ast.Call] = []
+        target_qualnames = sorted_tuple(
+            {dispatch_evidence_subject(symbol) for symbol in evidence_symbols}
+        )
+        for target_qualname in target_qualnames:
+            target = cls.function_target(context, source_path, target_qualname)
+            if target is None:
+                return ()
+            _target_digest, target_node = target
+            calls.extend(
+                call
+                for call in ast.walk(target_node)
+                if isinstance(call, ast.Call)
+                and cls.constructor_call_matches(
+                    call,
+                    constructor_name=constructor_name,
+                    field_names=field_names,
+                )
+            )
+        return tuple(calls)
+
+    @staticmethod
+    def constructor_call_matches(
+        node: ast.Call,
+        *,
+        constructor_name: str,
+        field_names: tuple[str, ...],
+    ) -> bool:
+        if _call_name(node.func) != constructor_name:
+            return False
+        if node.args:
+            return False
+        if any(keyword.arg is None for keyword in node.keywords):
+            return False
+        return tuple(keyword.arg for keyword in node.keywords) == field_names
+
+    @classmethod
+    def parameter_source(
+        cls,
+        source: str,
+        node: ast.Call,
+        parameter: RepeatedBuilderAuthorityParameter,
+    ) -> str | None:
+        values = tuple(
+            keyword.value
+            for keyword in node.keywords
+            if keyword.arg == parameter.source_field_name
+        )
+        if len(values) != 1:
+            return None
+        value = values[0]
+        if parameter.unwrap_single_tuple:
+            value = cls.single_tuple_item(value)
+            if value is None:
+                return None
+        return ast.get_source_segment(source, value)
+
+    @staticmethod
+    def replacement_source_for_target(
+        source: str,
+        target: AstTargetDigest,
+        replacements: tuple[SourceOffsetReplacement, ...],
+    ) -> str:
+        return IdentityKeywordForwardingShellFindingRecipeSynthesizer.replacement_source_for_target(
+            source,
+            target,
             replacements,
         )
 
@@ -15628,6 +16388,19 @@ class LocalRoleCaseBranchItem(LocalRoleCaseItemBase):
 
     result_source: str
 
+    @classmethod
+    def from_sources(
+        cls,
+        axis_name: str,
+        expected_source: str,
+        result_source: str,
+    ) -> "LocalRoleCaseBranchItem":
+        return cls(
+            axis_name=axis_name,
+            expected_source=expected_source,
+            result_source=result_source,
+        )
+
     def construction_source(self, item_class_name: str) -> str:
         return (
             f"{item_class_name}("
@@ -15962,10 +16735,8 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         source_path: str,
         function_qualname: str,
     ) -> tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef] | None:
-        target_ids = SourceIndexTargetSelector(
-            node_kinds=(AstTargetNodeKind.FUNCTION, AstTargetNodeKind.METHOD),
-            file_paths=(source_path,),
-            qualnames=(function_qualname,),
+        target_ids = SourceIndexTargetSelector.for_function_or_method(
+            file_path=source_path, qualname=function_qualname
         ).target_ids(self)
         if len(target_ids) != 1:
             return None
@@ -16422,7 +17193,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             if expected_source is None:
                 return ()
             return (
-                LocalRoleCaseBranchItem(
+                LocalRoleCaseBranchItem.from_sources(
                     axis_name=left.id,
                     expected_source=expected_source,
                     result_source=result_source,
@@ -16433,7 +17204,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
             if expected_source is None:
                 return ()
             return (
-                LocalRoleCaseBranchItem(
+                LocalRoleCaseBranchItem.from_sources(
                     axis_name=right.id,
                     expected_source=expected_source,
                     result_source=result_source,
@@ -16454,7 +17225,7 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         if expected_source is None:
             return ()
         return (
-            LocalRoleCaseBranchItem(
+            LocalRoleCaseBranchItem.from_sources(
                 axis_name=left.id,
                 expected_source=expected_source,
                 result_source=result_source,

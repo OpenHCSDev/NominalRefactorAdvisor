@@ -843,6 +843,7 @@ class SharedRegistryRootBase:
     __key_extractor__ = _registered_type_token
     _registry_root: ClassVar[bool] = False
 
+
 class AutoRegisteredModuleShapeSpec(
     SharedRegistryRootBase,
     ModuleShapeSpec[ShapeItemT],
@@ -2983,6 +2984,22 @@ def _builder_call_shape(
     class_name: str | None,
     function_name: str | None,
 ) -> BuilderCallShape | None:
+    module_class_names = frozenset(
+        node.name
+        for node in _walk_nodes(parsed_module.module)
+        if isinstance(node, ast.ClassDef)
+    )
+
+    def owned_builder_authority_call(call: ast.Call) -> bool:
+        if not isinstance(call.func, ast.Attribute):
+            return False
+        if not call.func.attr.startswith(("for_", "from_", "with_")):
+            return False
+        owner_name = _terminal_name(call.func.value)
+        if owner_name is None:
+            return False
+        return owner_name in module_class_names
+
     def positional_builder_roles_allowed(callee_name: str) -> bool:
         return callee_name.startswith(("for_", "from_", "with_"))
 
@@ -2999,6 +3016,10 @@ def _builder_call_shape(
                 return ()
             pairs.append((field_name, argument))
         return tuple(pairs)
+
+    call_node = as_ast(node, ast.Call)
+    if call_node is not None and owned_builder_authority_call(call_node):
+        return None
 
     context = (
         Maybe.of(as_ast(node, ast.Call))
