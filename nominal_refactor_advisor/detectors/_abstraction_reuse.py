@@ -22,6 +22,7 @@ from ._base import (
     RefactorFinding,
     SourceLocation,
     high_confidence_spec,
+    CrossModuleCandidateDetector,
 )
 from ._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
@@ -1198,7 +1199,9 @@ def _available_abstraction_reuse_candidates(
     )
 
 
-class AvailableAbstractionReuseDetector(IssueDetector):
+class AvailableAbstractionReuseDetector(
+    CrossModuleCandidateDetector[AvailableAbstractionReuseCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
         "Local implementation should reuse the available abstraction authority",
@@ -1212,6 +1215,14 @@ class AvailableAbstractionReuseDetector(IssueDetector):
         ),
         (ObservationTag.NORMALIZED_AST, ObservationTag.METHOD_ROLE),
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[AvailableAbstractionReuseCandidate]:
+        del config
+        return _available_abstraction_reuse_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1251,7 +1262,9 @@ class AvailableAbstractionReuseDetector(IssueDetector):
         return findings
 
 
-class AvailableCarrierReuseDetector(IssueDetector):
+class AvailableCarrierReuseDetector(
+    CrossModuleCandidateDetector[AvailableCarrierReuseCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Local carrier should reuse an available nominal carrier",
@@ -1268,6 +1281,14 @@ class AvailableCarrierReuseDetector(IssueDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[AvailableCarrierReuseCandidate]:
+        del config
+        return _available_carrier_reuse_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1321,7 +1342,9 @@ class AvailableCarrierReuseDetector(IssueDetector):
         return findings
 
 
-class CarrierCompositionRetreatDetector(IssueDetector):
+class CarrierCompositionRetreatDetector(
+    CrossModuleCandidateDetector[CarrierCompositionRetreatCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Carrier-valued dataclass field masks semantic inheritance",
@@ -1338,6 +1361,14 @@ class CarrierCompositionRetreatDetector(IssueDetector):
             ObservationTag.KEYWORD_MAPPING,
         ),
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[CarrierCompositionRetreatCandidate]:
+        del config
+        return _carrier_composition_retreat_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -1384,7 +1415,9 @@ class CarrierCompositionRetreatDetector(IssueDetector):
         return findings
 
 
-class ParallelPrimitiveCarrierDetector(IssueDetector):
+class ParallelPrimitiveCarrierDetector(
+    CrossModuleCandidateDetector[ParallelPrimitiveCarrierCandidate],
+):
     ssot_authority_boundary = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -1402,6 +1435,14 @@ class ParallelPrimitiveCarrierDetector(IssueDetector):
             ObservationTag.NORMALIZED_AST,
         ),
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[ParallelPrimitiveCarrierCandidate]:
+        del config
+        return _parallel_primitive_carrier_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

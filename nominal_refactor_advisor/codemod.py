@@ -249,6 +249,7 @@ class RefactorRecipeOperationKind(StrEnum):
     DERIVE_AUTOREGISTER_INSTANCE_VIEW = "derive_autoregister_instance_view"
     DISPATCH_TO_POLYMORPHISM = "dispatch_to_polymorphism"
     ENSURE_IMPORT = "ensure_import"
+    EXPOSE_GLOBAL_CANDIDATE_CACHE_CONTEXT = "expose_global_candidate_cache_context"
     EXTRACT_AUTHORITY = "extract_authority"
     EXTRACT_METHODS_TO_CLASS = "extract_methods_to_class"
     INSERT_AFTER_TARGET = "insert_after_target"
@@ -319,6 +320,12 @@ REGISTRY_NAME_PAYLOAD_FIELD = "registry_name"
 SELECTION_COUNT_PAYLOAD_FIELD = "selection_count"
 DETECTOR_ID_FIELD_NAME = "detector_id"
 CANDIDATE_COLLECTOR_FIELD_NAME = "candidate_collector"
+CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD = "candidate_collector_name"
+CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD = "candidate_collector_scope"
+CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD = "candidate_collector_uses_config"
+CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD = "candidate_item_sort_attributes"
+CANDIDATE_TYPE_NAME_PAYLOAD_FIELD = "candidate_type_name"
+CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD = "contextual_detector_base_name"
 DERIVABLE_DETECTOR_ID_FINDING_ID = "derivable_detector_id"
 DERIVABLE_CANDIDATE_COLLECTOR_FINDING_ID = "derivable_candidate_collector"
 SEMANTIC_TAG_TUPLE_BOILERPLATE_FINDING_ID = "semantic_tag_tuple_boilerplate"
@@ -3005,6 +3012,22 @@ class SourceRewritePlanPayload:
             return ""
         return value
 
+    def bool_with_default(self, field_name: str, default: bool) -> bool:
+        if field_name not in self.fields:
+            return default
+        value = self.fields[field_name]
+        if not isinstance(value, bool):
+            raise ValueError(f"Expected boolean field {field_name!r}")
+        return value
+
+    def string_tuple_or_empty(self, field_name: str) -> tuple[str, ...]:
+        if field_name not in self.fields:
+            return ()
+        values = self.required_array(field_name)
+        if not all(isinstance(value, str) for value in values):
+            raise ValueError(f"Expected string array field {field_name!r}")
+        return tuple(values)
+
     def required_object(self, field_name: str) -> Mapping[str, JsonValue]:
         value = self.fields.get(field_name)
         if not isinstance(value, Mapping):
@@ -3492,6 +3515,13 @@ class OperationPayloadReader:
         field_name: str,
     ) -> OperationConstructorValue:
         return OperationPayloadReader.bool_with_default(payload, field_name, True)
+
+    @staticmethod
+    def false_bool(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> OperationConstructorValue:
+        return OperationPayloadReader.bool_with_default(payload, field_name, False)
 
     @staticmethod
     def required_selector(
@@ -7973,6 +8003,523 @@ class RemoveClassBaseOperation(StringPayloadOperation):
 
 
 @dataclass(frozen=True)
+class CandidateCollectorMethodSpec:
+    """Source facts for a generated detector candidate-cache method."""
+
+    collector_name: str
+    collector_uses_config: bool
+    item_sort_attributes: tuple[str, ...]
+
+    def maybe_delete_config_source(self, continued: str) -> str:
+        if self.collector_uses_config:
+            return ""
+        return f"{continued}del config\n"
+
+    def modules_call_source(self) -> str:
+        if self.collector_uses_config:
+            return f"{self.collector_name}(modules, config)"
+        return f"{self.collector_name}(modules)"
+
+    def module_item_call_source(self) -> str:
+        if self.collector_uses_config:
+            return f"{self.collector_name}(module, config)"
+        return f"{self.collector_name}(module)"
+
+
+class CandidateCollectorScopeSource(ABC, metaclass=AutoRegisterMeta):
+    """Registered source authority for candidate collector traversal shape."""
+
+    __registry__: ClassVar[dict[str, type["CandidateCollectorScopeSource"]]] = {}
+    __registry_key__ = "scope_key"
+    __skip_if_no_key__ = True
+
+    scope_key: ClassVar[str | None] = None
+
+    @classmethod
+    def require(cls, scope_key: str) -> type["CandidateCollectorScopeSource"]:
+        scope_source = cls.__registry__.get(scope_key)
+        if scope_source is None:
+            raise ValueError(f"Unsupported candidate collector scope: {scope_key!r}")
+        return scope_source
+
+    @classmethod
+    @abstractmethod
+    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
+        raise NotImplementedError
+
+
+class WholeModuleCandidateCollectorScopeSource(CandidateCollectorScopeSource):
+    """Generate a candidate method from a whole-module-list collector."""
+
+    scope_key = "modules"
+
+    @classmethod
+    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
+        del cls
+        return (
+            spec.maybe_delete_config_source(continued)
+            + f"{continued}return {spec.modules_call_source()}\n"
+        )
+
+
+class PerModuleItemCandidateCollectorScopeSource(CandidateCollectorScopeSource):
+    """Generate a candidate method by flattening one-module item collectors."""
+
+    scope_key = "module_items"
+
+    @classmethod
+    def method_body(cls, spec: CandidateCollectorMethodSpec, continued: str) -> str:
+        del cls
+        item_projection = (
+            f"{continued}items = (\n"
+            f"{continued}    item\n"
+            f"{continued}    for module in modules\n"
+            f"{continued}    for item in {spec.module_item_call_source()}\n"
+            f"{continued})\n"
+        )
+        return (
+            spec.maybe_delete_config_source(continued)
+            + item_projection
+            + PerModuleItemCandidateCollectorScopeSource.item_return_source(
+                spec,
+                continued,
+            )
+        )
+
+    @staticmethod
+    def item_return_source(
+        spec: CandidateCollectorMethodSpec,
+        continued: str,
+    ) -> str:
+        if not spec.item_sort_attributes:
+            return f"{continued}return tuple(items)\n"
+        sort_key_items = ", ".join(
+            f"item.{attribute_name}"
+            for attribute_name in spec.item_sort_attributes
+        )
+        sort_key = (
+            f"{sort_key_items},"
+            if len(spec.item_sort_attributes) == 1
+            else sort_key_items
+        )
+        return (
+            f"{continued}return tuple(\n"
+            f"{continued}    sorted(\n"
+            f"{continued}        items,\n"
+            f"{continued}        key=lambda item: ({sort_key}),\n"
+            f"{continued}    )\n"
+            f"{continued})\n"
+        )
+
+
+class CandidateCacheDetectorProtocolSource:
+    """Source-level method protocol for detector candidate-cache integration."""
+
+    candidate_method_name: ClassVar[str] = "_candidate_items"
+    collect_anchor_method_name: ClassVar[str] = "_collect_findings"
+
+    @classmethod
+    def class_def_has_candidate_method(cls, node: ast.ClassDef) -> bool:
+        return any(
+            cls.is_function_named(statement, cls.candidate_method_name)
+            for statement in node.body
+        )
+
+    @classmethod
+    def collect_findings_anchor(cls, node: ast.ClassDef) -> ast.stmt | None:
+        return next(
+            (
+                statement
+                for statement in node.body
+                if cls.is_function_named(statement, cls.collect_anchor_method_name)
+            ),
+            None,
+        )
+
+    @staticmethod
+    def is_function_named(statement: ast.stmt, method_name: str) -> bool:
+        return isinstance(statement, ast.FunctionDef) and statement.name == method_name
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExposeGlobalCandidateCacheContextOperation(RefactorRecipeOperation):
+    """Make a global detector cache by its candidate projection."""
+
+    candidate_type_name: str
+    candidate_collector_name: str
+    candidate_collector_scope: str = "modules"
+    candidate_collector_uses_config: bool = False
+    candidate_item_sort_attributes: tuple[str, ...] = ()
+    contextual_detector_base_name: str = "CrossModuleCandidateDetector"
+    replaced_base_name: str = "IssueDetector"
+    import_source: str = "from ._base import CrossModuleCandidateDetector"
+
+    @classmethod
+    def payload_bindings(cls) -> OperationPayloadBindings:
+        del cls
+        return (
+            PayloadBinding(
+                field_name=CANDIDATE_TYPE_NAME_PAYLOAD_FIELD,
+                constructor_argument_name="candidate_type_name",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.candidate_type_name_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.required_string,
+            ),
+            PayloadBinding(
+                field_name=CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD,
+                constructor_argument_name="candidate_collector_name",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_name_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.required_string,
+            ),
+            PayloadBinding(
+                field_name=CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
+                constructor_argument_name="candidate_collector_scope",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_scope_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.required_string,
+            ),
+            PayloadBinding(
+                field_name=CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
+                constructor_argument_name="candidate_collector_uses_config",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.candidate_collector_uses_config_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.false_bool,
+            ),
+            PayloadBinding(
+                field_name=CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
+                constructor_argument_name="candidate_item_sort_attributes",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.candidate_item_sort_attributes_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.string_tuple_or_empty,
+            ),
+            PayloadBinding(
+                field_name=CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD,
+                constructor_argument_name="contextual_detector_base_name",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.contextual_detector_base_name_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.required_string,
+            ),
+            PayloadBinding(
+                field_name=BASE_NAME_PAYLOAD_FIELD,
+                constructor_argument_name="replaced_base_name",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.replaced_base_name_from_operation
+                ),
+                constructor_value_reader=OperationPayloadReader.required_string,
+            ),
+            PayloadBinding(
+                field_name=IMPORT_SOURCE_PAYLOAD_FIELD,
+                constructor_argument_name="import_source",
+                value_projector=(
+                    ExposeGlobalCandidateCacheContextOperation.import_source_from_operation
+                ),
+                constructor_value_reader=SourceRewritePlanPayload.string_or_empty,
+            ),
+        )
+
+    @classmethod
+    def from_operation_payload(
+        cls,
+        target: SourceRewriteTarget,
+        payload: SourceRewritePlanPayload,
+    ) -> "ExposeGlobalCandidateCacheContextOperation":
+        return cls(
+            target=target,
+            rationale=payload.string_or_empty("rationale"),
+            candidate_type_name=payload.required_string(
+                CANDIDATE_TYPE_NAME_PAYLOAD_FIELD
+            ),
+            candidate_collector_name=payload.required_string(
+                CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD
+            ),
+            candidate_collector_scope=cls.candidate_collector_scope_from_payload(
+                payload,
+                CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD,
+            ),
+            candidate_collector_uses_config=payload.bool_with_default(
+                CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD,
+                False,
+            ),
+            candidate_item_sort_attributes=payload.string_tuple_or_empty(
+                CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD,
+            ),
+            contextual_detector_base_name=cls.contextual_detector_base_from_payload(
+                payload,
+                CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD,
+            ),
+            replaced_base_name=cls.replaced_base_from_payload(
+                payload,
+                BASE_NAME_PAYLOAD_FIELD,
+            ),
+            import_source=cls.import_source_from_payload(
+                payload,
+                IMPORT_SOURCE_PAYLOAD_FIELD,
+            ),
+        )
+
+    @staticmethod
+    def candidate_collector_scope_from_payload(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> str:
+        value = payload.optional_string(field_name)
+        if value is None:
+            return WholeModuleCandidateCollectorScopeSource.scope_key
+        return value
+
+    @staticmethod
+    def contextual_detector_base_from_payload(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> str:
+        value = payload.optional_string(field_name)
+        if value is None:
+            return "CrossModuleCandidateDetector"
+        return value
+
+    @staticmethod
+    def replaced_base_from_payload(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> str:
+        value = payload.optional_string(field_name)
+        if value is None:
+            return "IssueDetector"
+        return value
+
+    @staticmethod
+    def import_source_from_payload(
+        payload: SourceRewritePlanPayload,
+        field_name: str,
+    ) -> str:
+        value = payload.optional_string(field_name)
+        if value is None:
+            return ""
+        return value
+
+    @staticmethod
+    def _required_operation(
+        operation: RefactorRecipeOperation,
+    ) -> "ExposeGlobalCandidateCacheContextOperation":
+        if not isinstance(operation, ExposeGlobalCandidateCacheContextOperation):
+            raise TypeError(
+                "candidate cache context binding requires "
+                "ExposeGlobalCandidateCacheContextOperation"
+            )
+        return operation
+
+    @staticmethod
+    def candidate_type_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .candidate_type_name
+        )
+
+    @staticmethod
+    def candidate_collector_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .candidate_collector_name
+        )
+
+    @staticmethod
+    def candidate_collector_scope_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .candidate_collector_scope
+        )
+
+    @staticmethod
+    def candidate_collector_uses_config_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .candidate_collector_uses_config
+        )
+
+    @staticmethod
+    def candidate_item_sort_attributes_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .candidate_item_sort_attributes
+        )
+
+    @staticmethod
+    def contextual_detector_base_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .contextual_detector_base_name
+        )
+
+    @staticmethod
+    def replaced_base_name_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .replaced_base_name
+        )
+
+    @staticmethod
+    def import_source_from_operation(
+        operation: RefactorRecipeOperation,
+    ) -> JsonValue:
+        return (
+            ExposeGlobalCandidateCacheContextOperation._required_operation(operation)
+            .import_source
+        )
+
+    def operation_payload(self) -> JsonObject:
+        return {
+            CANDIDATE_TYPE_NAME_PAYLOAD_FIELD: self.candidate_type_name,
+            CANDIDATE_COLLECTOR_NAME_PAYLOAD_FIELD: self.candidate_collector_name,
+            CANDIDATE_COLLECTOR_SCOPE_PAYLOAD_FIELD: self.candidate_collector_scope,
+            CANDIDATE_COLLECTOR_USES_CONFIG_PAYLOAD_FIELD: (
+                self.candidate_collector_uses_config
+            ),
+            CANDIDATE_ITEM_SORT_ATTRIBUTES_PAYLOAD_FIELD: (
+                self.candidate_item_sort_attributes
+            ),
+            CONTEXTUAL_DETECTOR_BASE_NAME_PAYLOAD_FIELD: (
+                self.contextual_detector_base_name
+            ),
+            BASE_NAME_PAYLOAD_FIELD: self.replaced_base_name,
+            IMPORT_SOURCE_PAYLOAD_FIELD: self.import_source,
+        }
+
+    @property
+    def contextual_base_source(self) -> str:
+        return f"{self.contextual_detector_base_name}[{self.candidate_type_name}]"
+
+    def line_replacements(
+        self,
+        source_index: SourceIndex,
+        source_by_path: Mapping[str, str],
+    ) -> tuple[SourceLineReplacement, ...]:
+        _, target_digest, node = self.target_node(source_index, source_by_path)
+        if not isinstance(node, ast.ClassDef):
+            raise ValueError(
+                f"Target {target_digest.qualname!r} is not a class definition"
+            )
+        source_path = target_digest.file_path
+        source = source_by_path[source_path]
+        replacements: list[SourceLineReplacement] = []
+        if self.import_source:
+            replacements.extend(
+                self.required_import_replacements(
+                    source_index,
+                    source_by_path,
+                    source_path,
+                    import_source=self.import_source,
+                    default_rationale=(
+                        "Import the contextual candidate detector cache base."
+                    ),
+                )
+            )
+        replacements.extend(self.class_header_replacements(node, source_path, source))
+        replacements.extend(
+            self.candidate_method_replacements(node, source_path, source)
+        )
+        return tuple(replacements)
+
+    def class_header_replacements(
+        self,
+        node: ast.ClassDef,
+        source_path: str,
+        source: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
+        base_items = header_authority.base_items
+        if self.contextual_base_source in base_items:
+            return ()
+        if self.replaced_base_name in base_items:
+            updated_base_items = tuple(
+                self.contextual_base_source
+                if base_name == self.replaced_base_name
+                else base_name
+                for base_name in base_items
+            )
+        else:
+            updated_base_items = (*base_items, self.contextual_base_source)
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=header_authority.start_line,
+                end_line=header_authority.end_line,
+                replacement_lines=header_authority.with_base_items(updated_base_items),
+                rationale=self.rationale
+                or f"Cache `{node.name}` by detector candidate semantics.",
+            ),
+        )
+
+    def candidate_method_replacements(
+        self,
+        node: ast.ClassDef,
+        source_path: str,
+        source: str,
+    ) -> tuple[SourceLineReplacement, ...]:
+        if CandidateCacheDetectorProtocolSource.class_def_has_candidate_method(node):
+            return ()
+        header_authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
+        anchor = CandidateCacheDetectorProtocolSource.collect_findings_anchor(node)
+        insertion_line = (
+            header_authority.body_start_line(anchor)
+            if anchor is not None
+            else header_authority.end_line + 1
+        )
+        return (
+            SourceLineReplacement(
+                file_path=source_path,
+                start_line=insertion_line,
+                end_line=insertion_line - 1,
+                replacement_lines=SourceTargetEditor.source_lines(
+                    self.candidate_method_source(header_authority.indentation)
+                ),
+                rationale=self.rationale
+                or "Expose the detector candidate projection as cache context.",
+            ),
+        )
+
+    def candidate_method_source(self, class_indentation: str) -> str:
+        indent = f"{class_indentation}    "
+        continued = f"{indent}    "
+        spec = CandidateCollectorMethodSpec(
+            collector_name=self.candidate_collector_name,
+            collector_uses_config=self.candidate_collector_uses_config,
+            item_sort_attributes=self.candidate_item_sort_attributes,
+        )
+        config_line = CandidateCollectorScopeSource.require(
+            self.candidate_collector_scope
+        ).method_body(spec, continued)
+        return (
+            f"{indent}def _candidate_items(\n"
+            f"{continued}self,\n"
+            f"{continued}modules: list[ParsedModule],\n"
+            f"{continued}config: DetectorConfig,\n"
+            f"{indent}) -> Sequence[{self.candidate_type_name}]:\n"
+            f"{config_line}\n"
+        )
+
+
+@dataclass(frozen=True)
 class ClassRegistryKeyPair:
     """One class/key binding used to convert manual registries."""
 
@@ -9703,6 +10250,10 @@ def codemod_dsl_payload_reader_profile_rules() -> tuple[
         CodemodDslPayloadReaderProfileRule(
             OperationPayloadReader.true_bool,
             CodemodDslPayloadReaderProfile.optional_boolean(True),
+        ),
+        CodemodDslPayloadReaderProfileRule(
+            OperationPayloadReader.false_bool,
+            CodemodDslPayloadReaderProfile.optional_boolean(False),
         ),
         CodemodDslPayloadReaderProfileRule(
             OperationPayloadReader.required_selector,
@@ -11445,7 +11996,7 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         self,
         operations: Iterable[RefactorRecipeOperation],
     ) -> tuple[PlannedSourceRewrite, ...]:
-        replacements = tuple(
+        replacements = self._coalesced_replacements(
             replacement
             for operation in operations
             for replacement in operation.line_replacements_with_context(
@@ -11456,6 +12007,32 @@ class RefactorRecipeOperationCompiler(CodemodSelectorContext):
         )
         groups = self._merged_replacement_groups(replacements)
         return tuple(self._planned_rewrite(group) for group in groups)
+
+    @staticmethod
+    def _coalesced_replacements(
+        replacements: Iterable[SourceLineReplacement],
+    ) -> tuple[SourceLineReplacement, ...]:
+        replacements_by_source: dict[
+            tuple[str, int, int, tuple[str, ...]], SourceLineReplacement
+        ] = {}
+        for replacement in replacements:
+            key = (
+                replacement.file_path,
+                replacement.start_line,
+                replacement.end_line,
+                replacement.replacement_lines,
+            )
+            existing = replacements_by_source.get(key)
+            if existing is None:
+                replacements_by_source[key] = replacement
+                continue
+            replacements_by_source[key] = replace(
+                existing,
+                rationale=_joined_rationales(
+                    (existing.rationale, replacement.rationale)
+                ),
+            )
+        return tuple(replacements_by_source.values())
 
     def _merged_replacement_groups(
         self,
@@ -11854,6 +12431,38 @@ class RefactorRecipe:
                 source_path=source_path,
             ),
             payload_value=base_name,
+            rationale=rationale or self.reason,
+        )
+        return replace(self, operations=(*self.operations, operation))
+
+    def expose_global_candidate_cache_context(
+        self,
+        class_qualname: str,
+        *,
+        candidate_type_name: str,
+        candidate_collector_name: str,
+        source_path: str | None = None,
+        candidate_collector_scope: str = "modules",
+        candidate_collector_uses_config: bool = False,
+        candidate_item_sort_attributes: Iterable[str] = (),
+        contextual_detector_base_name: str = "CrossModuleCandidateDetector",
+        replaced_base_name: str = "IssueDetector",
+        import_source: str = "from ._base import CrossModuleCandidateDetector",
+        rationale: str = "",
+    ) -> "RefactorRecipe":
+        operation = ExposeGlobalCandidateCacheContextOperation(
+            target=SourceRewriteTarget(
+                qualname=class_qualname,
+                source_path=source_path,
+            ),
+            candidate_type_name=candidate_type_name,
+            candidate_collector_name=candidate_collector_name,
+            candidate_collector_scope=candidate_collector_scope,
+            candidate_collector_uses_config=candidate_collector_uses_config,
+            candidate_item_sort_attributes=tuple(candidate_item_sort_attributes),
+            contextual_detector_base_name=contextual_detector_base_name,
+            replaced_base_name=replaced_base_name,
+            import_source=import_source,
             rationale=rationale or self.reason,
         )
         return replace(self, operations=(*self.operations, operation))

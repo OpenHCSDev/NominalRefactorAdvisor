@@ -286,7 +286,9 @@ declare_candidate_rule_detector(
 )
 
 
-class ExistingNominalAuthorityReuseDetector(IssueDetector):
+class ExistingNominalAuthorityReuseDetector(
+    CrossModuleCandidateDetector[ExistingNominalAuthorityReuseCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.ABC_TEMPLATE_METHOD,
         "Existing nominal authority should be reused",
@@ -295,6 +297,14 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
         "a concrete class repeats a semantic family already declared by an existing nominal authority",
         _NOMINAL_IDENTITY_SHARED_ALGORITHM_AUTHORITY_MRO_ORDERING_CAPABILITY_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[ExistingNominalAuthorityReuseCandidate]:
+        del config
+        return _existing_nominal_authority_reuse_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -347,7 +357,9 @@ class ExistingNominalAuthorityReuseDetector(IssueDetector):
         return findings
 
 
-class NominalAuthorityImplementationRetreatDetector(IssueDetector):
+class NominalAuthorityImplementationRetreatDetector(
+    CrossModuleCandidateDetector[NominalAuthorityImplementationRetreatCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Implementation mechanics must not split nominal authority identity",
@@ -356,6 +368,14 @@ class NominalAuthorityImplementationRetreatDetector(IssueDetector):
         "dataclass mechanics split a semantic field family away from its nominal authority",
         _NOMINAL_IDENTITY_FAIL_LOUD_CONTRACTS_VIRTUAL_MEMBERSHIP_CAPABILITY_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[NominalAuthorityImplementationRetreatCandidate]:
+        del config
+        return _nominal_authority_implementation_retreat_candidates(modules)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig

@@ -4397,7 +4397,7 @@ class MirroredConstructorValidationDetector(PerModuleIssueDetector):
         return findings
 
 
-class RepeatedBuilderCallDetector(IssueDetector):
+class RepeatedBuilderCallDetector(CrossModuleCandidateDetector[BuilderCallShape]):
     detector_id = "repeated_builder_calls"
     ssot_authority_boundary = True
     finding_spec = certified_spec(
@@ -4409,6 +4409,24 @@ class RepeatedBuilderCallDetector(IssueDetector):
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[BuilderCallShape]:
+        del config
+        items = (
+            item
+            for module in modules
+            for item in _module_builder_call_shapes(module)
+        )
+        return tuple(
+            sorted(
+                items,
+                key=lambda item: (item.file_path, item.lineno, item.symbol),
+            )
+        )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -4579,7 +4597,9 @@ class DeclaredFieldExtractionSite:
         }
 
 
-class DeclaredFieldExtractionFanoutDetector(IssueDetector):
+class DeclaredFieldExtractionFanoutDetector(
+    CrossModuleCandidateDetector[DeclaredFieldExtractionSite],
+):
     ssot_authority_boundary = True
     finding_spec = certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -4594,6 +4614,24 @@ class DeclaredFieldExtractionFanoutDetector(IssueDetector):
         _UNIT_RATE_COHERENCE_AUTHORITATIVE_PROVENANCE_CAPABILITY_TAGS,
         _KEYWORD_BUILDER_CALL_DATAFLOW_ROOT_OBSERVATION_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[DeclaredFieldExtractionSite]:
+        del config
+        items = (
+            item
+            for module in modules
+            for item in _declared_field_extraction_sites(module)
+        )
+        return tuple(
+            sorted(
+                items,
+                key=lambda item: (item.file_path, item.lineno, item.owner_symbol),
+            )
+        )
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
@@ -11389,7 +11427,9 @@ class PublicApiPrivateDelegateShellDetector(IssueDetector):
         return findings
 
 
-class PublicApiPrivateDelegateFamilyDetector(IssueDetector):
+class PublicApiPrivateDelegateFamilyDetector(
+    CrossModuleCandidateDetector[PublicApiPrivateDelegateFamilyCandidate],
+):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Multiple public shells over one private delegate should collapse into a public facade family",
@@ -11399,6 +11439,13 @@ class PublicApiPrivateDelegateFamilyDetector(IssueDetector):
         _AUTHORITATIVE_PROVENANCE_NOMINAL_IDENTITY_CAPABILITY_TAGS,
         _ACCESSOR_WRAPPER_INTERFACE_IDENTITY_NORMALIZED_AST_OBSERVATION_TAGS,
     )
+
+    def _candidate_items(
+        self,
+        modules: list[ParsedModule],
+        config: DetectorConfig,
+    ) -> Sequence[PublicApiPrivateDelegateFamilyCandidate]:
+        return _public_api_private_delegate_family_candidates(modules, config)
 
     def _collect_findings(
         self, modules: list[ParsedModule], config: DetectorConfig
