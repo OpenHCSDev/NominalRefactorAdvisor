@@ -609,18 +609,18 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
 
     def edge_is_admissible(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
-        del resolver, candidate
+        del context, candidate
         return True
 
     def projection_descends_to_authority(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
-        del resolver, candidate
+        del context, candidate
         return False
 
 
@@ -631,13 +631,13 @@ class ClassFamilyLikeMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         return not (
             candidate.projection.kind is PresentationProjectionKind.BRANCH_LITERAL
             and len(candidate.matched_fact_ids) <= 2
-            and not resolver.projection_has_authority_affinity(
+            and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
             )
@@ -664,13 +664,13 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
             candidate.coverage_ratio < 1.0
             and len(candidate.matched_fact_ids) <= 2
-            and not resolver.projection_has_authority_affinity(
+            and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
             )
@@ -678,25 +678,25 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
             return False
         if (
             candidate.branch_like_projection
-            and not resolver.dataclass_branch_projection_has_field_syntax(
+            and not context.projection_semantics.dataclass_branch_has_field_syntax(
                 candidate.projection,
                 frozenset(candidate.matched_tokens),
             )
-            and not resolver.projection_has_qualified_authority_reference(
+            and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
             )
         ):
             return False
         if (
-            resolver.projection_materializes_any_dataclass_authority(
+            context.dataclass_descent.projection_materializes_any_dataclass_authority(
                 candidate.projection,
             )
-            and not resolver.projection_has_authority_affinity(
+            and not context.projection_semantics.has_authority_affinity(
                 candidate.projection,
                 candidate.authority,
             )
-            and not resolver.projection_has_qualified_authority_reference(
+            and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
             )
@@ -705,10 +705,10 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
         return not (
             candidate.coverage_ratio < 1.0
             and (
-                resolver.projection_descends_to_any_dataclass_authority(
+                context.dataclass_descent.projection_descends_to_any_dataclass_authority(
                     candidate.projection,
                 )
-                or resolver.projection_materializes_any_dataclass_authority(
+                or context.dataclass_descent.projection_materializes_any_dataclass_authority(
                     candidate.projection,
                 )
             )
@@ -716,20 +716,20 @@ class DataclassSchemaMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def projection_descends_to_authority(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         return (
-            resolver.dataclass_projection_descends_to_authority(
+            context.dataclass_descent.projection_descends_to_authority(
                 candidate.projection,
                 candidate.authority,
             )
-            or resolver.projection_owner_constructs_dataclass_authority(
+            or context.dataclass_descent.projection_owner_constructs_dataclass_authority(
                 candidate.projection,
                 candidate.authority,
                 candidate.matched_facts,
             )
-            or resolver.projection_shares_dataclass_base_with_authority(
+            or context.dataclass_descent.projection_shares_dataclass_base_with_authority(
                 candidate.projection,
                 candidate.authority,
             )
@@ -744,17 +744,17 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
 
     def edge_is_admissible(
         self,
-        resolver: "SemanticMirrorResolver",
+        context: "SemanticMirrorResolutionContext",
         candidate: SemanticMirrorEdgeCandidate,
     ) -> bool:
         if (
             candidate.branch_like_projection
-            and not resolver.enum_branch_projection_has_case_syntax(
+            and not context.projection_semantics.enum_branch_has_case_syntax(
                 candidate.projection,
                 frozenset(candidate.matched_tokens),
             )
             and not candidate.authority_affinity.has_authority_affinity()
-            and not resolver.projection_has_qualified_authority_reference(
+            and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
             )
@@ -763,7 +763,7 @@ class EnumMirrorPolicy(SemanticAuthorityMirrorPolicy):
         return not (
             len(candidate.matched_fact_ids) <= 2
             and not candidate.authority_affinity.has_authority_affinity()
-            and not resolver.projection_has_qualified_authority_reference(
+            and not context.projection_semantics.has_qualified_authority_reference(
                 candidate.projection,
                 candidate.authority,
             )
@@ -2249,49 +2249,126 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
 
 
 @dataclass(frozen=True)
-class SemanticMirrorResolver(SemanticDescentGraphSpace):
-    """Resolve graph edges where a projection mirrors an authority."""
+class SemanticMirrorPolicyCatalog:
+    """Nominal policy lookup for semantic mirror authority kinds."""
+
+    authority_catalog: SemanticAuthorityCatalog
+
+    def policy_for_authority(
+        self,
+        authority: SemanticAuthority,
+    ) -> SemanticAuthorityMirrorPolicy:
+        return SemanticAuthorityMirrorPolicy.for_authority(authority)
+
+    def policy_for_authority_id(
+        self,
+        authority_id: str,
+    ) -> SemanticAuthorityMirrorPolicy:
+        return self.policy_for_authority(self.authority_catalog.authority(authority_id))
+
+
+@dataclass(frozen=True)
+class ProjectionSemanticAuthority:
+    """Projection-level syntax and affinity predicates for mirror policies."""
+
+    @staticmethod
+    def has_authority_affinity(
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        authority_tokens = NormalizeNameProjection.token_set(authority.name)
+        projection_tokens = NormalizeNameProjection.token_set(
+            f"{projection.label} {projection.owner_symbol} {projection.location.symbol}"
+        )
+        return len(authority_tokens & projection_tokens) >= 2
+
+    @staticmethod
+    def has_qualified_authority_reference(
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            token.kind is PresentationTokenKind.QUALIFIED_ATTRIBUTE
+            and token.qualifier == authority.name
+            for token in projection.tokens
+        )
+
+    @staticmethod
+    def enum_branch_has_case_syntax(
+        projection: PresentationProjection,
+        matched_tokens: frozenset[str],
+    ) -> bool:
+        return (
+            len(
+                {
+                    token.value
+                    for token in projection.tokens
+                    if token.kind is PresentationTokenKind.STRING_LITERAL
+                    and token.value in matched_tokens
+                }
+            )
+            >= 2
+        )
+
+    @staticmethod
+    def dataclass_branch_has_field_syntax(
+        projection: PresentationProjection,
+        matched_tokens: frozenset[str],
+    ) -> bool:
+        return any(
+            token.kind is PresentationTokenKind.STRING_LITERAL
+            and token.value in matched_tokens
+            for token in projection.tokens
+        )
+
+
+@dataclass(frozen=True)
+class ProjectionClassSymbolLineageIndex:
+    """Resolve presentation projections into indexed class lineage."""
 
     class_index: ClassFamilyIndex
+    projections: tuple[PresentationProjection, ...]
 
     @cached_property
-    def dataclass_authorities(self) -> tuple[SemanticAuthority, ...]:
-        return tuple(
-            authority
-            for authority in self.authorities
-            if self._policy_for_authority(authority).dataclass_authority_selected
-        )
+    def class_symbols_by_projection_id(self) -> dict[str, str | None]:
+        return {
+            projection.projection_id: self._resolve_class_symbol(projection)
+            for projection in self.projections
+        }
 
     @cached_property
-    def dataclass_authority_ids(self) -> frozenset[str]:
-        return frozenset(
-            authority.authority_id for authority in self.dataclass_authorities
-        )
-
-    @cached_property
-    def ancestor_symbol_sets(self) -> dict[str, frozenset[str]]:
+    def ancestor_symbols_by_class_symbol(self) -> dict[str, frozenset[str]]:
         return {
             symbol: frozenset(self.class_index.ancestor_symbols(symbol))
             for symbol in self.class_index.classes_by_symbol
         }
 
-    @cached_property
-    def projection_owner_class_symbols(self) -> dict[str, str | None]:
-        return {
-            projection.projection_id: self._resolve_projection_owner_class_symbol(
-                projection
-            )
-            for projection in self.projections
-        }
+    def class_symbol_for_projection(
+        self,
+        projection: PresentationProjection,
+    ) -> str | None:
+        return self.class_symbols_by_projection_id[projection.projection_id]
 
-    @cached_property
-    def dataclass_projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
-        return {
-            projection.projection_id: self._dataclass_projection_descent_authority_ids(
-                projection
+    def _resolve_class_symbol(
+        self,
+        projection: PresentationProjection,
+    ) -> str | None:
+        for end_index in range(len(projection.owner.qualname_parts), 0, -1):
+            owner_qualname = ".".join(projection.owner.qualname_parts[:end_index])
+            symbol = self.class_index.symbol_for(
+                file_path=projection.location.file_path,
+                qualname=owner_qualname,
             )
-            for projection in self.projections
-        }
+            if symbol is not None:
+                return symbol
+        return None
+
+
+@dataclass(frozen=True)
+class ConstructionAuthorityResolver:
+    """Resolve owner construction sites that descend to semantic authorities."""
+
+    class_index: ClassFamilyIndex
 
     @cached_property
     def construction_authority_class_cache(
@@ -2305,9 +2382,355 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
     ) -> dict[ConstructionAuthorityCacheKey, bool]:
         return {}
 
+    def construction_type_descends_to_authority(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
+        if self.construction_type_is_authority_class(construction, authority):
+            return True
+        return self.construction_type_materializes_authority(construction, authority)
+
+    def construction_type_is_authority_class(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return self._construction_authority_cache_result(
+            self.construction_authority_class_cache,
+            construction,
+            authority,
+            self._construction_type_is_authority_class_uncached,
+        )
+
+    def construction_type_materializes_authority(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return self._construction_authority_cache_result(
+            self.construction_materializes_authority_cache,
+            construction,
+            authority,
+            self._construction_type_materializes_authority_uncached,
+        )
+
+    def _construction_authority_cache_result(
+        self,
+        cache: dict[ConstructionAuthorityCacheKey, bool],
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+        compute: ConstructionAuthorityPredicate,
+    ) -> bool:
+        cache_key = (construction.type_name, authority.authority_id)
+        if cache_key not in cache:
+            cache[cache_key] = compute(construction, authority)
+        return cache[cache_key]
+
+    def _construction_type_is_authority_class_uncached(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
+        if construction.type_name == authority.name:
+            return True
+        for class_symbol in self.class_index.symbols_by_simple_name.get(
+            construction.type_name, ()
+        ):
+            if authority.authority_id in self.class_index.ancestor_symbols(
+                class_symbol
+            ):
+                return True
+        return False
+
+    def _construction_type_materializes_authority_uncached(
+        self,
+        construction: PresentationAuthorityConstruction,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            (indexed_class := self.class_index.class_for(class_symbol)) is not None
+            and self._class_materializes_authority(indexed_class, authority)
+            for class_symbol in self.class_index.symbols_by_simple_name.get(
+                construction.type_name, ()
+            )
+        )
+
+    def _class_materializes_authority(
+        self,
+        indexed_class: IndexedClass,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return self._class_declares_materialized_authority(
+            indexed_class,
+            authority,
+        ) or any(
+            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            and self._function_materializes_authority(statement, authority)
+            for statement in indexed_class.node.body
+        )
+
+    @staticmethod
+    def _class_declares_materialized_authority(
+        indexed_class: IndexedClass,
+        authority: SemanticAuthority,
+    ) -> bool:
+        for _, value in AutoRegisterClassAuthority(indexed_class.node).assignment_pairs:
+            if AttributeChainAuthority.terminal_name(value) == authority.name:
+                return True
+        return False
+
+    def _function_materializes_authority(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            self._call_constructs_authority(child, authority)
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call)
+        )
+
+    def _call_constructs_authority(
+        self,
+        node: ast.Call,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return any(
+            self.construction_type_is_authority_class(
+                PresentationAuthorityConstruction(type_name, ()),
+                authority,
+            )
+            for type_name in PresentationAuthorityConstructionCollector.construction_type_names(
+                node
+            )
+        )
+
+
+@dataclass(frozen=True)
+class DataclassProjectionDescentAuthority:
+    """Dataclass-schema descent semantics for presentation projections."""
+
+    authorities: tuple[SemanticAuthority, ...]
+    projections: tuple[PresentationProjection, ...]
+    fact_authority_index: SemanticFactAuthorityIndex
+    policy_catalog: SemanticMirrorPolicyCatalog
+    projection_class_symbol_lineage: ProjectionClassSymbolLineageIndex
+    construction_resolver: ConstructionAuthorityResolver
+
+    @cached_property
+    def dataclass_authorities(self) -> tuple[SemanticAuthority, ...]:
+        return tuple(
+            authority
+            for authority in self.authorities
+            if self.policy_catalog.policy_for_authority(
+                authority
+            ).dataclass_authority_selected
+        )
+
+    @cached_property
+    def dataclass_authority_ids(self) -> frozenset[str]:
+        return frozenset(
+            authority.authority_id for authority in self.dataclass_authorities
+        )
+
+    @cached_property
+    def projection_descent_authority_ids(self) -> dict[str, frozenset[str]]:
+        return {
+            projection.projection_id: self._projection_descent_authority_ids(projection)
+            for projection in self.projections
+        }
+
     @cached_property
     def projection_materializes_any_dataclass_authority_cache(self) -> dict[str, bool]:
         return {}
+
+    def projection_descends_to_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        return (
+            authority.authority_id
+            in self.projection_descent_authority_ids[projection.projection_id]
+        )
+
+    def projection_descends_to_any_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
+        return any(
+            self.projection_descends_to_authority(projection, authority)
+            for authority in self.dataclass_authorities
+        )
+
+    def projection_materializes_any_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
+        cache = self.projection_materializes_any_dataclass_authority_cache
+        if projection.projection_id not in cache:
+            cache[projection.projection_id] = (
+                self._projection_materializes_any_dataclass_authority_uncached(
+                    projection,
+                )
+            )
+        return cache[projection.projection_id]
+
+    def projection_owner_constructs_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        return self._projection_owner_derives_dataclass_authority(
+            projection,
+            authority,
+            matched_facts,
+            self.construction_resolver.construction_type_descends_to_authority,
+        )
+
+    def projection_owner_materializes_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+    ) -> bool:
+        return self._projection_owner_derives_dataclass_authority(
+            projection,
+            authority,
+            matched_facts,
+            self.construction_resolver.construction_type_materializes_authority,
+        )
+
+    def projection_shares_dataclass_base_with_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+    ) -> bool:
+        projection_class_symbol = (
+            self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
+        )
+        if projection_class_symbol is None:
+            return False
+        shared_ancestors = (
+            self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+                projection_class_symbol
+            ]
+            & self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+                authority.authority_id
+            ]
+            & self.dataclass_authority_ids
+        )
+        return bool(shared_ancestors)
+
+    def _projection_descent_authority_ids(
+        self,
+        projection: PresentationProjection,
+    ) -> frozenset[str]:
+        projection_class_symbol = (
+            self.projection_class_symbol_lineage.class_symbol_for_projection(projection)
+        )
+        if projection_class_symbol is None:
+            return frozenset()
+        projection_ancestor_symbols = (
+            self.projection_class_symbol_lineage.ancestor_symbols_by_class_symbol[
+                projection_class_symbol
+            ]
+        )
+        return frozenset(
+            authority_id
+            for authority_id in self.dataclass_authority_ids
+            if projection_class_symbol == authority_id
+            or authority_id in projection_ancestor_symbols
+        )
+
+    def _projection_materializes_any_dataclass_authority_uncached(
+        self,
+        projection: PresentationProjection,
+    ) -> bool:
+        return any(
+            self.projection_owner_materializes_dataclass_authority(
+                projection,
+                authority,
+                self.fact_authority_index.facts_for_authority(authority.authority_id),
+            )
+            for authority in self.dataclass_authorities
+        )
+
+    def _projection_owner_derives_dataclass_authority(
+        self,
+        projection: PresentationProjection,
+        authority: SemanticAuthority,
+        matched_facts: tuple[SemanticFact, ...],
+        accepts_construction: ConstructionAuthorityPredicate,
+    ) -> bool:
+        if not matched_facts:
+            return False
+        matched_tokens = frozenset(
+            variant
+            for fact in matched_facts
+            for variant in normalized_name_variants(fact.name)
+        )
+        if not matched_tokens:
+            return False
+        descended_field_tokens: set[str] = set()
+        for construction in projection.owner_constructions:
+            if not accepts_construction(construction, authority):
+                continue
+            descended_field_tokens.update(construction.field_tokens)
+            if matched_tokens <= frozenset(construction.field_tokens):
+                return True
+        return matched_tokens <= frozenset(descended_field_tokens)
+
+
+@dataclass(frozen=True)
+class SemanticMirrorResolutionContext:
+    """Composed policy context for deciding mirror admissibility and descent."""
+
+    projection_semantics: ProjectionSemanticAuthority
+    dataclass_descent: DataclassProjectionDescentAuthority
+
+
+@dataclass(frozen=True)
+class SemanticMirrorResolver(SemanticDescentGraphSpace):
+    """Resolve graph edges where a projection mirrors an authority."""
+
+    class_index: ClassFamilyIndex
+
+    @cached_property
+    def policy_catalog(self) -> SemanticMirrorPolicyCatalog:
+        return SemanticMirrorPolicyCatalog(self.authority_catalog)
+
+    @cached_property
+    def projection_semantics(self) -> ProjectionSemanticAuthority:
+        return ProjectionSemanticAuthority()
+
+    @cached_property
+    def projection_class_symbol_lineage(self) -> ProjectionClassSymbolLineageIndex:
+        return ProjectionClassSymbolLineageIndex(self.class_index, self.projections)
+
+    @cached_property
+    def construction_resolver(self) -> ConstructionAuthorityResolver:
+        return ConstructionAuthorityResolver(self.class_index)
+
+    @cached_property
+    def dataclass_descent(self) -> DataclassProjectionDescentAuthority:
+        return DataclassProjectionDescentAuthority(
+            authorities=self.authorities,
+            projections=self.projections,
+            fact_authority_index=self.fact_authority_index,
+            policy_catalog=self.policy_catalog,
+            projection_class_symbol_lineage=self.projection_class_symbol_lineage,
+            construction_resolver=self.construction_resolver,
+        )
+
+    @cached_property
+    def resolution_context(self) -> SemanticMirrorResolutionContext:
+        return SemanticMirrorResolutionContext(
+            projection_semantics=self.projection_semantics,
+            dataclass_descent=self.dataclass_descent,
+        )
 
     def edges(self) -> tuple[MirrorEdge, ...]:
         edges: list[MirrorEdge] = []
@@ -2371,7 +2794,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
                 for authority_id in self.authority_name_index.authority_ids_for_name(
                     qualifier
                 )
-                if self._policy_for_authority_id(
+                if self.policy_catalog.policy_for_authority_id(
                     authority_id
                 ).authority_qualified_token_reference_admitted
             )
@@ -2381,7 +2804,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
         return tuple(
             ref
             for ref in refs
-            if self._policy_for_authority_id(
+            if self.policy_catalog.policy_for_authority_id(
                 ref.authority_id
             ).foreign_qualified_attribute_token_reference_admitted
         )
@@ -2414,10 +2837,10 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             matched_tokens=sorted_tuple(matched_tokens),
             coverage_ratio=coverage_ratio,
         )
-        policy = self._policy_for_authority(authority)
-        if not policy.edge_is_admissible(self, candidate):
+        policy = self.policy_catalog.policy_for_authority(authority)
+        if not policy.edge_is_admissible(self.resolution_context, candidate):
             return None
-        if policy.projection_descends_to_authority(self, candidate):
+        if policy.projection_descends_to_authority(self.resolution_context, candidate):
             return None
         return MirrorEdge(
             authority_id=authority.authority_id,
@@ -2425,344 +2848,6 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
             matched_fact_ids=candidate.matched_fact_ids,
             matched_tokens=candidate.matched_tokens,
             coverage_ratio=coverage_ratio,
-        )
-
-    def _policy_for_authority_id(
-        self,
-        authority_id: str,
-    ) -> SemanticAuthorityMirrorPolicy:
-        return self._policy_for_authority(
-            self.authority_catalog.authority(authority_id)
-        )
-
-    @staticmethod
-    def _policy_for_authority(
-        authority: SemanticAuthority,
-    ) -> SemanticAuthorityMirrorPolicy:
-        return SemanticAuthorityMirrorPolicy.for_authority(authority)
-
-    def dataclass_projection_descends_to_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return (
-            authority.authority_id
-            in self.dataclass_projection_descent_authority_ids[projection.projection_id]
-        )
-
-    def _dataclass_projection_descent_authority_ids(
-        self,
-        projection: PresentationProjection,
-    ) -> frozenset[str]:
-        owner_class_symbol = self._projection_owner_class_symbol(projection)
-        if owner_class_symbol is None:
-            return frozenset()
-        owner_ancestor_symbols = self.ancestor_symbol_sets[owner_class_symbol]
-        return frozenset(
-            authority_id
-            for authority_id in self.dataclass_authority_ids
-            if owner_class_symbol == authority_id
-            or authority_id in owner_ancestor_symbols
-        )
-
-    def projection_owner_constructs_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-        matched_facts: tuple[SemanticFact, ...],
-    ) -> bool:
-        return self._projection_owner_derives_dataclass_authority(
-            projection,
-            authority,
-            matched_facts,
-            self._construction_type_descends_to_authority,
-        )
-
-    def _construction_type_descends_to_authority(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        if self._construction_type_is_authority_class(construction, authority):
-            return True
-        return self._construction_type_materializes_authority(construction, authority)
-
-    def _construction_type_is_authority_class(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return self._construction_authority_cache_result(
-            self.construction_authority_class_cache,
-            construction,
-            authority,
-            self._construction_type_is_authority_class_uncached,
-        )
-
-    def _construction_type_is_authority_class_uncached(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        if construction.type_name == authority.name:
-            return True
-        for class_symbol in self.class_index.symbols_by_simple_name.get(
-            construction.type_name, ()
-        ):
-            if authority.authority_id in self.class_index.ancestor_symbols(
-                class_symbol
-            ):
-                return True
-        return False
-
-    def _construction_type_materializes_authority(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return self._construction_authority_cache_result(
-            self.construction_materializes_authority_cache,
-            construction,
-            authority,
-            self._construction_type_materializes_authority_uncached,
-        )
-
-    def _construction_authority_cache_result(
-        self,
-        cache: dict[ConstructionAuthorityCacheKey, bool],
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-        compute: ConstructionAuthorityPredicate,
-    ) -> bool:
-        cache_key = (construction.type_name, authority.authority_id)
-        if cache_key not in cache:
-            cache[cache_key] = compute(
-                construction,
-                authority,
-            )
-        return cache[cache_key]
-
-    def _construction_type_materializes_authority_uncached(
-        self,
-        construction: PresentationAuthorityConstruction,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            (indexed_class := self.class_index.class_for(class_symbol)) is not None
-            and self._class_materializes_authority(indexed_class, authority)
-            for class_symbol in self.class_index.symbols_by_simple_name.get(
-                construction.type_name, ()
-            )
-        )
-
-    def _class_materializes_authority(
-        self,
-        indexed_class: IndexedClass,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return self._class_declares_materialized_authority(
-            indexed_class,
-            authority,
-        ) or any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and self._function_materializes_authority(statement, authority)
-            for statement in indexed_class.node.body
-        )
-
-    @staticmethod
-    def _class_declares_materialized_authority(
-        indexed_class: IndexedClass,
-        authority: SemanticAuthority,
-    ) -> bool:
-        for _, value in AutoRegisterClassAuthority(indexed_class.node).assignment_pairs:
-            if AttributeChainAuthority.terminal_name(value) == authority.name:
-                return True
-        return False
-
-    def _function_materializes_authority(
-        self,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            self._call_constructs_authority(child, authority)
-            for child in ast.walk(node)
-            if isinstance(child, ast.Call)
-        )
-
-    def _call_constructs_authority(
-        self,
-        node: ast.Call,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            self._construction_type_is_authority_class(
-                PresentationAuthorityConstruction(type_name, ()),
-                authority,
-            )
-            for type_name in PresentationAuthorityConstructionCollector.construction_type_names(
-                node
-            )
-        )
-
-    def projection_descends_to_any_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-    ) -> bool:
-        return any(
-            self.dataclass_projection_descends_to_authority(projection, authority)
-            for authority in self.dataclass_authorities
-        )
-
-    def projection_materializes_any_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-    ) -> bool:
-        cache = self.projection_materializes_any_dataclass_authority_cache
-        if projection.projection_id not in cache:
-            cache[projection.projection_id] = (
-                self._projection_materializes_any_dataclass_authority_uncached(
-                    projection,
-                )
-            )
-        return cache[projection.projection_id]
-
-    def _projection_materializes_any_dataclass_authority_uncached(
-        self,
-        projection: PresentationProjection,
-    ) -> bool:
-        return any(
-            self.projection_owner_materializes_dataclass_authority(
-                projection,
-                authority,
-                self.fact_authority_index.facts_for_authority(authority.authority_id),
-            )
-            for authority in self.dataclass_authorities
-        )
-
-    def projection_owner_materializes_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-        matched_facts: tuple[SemanticFact, ...],
-    ) -> bool:
-        return self._projection_owner_derives_dataclass_authority(
-            projection,
-            authority,
-            matched_facts,
-            self._construction_type_materializes_authority,
-        )
-
-    def _projection_owner_derives_dataclass_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-        matched_facts: tuple[SemanticFact, ...],
-        accepts_construction: ConstructionAuthorityPredicate,
-    ) -> bool:
-        if not matched_facts:
-            return False
-        matched_tokens = frozenset(
-            variant
-            for fact in matched_facts
-            for variant in normalized_name_variants(fact.name)
-        )
-        if not matched_tokens:
-            return False
-        descended_field_tokens: set[str] = set()
-        for construction in projection.owner_constructions:
-            if not accepts_construction(construction, authority):
-                continue
-            descended_field_tokens.update(construction.field_tokens)
-            if matched_tokens <= frozenset(construction.field_tokens):
-                return True
-        return matched_tokens <= frozenset(descended_field_tokens)
-
-    def projection_shares_dataclass_base_with_authority(
-        self,
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        owner_class_symbol = self._projection_owner_class_symbol(projection)
-        if owner_class_symbol is None:
-            return False
-        shared_ancestors = (
-            self.ancestor_symbol_sets[owner_class_symbol]
-            & self.ancestor_symbol_sets[authority.authority_id]
-            & self.dataclass_authority_ids
-        )
-        return bool(shared_ancestors)
-
-    def _projection_owner_class_symbol(
-        self,
-        projection: PresentationProjection,
-    ) -> str | None:
-        return self.projection_owner_class_symbols[projection.projection_id]
-
-    def _resolve_projection_owner_class_symbol(
-        self,
-        projection: PresentationProjection,
-    ) -> str | None:
-        parts = projection.owner.qualname_parts
-        for end_index in range(len(parts), 0, -1):
-            owner_qualname = ".".join(parts[:end_index])
-            symbol = self.class_index.symbol_for(
-                file_path=projection.location.file_path,
-                qualname=owner_qualname,
-            )
-            if symbol is not None:
-                return symbol
-        return None
-
-    @staticmethod
-    def projection_has_authority_affinity(
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        authority_tokens = NormalizeNameProjection.token_set(authority.name)
-        projection_tokens = NormalizeNameProjection.token_set(
-            f"{projection.label} {projection.owner_symbol} {projection.location.symbol}"
-        )
-        return len(authority_tokens & projection_tokens) >= 2
-
-    @staticmethod
-    def projection_has_qualified_authority_reference(
-        projection: PresentationProjection,
-        authority: SemanticAuthority,
-    ) -> bool:
-        return any(
-            token.kind is PresentationTokenKind.QUALIFIED_ATTRIBUTE
-            and token.qualifier == authority.name
-            for token in projection.tokens
-        )
-
-    @staticmethod
-    def enum_branch_projection_has_case_syntax(
-        projection: PresentationProjection,
-        matched_tokens: frozenset[str],
-    ) -> bool:
-        return (
-            len(
-                {
-                    token.value
-                    for token in projection.tokens
-                    if token.kind is PresentationTokenKind.STRING_LITERAL
-                    and token.value in matched_tokens
-                }
-            )
-            >= 2
-        )
-
-    @staticmethod
-    def dataclass_branch_projection_has_field_syntax(
-        projection: PresentationProjection,
-        matched_tokens: frozenset[str],
-    ) -> bool:
-        return any(
-            token.kind is PresentationTokenKind.STRING_LITERAL
-            and token.value in matched_tokens
-            for token in projection.tokens
         )
 
 
