@@ -34,7 +34,7 @@ DetectorConfigSignature: TypeAlias = tuple[
 class AnalysisCacheSchema:
     """Nominal schema identity for persisted detector-output cache entries."""
 
-    version: int = 9
+    version: int = 10
 
 
 analysis_cache_schema = AnalysisCacheSchema()
@@ -187,6 +187,25 @@ class ModuleSourceSignature:
             module.is_package_init,
             semantic_module_hash(module),
         )
+
+
+@dataclass(frozen=True)
+class GlobalModuleContextSignature:
+    """Semantic source identity for detector shards that need the whole module graph."""
+
+    source_files: tuple[ModuleSourceSignature, ...]
+
+    @classmethod
+    def from_modules(
+        cls,
+        modules: tuple[ParsedModule, ...],
+    ) -> "GlobalModuleContextSignature":
+        return cls(tuple(ModuleSourceSignature.from_module(module) for module in modules))
+
+    @property
+    def cache_token(self) -> str:
+        payload = repr(self).encode("utf-8")
+        return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -438,7 +457,7 @@ class ContextualModuleAnalysisCacheIdentity(AnalysisCacheEntryContext):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ContextualGlobalAnalysisCacheIdentity(AnalysisCacheEntryContext):
+class GlobalDetectorAnalysisCacheIdentity(AnalysisCacheEntryContext):
     """Invalidation identity for one global detector keyed by semantic context."""
 
     context_signature: str
@@ -449,7 +468,7 @@ class ContextualGlobalAnalysisCacheIdentity(AnalysisCacheEntryContext):
         config: DetectorConfig,
         detector_type: type[IssueDetector],
         context_signature: str,
-    ) -> "ContextualGlobalAnalysisCacheIdentity":
+    ) -> "GlobalDetectorAnalysisCacheIdentity":
         return cls(
             config=detector_config_signature(config),
             detector_registry=DetectorRegistrySignature.from_detector_types(
@@ -469,7 +488,7 @@ AnalysisCacheEntryIdentity: TypeAlias = (
     AnalysisCacheIdentity
     | PerModuleAnalysisCacheIdentity
     | ContextualModuleAnalysisCacheIdentity
-    | ContextualGlobalAnalysisCacheIdentity
+    | GlobalDetectorAnalysisCacheIdentity
 )
 AnalysisCachePayloadValue: TypeAlias = (
     AnalysisCacheEntryIdentity

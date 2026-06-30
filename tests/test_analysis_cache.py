@@ -30,6 +30,7 @@ from nominal_refactor_advisor.detectors import (
     CrossModuleCandidateDetector,
     DetectorConfig,
     IssueDetector,
+    PerModuleIssueDetector,
 )
 from nominal_refactor_advisor.models import FindingSpec, RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
@@ -196,6 +197,94 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
     assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
     assert candidate_calls == 3
     assert finding_calls == 2
+
+
+def test_global_detector_shard_survives_detector_registry_expansion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    module_path = package_root / "mod.py"
+    module_path.write_text("class Alpha:\n    pass\n", encoding="utf-8")
+    cache_dir = tmp_path / ".nra-cache" / "analysis"
+    finding_spec = FindingSpec(
+        pattern_id=PatternId.NOMINAL_BOUNDARY,
+        title="Global cache",
+        why="global cache",
+        capability_gap="global cache",
+        relation_context="global cache",
+    )
+    global_calls = 0
+    local_calls = 0
+    registered_test_detectors: list[type[IssueDetector]] = []
+
+    class StableGlobalDetector(IssueDetector):
+        detector_id = "stable_global_cache"
+
+        def _collect_findings(
+            self, modules: list, config: DetectorConfig
+        ) -> list[RefactorFinding]:
+            nonlocal global_calls
+            del config
+            global_calls += 1
+            return [
+                finding_spec.build(
+                    self.detector_id,
+                    "stable global",
+                    (SourceLocation(str(modules[0].path), 1, "global"),),
+                )
+            ]
+
+    registered_test_detectors.append(StableGlobalDetector)
+
+    def unregister_test_detectors() -> None:
+        for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
+            if detector_type in registered_test_detectors:
+                del IssueDetector.__registry__[registry_key]
+
+    try:
+        monkeypatch.setattr(
+            "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+            lambda: (StableGlobalDetector,),
+        )
+        first_result = analyze_modules_with_cache(
+            (package_root,),
+            parse_python_module_roots((package_root,)),
+            DetectorConfig(),
+            analysis_cache_dir=cache_dir,
+        )
+
+        class AddedPerModuleDetector(PerModuleIssueDetector):
+            detector_id = "added_per_module_cache"
+
+            def _findings_for_module(
+                self, module, config: DetectorConfig
+            ) -> list[RefactorFinding]:
+                nonlocal local_calls
+                del module, config
+                local_calls += 1
+                return []
+
+        registered_test_detectors.append(AddedPerModuleDetector)
+        monkeypatch.setattr(
+            "nominal_refactor_advisor.analysis.default_detector_types_for_analysis",
+            lambda: (StableGlobalDetector, AddedPerModuleDetector),
+        )
+        second_result = analyze_modules_with_cache(
+            (package_root,),
+            parse_python_module_roots((package_root,)),
+            DetectorConfig(),
+            analysis_cache_dir=cache_dir,
+        )
+    finally:
+        unregister_test_detectors()
+
+    assert first_result.cache_status is AnalysisCacheStatus.MISS
+    assert second_result.cache_status is AnalysisCacheStatus.PARTIAL
+    assert global_calls == 1
+    assert local_calls == 1
+    assert [finding.summary for finding in second_result.findings] == ["stable global"]
 
 
 def test_collected_family_items_are_persisted_beside_parse_cache(tmp_path: Path) -> None:

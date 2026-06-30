@@ -18,8 +18,9 @@ from .analysis_cache import (
     AnalysisFindingSummary,
     AnalysisCacheStatus,
     AnalysisFindingCache,
-    ContextualGlobalAnalysisCacheIdentity,
     ContextualModuleAnalysisCacheIdentity,
+    GlobalDetectorAnalysisCacheIdentity,
+    GlobalModuleContextSignature,
     PerModuleAnalysisCacheIdentity,
 )
 from .ast_tools import (
@@ -262,6 +263,69 @@ def detect_per_module_shard_with_active_state(
     return state.detect_module_index(module_index)
 
 
+@dataclass(frozen=True)
+class DetectorTypeShardRunner:
+    """Run detector-type shards through one process-pool authority."""
+
+    worker_state: DetectorAnalysisWorkerState
+    detector_types: tuple[type[IssueDetector], ...]
+    worker_plan: DetectorAnalysisWorkerPlan
+
+    @classmethod
+    def from_modules(
+        cls,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+        detector_types: tuple[type[IssueDetector], ...],
+        *,
+        analysis_workers: int,
+        minimum_auto_work_items: int = 4,
+    ) -> "DetectorTypeShardRunner":
+        return cls(
+            worker_state=DetectorAnalysisWorkerState(modules, config),
+            detector_types=detector_types,
+            worker_plan=DetectorAnalysisWorkerPlan(
+                requested_worker_count=analysis_workers,
+                work_item_count=len(detector_types),
+                module_count=len(modules),
+                minimum_auto_work_items=minimum_auto_work_items,
+            ),
+        )
+
+    def findings_by_detector(self) -> list[list[RefactorFinding]]:
+        if not self.detector_types:
+            return []
+        if self.worker_plan.uses_process_pool:
+            with ProcessPoolExecutor(
+                max_workers=self.worker_plan.effective_worker_count,
+                initializer=initialize_detector_analysis_worker,
+                initargs=(self.worker_state,),
+            ) as executor:
+                return list(
+                    executor.map(
+                        detect_with_active_worker_state,
+                        self.detector_types,
+                    )
+                )
+        return [
+            detector_type().detect(
+                list(self.worker_state.modules),
+                self.worker_state.config,
+            )
+            for detector_type in self.detector_types
+        ]
+
+    def sorted_findings(self) -> list[RefactorFinding]:
+        return SortedFindingsAuthority.sort(
+            (
+                finding
+                for detector_findings in self.findings_by_detector()
+                for finding in detector_findings
+            ),
+            detector_types=self.detector_types,
+        )
+
+
 def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
     """Return registered detector classes in the default analysis order."""
 
@@ -474,31 +538,13 @@ def analyze_detector_types(
 ) -> list[RefactorFinding]:
     """Run selected detector classes against parsed modules."""
 
-    worker_plan = DetectorAnalysisWorkerPlan(
-        requested_worker_count=analysis_workers,
-        work_item_count=len(detector_types),
-        module_count=len(modules),
+    return DetectorTypeShardRunner.from_modules(
+        modules=tuple(modules),
+        config=config,
+        detector_types=detector_types,
+        analysis_workers=analysis_workers,
         minimum_auto_work_items=64,
-    )
-    if worker_plan.uses_process_pool:
-        state = DetectorAnalysisWorkerState(tuple(modules), config)
-        with ProcessPoolExecutor(
-            max_workers=worker_plan.effective_worker_count,
-            initializer=initialize_detector_analysis_worker,
-            initargs=(state,),
-        ) as executor:
-            detector_findings = executor.map(
-                detect_with_active_worker_state,
-                detector_types,
-            )
-        return SortedFindingsAuthority.sort(
-            (finding for findings in detector_findings for finding in findings),
-            detector_types=detector_types,
-        )
-    findings: list[RefactorFinding] = []
-    for detector_type in detector_types:
-        findings.extend(detector_type().detect(modules, config))
-    return SortedFindingsAuthority.sort(findings, detector_types=detector_types)
+    ).sorted_findings()
 
 
 @dataclass(frozen=True)
@@ -648,6 +694,7 @@ class IncrementalAnalysisCacheResolver:
         self._detector_partition = DetectorTypePartition.from_detector_types(
             self._detector_types
         )
+        self._global_module_context_signature: str | None = None
 
     def result(self) -> IncrementalAnalysisResult:
         per_module_findings = self._per_module_findings()
@@ -659,7 +706,7 @@ class IncrementalAnalysisCacheResolver:
                 *per_module_findings.findings,
                 *contextual_module_findings.findings,
                 *contextual_global_findings.findings,
-                *global_findings,
+                *global_findings.findings,
             ],
             detector_types=self._detector_types,
         )
@@ -669,6 +716,7 @@ class IncrementalAnalysisCacheResolver:
                 per_module_findings.cache_status,
                 contextual_module_findings.cache_status,
                 contextual_global_findings.cache_status,
+                global_findings.cache_status,
             ),
         )
 
@@ -795,15 +843,52 @@ class IncrementalAnalysisCacheResolver:
         )
         return IncrementalAnalysisResult(findings, cache_status)
 
-    def _global_findings(self) -> list[RefactorFinding]:
+    def _global_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_global_detectors:
-            return []
-        return analyze_detector_types(
-            self._modules,
-            self._config,
-            detector_types=self._detector_partition.global_detector_types,
-            analysis_workers=self._analysis_workers,
+            return IncrementalAnalysisResult([], AnalysisCacheStatus.MISS)
+
+        findings: list[RefactorFinding] = []
+        hit_count = 0
+        missing_detector_types: list[type[IssueDetector]] = []
+        missing_identities: list[GlobalDetectorAnalysisCacheIdentity] = []
+        context_signature = self._global_detector_context_signature()
+        for detector_type in self._detector_partition.global_detector_types:
+            identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
+                self._config,
+                detector_type,
+                context_signature,
+            )
+            cache_lookup = self._analysis_cache.load(identity)
+            if cache_lookup.status is AnalysisCacheStatus.HIT:
+                hit_count += 1
+                findings.extend(cache_lookup.findings)
+                continue
+            missing_detector_types.append(detector_type)
+            missing_identities.append(identity)
+
+        for identity, detector_findings in zip(
+            missing_identities,
+            self._missing_global_detector_findings(tuple(missing_detector_types)),
+            strict=True,
+        ):
+            self._analysis_cache.store(identity, detector_findings)
+            findings.extend(detector_findings)
+
+        cache_status = (
+            AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
         )
+        return IncrementalAnalysisResult(findings, cache_status)
+
+    def _missing_global_detector_findings(
+        self,
+        missing_detector_types: tuple[type[IssueDetector], ...],
+    ) -> list[list[RefactorFinding]]:
+        return DetectorTypeShardRunner.from_modules(
+            modules=tuple(self._modules),
+            config=self._config,
+            detector_types=missing_detector_types,
+            analysis_workers=self._analysis_workers,
+        ).findings_by_detector()
 
     def _contextual_global_findings(self) -> IncrementalAnalysisResult:
         if not self._detector_partition.has_contextual_global_detectors:
@@ -821,7 +906,7 @@ class IncrementalAnalysisCacheResolver:
             context_signature = detector_type.context_signature(
                 module_context, self._config
             )
-            identity = ContextualGlobalAnalysisCacheIdentity.from_global_context(
+            identity = GlobalDetectorAnalysisCacheIdentity.from_global_context(
                 self._config,
                 detector_type,
                 context_signature,
@@ -839,6 +924,13 @@ class IncrementalAnalysisCacheResolver:
             AnalysisCacheStatus.MISS if hit_count == 0 else AnalysisCacheStatus.PARTIAL
         )
         return IncrementalAnalysisResult(findings, cache_status)
+
+    def _global_detector_context_signature(self) -> str:
+        if self._global_module_context_signature is None:
+            self._global_module_context_signature = (
+                GlobalModuleContextSignature.from_modules(tuple(self._modules)).cache_token
+            )
+        return self._global_module_context_signature
 
 
 class AnalysisCacheStatusStrategy(ABC, metaclass=AutoRegisterMeta):
