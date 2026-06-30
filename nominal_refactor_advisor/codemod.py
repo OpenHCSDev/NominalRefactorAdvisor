@@ -30,7 +30,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Generic, TypeAlias, TypeVar
+from typing import ClassVar, Generic, Self, TypeAlias, TypeVar
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -88,7 +88,14 @@ from .semantic_descent import (
     build_finding_backed_semantic_descent_graph,
     semantic_descent_finding_projection_id,
 )
-from .semantic_match import Maybe, single_item
+from .semantic_match import (
+    FirstSuccessfulEffectStep,
+    Maybe,
+    RegisteredEffectStep,
+    as_ast,
+    registered_effect_steps,
+    single_item,
+)
 from .source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
@@ -20731,6 +20738,14 @@ class LocalRoleCaseGuardAuthorityExtraction(
         return "\n".join(body_parts)
 
 
+LocalRoleCaseExtraction: TypeAlias = (
+    LocalRoleCaseAssignmentAuthorityExtraction
+    | LocalRoleCaseGuardAuthorityExtraction
+    | LocalRoleCaseAuthorityExtraction
+    | LocalRoleCaseBranchAuthorityExtraction
+)
+
+
 @dataclass(frozen=True)
 class LocalRoleGuardReturnWindow:
     """Contiguous guard-return statements with a normal return tail."""
@@ -20863,6 +20878,339 @@ class FunctionParameterProjection:
         )
 
 
+@dataclass(frozen=True)
+class LocalRoleCaseExtractionRequest:
+    """Input bundle for registered role-case extraction strategies."""
+
+    builder: "LocalRoleCaseLogicMappingRecipeBuilder"
+    source_path: str
+    node: ast.FunctionDef
+
+
+class LocalRoleCaseExtractionStrategy(RegisteredEffectStep, ABC):
+    """Registered matcher for one local role-case extraction shape."""
+
+    __registry__: ClassVar[dict[str, type["LocalRoleCaseExtractionStrategy"]]] = {}
+
+    def apply(
+        self,
+        value: LocalRoleCaseExtractionRequest,
+    ) -> LocalRoleCaseExtraction | None:
+        return self.extraction(
+            value.builder,
+            value.source_path,
+            value.node,
+        )
+
+    @abstractmethod
+    def extraction(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseExtraction | None:
+        raise NotImplementedError
+
+
+class LocalRoleCaseBodyExtractionStrategy(LocalRoleCaseExtractionStrategy, ABC):
+    """Template method for strategies that first match the semantic body."""
+
+    exact_body_length: ClassVar[int | None] = None
+    minimum_body_length: ClassVar[int] = 0
+
+    def extraction(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseExtraction | None:
+        return (
+            Maybe.of(builder.semantic_body(node))
+            .filter(self.accepts_body)
+            .project(
+                lambda body: self.extraction_from_body(
+                    builder,
+                    source_path,
+                    node,
+                    body,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def accepts_body(self, body: tuple[ast.stmt, ...]) -> bool:
+        if self.exact_body_length is not None:
+            return len(body) == self.exact_body_length
+        return len(body) >= self.minimum_body_length
+
+    @abstractmethod
+    def extraction_from_body(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseExtraction | None:
+        raise NotImplementedError
+
+
+class LocalRoleCaseMappingExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
+    """Extract a local string-keyed mapping lookup into an authority."""
+
+    step_id = "mapping"
+    registration_order = 10
+    exact_body_length = 2
+
+    def extraction_from_body(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseAuthorityExtraction | None:
+        assignment, return_statement = body
+        returned = as_ast(return_statement, ast.Return)
+        mapping_name, items = builder.mapping_assignment_items(source_path, assignment)
+        lookup = AxisIndexedMappingLookupProjection.axis_name(
+            returned.value if returned is not None else None,
+            mapping_name or "",
+        )
+        return (
+            Maybe.of(mapping_name)
+            .filter(lambda _mapping_name: bool(items))
+            .combine(lambda _mapping_name: lookup, lambda name, axis_name: (name, axis_name))
+            .filter(lambda row: row[1] in FunctionParameterProjection.all_names(node))
+            .map(
+                lambda row: LocalRoleCaseAuthorityExtraction(
+                    mapping_name=row[0],
+                    axis_name=row[1],
+                    items=items,
+                    owner_function_name=node.name,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+
+class LocalRoleCaseBranchExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
+    """Extract ordered literal-return branches into a role-case authority."""
+
+    step_id = "branch"
+    registration_order = 20
+    minimum_body_length = 2
+
+    def extraction_from_body(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
+        return (
+            Maybe.of(builder.suffix_branch_slice(body))
+            .project(lambda branch_slice: self.extraction_from_slice(builder, source_path, node, body, branch_slice))
+            .unwrap_or_none()
+        )
+
+    def extraction_from_slice(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+        branch_slice: tuple[int, int],
+    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
+        branch_start, branch_stop = branch_slice
+        source_segments = builder.source_segments_for(source_path)
+        branch_statements = body[branch_start:branch_stop]
+        default_statement = as_ast(body[branch_stop], ast.Return)
+        parameter_name = single_item(FunctionParameterProjection.public_names(node))
+        prelude_source = builder.prelude_source(source_segments, body[:branch_start])
+        default_source = builder.node_source(
+            source_segments,
+            default_statement.value if default_statement is not None else None,
+        )
+        items = self.branch_items(builder, source_segments, branch_statements, parameter_name)
+        return (
+            Maybe.of((parameter_name, prelude_source, default_source, items))
+            .filter(lambda row: row[0] is not None and row[1] is not None and row[2] is not None)
+            .filter(lambda row: bool(row[3]))
+            .filter(lambda row: builder.branch_items_cover_finding(row[3]))
+            .map(
+                lambda row: LocalRoleCaseBranchAuthorityExtraction(
+                    items=row[3],
+                    default_source=row[2],
+                    owner_function_name=node.name,
+                    parameter_names=(row[0],),
+                    prelude_source=row[1],
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def branch_items(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_segments: SourceLineSegmentAuthority,
+        branch_statements: tuple[ast.stmt, ...],
+        parameter_name: str | None,
+    ) -> tuple[LocalRoleCaseBranchItem, ...]:
+        if parameter_name is None:
+            return ()
+        items: list[LocalRoleCaseBranchItem] = []
+        for statement in branch_statements:
+            if not isinstance(statement, ast.If) or statement.orelse:
+                return ()
+            if len(statement.body) != 1 or not isinstance(statement.body[0], ast.Return):
+                return ()
+            result_source = builder.node_source(source_segments, statement.body[0].value)
+            if result_source is None:
+                return ()
+            condition_items = builder.branch_items_for_condition(
+                source_segments,
+                statement.test,
+                result_source,
+            )
+            if not condition_items:
+                return ()
+            if any(item.axis_name != parameter_name for item in condition_items):
+                return ()
+            items.extend(condition_items)
+        return tuple(items)
+
+
+class LocalRoleCaseAssignmentExtractionStrategy(LocalRoleCaseBodyExtractionStrategy):
+    """Extract branch-local assignments into a role-case authority."""
+
+    step_id = "assignment"
+    registration_order = 30
+    minimum_body_length = 3
+
+    def extraction_from_body(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
+        branch_statement = as_ast(body[-2], ast.If)
+        source_segments = builder.source_segments_for(source_path)
+        prelude_source = builder.prelude_source(source_segments, body[:-2])
+        return_source = (
+            builder.statement_source(source_segments, body[-1])
+            if isinstance(body[-1], ast.Return)
+            else None
+        )
+        chain = (
+            builder.assignment_branch_chain(source_segments, branch_statement)
+            if branch_statement is not None
+            else None
+        )
+        return (
+            Maybe.of((prelude_source, return_source, chain))
+            .filter(lambda row: row[0] is not None and row[1] is not None and row[2] is not None)
+            .project(lambda row: self.extraction_from_chain(builder, node, row[0], row[1], row[2]))
+            .unwrap_or_none()
+        )
+
+    def extraction_from_chain(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        node: ast.FunctionDef,
+        prelude_source: str,
+        return_source: str,
+        chain: tuple[
+            tuple[LocalRoleCaseAssignmentItem, ...],
+            LocalRoleCaseAssignmentDefault,
+            tuple[str, ...],
+        ],
+    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
+        items, default_item, assignment_names = chain
+        value_names = builder.assignment_value_names(
+            node,
+            builder.semantic_body(node)[:-2],
+            items,
+            default_item,
+        )
+        return (
+            Maybe.of(value_names)
+            .filter(bool)
+            .filter(lambda _value_names: builder.assignment_items_cover_finding(items))
+            .map(
+                lambda value_name_tuple: LocalRoleCaseAssignmentAuthorityExtraction(
+                    items=tuple(
+                        replace(item, value_names=value_name_tuple) for item in items
+                    ),
+                    default_item=replace(default_item, value_names=value_name_tuple),
+                    owner_function_name=node.name,
+                    assignment_names=assignment_names,
+                    value_names=value_name_tuple,
+                    return_source=return_source,
+                    prelude_source=prelude_source,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+
+class LocalRoleCaseGuardExtractionStrategy(LocalRoleCaseExtractionStrategy):
+    """Extract guard-return windows into a role-case authority."""
+
+    step_id = "guard"
+    registration_order = 40
+
+    def extraction(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
+        body = builder.semantic_body(node)
+        return (
+            Maybe.of(LocalRoleGuardReturnWindow.from_body(body))
+            .project(lambda window: self.extraction_from_window(builder, source_path, node, body, window))
+            .unwrap_or_none()
+        )
+
+    def extraction_from_window(
+        self,
+        builder: "LocalRoleCaseLogicMappingRecipeBuilder",
+        source_path: str,
+        node: ast.FunctionDef,
+        body: tuple[ast.stmt, ...],
+        window: LocalRoleGuardReturnWindow,
+    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
+        source_segments = builder.source_segments_for(source_path)
+        prelude_statements = window.prelude_statements(body)
+        guard_statements = window.guard_statements(body)
+        tail_statements = window.tail_statements(body)
+        prelude_source = builder.prelude_source(source_segments, prelude_statements)
+        tail_source = builder.prelude_source(source_segments, tail_statements)
+        value_names = builder.guard_value_names(
+            source_segments,
+            node,
+            prelude_statements,
+            guard_statements,
+        )
+        items = builder.guard_items(source_segments, guard_statements, value_names)
+        return (
+            Maybe.of((prelude_source, tail_source, items))
+            .filter(lambda row: row[0] is not None and row[1] is not None)
+            .filter(lambda row: not builder.guard_delegate_names_conflict(body))
+            .filter(lambda row: len(row[2]) >= 2)
+            .map(
+                lambda row: LocalRoleCaseGuardAuthorityExtraction(
+                    items=row[2],
+                    owner_function_name=node.name,
+                    value_names=value_names,
+                    tail_source=row[1],
+                    prelude_source=row[0],
+                )
+            )
+            .unwrap_or_none()
+        )
+
+
 @dataclass(frozen=True, kw_only=True)
 class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder):
     """Extract local role-case maps into a nominal authority recipe."""
@@ -20897,39 +21245,86 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         return self.parts()
 
     def parts(self) -> LocalRoleCaseLogicRecipeParts | None:
-        evidence = FindingPrimaryEvidence(self.finding).source_location
-        if evidence is None:
-            return None
+        return (
+            Maybe.of(FindingPrimaryEvidence(self.finding).source_location)
+            .project(self.parts_for_evidence)
+            .unwrap_or_none()
+        )
+
+    def parts_for_evidence(
+        self,
+        evidence: SourceLocation,
+    ) -> LocalRoleCaseLogicRecipeParts | None:
         function_qualname = dispatch_evidence_subject(evidence.symbol)
         resolved_source_path = SourcePathResolutionAuthority.from_source_index(
             evidence.file_path,
             self.source_index,
         ).optional_path()
-        if resolved_source_path is None:
-            return None
-        target = self.function_target(resolved_source_path, function_qualname)
-        if target is None:
-            return None
+        return (
+            Maybe.of(resolved_source_path)
+            .project(
+                lambda source_path: self.parts_for_resolved_path(
+                    source_path,
+                    function_qualname,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def parts_for_resolved_path(
+        self,
+        resolved_source_path: str,
+        function_qualname: str,
+    ) -> LocalRoleCaseLogicRecipeParts | None:
+        return (
+            Maybe.of(self.function_target(resolved_source_path, function_qualname))
+            .project(
+                lambda target: self.parts_for_target(
+                    resolved_source_path,
+                    target,
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    def parts_for_target(
+        self,
+        resolved_source_path: str,
+        target: tuple[AstTargetDigest, ast.FunctionDef | ast.AsyncFunctionDef],
+    ) -> LocalRoleCaseLogicRecipeParts | None:
         target_digest, node = target
-        if isinstance(node, ast.AsyncFunctionDef):
-            return None
-        extraction = self.extraction_for(resolved_source_path, node)
-        if extraction is None:
-            return None
-        authority_stem = self.authority_stem()
-        if not authority_stem:
-            return None
-        authority_name = f"{authority_stem}RoleCaseAuthority"
-        item_class_name = f"{authority_stem}RoleCase"
-        if self.class_name_conflicts(authority_name, item_class_name):
-            return None
-        return LocalRoleCaseLogicRecipeParts(
-            source_path=resolved_source_path,
-            function_qualname=target_digest.qualname,
-            insertion_qualname=self.insertion_qualname(target_digest.qualname),
-            authority_name=authority_name,
-            item_class_name=item_class_name,
-            extraction=extraction,
+        return (
+            Maybe.of(as_ast(node, ast.FunctionDef))
+            .combine(
+                lambda function_node: self.extraction_for(
+                    resolved_source_path,
+                    function_node,
+                ),
+                lambda function_node, extraction: (function_node, extraction),
+            )
+            .combine(
+                lambda _row: self.authority_stem() or None,
+                lambda row, authority_stem: (row[0], row[1], authority_stem),
+            )
+            .filter(
+                lambda row: not self.class_name_conflicts(
+                    f"{row[2]}RoleCaseAuthority",
+                    f"{row[2]}RoleCase",
+                )
+            )
+            .map(
+                lambda row: LocalRoleCaseLogicRecipeParts(
+                    source_path=resolved_source_path,
+                    function_qualname=target_digest.qualname,
+                    insertion_qualname=self.insertion_qualname(
+                        target_digest.qualname
+                    ),
+                    authority_name=f"{row[2]}RoleCaseAuthority",
+                    item_class_name=f"{row[2]}RoleCase",
+                    extraction=row[1],
+                )
+            )
+            .unwrap_or_none()
         )
 
     def function_target(
@@ -20952,18 +21347,21 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         self,
         source_path: str,
         node: ast.FunctionDef,
-    ) -> (
-        LocalRoleCaseAssignmentAuthorityExtraction
-        | LocalRoleCaseGuardAuthorityExtraction
-        | LocalRoleCaseAuthorityExtraction
-        | LocalRoleCaseBranchAuthorityExtraction
-        | None
-    ):
+    ) -> LocalRoleCaseExtraction | None:
         return (
-            self.mapping_extraction_for(source_path, node)
-            or self.branch_extraction_for(source_path, node)
-            or self.assignment_branch_extraction_for(source_path, node)
-            or self.guard_return_extraction_for(source_path, node)
+            Maybe.of(
+                LocalRoleCaseExtractionRequest(
+                    builder=self,
+                    source_path=source_path,
+                    node=node,
+                )
+            )
+            .project(
+                FirstSuccessfulEffectStep(
+                    registered_effect_steps(LocalRoleCaseExtractionStrategy)
+                ).apply
+            )
+            .unwrap_or_none()
         )
 
     def source_segments_for(self, source_path: str) -> SourceLineSegmentAuthority:
@@ -20973,173 +21371,6 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
                 self.sources_by_file_path[source_path]
             )
         return cache[source_path]
-
-    def mapping_extraction_for(
-        self,
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseAuthorityExtraction | None:
-        body = self.semantic_body(node)
-        if len(body) != 2:
-            return None
-        assignment, return_statement = body
-        if not isinstance(return_statement, ast.Return):
-            return None
-        mapping_name, items = self.mapping_assignment_items(source_path, assignment)
-        if mapping_name is None or not items:
-            return None
-        lookup = AxisIndexedMappingLookupProjection.axis_name(
-            return_statement.value,
-            mapping_name,
-        )
-        if lookup is None:
-            return None
-        axis_name = lookup
-        if axis_name not in FunctionParameterProjection.all_names(node):
-            return None
-        return LocalRoleCaseAuthorityExtraction(
-            mapping_name=mapping_name,
-            axis_name=axis_name,
-            items=items,
-            owner_function_name=node.name,
-        )
-
-    def branch_extraction_for(
-        self,
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseBranchAuthorityExtraction | None:
-        body = self.semantic_body(node)
-        if len(body) < 2:
-            return None
-        branch_slice = self.suffix_branch_slice(body)
-        if branch_slice is None:
-            return None
-        branch_start, branch_stop = branch_slice
-        branch_statements = body[branch_start:branch_stop]
-        default_statement = body[branch_stop]
-        if not isinstance(default_statement, ast.Return):
-            return None
-        source_segments = self.source_segments_for(source_path)
-        prelude_source = self.prelude_source(source_segments, body[:branch_start])
-        if prelude_source is None:
-            return None
-        default_source = self.node_source(source_segments, default_statement.value)
-        if default_source is None:
-            return None
-        parameter_names = FunctionParameterProjection.public_names(node)
-        if len(parameter_names) != 1:
-            return None
-        parameter_name_set = frozenset(parameter_names)
-        items: list[LocalRoleCaseBranchItem] = []
-        for statement in branch_statements:
-            if not isinstance(statement, ast.If):
-                return None
-            if statement.orelse:
-                return None
-            if len(statement.body) != 1 or not isinstance(
-                statement.body[0], ast.Return
-            ):
-                return None
-            result_source = self.node_source(source_segments, statement.body[0].value)
-            if result_source is None:
-                return None
-            condition_items = self.branch_items_for_condition(
-                source_segments,
-                statement.test,
-                result_source,
-            )
-            if not condition_items:
-                return None
-            if any(
-                item.axis_name not in parameter_name_set for item in condition_items
-            ):
-                return None
-            items.extend(condition_items)
-        if not self.branch_items_cover_finding(tuple(items)):
-            return None
-        if any(item.axis_name != parameter_names[0] for item in items):
-            return None
-        return LocalRoleCaseBranchAuthorityExtraction(
-            items=tuple(items),
-            default_source=default_source,
-            owner_function_name=node.name,
-            parameter_names=parameter_names,
-            prelude_source=prelude_source,
-        )
-
-    def assignment_branch_extraction_for(
-        self,
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseAssignmentAuthorityExtraction | None:
-        body = self.semantic_body(node)
-        if len(body) < 3 or not isinstance(body[-1], ast.Return):
-            return None
-        branch_statement = body[-2]
-        if not isinstance(branch_statement, ast.If):
-            return None
-        source_segments = self.source_segments_for(source_path)
-        prelude_source = self.prelude_source(source_segments, body[:-2])
-        if prelude_source is None:
-            return None
-        return_source = self.statement_source(source_segments, body[-1])
-        if return_source is None:
-            return None
-        chain = self.assignment_branch_chain(source_segments, branch_statement)
-        if chain is None:
-            return None
-        items, default_item, assignment_names = chain
-        if not self.assignment_items_cover_finding(tuple(items)):
-            return None
-        value_names = self.assignment_value_names(node, body[:-2], items, default_item)
-        if not value_names:
-            return None
-        return LocalRoleCaseAssignmentAuthorityExtraction(
-            items=tuple(replace(item, value_names=value_names) for item in items),
-            default_item=replace(default_item, value_names=value_names),
-            owner_function_name=node.name,
-            assignment_names=assignment_names,
-            value_names=value_names,
-            return_source=return_source,
-            prelude_source=prelude_source,
-        )
-
-    def guard_return_extraction_for(
-        self,
-        source_path: str,
-        node: ast.FunctionDef,
-    ) -> LocalRoleCaseGuardAuthorityExtraction | None:
-        body = self.semantic_body(node)
-        window = LocalRoleGuardReturnWindow.from_body(body)
-        if window is None:
-            return None
-        source_segments = self.source_segments_for(source_path)
-        prelude_statements = window.prelude_statements(body)
-        guard_statements = window.guard_statements(body)
-        tail_statements = window.tail_statements(body)
-        prelude_source = self.prelude_source(source_segments, prelude_statements)
-        tail_source = self.prelude_source(source_segments, tail_statements)
-        if prelude_source is None or tail_source is None:
-            return None
-        value_names = self.guard_value_names(
-            source_segments,
-            node,
-            prelude_statements,
-            guard_statements,
-        )
-        if self.guard_delegate_names_conflict(body):
-            return None
-        items = self.guard_items(source_segments, guard_statements, value_names)
-        if len(items) < 2:
-            return None
-        return LocalRoleCaseGuardAuthorityExtraction(
-            items=items,
-            owner_function_name=node.name,
-            value_names=value_names,
-            tail_source=tail_source,
-            prelude_source=prelude_source,
-        )
 
     def guard_items(
         self,
@@ -21578,14 +21809,13 @@ class LocalRoleCaseLogicMappingRecipeBuilder(MappingSemanticMirrorRecipeBuilder)
         source_segments: SourceLineSegmentAuthority,
         node: ast.AST | None,
     ) -> str | None:
-        if node is None:
-            return None
-        if not isinstance(node, ast.expr | ast.stmt):
-            return None
-        node_source = source_segments.segment_for_node(node)
-        if node_source is None or "\n" in node_source:
-            return None
-        return node_source
+        return (
+            Maybe.of(node)
+            .filter(lambda candidate: isinstance(candidate, ast.expr | ast.stmt))
+            .project(lambda candidate: source_segments.segment_for_node(candidate))
+            .filter(lambda source: "\n" not in source)
+            .unwrap_or_none()
+        )
 
     @staticmethod
     def statement_source(
@@ -21647,22 +21877,21 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
     metric_type = RegistrationMetrics
+    manual_registration_order: ClassVar[int] = 20
 
     def recipe_for_finding(
         self,
         finding: RefactorFinding,
         context: CodemodSelectorContext | None = None,
     ) -> RefactorRecipe | None:
-        collection_builder = (
-            ClassFamilyCollectionSemanticMirrorRecipeBuilder.from_context(
-                finding,
-                context,
-            )
-        )
-        if collection_builder is not None:
-            collection_recipe = collection_builder.recipe()
-            if collection_recipe is not None:
-                return collection_recipe
+        for builder in ContextualSemanticMirrorRecipeBuilder.builders_from_context(
+            finding,
+            context,
+            before_order=self.manual_registration_order,
+        ):
+            recipe = builder.recipe()
+            if recipe is not None:
+                return recipe
         manual_recipe = (
             ManualClassRegistrationFindingRecipeSynthesizer().recipe_for_finding(
                 finding,
@@ -21671,13 +21900,15 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
         )
         if manual_recipe is not None:
             return manual_recipe
-        builder = AutoregisterInstanceViewRecipeBuilder.from_context(
+        for builder in ContextualSemanticMirrorRecipeBuilder.builders_from_context(
             finding,
             context,
-        )
-        if builder is None:
-            return None
-        return builder.recipe()
+            at_or_after_order=self.manual_registration_order,
+        ):
+            recipe = builder.recipe()
+            if recipe is not None:
+                return recipe
+        return None
 
     def action_keys_for_finding(
         self,
@@ -21698,21 +21929,16 @@ class RegistrationSemanticMirrorRecipeStrategy(TypedMetricSemanticMirrorRecipeSt
             finding,
             context,
         )
-        instance_view_reason = (
-            AutoregisterInstanceViewRecipeBuilder.rejection_reason_from_context(
+        contextual_reasons = "; ".join(
+            ContextualSemanticMirrorRecipeBuilder.rejection_reasons_from_context(
                 finding,
                 context,
             )
         )
-        collection_reason = ClassFamilyCollectionSemanticMirrorRecipeBuilder.rejection_reason_from_context(
-            finding,
-            context,
-        )
         return (
             f"semantic class-family mirror `{finding.title}` could not be "
-            f"derived as a class-family collection: {collection_reason}; could not "
-            f"be converted to AutoRegisterMeta: {reason}; could not derive an "
-            f"AutoRegister instance view: {instance_view_reason}"
+            f"derived by contextual builders: {contextual_reasons}; could not "
+            f"be converted to AutoRegisterMeta: {reason}"
         )
 
 
@@ -21754,6 +21980,118 @@ class SemanticMirrorAuthorityLocation:
     authority_name: str
 
 
+@dataclass(frozen=True, kw_only=True)
+class ContextualSemanticMirrorRecipeBuilder(
+    CodemodSelectorContext,
+    ABC,
+    metaclass=AutoRegisterMeta,
+):
+    """Shared lifecycle for semantic-mirror builders that require selector context."""
+
+    __registry__: ClassVar[
+        dict[str, type["ContextualSemanticMirrorRecipeBuilder"]]
+    ] = {}
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = staticmethod(_suffix_trimmed_class_name_registry_key)
+    __skip_if_no_key__ = True
+
+    registry_key_suffix: ClassVar[str] = "RecipeBuilder"
+    registry_order: ClassVar[int] = 100
+    finding: RefactorFinding
+    missing_context_rejection: ClassVar[str]
+
+    @classmethod
+    def ordered_builder_types(
+        cls,
+    ) -> tuple[type["ContextualSemanticMirrorRecipeBuilder"], ...]:
+        return tuple(
+            builder_type
+            for builder_type in sorted(
+                cls.__registry__.values(),
+                key=lambda item: (item.registry_order, item.__name__),
+            )
+            if issubclass(builder_type, cls) and builder_type is not cls
+        )
+
+    @classmethod
+    def builders_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+        *,
+        before_order: int | None = None,
+        at_or_after_order: int | None = None,
+    ) -> tuple["ContextualSemanticMirrorRecipeBuilder", ...]:
+        return tuple(
+            builder
+            for builder_type in cls.ordered_builder_types()
+            if before_order is None or builder_type.registry_order < before_order
+            if at_or_after_order is None
+            or builder_type.registry_order >= at_or_after_order
+            if (builder := builder_type.from_context(finding, context)) is not None
+        )
+
+    @classmethod
+    def rejection_reasons_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> tuple[str, ...]:
+        return tuple(
+            (
+                f"{cls.builder_registry_key(builder_type)}: "
+                f"{builder_type.rejection_reason_from_context(finding, context)}"
+            )
+            for builder_type in cls.ordered_builder_types()
+        )
+
+    @classmethod
+    def builder_registry_key(
+        cls,
+        builder_type: type["ContextualSemanticMirrorRecipeBuilder"],
+    ) -> str:
+        for registry_key, registered_type in cls.__registry__.items():
+            if registered_type is builder_type:
+                return registry_key
+        return builder_type.__name__
+
+    @classmethod
+    def from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> Self | None:
+        if context is None:
+            return None
+        return cls(
+            source_index=context.source_index,
+            sources_by_file_path=context.sources_by_file_path,
+            class_family_index=context.class_family_index,
+            module_node_cache=context.module_node_cache,
+            ast_target_node_cache=context.ast_target_node_cache,
+            finding=finding,
+        )
+
+    @classmethod
+    def rejection_reason_from_context(
+        cls,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None,
+    ) -> str:
+        builder = cls.from_context(finding, context)
+        if builder is None:
+            return cls.missing_context_rejection
+        return builder.rejection_reason()
+
+    @abstractmethod
+    def recipe(self) -> RefactorRecipe | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def rejection_reason(self) -> str:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLocation):
     """Executable recipe facts for a subclass-collection semantic mirror."""
@@ -21785,39 +22123,14 @@ class ClassFamilyCollectionSemanticMirrorRecipeParts(SemanticMirrorAuthorityLoca
 @dataclass(frozen=True, kw_only=True)
 class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     SharedAssignmentValueMixin,
-    CodemodSelectorContext,
+    ContextualSemanticMirrorRecipeBuilder,
 ):
     """Build recipes for literal subclass collections that mirror a class family."""
 
-    finding: RefactorFinding
-
-    @classmethod
-    def from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> "ClassFamilyCollectionSemanticMirrorRecipeBuilder | None":
-        if context is None:
-            return None
-        return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            finding=finding,
-        )
-
-    @classmethod
-    def rejection_reason_from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> str:
-        builder = cls.from_context(finding, context)
-        if builder is None:
-            return (
-                "class-family collection derivation requires a source selector context"
-            )
-        return builder.rejection_reason()
+    registry_order = 10
+    missing_context_rejection = (
+        "class-family collection derivation requires a source selector context"
+    )
 
     def recipe(self) -> RefactorRecipe | None:
         parts = self.parts()
@@ -21826,32 +22139,42 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         return parts.recipe_for(self.finding)
 
     def parts(self) -> ClassFamilyCollectionSemanticMirrorRecipeParts | None:
-        seed = FindingSemanticMirrorLocations(self.finding).optional_seed_locations()
-        if seed is None:
-            return None
-        assignment_name = self.finding.metrics.plan_registry_name
-        if assignment_name is None:
-            return None
-        statement = self.module_assignment_statement(
-            seed.projection_location.file_path,
-            assignment_name,
-        )
-        if statement is None:
-            return None
-        collection_projection = self.collection_projection(statement)
-        if collection_projection is None:
-            return None
-        return ClassFamilyCollectionSemanticMirrorRecipeParts(
-            projection_path=seed.projection_location.file_path,
-            authority_path=seed.authority_location.file_path,
-            authority_name=seed.authority_location.symbol,
-            assignment_name=assignment_name,
-            assignment_source=self.replacement_assignment_source(
-                statement,
-                assignment_name,
-                seed.authority_location.symbol,
-                collection_projection,
-            ),
+        return (
+            Maybe.of(
+                FindingSemanticMirrorLocations(
+                    self.finding
+                ).optional_seed_locations()
+            )
+            .combine(
+                lambda _seed: self.finding.metrics.plan_registry_name,
+                lambda seed, assignment_name: (seed, assignment_name),
+            )
+            .combine(
+                lambda row: self.module_assignment_statement(
+                    row[0].projection_location.file_path,
+                    row[1],
+                ),
+                lambda row, statement: (row[0], row[1], statement),
+            )
+            .combine(
+                lambda row: self.collection_projection(row[2]),
+                lambda row, projection: (row[0], row[1], row[2], projection),
+            )
+            .map(
+                lambda row: ClassFamilyCollectionSemanticMirrorRecipeParts(
+                    projection_path=row[0].projection_location.file_path,
+                    authority_path=row[0].authority_location.file_path,
+                    authority_name=row[0].authority_location.symbol,
+                    assignment_name=row[1],
+                    assignment_source=self.replacement_assignment_source(
+                        row[2],
+                        row[1],
+                        row[0].authority_location.symbol,
+                        row[3],
+                    ),
+                )
+            )
+            .unwrap_or_none()
         )
 
     def rejection_reason(self) -> str:
@@ -21911,16 +22234,22 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
         self,
         statement: ast.Assign | ast.AnnAssign,
     ) -> ClassFamilyCollectionProjection | None:
-        collection = self.collection_value(statement)
-        if collection is None:
-            return None
-        factory_name, elements = collection
-        element_projection = self.element_projection_for(elements)
-        if element_projection is None:
-            return None
-        return ClassFamilyCollectionProjection(
-            factory_name=factory_name,
-            element_projection=element_projection,
+        return (
+            Maybe.of(self.collection_value(statement))
+            .combine(
+                lambda collection: self.element_projection_for(collection[1]),
+                lambda collection, element_projection: (
+                    collection[0],
+                    element_projection,
+                ),
+            )
+            .map(
+                lambda row: ClassFamilyCollectionProjection(
+                    factory_name=row[0],
+                    element_projection=row[1],
+                )
+            )
+            .unwrap_or_none()
         )
 
     def element_projection_for(
@@ -22088,36 +22417,13 @@ class AutoregisterInstanceViewRecipeSeed(AutoregisterInstanceViewRecipeSeedDraft
 
 
 @dataclass(frozen=True, kw_only=True)
-class AutoregisterInstanceViewRecipeBuilder(CodemodSelectorContext):
+class AutoregisterInstanceViewRecipeBuilder(ContextualSemanticMirrorRecipeBuilder):
     """Build recipes for constructor-valued views over AutoRegisterMeta families."""
 
-    finding: RefactorFinding
-
-    @classmethod
-    def from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> "AutoregisterInstanceViewRecipeBuilder | None":
-        if context is None:
-            return None
-        return cls(
-            source_index=context.source_index,
-            sources_by_file_path=context.sources_by_file_path,
-            class_family_index=context.class_family_index,
-            finding=finding,
-        )
-
-    @classmethod
-    def rejection_reason_from_context(
-        cls,
-        finding: RefactorFinding,
-        context: CodemodSelectorContext | None,
-    ) -> str:
-        builder = cls.from_context(finding, context)
-        if builder is None:
-            return "instance-view derivation requires a source selector context"
-        return builder.rejection_reason()
+    registry_order = 30
+    missing_context_rejection = (
+        "instance-view derivation requires a source selector context"
+    )
 
     def recipe(self) -> RefactorRecipe | None:
         parts = self.parts()
